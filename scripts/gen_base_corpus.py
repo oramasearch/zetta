@@ -1,42 +1,35 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["requests", "huggingface-hub"]
+# dependencies = ["requests", "huggingface-hub", "jsonschema"]
 # ///
 """Generate the base-agent RLVR training corpus from the solutions catalog (zetta#866).
 
 Method: blender-rl's *grow by generation, gate by verification* (see the
-rlvr-training-data skill). Per use case in `solutions-designs/docs/plan`, this:
-  1. grounds the real-world data shape with Perplexity,
-  2. generates N task "games" with a frontier model via OpenRouter — each a
-     `Task` (intent + required end-state facts) + a reference solution that passes
-     + negative controls that each fail (discrimination is the product),
-  3. GATES every generated task through the same admission-gate logic the native
-     `admit_corpus` enforces, dropping any that don't discriminate,
-  4. writes JSONL in the `CorpusTask` shape the native loader consumes, and
-  5. (optionally) pushes to a PRIVATE HuggingFace dataset.
+rlvr-training-data skill). It consumes the STRUCTURED catalog (build_catalog.py projects
+docs/plan into catalog.json, schema-valid) — not raw markdown — and per use case:
+  1. grounds the real-world data shape with Perplexity (optional),
+  2. generates N task "games" with a frontier model via OpenRouter, grounded in the use
+     case's SOLUTION spec + the methodology toolbox, phrased in rotating STYLES (the same
+     outcome asked many ways) and sometimes transforming a pasted CURRENT STATE,
+  3. VALIDATES each task against scripts/schemas/task.schema.json,
+  4. GATES it through a mirror of the native `admit_corpus` (reference passes, negatives
+     each fail), dropping any that don't validate or discriminate,
+  5. streams the `CorpusTask` JSONL to --out (Ctrl-C leaves a valid partial), and
+  6. (optionally) pushes to a PRIVATE HuggingFace dataset.
 
-Nothing external is contacted unless you run generation/push — `--self-test` is a
-fully offline check of the format + gate logic (no deps, no network).
+`--self-test` is fully offline (format + gate + schema). All credentials + config are read
+from the ENVIRONMENT (never hardcoded):
+  OPENROUTER_API_KEY / OPENROUTER_MODEL   frontier generation (default anthropic/claude-sonnet-4.5)
+  PERPLEXITY_API_KEY / PERPLEXITY_MODEL   grounding (optional; default sonar-pro)
+  HF_TOKEN, HF_DATASET_REPO               the private dataset to push to (only with --push)
+  ORAMA_PLAN_DIR                          the solutions catalog dir (docs/plan)
 
-All credentials + config are read from the ENVIRONMENT (never hardcoded):
-  OPENROUTER_API_KEY    frontier generation (Claude/GPT/... via OpenRouter)
-  OPENROUTER_MODEL      default: anthropic/claude-sonnet-4.5
-  PERPLEXITY_API_KEY    grounding the data shapes (optional; skipped if absent)
-  PERPLEXITY_MODEL      default: sonar-pro
-  HF_TOKEN, HF_DATASET_REPO   the private dataset to push to (only with --push)
-  ORAMA_PLAN_DIR        the solutions catalog dir (default: the repo's sibling
-                        solutions-designs/docs/plan)
-
-Each gated task is written + flushed to --out as it is generated, so an interrupted run
-(Ctrl-C) leaves a valid partial corpus; `--append` accumulates across runs instead of
-overwriting.
-
-Usage (always via `uv run`; deps are declared inline above, PEP 723):
-  uv run gen_base_corpus.py --self-test                 # offline: format + gate
-  uv run gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-  uv run gen_base_corpus.py --out corpus.jsonl --append # accumulate onto an existing file
-  uv run gen_base_corpus.py --out corpus.jsonl --push   # + upload to HF_DATASET_REPO
+Usage (always via `uv run`; deps declared inline above, PEP 723):
+  uv run gen_base_corpus.py --self-test
+  uv run gen_base_corpus.py --out corpus.jsonl                       # 20 samples per use case
+  uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
+  uv run gen_base_corpus.py --out corpus.jsonl --append --push
 """
 from __future__ import annotations
 
@@ -47,28 +40,38 @@ import re
 import sys
 from typing import Any, Iterator
 
-# The six execution-graph step kinds the agent mutates (ir::StepKind). A task's
-# tools are these; a reference solution is a trajectory over them.
+HERE = os.path.dirname(os.path.abspath(__file__))
+TASK_SCHEMA = os.path.join(HERE, "schemas", "task.schema.json")
+
+# The six execution-graph step kinds the agent mutates (ir::StepKind).
 TOOL_NAMES = ["connect", "clean", "model", "index", "serve", "act"]
 
+
+def default_plan_dir() -> str:
+    env = os.environ.get("ORAMA_PLAN_DIR")
+    if env:
+        return env
+    return os.path.normpath(
+        os.path.join(HERE, "..", "..", "solutions-designs", "docs", "plan"))
+
+
 # ---------------------------------------------------------------------------
-# The admission gate — a faithful mirror of the native `admit_corpus`
-# (src/core/agent/admission_gate.cpp). The native loader re-gates before training;
-# this is the generation-time pre-filter so ungated tasks never reach the dataset.
+# The admission gate + the schema — a task must VALIDATE and DISCRIMINATE. Both mirror
+# the native side (agent/corpus_io.hpp + admission_gate.cpp), which re-checks before
+# training; these are the generation-time pre-filters so nothing bad reaches the dataset.
 # ---------------------------------------------------------------------------
 
 
 def _grade_passes(required: dict[str, Any], observed: dict[str, Any]) -> bool:
     """A grade PASSES when every required fact is satisfied (>=1 required)."""
     if not required:
-        return False  # a task with no criterion is untrainable
+        return False
     return all(observed.get(key) == value for key, value in required.items())
 
 
 def gate_task(row: dict[str, Any]) -> tuple[bool, str]:
     """Return (admitted, reason). Mirrors the native admission gate."""
-    task = row.get("task", {})
-    required = task.get("required", {})
+    required = row.get("task", {}).get("required", {})
     if not isinstance(required, dict) or not required:
         return False, "untrainable task (no required facts)"
     if not _grade_passes(required, row.get("reference", {})):
@@ -82,18 +85,28 @@ def gate_task(row: dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
+_VALIDATOR: Any = None
+
+
+def validate_task(row: dict[str, Any]) -> tuple[bool, str]:
+    """Return (ok, reason) — the task must adhere to task.schema.json."""
+    global _VALIDATOR
+    if _VALIDATOR is None:
+        import jsonschema  # lazy; PEP 723 dep
+
+        with open(TASK_SCHEMA, encoding="utf-8") as handle:
+            _VALIDATOR = jsonschema.Draft7Validator(json.load(handle))
+    errors = sorted(_VALIDATOR.iter_errors(row), key=lambda e: list(e.path))
+    return (True, "") if not errors else (False, f"schema: {errors[0].message}")
+
+
 # ---------------------------------------------------------------------------
-# The self-test corpus — the churn seed, matching the native `churn_solution_case()`
-# (src/core/agent/curriculum.cpp). Proves the format + gate offline.
+# The churn seed — matches native churn_solution_case() (curriculum.cpp). Sample #1.
 # ---------------------------------------------------------------------------
 
 CHURN_REQUIRED = {
-    "connect": True,
-    "leakage_free": True,
-    "model_kind": "gbdt",
-    "explain": "shap",
-    "calibrated": True,
-    "calibration_loop": True,
+    "connect": True, "leakage_free": True, "model_kind": "gbdt",
+    "explain": "shap", "calibrated": True, "calibration_loop": True,
 }
 
 
@@ -105,87 +118,105 @@ def churn_self_test_row() -> dict[str, Any]:
                 "Build a churn-risk pipeline over the account events + communications: "
                 "connect the source, engineer leakage-free point-in-time features, train "
                 "a gradient-boosted model with SHAP explanations, and serve calibrated "
-                "risk scores with a score-vs-outcome calibration loop."
-            ),
+                "risk scores with a score-vs-outcome calibration loop."),
             "initial_state": {"data.churned_events": True, "data.active_accounts": True},
             "tool_names": TOOL_NAMES,
             "required": dict(CHURN_REQUIRED),
         },
         "reference": dict(CHURN_REQUIRED),
         "negative_controls": [
-            {**CHURN_REQUIRED, "model_kind": "llm", "explain": "none"},  # his n8n
-            {**CHURN_REQUIRED, "leakage_free": False},  # leaky
-            {**CHURN_REQUIRED, "calibration_loop": False},  # uncalibrated
+            {**CHURN_REQUIRED, "model_kind": "llm", "explain": "none"},
+            {**CHURN_REQUIRED, "leakage_free": False},
+            {**CHURN_REQUIRED, "calibration_loop": False},
         ],
-        "tier": 1,
-        "difficulty": 0.45,
-        "held_out": False,
+        "tier": 1, "difficulty": 0.45, "held_out": False,
         "tags": ["churn", "tabular", "gbdt", "uc1"],
     }
 
 
 # ---------------------------------------------------------------------------
-# Catalog parsing — pull the scored use cases out of the plan (offline).
+# The structured catalog (from build_catalog.py) — the generator's grounding.
 # ---------------------------------------------------------------------------
 
 
-def default_plan_dir() -> str:
-    env = os.environ.get("ORAMA_PLAN_DIR")
-    if env:
-        return env
-    here = os.path.dirname(os.path.abspath(__file__))
-    # scripts/ -> zetta/ -> modules/ -> zetta-bridge/ -> modules/ -> solutions-designs
-    return os.path.normpath(
-        os.path.join(here, "..", "..", "solutions-designs", "docs", "plan")
-    )
+def load_catalog(plan_dir: str, catalog_path: str | None) -> dict[str, Any]:
+    """Read a prebuilt catalog.json, or build it in-memory from the markdown plan."""
+    if catalog_path:
+        with open(catalog_path, encoding="utf-8") as handle:
+            return json.load(handle)
+    sys.path.insert(0, HERE)
+    import build_catalog  # sibling script; build_catalog() needs no extra deps
+
+    return build_catalog.build_catalog(plan_dir)
 
 
-def parse_use_cases(plan_dir: str) -> list[dict[str, str]]:
-    """Extract UC rows (id, name, band) from 02-use-case-portfolio.md's scored table."""
-    path = os.path.join(plan_dir, "02-use-case-portfolio.md")
-    use_cases: list[dict[str, str]] = []
-    if not os.path.exists(path):
-        return use_cases
-    row = re.compile(r"^\|\s*(UC-\d+)\s*\|\s*([^|]+?)\s*\|.*\|\s*\*?\*?([ABC])\b")
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            match = row.match(line.strip())
-            if match:
-                use_cases.append(
-                    {"id": match.group(1), "name": match.group(2).strip(),
-                     "band": match.group(3)}
-                )
-    return use_cases
+def methodology_toolbox(catalog: dict[str, Any]) -> str:
+    return "\n".join(
+        f"- {component['id']} — {component['name']}"
+        for component in catalog.get("methodologies", {}).get("components", []))
+
+
+def parse_current_states(pairs: list[str] | None) -> dict[str, dict[str, str]]:
+    """`UC-N=path` -> {kind, text}. Kind inferred from the file extension."""
+    kinds = {".json": "n8n", ".sql": "sql", ".ipynb": "notebook", ".py": "notebook"}
+    states: dict[str, dict[str, str]] = {}
+    for pair in pairs or []:
+        uc, _, path = pair.partition("=")
+        if not path:
+            raise SystemExit(f"--current-state expects UC-N=path, got {pair!r}")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        states[uc.strip()] = {"kind": kinds.get(os.path.splitext(path)[1].lower(), "prose"),
+                              "text": text}
+    return states
 
 
 # ---------------------------------------------------------------------------
 # Grounding + generation (lazy imports; only touched when actually generating).
 # ---------------------------------------------------------------------------
 
+# The same outcome gets requested many ways; rotate the phrasing across a use case's
+# samples so the agent learns intent invariance (varied ask -> same required end-state).
+STYLES = [
+    "a terse one-line request",
+    "a detailed technical spec with explicit requirements",
+    "a non-technical business ask, no ML jargon",
+    "a vague, under-specified ask that still implies the goal",
+    "a request that PASTES the user's current approach (an n8n workflow, a SQL script, a "
+    "notebook, or a prose description of their manual/LLM-only process) and asks to improve it",
+]
+
 GENERATION_SYSTEM = """You author ONE verifiable RLVR training task for an agent that \
-builds data/AI pipelines as an execution graph. The graph's node kinds are exactly: \
-connect, clean, model, index, serve, act. Follow blender-rl's rule: the task must \
-DISCRIMINATE — a reference solution that passes and negative controls that each fail.
+builds data/AI pipelines as an execution graph. Node kinds are exactly: connect, clean, \
+model, index, serve, act.
 
-Return ONLY a JSON object with this shape (booleans/strings/numbers as facts):
-{
-  "task": {"id": "<slug>", "description": "<what to build>",
-           "initial_state": {"<data facts available>": true},
-           "tool_names": ["connect","clean","model","index","serve","act"],
-           "required": {"<fact>": <value>, ...}},   // the checkable success criterion
-  "reference": {"<fact>": <value>, ...},             // satisfies EVERY required fact
-  "negative_controls": [{"<fact>": <value>, ...}, ...],  // each fails >=1 required fact
-  "tier": <int 0-5>, "difficulty": <float 0-1>, "held_out": false, "tags": ["..."]
-}
-Required facts must be objectively checkable from the built graph (e.g. model_kind, \
-leakage_free, calibrated). Provide at least 3 negative controls that are plausible-wrong \
-(the naive/LLM-only approach, a leaky pipeline, a missing-step pipeline)."""
+blender-rl rule: the task must DISCRIMINATE — a reference solution that PASSES and \
+negative controls that each FAIL. The `required` facts are the checkable success \
+criterion (objectively verifiable from the built graph: model_kind, leakage_free, \
+calibrated, ...), INDEPENDENT of how the request is phrased or what current state is \
+pasted. Provide >=3 negative controls (the naive/LLM-only approach, a leaky pipeline, a \
+missing-step pipeline).
+
+Real users ask for the same outcome in many different ways, and often PASTE their current \
+state (an n8n workflow, a SQL script, a notebook, or a prose description of their \
+manual/LLM-only process) and ask to improve it. Reflect that:
+- Phrase `task.description` in the requested STYLE; keep the SAME required end-state.
+- If a CURRENT STATE is provided, embed it in `task.description`, set \
+`initial_state.current_state` (verbatim) + `initial_state.current_state_kind`, and frame \
+the task as transforming it into the correct solution.
+- Ground the required facts + reference in the provided SOLUTION SPEC and map them onto \
+the METHODOLOGY TOOLBOX components.
+
+Return ONLY a JSON object:
+{ "task": {"id","description","initial_state":{...},"tool_names":["connect","clean",
+    "model","index","serve","act"],"required":{...}},
+  "reference": {...},                      // satisfies EVERY required fact
+  "negative_controls": [{...}, ...],       // each fails >=1 required fact
+  "tier": <0-5>, "difficulty": <0-1>, "held_out": false, "tags": [...] }"""
 
 
-def perplexity_ground(use_case: dict[str, str]) -> str:
-    """Ground the data shape with Perplexity (sonar-pro by default). Optional and
-    non-fatal: no key / HTTP error / bad response returns "" and logs — grounding must
-    never crash the generation run."""
+def perplexity_ground(use_case: dict[str, Any]) -> str:
+    """Ground the data shape with Perplexity (sonar-pro). Optional + non-fatal."""
     key = os.environ.get("PERPLEXITY_API_KEY")
     if not key:
         return ""
@@ -195,15 +226,13 @@ def perplexity_ground(use_case: dict[str, str]) -> str:
     prompt = (
         f"For the enterprise AI use case '{use_case['name']}', briefly describe the "
         "typical input data shape (tables + key columns), the standard modeling "
-        "methodology, and the common leakage/calibration pitfalls. 6 sentences max."
-    )
+        "methodology, and the common leakage/calibration pitfalls. 6 sentences max.")
     try:
         resp = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json={"model": model, "messages": [{"role": "user", "content": prompt}]},
-            timeout=60,
-        )
+            timeout=60)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as exc:  # noqa: BLE001 - grounding is optional; degrade, don't crash
@@ -212,9 +241,9 @@ def perplexity_ground(use_case: dict[str, str]) -> str:
 
 
 def _extract_json(content: Any, model: str) -> dict[str, Any]:
-    """Pull the JSON object out of a model reply — tolerating ```json fences, prose
-    around it, or a content-block list — and fail with a useful reason otherwise."""
-    if isinstance(content, list):  # some providers return a list of blocks
+    """Pull the JSON object out of a model reply — tolerating ```json fences, prose, or a
+    content-block list — and fail with a useful reason otherwise."""
+    if isinstance(content, list):
         content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
     text = (content or "").strip()
     if not text:
@@ -233,75 +262,84 @@ def _extract_json(content: Any, model: str) -> dict[str, Any]:
         raise RuntimeError(f"non-JSON from '{model}': {content[:200]!r}") from exc
 
 
-def openrouter_generate(use_case: dict[str, str], grounding: str) -> dict[str, Any]:
+def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
+                        toolbox: str, style: str,
+                        current_state: dict[str, str] | None) -> dict[str, Any]:
     key = os.environ["OPENROUTER_API_KEY"]  # required for generation
     model = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
     import requests  # lazy
 
-    user = (
-        f"Use case: {use_case['id']} — {use_case['name']} (band {use_case['band']}).\n"
-        f"Grounding:\n{grounding or '(none)'}\n\n"
-        "Author one discriminating task as specified. Output ONLY the JSON object."
-    )
+    parts = [
+        f"Use case: {use_case['id']} — {use_case['name']} (band {use_case.get('band','?')}).",
+        f"Phrasing style: {style}.",
+    ]
+    if current_state:
+        parts.append(f"CURRENT STATE pasted by the user (kind: {current_state['kind']}) — "
+                     f"the task is to transform THIS into the correct solution:\n"
+                     f"{current_state['text'][:6000]}")
+    if solution:
+        parts.append("Our solution spec from the catalog (mirror its methodology "
+                     f"composition, correctness checks, and agent operation):\n{solution[:3000]}")
+    if toolbox:
+        parts.append(f"Methodology toolbox (map required facts onto these):\n{toolbox}")
+    if grounding:
+        parts.append(f"External grounding:\n{grounding}")
+    parts.append("Author one discriminating task in the given style. Output ONLY the JSON object.")
+
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": GENERATION_SYSTEM},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.7,
-        },
-        timeout=120,
-    )
-    if resp.status_code >= 400:  # surface model-not-found / auth errors verbatim
+        json={"model": model, "temperature": 0.7, "messages": [
+            {"role": "system", "content": GENERATION_SYSTEM},
+            {"role": "user", "content": "\n\n".join(parts)}]},
+        timeout=120)
+    if resp.status_code >= 400:
         raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
-    payload = resp.json()
-    choices = payload.get("choices") or []
+    choices = resp.json().get("choices") or []
     if not choices:
-        raise RuntimeError(f"no choices from '{model}': {json.dumps(payload)[:300]}")
+        raise RuntimeError(f"no choices from '{model}'")
     return _extract_json((choices[0].get("message") or {}).get("content"), model)
 
 
-def generate_corpus(plan_dir: str, per_use_case: int) -> Iterator[dict[str, Any]]:
-    """Yield gated CorpusTask rows — churn seed first, then per use case. A generator
-    (not a list) so the caller can stream each task to disk: an interrupted run leaves
-    a valid partial corpus instead of losing everything."""
-    yield churn_self_test_row()  # churn is always sample #1 (no API)
-    use_cases = parse_use_cases(plan_dir)
-    if not use_cases:
-        print(f"warning: no use cases found under {plan_dir}", file=sys.stderr)
-    for use_case in use_cases:
+def generate_corpus(catalog: dict[str, Any], per_use_case: int,
+                    current_states: dict[str, dict[str, str]]) -> Iterator[dict[str, Any]]:
+    """Yield validated + gated CorpusTask rows — churn seed first, then per use case.
+    A generator so the caller streams each task to disk (Ctrl-C keeps a partial)."""
+    yield churn_self_test_row()  # sample #1, no API
+    solutions = {s["uc"]: s.get("text", "") for s in catalog.get("solutions", []) if "uc" in s}
+    toolbox = methodology_toolbox(catalog)
+    paste_index = len(STYLES) - 1
+    for use_case in catalog.get("use_cases", []):
         grounding = perplexity_ground(use_case)
-        for _ in range(per_use_case):
+        solution = solutions.get(use_case["id"], "")
+        for i in range(per_use_case):
+            style = STYLES[i % len(STYLES)]
+            current = current_states.get(use_case["id"]) if i % len(STYLES) == paste_index else None
             try:
-                row = openrouter_generate(use_case, grounding)
+                row = openrouter_generate(use_case, grounding, solution, toolbox, style, current)
             except Exception as exc:  # noqa: BLE001 - a bad generation is skipped, logged
                 print(f"  {use_case['id']}: generation failed: {exc}", file=sys.stderr)
+                continue
+            ok, reason = validate_task(row)
+            if not ok:
+                print(f"  {use_case['id']}: DROPPED ({reason})", file=sys.stderr)
                 continue
             admitted, reason = gate_task(row)
             if not admitted:
                 print(f"  {use_case['id']}: DROPPED (gate): {reason}", file=sys.stderr)
                 continue
-            print(f"  {use_case['id']}: admitted", file=sys.stderr)
+            print(f"  {use_case['id']}: admitted ({style.split(',')[0]})", file=sys.stderr)
             yield row
 
 
 def push_to_hf(jsonl_path: str) -> None:
     repo = os.environ["HF_DATASET_REPO"]
-    token = os.environ["HF_TOKEN"]
     from huggingface_hub import HfApi  # lazy
 
-    api = HfApi(token=token)
+    api = HfApi(token=os.environ["HF_TOKEN"])
     api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
-    api.upload_file(
-        path_or_fileobj=jsonl_path,
-        path_in_repo="corpus.jsonl",
-        repo_id=repo,
-        repo_type="dataset",
-    )
+    api.upload_file(path_or_fileobj=jsonl_path, path_in_repo="corpus.jsonl",
+                    repo_id=repo, repo_type="dataset")
     print(f"pushed {jsonl_path} -> hf://datasets/{repo} (private)")
 
 
@@ -310,51 +348,58 @@ def push_to_hf(jsonl_path: str) -> None:
 
 def self_test() -> int:
     row = churn_self_test_row()
-    line = json.dumps(row)
-    assert json.loads(line) == row, "row must be JSON round-trippable"
+    assert json.loads(json.dumps(row)) == row, "row must be JSON round-trippable"
+    ok, reason = validate_task(row)
+    assert ok, f"churn seed must be schema-valid: {reason}"
     admitted, reason = gate_task(row)
-    assert admitted, f"churn seed must be admitted, got: {reason}"
-    # Each negative control must fail the gate when substituted as the reference.
+    assert admitted, f"churn seed must be admitted: {reason}"
     for i, control in enumerate(row["negative_controls"]):
-        bad = {**row, "reference": control}
-        ok, _ = gate_task(bad)
-        assert not ok, f"negative control {i} should NOT pass the grader"
-    print("self-test OK: churn seed round-trips, is admitted, and discriminates.")
+        bad, _ = gate_task({**row, "reference": control})
+        assert not bad, f"negative control {i} should NOT pass the grader"
+    print("self-test OK: churn seed is schema-valid, admitted, and discriminates.")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true",
-                        help="offline check of the format + gate (no network/deps)")
+                        help="offline check of the format + schema + gate")
     parser.add_argument("--out", help="output JSONL path")
-    parser.add_argument("--plan-dir", default=default_plan_dir(),
-                        help="solutions catalog dir (docs/plan)")
-    parser.add_argument("--per-use-case", type=int, default=2)
+    parser.add_argument("--plan-dir", default=default_plan_dir())
+    parser.add_argument("--catalog", help="prebuilt catalog.json (else built from --plan-dir)")
+    parser.add_argument("--per-use-case", type=int, default=20)
+    parser.add_argument("--current-state", action="append", metavar="UC-N=path",
+                        help="hydrate a real current-state artifact for a use case (repeatable)")
     parser.add_argument("--append", action="store_true",
-                        help="append to --out instead of overwriting (accumulate across runs)")
+                        help="append to --out instead of overwriting")
     parser.add_argument("--push", action="store_true",
                         help="upload --out to the private HF_DATASET_REPO")
     args = parser.parse_args()
 
     if args.self_test:
         return self_test()
-
     if not args.out:
         parser.error("--out is required (or use --self-test)")
+
+    catalog = load_catalog(args.plan_dir, args.catalog)
+    current_states = parse_current_states(args.current_state)
+    print(f"catalog: {len(catalog.get('use_cases', []))} use cases, "
+          f"{len(catalog.get('solutions', []))} solutions; "
+          f"{args.per_use_case} samples each", file=sys.stderr)
+
     count = 0
-    mode = "a" if args.append else "w"  # append accumulates; write starts fresh
+    mode = "a" if args.append else "w"
     try:
         with open(args.out, mode, encoding="utf-8") as handle:
-            for row in generate_corpus(args.plan_dir, args.per_use_case):
+            for row in generate_corpus(catalog, args.per_use_case, current_states):
                 handle.write(json.dumps(row) + "\n")
                 handle.flush()  # durable per task, so Ctrl-C leaves a valid partial corpus
                 count += 1
     except KeyboardInterrupt:
-        print(f"\ninterrupted — {count} gated tasks {'appended to' if args.append else 'written to'} "
+        print(f"\ninterrupted — {count} tasks {'appended to' if args.append else 'written to'} "
               f"{args.out} (valid partial JSONL)", file=sys.stderr)
         return 130
-    print(f"{'appended' if args.append else 'wrote'} {count} gated tasks -> {args.out}")
+    print(f"{'appended' if args.append else 'wrote'} {count} validated+gated tasks -> {args.out}")
     if args.push:
         push_to_hf(args.out)
     return 0
