@@ -14,9 +14,11 @@
 #include "zetta/tokenizer/bpe.hpp"
 
 #if defined(ZETTA_WITH_MLX)
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
+#include <system_error>
 #include "zetta/agent/admission_gate.hpp"  // admit_corpus (native re-gate)
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
@@ -535,6 +537,20 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
 
     const int steps =
         std::getenv("ZETTA_SFT_STEPS") ? std::atoi(std::getenv("ZETTA_SFT_STEPS")) : 60;
+    const char* out = std::getenv("ZETTA_CHECKPOINT_OUT");
+    const std::string out_dir = out != nullptr ? out : "sft-base-agent-0.6b";
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+
+    // Live training-metrics log (JSONL), flushed per step so it survives an interruption.
+    const char* log_env = std::getenv("ZETTA_SFT_LOG");
+    const std::string log_path = log_env != nullptr ? log_env : out_dir + "/train.log";
+    std::ofstream metrics(log_path);
+    metrics << R"({"event":"start","model":")" << dir << R"(","corpus":")" << corpus_path
+            << R"(","examples":)" << examples.size() << R"(,"steps":)" << steps
+            << R"(,"lr":1e-5})" << "\n";
+    metrics.flush();
+
     zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
     std::vector<int> argnums(model->parameters().size());
     std::iota(argnums.begin(), argnums.end(), 0);
@@ -557,15 +573,21 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         if (step == 0) first_loss = value;
         last_loss = value;
         min_loss = std::min(min_loss, value);
+        metrics << R"({"step":)" << step << R"(,"loss":)" << value << "}\n";
+        metrics.flush();  // durable per step
+        if (step % 50 == 0) {
+            std::cerr << "[SFT] step " << step << "/" << steps << " loss " << value << "\n";
+        }
     }
+    metrics << R"({"event":"done","first_loss":)" << first_loss << R"(,"last_loss":)"
+            << last_loss << R"(,"min_loss":)" << min_loss << "}\n";
+    metrics.flush();
     std::cerr << "[SFT base agent] " << examples.size() << " examples, " << steps
               << " steps; loss " << first_loss << " -> " << last_loss << " (min " << min_loss
-              << ")\n";
+              << "); log " << log_path << "\n";
     EXPECT_LT(min_loss, first_loss) << "SFT should reduce the loss";
 
     // Save the fine-tuned checkpoint and confirm it reloads (the produced base agent).
-    const char* out = std::getenv("ZETTA_CHECKPOINT_OUT");
-    const std::string out_dir = out != nullptr ? out : "sft-base-agent-0.6b";
     ASSERT_TRUE(model->save(out_dir, dir, &error)) << error;
     const std::optional<zetta::compute::model::MlxQwenModel> reloaded =
         zetta::compute::model::MlxQwenModel::from_directory(out_dir, &error);

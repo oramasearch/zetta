@@ -60,3 +60,7 @@ __pycache__/
 
 /autosuggest.jsonl
 /autosuggest*.jsonl
+
+# Trained checkpoints — large (~GBs); kept local and pushed to a private HF model repo,
+# never committed. The training-metrics log lives alongside (data/checkpoints/*/train.log).
+/data/checkpoints/
