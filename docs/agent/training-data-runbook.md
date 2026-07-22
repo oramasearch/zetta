@@ -1,10 +1,14 @@
 # Runbook — operating the training-data generators
 
-How to run the RLVR training-data pipeline (#866) end to end: produce the **base-agent
-corpus** (→ a private HuggingFace dataset) and the **synthetic churn data** (→ local
-Postgres), which then feed base training (#863) and the churn fork (#853) for the
-Charles/Motive demo (#862). The method is blender-rl's *grow by generation, gate by
-verification* — see the **rlvr-training-data** skill and [`scripts/README.md`](../../scripts/README.md).
+How to run all the training-data generators end to end, in one place. Three generators
+feed three things:
+- the **base-agent corpus** (→ a private HuggingFace dataset) → base training (#863, #866);
+- the **Auto-Suggest corpus** (→ its own private HF dataset) → the Auto-Suggest model (#554);
+- the **synthetic churn data** (→ local Postgres) → the churn fork (#853) + the
+  Charles/Motive demo (#862).
+
+The method is blender-rl's *grow by generation, gate by verification* — see the
+**rlvr-training-data** skill and [`scripts/README.md`](../../scripts/README.md).
 
 The scripts live in [`scripts/`](../../scripts/); the native corpus contract they target
 is [`agent/corpus_io.hpp`](../../include/zetta/agent/corpus_io.hpp) +
@@ -47,6 +51,7 @@ Always self-test first; both are fully offline:
 ```bash
 uv run scripts/build_catalog.py --self-test            # plan -> structured, schema-valid
 uv run scripts/gen_base_corpus.py --self-test          # task schema + admission gate
+uv run scripts/gen_autosuggest_corpus.py --self-test   # auto-suggest schema + discrimination
 uv run scripts/gen_synthetic_churn_pg.py --self-test   # schema + churn signal
 uv run scripts/gen_synthetic_churn_pg.py --dry-run     # DDL + a sample account
 ```
@@ -90,7 +95,26 @@ The Python gate is a pre-filter; the **authoritative** gate is the native
 for training — this is the invariant the corpus must satisfy. (A tiny loader/gate CLI is
 a reasonable follow-up; until then the native gate runs as part of training in #863.)
 
-## Step 4 — synthetic churn data (→ local Postgres)
+## Step 4 — the Auto-Suggest corpus (a separate model, #554)
+
+Auto-Suggest is a **separate model** from the pipeline-building agent: it reads a
+customer's current **data state** and suggests zero-to-many use cases as *prompts* that
+feed the agent. Its corpus is generated the same gated way and pushed to its **own**
+private HF dataset — point `HF_DATASET_REPO` at the Auto-Suggest dataset for these runs.
+
+```bash
+uv run scripts/gen_autosuggest_corpus.py --out autosuggest.jsonl              # 20 / use case
+uv run scripts/gen_autosuggest_corpus.py --out autosuggest.jsonl --append --push
+```
+
+Per use case it rotates **single / multi / zero** scenarios (the data supports one, many,
+or no use cases) so the model learns to suggest 0-to-many, and each sample carries
+**distractors** (use cases the data can't support) that must NOT be suggested — the
+discrimination signal. Every sample is validated against
+[`schemas/autosuggest.schema.json`](../../scripts/schemas/autosuggest.schema.json) and
+gated (suggestions and distractors disjoint; ≥ 1 distractor).
+
+## Step 5 — synthetic churn data (→ local Postgres)
 
 **Target DB precedence:** `DATABASE_URL` > `--database` > `PGDATABASE` >
 `orama_churn_synth` (the explicit default — *not* libpq's implicit user-named DB; created
@@ -108,9 +132,10 @@ Creates `account_registry` / `account_events` / `account_labels` (Charles's sche
 inserts synthetic accounts with learnable churn signal. The insert is idempotent per
 `sfdc_account_id` (`ON CONFLICT DO NOTHING`).
 
-## Step 5 — hand off to training
+## Step 6 — hand off to training
 
 - **Base corpus** → #863 (fine-tune Qwen3-0.6B; 8B paths in #864/#865).
+- **Auto-Suggest corpus** → #554 (train the Auto-Suggest model).
 - **Synthetic churn (Postgres)** → the churn fork #853 + the demo #862.
 
 ## Troubleshooting

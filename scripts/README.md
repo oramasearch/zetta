@@ -42,6 +42,22 @@ Env: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-
 `--append` accumulates; `--catalog catalog.json` reuses a prebuilt catalog. Deps
 (`requests`, `huggingface-hub`, `jsonschema`) are inline (PEP 723), resolved by `uv run`.
 
+### `gen_autosuggest_corpus.py` — catalog → Auto-Suggest corpus (#554)
+Trains a **separate** model from the agent: it reads a customer's current **data state**
+and suggests zero-to-many use cases as *prompts* that feed the agent. Per use case it
+rotates **single / multi / zero** scenarios, generates a data state + suggestions (+
+**distractors** the data can't support) → **validate** against
+[`schemas/autosuggest.schema.json`](schemas/autosuggest.schema.json) → **gate**
+(suggestions and distractors disjoint; ≥ 1 distractor) → stream JSONL → optional push.
+
+```bash
+uv run gen_autosuggest_corpus.py --self-test        # offline: schema + discrimination
+uv run gen_autosuggest_corpus.py --out autosuggest.jsonl        # 20 / use case
+uv run gen_autosuggest_corpus.py --out autosuggest.jsonl --append --push
+```
+Env: same as `gen_base_corpus.py`; point `HF_DATASET_REPO` at the **Auto-Suggest** dataset
+(separate from the agent corpus).
+
 ### `gen_synthetic_churn_pg.py` — frontier → local Postgres (Charles's schema)
 Synthesize accounts + communications in the exact schema recovered from Charles's n8n
 (`account_registry` / `account_events` / `account_labels`), with learnable churn signal
