@@ -56,3 +56,6 @@ __pycache__/
 # HuggingFace dataset, never committed. Root-anchored so test fixtures (*.jsonl) stay tracked.
 /corpus.jsonl
 /corpus*.jsonl
+
+/autosuggest.jsonl
+/autosuggest*.jsonl
