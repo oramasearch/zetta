@@ -138,6 +138,7 @@ level can be trusted — a stale card is worse than none.
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
 | **Generating RLVR training data / a task corpus** (from a solutions catalog or a customer's data) | the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
 | **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill |
+| **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill |
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
