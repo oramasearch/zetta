@@ -47,6 +47,9 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   pipeline model, and how the pipeline model trains → checkpoints → serves.
 - **Plain-language** — [`how-orama-works-plain.md`](how-orama-works-plain.md): the
   non-technical version, written to forward to a less-technical reader.
+- **Auto-Suggest** — [`auto-suggest.md`](auto-suggest.md): the *separate* model (#554)
+  that reads your data and suggests zero-to-many use cases as prompts for the agent — the
+  "what" to the agent's "how", and the source of the games Auto-RL trains on.
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 - **Curriculum + observability** — `train_over_corpus` (below).
 
