@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.dev/schemas/solutions-catalog.schema.json",
+  "title": "Structured solutions catalog",
+  "description": "The machine-readable projection of solutions-designs/docs/plan (use cases, methodologies, solutions). Built by scripts/build_catalog.py from the markdown plan; consumed by the training-data generators so they ground each task in the real catalog rather than regex-scraping prose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["use_cases", "methodologies", "solutions"],
+  "properties": {
+    "source": {
+      "type": "object",
+      "description": "Provenance: the plan dir + which files were read.",
+      "properties": {
+        "plan_dir": { "type": "string" },
+        "files": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "use_cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "band"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^UC-\\d+$" },
+          "name": { "type": "string", "minLength": 1 },
+          "band": { "type": "string", "enum": ["A", "B", "C"] },
+          "scores": {
+            "type": "object",
+            "description": "The D1 scoring, as parsed (e_roi, p_success, ra, value/feasibility axes).",
+            "additionalProperties": true
+          },
+          "text": { "type": "string", "description": "The UC's dossier section (raw markdown) for grounding." }
+        }
+      }
+    },
+    "methodologies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["components", "methods"],
+      "properties": {
+        "components": {
+          "type": "array",
+          "description": "The component inventory C-1..C-n — the agent's tools.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^C-\\d+$" },
+              "name": { "type": "string", "minLength": 1 },
+              "text": { "type": "string" }
+            }
+          }
+        },
+        "methods": {
+          "type": "array",
+          "description": "The methodology portfolio M-1..M-n.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^M-\\d+$" },
+              "name": { "type": "string", "minLength": 1 },
+              "family": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "solutions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^S-\\d+$" },
+          "uc": { "type": "string", "pattern": "^UC-\\d+$", "description": "The paired use case (S-n ~ UC-n)." },
+          "name": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "description": "The S-n spec section (raw markdown; the 12-field anatomy) for grounding." }
+        }
+      }
+    }
+  }
+}
