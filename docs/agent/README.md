@@ -43,6 +43,10 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   (below). Operating the generators: [`training-data-runbook.md`](training-data-runbook.md).
 - **Why it works** — [`rlvr-to-production.md`](rlvr-to-production.md): how the corpus →
   RLVR → the *same* correctness gate makes your production pipelines correct by construction.
+- **The two models** — [`model-lifecycle.md`](model-lifecycle.md): the agent vs. the
+  pipeline model, and how the pipeline model trains → checkpoints → serves.
+- **Plain-language** — [`how-orama-works-plain.md`](how-orama-works-plain.md): the
+  non-technical version, written to forward to a less-technical reader.
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 - **Curriculum + observability** — `train_over_corpus` (below).
 
