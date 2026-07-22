@@ -190,12 +190,14 @@ GENERATION_SYSTEM = """You author ONE verifiable RLVR training task for an agent
 builds data/AI pipelines as an execution graph. Node kinds are exactly: connect, clean, \
 model, index, serve, act.
 
-blender-rl rule: the task must DISCRIMINATE — a reference solution that PASSES and \
-negative controls that each FAIL. The `required` facts are the checkable success \
-criterion (objectively verifiable from the built graph: model_kind, leakage_free, \
-calibrated, ...), INDEPENDENT of how the request is phrased or what current state is \
-pasted. Provide >=3 negative controls (the naive/LLM-only approach, a leaky pipeline, a \
-missing-step pipeline).
+blender-rl rule: the task must DISCRIMINATE. The `required` facts are the checkable \
+success criterion (objectively verifiable from the built graph: model_kind, leakage_free, \
+calibrated, ...), INDEPENDENT of how the request is phrased or what current state is pasted.
+- `reference` = your `required` facts (a correct solution satisfies EXACTLY the criterion;
+  use the SAME keys and values).
+- Provide >=3 `negative_controls`. Each is the `required` facts copied, then AT LEAST ONE
+  fact CHANGED to a WRONG value so it fails (the naive/LLM-only approach, a leaky pipeline,
+  a missing-step pipeline). Same keys as `required`, one or more values wrong.
 
 Real users ask for the same outcome in many different ways, and often PASTE their current \
 state (an n8n workflow, a SQL script, a notebook, or a prose description of their \
@@ -320,6 +322,12 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int,
             except Exception as exc:  # noqa: BLE001 - a bad generation is skipped, logged
                 print(f"  {use_case['id']}: generation failed: {exc}", file=sys.stderr)
                 continue
+            # A correct solution satisfies exactly the criterion: force the reference to
+            # include every required fact by construction, so gating turns on whether the
+            # NEGATIVE CONTROLS discriminate — not on the model duplicating keys verbatim.
+            required = (row.get("task") or {}).get("required")
+            if isinstance(required, dict) and required:
+                row["reference"] = {**(row.get("reference") or {}), **required}
             ok, reason = validate_task(row)
             if not ok:
                 print(f"  {use_case['id']}: DROPPED ({reason})", file=sys.stderr)
