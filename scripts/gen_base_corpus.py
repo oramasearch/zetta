@@ -39,7 +39,7 @@ import json
 import os
 import re
 import sys
-from typing import Any
+from typing import Any, Iterator
 
 # The six execution-graph step kinds the agent mutates (ir::StepKind). A task's
 # tools are these; a reference solution is a trajectory over them.
@@ -251,11 +251,14 @@ def openrouter_generate(use_case: dict[str, str], grounding: str) -> dict[str, A
     return _extract_json((choices[0].get("message") or {}).get("content"), model)
 
 
-def generate_corpus(plan_dir: str, per_use_case: int) -> list[dict[str, Any]]:
+def generate_corpus(plan_dir: str, per_use_case: int) -> Iterator[dict[str, Any]]:
+    """Yield gated CorpusTask rows — churn seed first, then per use case. A generator
+    (not a list) so the caller can stream each task to disk: an interrupted run leaves
+    a valid partial corpus instead of losing everything."""
+    yield churn_self_test_row()  # churn is always sample #1 (no API)
     use_cases = parse_use_cases(plan_dir)
     if not use_cases:
         print(f"warning: no use cases found under {plan_dir}", file=sys.stderr)
-    rows: list[dict[str, Any]] = [churn_self_test_row()]  # churn is always sample #1
     for use_case in use_cases:
         grounding = perplexity_ground(use_case)
         for _ in range(per_use_case):
@@ -268,9 +271,8 @@ def generate_corpus(plan_dir: str, per_use_case: int) -> list[dict[str, Any]]:
             if not admitted:
                 print(f"  {use_case['id']}: DROPPED (gate): {reason}", file=sys.stderr)
                 continue
-            rows.append(row)
             print(f"  {use_case['id']}: admitted", file=sys.stderr)
-    return rows
+            yield row
 
 
 def push_to_hf(jsonl_path: str) -> None:
@@ -324,11 +326,18 @@ def main() -> int:
 
     if not args.out:
         parser.error("--out is required (or use --self-test)")
-    rows = generate_corpus(args.plan_dir, args.per_use_case)
-    with open(args.out, "w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row) + "\n")
-    print(f"wrote {len(rows)} gated tasks -> {args.out}")
+    count = 0
+    try:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            for row in generate_corpus(args.plan_dir, args.per_use_case):
+                handle.write(json.dumps(row) + "\n")
+                handle.flush()  # durable per task, so Ctrl-C leaves a valid partial corpus
+                count += 1
+    except KeyboardInterrupt:
+        print(f"\ninterrupted — {count} gated tasks written to {args.out} "
+              f"(valid partial JSONL)", file=sys.stderr)
+        return 130
+    print(f"wrote {count} gated tasks -> {args.out}")
     if args.push:
         push_to_hf(args.out)
     return 0
