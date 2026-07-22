@@ -77,6 +77,27 @@ def validate_sample(row: dict[str, Any]) -> tuple[bool, str]:
     return (True, "") if not errors else (False, f"schema: {errors[0].message}")
 
 
+def normalize_sample(row: dict[str, Any]) -> dict[str, Any]:
+    """Coerce common model-formatting quirks into the schema shape: column entries -> name
+    strings (models sometimes emit {name, type} objects), and use_case -> the bare id
+    (models sometimes write 'UC-1 — Churn & retention')."""
+    for table in (row.get("data_state") or {}).get("tables", []) or []:
+        columns = table.get("columns")
+        if isinstance(columns, list):
+            table["columns"] = [
+                (col.get("name") if isinstance(col, dict) else str(col))
+                for col in columns
+                if (col.get("name") if isinstance(col, dict) else col) is not None
+            ]
+    for key in ("suggestions", "distractors"):
+        for item in row.get(key, []) or []:
+            if isinstance(item, dict) and "use_case" in item:
+                match = re.search(r"UC-\d+", str(item["use_case"]))
+                if match:
+                    item["use_case"] = match.group(0)
+    return row
+
+
 def gate_sample(row: dict[str, Any]) -> tuple[bool, str]:
     """Discrimination: a use case can't be both suggested and a distractor, and there must
     be >= 1 distractor (something the model must NOT suggest — else it could suggest all)."""
@@ -150,16 +171,18 @@ suggest use cases the data cannot support.
 
 You are given SUPPORTED use cases (their data must be PRESENT) and DISTRACTOR use cases \
 (their data must be ABSENT). Produce:
-- data_state.tables: realistic tables + columns holding the data the SUPPORTED use cases \
-need, PLUS 1-3 irrelevant/noise tables, and NONE of the data a distractor needs.
+- data_state.tables: realistic tables holding the data the SUPPORTED use cases need, PLUS \
+1-3 irrelevant/noise tables, and NONE of the data a distractor needs. Each table's \
+`columns` is an array of column-NAME STRINGS (e.g. "customer_id"), NOT objects.
 - suggestions: one per SUPPORTED use case — {use_case, name, prompt (the intent to hand \
 the agent), rationale (which tables/columns support it)}. If SUPPORTED is empty, [].
 - distractors: the given DISTRACTOR use cases, each with a `reason` naming the missing data.
+- Every `use_case` is the BARE id like "UC-1" — never "UC-1 — Churn & retention".
 
 Return ONLY the JSON object:
-{ "data_state": {"description", "tables":[{"name","columns":[...],"profile"}]},
-  "suggestions": [{"use_case","name","prompt","rationale"}],
-  "distractors": [{"use_case","reason"}],
+{ "data_state": {"description", "tables":[{"name","columns":["col_a","col_b"],"profile"}]},
+  "suggestions": [{"use_case":"UC-1","name","prompt","rationale"}],
+  "distractors": [{"use_case":"UC-5","reason"}],
   "tier": <0-5>, "difficulty": <0-1>, "held_out": false, "tags": [...] }"""
 
 
@@ -247,6 +270,7 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int,
             except Exception as exc:  # noqa: BLE001
                 print(f"  {anchor['id']}/{mode}: generation failed: {exc}", file=sys.stderr)
                 continue
+            row = normalize_sample(row)
             ok, reason = validate_sample(row)
             if not ok:
                 print(f"  {anchor['id']}/{mode}: DROPPED ({reason})", file=sys.stderr)
