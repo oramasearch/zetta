@@ -46,3 +46,13 @@ compile_commands.json
 
 # Node data directory (default data_dir; UUID-named db/table folders + JSONL)
 /zetta-data/
+
+# Python tooling (scripts/ generators; run via `uv run` — deps are PEP 723 inline)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Generated training-data corpus (docs/agent/training-data-runbook.md) — pushed to the
+# HuggingFace dataset, never committed. Root-anchored so test fixtures (*.jsonl) stay tracked.
+/corpus.jsonl
+/corpus*.jsonl
