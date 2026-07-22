@@ -15,7 +15,10 @@ be suggested — that is the discrimination signal.
 
 It consumes the structured catalog (build_catalog.py) and, per use case, rotates
 scenarios — single / multi / zero (garbage data supports nothing) — so the model learns
-to suggest 0, 1, or many. Each sample is validated against
+to suggest 0, 1, or many. Beyond the (supervised-tabular) catalog it also injects a
+SEARCH/RETRIEVAL use case (UC-25): a document/text corpus (articles, tickets, contracts,
+logs) should be recognized and suggested as upload -> index -> serve search, and is a
+distractor when only structured numeric data is present. Each sample is validated against
 scripts/schemas/autosuggest.schema.json and gated (suggestions and distractors disjoint;
 >= 1 distractor). Env-driven; `--self-test` is fully offline.
 
@@ -119,6 +122,19 @@ def gate_sample(row: dict[str, Any]) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 
+# Search/retrieval is missing from the (supervised-tabular) plan catalog, but Auto-Suggest
+# must recognize a document/text corpus and propose UPLOAD -> INDEX -> SERVE SEARCH. Inject
+# it as a synthetic suggestable use case (UC-25 keeps the schema's ^UC-\d+$ id pattern).
+SEARCH_USE_CASE = {"id": "UC-25", "name": "Search & retrieval"}
+SEARCH_GROUNDING = (
+    "Search & retrieval (UC-25): the customer has a CORPUS of documents/text — support "
+    "articles, tickets, contracts, product descriptions, application logs, a wiki, PDFs — "
+    "with an id plus a free-text title/body/message column. When such text data is present, "
+    "suggest UPLOADING it, INDEXING it (keyword / semantic / hybrid), and SERVING ranked "
+    "search. It is a DISTRACTOR when the data is purely structured numeric tables with no "
+    "free-text column.")
+
+
 def churn_self_test_sample() -> dict[str, Any]:
     return {
         "data_state": {
@@ -147,6 +163,35 @@ def churn_self_test_sample() -> dict[str, Any]:
     }
 
 
+def search_self_test_sample() -> dict[str, Any]:
+    return {
+        "data_state": {
+            "description": "A large support-content corpus + ticket history — free text, no "
+                           "labels or outcomes.",
+            "tables": [
+                {"name": "support_articles",
+                 "columns": ["article_id", "title", "body", "updated_at"],
+                 "profile": "~48k articles, long free-text bodies"},
+                {"name": "tickets",
+                 "columns": ["ticket_id", "subject", "message", "created_at"],
+                 "profile": "~900k tickets, free text, no resolution labels"},
+            ],
+        },
+        "suggestions": [
+            {"use_case": "UC-25", "name": "Search & retrieval",
+             "prompt": "Upload the support articles and tickets, build a hybrid (keyword + "
+                       "semantic) index, and serve ranked search so agents and customers can "
+                       "find the most relevant content in plain language.",
+             "rationale": "free-text article/ticket bodies are present — a searchable corpus"},
+        ],
+        "distractors": [
+            {"use_case": "UC-1", "reason": "no churn labels or account outcome history"},
+            {"use_case": "UC-5", "reason": "no time-series demand/quantity data"},
+        ],
+        "tier": 1, "difficulty": 0.4, "held_out": False, "tags": ["auto-suggest", "search"],
+    }
+
+
 def zero_self_test_sample() -> dict[str, Any]:
     return {
         "data_state": {
@@ -171,6 +216,11 @@ GENERATION_SYSTEM = """You author ONE training sample for an Auto-Suggest model.
 model reads a customer's CURRENT DATA STATE (tables + columns) and suggests the use cases \
 the data SUPPORTS — each as a prompt to hand a pipeline-building agent — and must NOT \
 suggest use cases the data cannot support.
+
+Some use cases are SEARCH/RETRIEVAL over a document/text corpus (support articles, tickets, \
+contracts, logs, a wiki, PDFs). For those the supporting data is a table with a FREE-TEXT \
+column (title/body/message), and the suggestion prompt is to upload the corpus, index it \
+(keyword / semantic / hybrid), and serve ranked search — not to train a supervised model.
 
 You are given SUPPORTED use cases (their data must be PRESENT) and DISTRACTOR use cases \
 (their data must be ABSENT). Produce:
@@ -299,9 +349,11 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int, seed: int,
     existing = existing or {}
     if emit_seeds:
         yield churn_self_test_sample()
+        yield search_self_test_sample()
         yield zero_self_test_sample()
     rng = random.Random(seed)
     use_cases = [{"id": u["id"], "name": u["name"]} for u in catalog.get("use_cases", [])]
+    use_cases.append(dict(SEARCH_USE_CASE))  # document/text-corpus search (not in the catalog)
     solutions = {s["uc"]: s.get("text", "") for s in catalog.get("solutions", []) if "uc" in s}
     if not use_cases:
         return
@@ -326,8 +378,10 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int, seed: int,
             else:  # single
                 supported = [anchor]
                 distractors = pool[:rng.randint(1, 3)]
+            grounding = (SEARCH_GROUNDING if anchor["id"] == SEARCH_USE_CASE["id"]
+                         else solutions.get(anchor["id"], ""))
             try:
-                row = openrouter_generate(supported, distractors, solutions.get(anchor["id"], ""))
+                row = openrouter_generate(supported, distractors, grounding)
             except Exception as exc:  # noqa: BLE001
                 print(f"  {anchor['id']}/{scenario}: generation failed: {exc}", file=sys.stderr)
                 continue
@@ -364,7 +418,8 @@ def push_to_hf(jsonl_path: str) -> None:
 
 
 def self_test() -> int:
-    for sample in (churn_self_test_sample(), zero_self_test_sample()):
+    for sample in (churn_self_test_sample(), search_self_test_sample(),
+                   zero_self_test_sample()):
         assert json.loads(json.dumps(sample)) == sample, "must be JSON round-trippable"
         ok, reason = validate_sample(sample)
         assert ok, f"sample must be schema-valid: {reason}"
@@ -373,7 +428,7 @@ def self_test() -> int:
     # A sample that suggests everything (no distractors) must be REJECTED.
     bad = {**churn_self_test_sample(), "distractors": []}
     assert not gate_sample(bad)[0], "no-distractor sample must be rejected"
-    print("self-test OK: churn + zero samples are schema-valid + discriminate; "
+    print("self-test OK: churn + search + zero samples are schema-valid + discriminate; "
           "a no-distractor sample is rejected.")
     return 0
 
