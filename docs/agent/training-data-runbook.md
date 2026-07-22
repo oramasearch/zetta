@@ -139,6 +139,10 @@ inserts synthetic accounts with learnable churn signal. The insert is idempotent
 
 ## Step 6 — hand off to training
 
+The generated corpora are committed to [`data/`](../../data/README.md) (`data/corpus.jsonl`,
+`data/autosuggest.jsonl`) — the tracked, versioned copies — and pushed to their private HF
+datasets. From there:
+
 - **Base corpus** → #863 (fine-tune Qwen3-0.6B; 8B paths in #864/#865).
 - **Auto-Suggest corpus** → #554 (train the Auto-Suggest model).
 - **Synthetic churn (Postgres)** → the churn fork #853 + the demo #862.

@@ -52,8 +52,9 @@ __pycache__/
 *.py[cod]
 .venv/
 
-# Generated training-data corpus (docs/agent/training-data-runbook.md) — pushed to the
-# HuggingFace dataset, never committed. Root-anchored so test fixtures (*.jsonl) stay tracked.
+# Generated training-data corpus (docs/agent/training-data-runbook.md). Root-level outputs
+# are SCRATCH — ignored; the tracked, committed corpora live in data/ (see data/README.md).
+# Root-anchored so both data/*.jsonl and the test fixtures (tests/fixtures/*.jsonl) stay tracked.
 /corpus.jsonl
 /corpus*.jsonl
 
