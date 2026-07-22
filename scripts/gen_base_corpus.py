@@ -27,9 +27,14 @@ All credentials + config are read from the ENVIRONMENT (never hardcoded):
   ORAMA_PLAN_DIR        the solutions catalog dir (default: the repo's sibling
                         solutions-designs/docs/plan)
 
+Each gated task is written + flushed to --out as it is generated, so an interrupted run
+(Ctrl-C) leaves a valid partial corpus; `--append` accumulates across runs instead of
+overwriting.
+
 Usage (always via `uv run`; deps are declared inline above, PEP 723):
   uv run gen_base_corpus.py --self-test                 # offline: format + gate
   uv run gen_base_corpus.py --out corpus.jsonl --per-use-case 3
+  uv run gen_base_corpus.py --out corpus.jsonl --append # accumulate onto an existing file
   uv run gen_base_corpus.py --out corpus.jsonl --push   # + upload to HF_DATASET_REPO
 """
 from __future__ import annotations
@@ -317,6 +322,8 @@ def main() -> int:
     parser.add_argument("--plan-dir", default=default_plan_dir(),
                         help="solutions catalog dir (docs/plan)")
     parser.add_argument("--per-use-case", type=int, default=2)
+    parser.add_argument("--append", action="store_true",
+                        help="append to --out instead of overwriting (accumulate across runs)")
     parser.add_argument("--push", action="store_true",
                         help="upload --out to the private HF_DATASET_REPO")
     args = parser.parse_args()
@@ -327,17 +334,18 @@ def main() -> int:
     if not args.out:
         parser.error("--out is required (or use --self-test)")
     count = 0
+    mode = "a" if args.append else "w"  # append accumulates; write starts fresh
     try:
-        with open(args.out, "w", encoding="utf-8") as handle:
+        with open(args.out, mode, encoding="utf-8") as handle:
             for row in generate_corpus(args.plan_dir, args.per_use_case):
                 handle.write(json.dumps(row) + "\n")
                 handle.flush()  # durable per task, so Ctrl-C leaves a valid partial corpus
                 count += 1
     except KeyboardInterrupt:
-        print(f"\ninterrupted — {count} gated tasks written to {args.out} "
-              f"(valid partial JSONL)", file=sys.stderr)
+        print(f"\ninterrupted — {count} gated tasks {'appended to' if args.append else 'written to'} "
+              f"{args.out} (valid partial JSONL)", file=sys.stderr)
         return 130
-    print(f"wrote {count} gated tasks -> {args.out}")
+    print(f"{'appended' if args.append else 'wrote'} {count} gated tasks -> {args.out}")
     if args.push:
         push_to_hf(args.out)
     return 0

@@ -57,10 +57,13 @@ than retained (signal present).
 ```bash
 export OPENROUTER_API_KEY=…  PERPLEXITY_API_KEY=…  HF_TOKEN=…  HF_DATASET_REPO=<owner>/<name>
 uv run scripts/gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --push     # after reviewing corpus.jsonl
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --append  # add more onto an existing corpus
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --push    # after reviewing corpus.jsonl
 ```
 
-Each generated task is **gated before it enters the corpus** (reference passes, negatives
+Each admitted task is **written + flushed to `--out` as it is generated**, so a Ctrl-C
+mid-run leaves a valid partial corpus (and `--append` accumulates across runs instead of
+overwriting). Each is **gated before it enters the corpus** (reference passes, negatives
 each fail); dropped tasks are logged to stderr with the reason. `--push` uploads
 `corpus.jsonl` to the private `HF_DATASET_REPO`. Review the file before pushing.
 
