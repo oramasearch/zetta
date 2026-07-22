@@ -5,26 +5,42 @@ the product's train/infer path; these are authoring aids, like `gen-parquet-fixt
 
 ## Training-data generators (zetta#866)
 
-Two frontier-model generators produce the RLVR training data, following blender-rl's
-*grow by generation, gate by verification* method (see the **rlvr-training-data** skill).
-Both are **env-var-driven** — nothing external is contacted except when you run
-generation/insert, and each ships an **offline self-test**.
+Frontier-model generators produce the RLVR training data, following blender-rl's *grow by
+generation, gate by verification* method (see the **rlvr-training-data** skill). All are
+**env-var-driven** — nothing external is contacted except when you run generation/insert,
+and each ships an **offline self-test**. Full runbook:
+[`docs/agent/training-data-runbook.md`](../docs/agent/training-data-runbook.md).
 
-### `gen_base_corpus.py` — solutions catalog → gated JSONL → HuggingFace
-Per use case in `solutions-designs/docs/plan`: ground the data shape (Perplexity) →
-generate task games (OpenRouter/Claude) → **gate** each through a mirror of the native
-`admit_corpus` (reference passes, negatives each fail) → write `CorpusTask` JSONL the
+### `build_catalog.py` — plan markdown → structured `catalog.json`
+The one place that reads `solutions-designs/docs/plan`, projecting it into a machine-
+readable catalog (use cases, methodology components `C-n` + methods `M-n`, solutions
+`S-n` with their spec text) validated against
+[`schemas/catalog.schema.json`](schemas/catalog.schema.json). The generator consumes it.
+
+```bash
+uv run build_catalog.py --self-test           # build from the real plan + validate
+uv run build_catalog.py --out catalog.json    # write the structured catalog
+```
+
+### `gen_base_corpus.py` — catalog → validated + gated JSONL → HuggingFace
+Per use case: ground the data shape (Perplexity `sonar-pro`) → generate task games
+(OpenRouter/Claude) **grounded in the use case's solution spec + methodology toolbox**,
+in rotating phrasing **styles** (same outcome asked many ways) with an optional pasted
+**current state** → **validate against [`schemas/task.schema.json`](schemas/task.schema.json)**
+→ **gate** through a mirror of the native `admit_corpus` → stream `CorpusTask` JSONL the
 native loader (`agent/corpus_io.hpp`) consumes → optionally push to a private HF dataset.
 
 ```bash
-uv run gen_base_corpus.py --self-test               # offline: format + gate (no net)
-uv run gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-uv run gen_base_corpus.py --out corpus.jsonl --push # + upload to $HF_DATASET_REPO
+uv run gen_base_corpus.py --self-test               # offline: schema + gate
+uv run gen_base_corpus.py --out corpus.jsonl        # 20 samples / use case (default)
+uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
+uv run gen_base_corpus.py --out corpus.jsonl --append --push
 ```
 Env: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-4.5`),
-`PERPLEXITY_API_KEY` (optional), `HF_TOKEN`, `HF_DATASET_REPO`, `ORAMA_PLAN_DIR`.
-Deps (`requests`, `huggingface-hub`) are declared inline (PEP 723) and resolved by
-`uv run` — no manual install.
+`PERPLEXITY_API_KEY` + `PERPLEXITY_MODEL` (optional, default `sonar-pro`), `HF_TOKEN`,
+`HF_DATASET_REPO`, `ORAMA_PLAN_DIR`. Streams to `--out` (Ctrl-C keeps a valid partial);
+`--append` accumulates; `--catalog catalog.json` reuses a prebuilt catalog. Deps
+(`requests`, `huggingface-hub`, `jsonschema`) are inline (PEP 723), resolved by `uv run`.
 
 ### `gen_synthetic_churn_pg.py` — frontier → local Postgres (Charles's schema)
 Synthesize accounts + communications in the exact schema recovered from Charles's n8n

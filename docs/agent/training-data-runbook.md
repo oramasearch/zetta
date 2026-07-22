@@ -45,27 +45,42 @@ via `DATABASE_URL` / `--database` / `PGDATABASE`.
 Always self-test first; both are fully offline:
 
 ```bash
-uv run scripts/gen_base_corpus.py --self-test          # format + admission gate
+uv run scripts/build_catalog.py --self-test            # plan -> structured, schema-valid
+uv run scripts/gen_base_corpus.py --self-test          # task schema + admission gate
 uv run scripts/gen_synthetic_churn_pg.py --self-test   # schema + churn signal
 uv run scripts/gen_synthetic_churn_pg.py --dry-run     # DDL + a sample account
 ```
 
-Expected: the churn seed round-trips + discriminates; churned accounts escalate more
-than retained (signal present).
+Expected: the catalog is schema-valid (24 use cases / 11 components / 21 methods / 12
+solutions); the churn seed is schema-valid + discriminates; churned accounts escalate
+more than retained (signal present).
+
+**The structured catalog.** `build_catalog.py` is the one place that reads `docs/plan`
+markdown, projecting it into a `catalog.json` validated against
+[`scripts/schemas/catalog.schema.json`](../../scripts/schemas/catalog.schema.json). The
+generator consumes it (building it in-memory by default, or pass `--catalog catalog.json`
+to reuse a prebuilt one), so each task is grounded in its use case's **solution spec** +
+the **methodology toolbox**. Every generated task is validated against
+[`scripts/schemas/task.schema.json`](../../scripts/schemas/task.schema.json) *and* gated.
 
 ## Step 2 — generate the base corpus (→ HuggingFace)
 
 ```bash
 export OPENROUTER_API_KEY=…  PERPLEXITY_API_KEY=…  HF_TOKEN=…  HF_DATASET_REPO=<owner>/<name>
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --append  # add more onto an existing corpus
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --push    # after reviewing corpus.jsonl
+uv run scripts/gen_base_corpus.py --out corpus.jsonl                 # 20 samples per use case
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --append        # accumulate onto a corpus
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --push          # after reviewing corpus.jsonl
 ```
 
-Each admitted task is **written + flushed to `--out` as it is generated**, so a Ctrl-C
-mid-run leaves a valid partial corpus (and `--append` accumulates across runs instead of
-overwriting). Each is **gated before it enters the corpus** (reference passes, negatives
-each fail); dropped tasks are logged to stderr with the reason. `--push` uploads
+Generates **20 samples per use case by default**, each phrased in a rotating **style**
+(the same outcome asked many ways) so the agent learns intent invariance, and some
+transforming a pasted **current state** — pass `--current-state UC-N=path` to hydrate a
+real artifact (e.g. Charles's n8n). Each admitted task is **written + flushed to `--out`
+as it is generated**, so a Ctrl-C mid-run leaves a valid partial corpus (`--append`
+accumulates instead of overwriting). Each is **validated against `task.schema.json` and
+gated** (reference passes, negatives each fail); dropped tasks are logged to stderr with
+the reason. `--push` uploads
 `corpus.jsonl` to the private `HF_DATASET_REPO`. Review the file before pushing.
 
 ## Step 3 — re-gate with the native authority (recommended)
