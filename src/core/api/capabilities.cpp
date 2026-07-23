@@ -31,6 +31,9 @@
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/agent/agent_store.hpp"
+#include "zetta/agent/chat.hpp"
+#include "zetta/autograd/qwen.hpp"
+#include "zetta/tokenizer/bpe.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/node.hpp"
@@ -3173,6 +3176,116 @@ ApiResult handle_delete_agent(const nlohmann::json& input, ApiContext& context) 
     return ApiResult::success(std::move(output));
 }
 
+// --- chat: talk to an agent, with tool-calling (#849) -------------------------
+
+const nlohmann::json& chat_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agent", "message"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
+          {"message", {{"type", "string"}, {"minLength", 1}}},
+          {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
+          {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
+    return schema;
+}
+
+const nlohmann::json& chat_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"reply", "tool_calls", "rounds"}},
+        {"properties",
+         {{"reply", {{"type", "string"}}},
+          {"rounds", {{"type", "integer"}}},
+          {"tool_calls",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"tool", {{"type", "string"}}},
+                {"status", {{"type", "string"}}},
+                {"detail", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string agent_id = input.at("agent").get<std::string>();
+    const std::string message = input.at("message").get<std::string>();
+    const int max_new_tokens = input.value("max_new_tokens", 256);
+    const int max_rounds = input.value("max_rounds", 3);
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+
+    // Load the agent's model + tokenizer (device-agnostic CPU path; `agent.model` must be
+    // a local checkpoint dir — pull it first with `zetta pull` if it isn't present).
+    std::string load_error;
+    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
+        zetta::tokenizer::BpeTokenizer::from_directory(agent->model, &load_error);
+    if (!tokenizer) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not load the agent's tokenizer from '" + agent->model + "': " + load_error);
+    }
+    const std::optional<zetta::autograd::QwenModel> model =
+        zetta::autograd::load_qwen_model(agent->model, &load_error);
+    if (!model) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not load the agent's model from '" + agent->model + "': " + load_error);
+    }
+
+    // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for
+    // now each records that it ran, so the tool-calling loop closes end to end.
+    zetta::agent::Sandbox sandbox;
+    for (const std::string& tool : agent->tools) {
+        sandbox.register_tool(tool, [tool](zetta::agent::EndState& world,
+                                           const nlohmann::json&) {
+            world.set("ran_" + tool, true);
+            return zetta::agent::ToolResult::success();
+        });
+    }
+
+    // The model is the injected generate function: a fresh KV-cached inference per call
+    // (independent decode), returning just the new text.
+    const auto generate = [&tokenizer, &model, max_new_tokens](
+                              const std::string& prompt) -> std::string {
+        zetta::autograd::QwenInference inference(*model);
+        const std::vector<int> generated =
+            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens);
+        return tokenizer->decode(generated);
+    };
+
+    std::string conversation;
+    if (!agent->system_prompt.empty()) conversation += agent->system_prompt + "\n\n";
+    conversation += "User: " + message + "\nAssistant:";
+
+    const zetta::agent::ChatResult chat =
+        zetta::agent::run_chat_turn(generate, sandbox, conversation, max_rounds);
+
+    nlohmann::json tool_calls = nlohmann::json::array();
+    for (const zetta::agent::ChatToolInvocation& invocation : chat.invocations) {
+        nlohmann::json entry;
+        entry["tool"] = invocation.call.tool;
+        entry["status"] = invocation.status == zetta::agent::ApplyStatus::Ok ? "ok"
+                          : invocation.status == zetta::agent::ApplyStatus::UnknownTool
+                              ? "unknown_tool"
+                              : "failed";
+        if (!invocation.detail.empty()) entry["detail"] = invocation.detail;
+        tool_calls.push_back(std::move(entry));
+    }
+    nlohmann::json output;
+    output["reply"] = chat.reply;
+    output["tool_calls"] = std::move(tool_calls);
+    output["rounds"] = chat.rounds;
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -3514,6 +3627,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_agent});
+    registry.add(Capability{
+        "chat",
+        "Chat with an agent",
+        "Send a message to an agent and get its reply, with tool-calling: the agent's model "
+        "generates, any tool calls it emits run in its sandbox and feed back, until it "
+        "answers. Loads the agent's model (a local checkpoint dir). No persistent side "
+        "effects.",
+        chat_schema(),
+        chat_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_chat});
 
     // --- governed serving (#648, docs/api/serving.md) -------------------------
 

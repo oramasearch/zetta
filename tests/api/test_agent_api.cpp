@@ -3,6 +3,7 @@
 // registry.call() the servers dispatch to.
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <string>
 
 #include "temp_dir.hpp"
@@ -89,6 +90,30 @@ TEST_F(AgentApiFixture, CreateListGetUpdateDelete) {
 
     listed = call("list_agents", nlohmann::json::object());
     EXPECT_TRUE(listed.value.at("agents").empty());
+}
+
+// The full chat path with a REAL model: create an agent pointing at a checkpoint, then
+// chat. Guarded on ZETTA_QWEN_DIR (a local checkpoint dir), skipped otherwise so CI needs
+// no weights. Small max_new_tokens keeps the CPU generation quick.
+TEST_F(AgentApiFixture, ChatWithARealModel) {
+    const char* dir = std::getenv("ZETTA_QWEN_DIR");
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to a checkpoint dir to run";
+
+    ApiResult created = call("create_agent",
+                             {{"name", "Base agent"},
+                              {"model", std::string(dir)},
+                              {"tools", {"connect", "serve"}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string id = created.value.at("id").get<std::string>();
+
+    ApiResult chat = call("chat", {{"agent", id},
+                                   {"message", "Say hello in one word."},
+                                   {"max_new_tokens", 16},
+                                   {"max_rounds", 2}});
+    ASSERT_TRUE(chat.ok) << chat.error.message;
+    EXPECT_FALSE(chat.value.at("reply").get<std::string>().empty());
+    EXPECT_TRUE(chat.value.at("tool_calls").is_array());
+    EXPECT_GE(chat.value.at("rounds").get<int>(), 1);
 }
 
 }  // namespace
