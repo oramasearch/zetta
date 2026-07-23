@@ -176,6 +176,73 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          facts({{"connect", true}, {"model", true}, {"serve", true},
                 {"model_kind", "online"}, {"streaming", true}, {"drift_monitoring", true}})});
 
+    // --- Remaining use cases (doc 02, UC-13…24) mapped to their methodology ---
+    templates.push_back(
+        {"UC-13", "Decide credit risk on applicants, defensibly (regulated).",
+         with_fact(supervised_core("gbdt"), "baseline_glm", true)});  // SR 11-7: GLM baseline
+    templates.push_back({"UC-14", "Optimize our prices/discounts within guardrails.",
+                         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
+                                {"model_kind", "optimization"}, {"constraints", true},
+                                {"approval_gated", true}})});
+    templates.push_back({"UC-15", "Predict which employees are at risk of leaving.",
+                         supervised_core("gbdt")});
+    templates.push_back(
+        {"UC-16", "Triage + route incoming support tickets automatically.",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true}, {"act", true},
+                {"model_kind", "classifier"}, {"grounded_in_data", true},
+                {"approval_gated", true}})});
+    templates.push_back({"UC-18", "Monitor our suppliers for emerging risk.",
+                         with_fact(supervised_core("gbdt"), "monitoring", true)});
+    templates.push_back({"UC-19", "Predict claim denials + patient no-shows.",
+                         supervised_core("gbdt")});
+    templates.push_back({"UC-20", "Forecast cash flow + working capital.",
+                         facts({{"connect", true}, {"model", true}, {"serve", true},
+                                {"model_kind", "forecast"}, {"temporal_validation", true},
+                                {"backtest", true}})});
+    templates.push_back({"UC-21", "Detect + explain incidents across our systems (AIOps).",
+                         facts({{"connect", true}, {"model", true}, {"serve", true},
+                                {"model_kind", "anomaly"}, {"streaming", true},
+                                {"drivers", true}})});
+    templates.push_back({"UC-22", "Find what drives scrap/quality/yield in our process.",
+                         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                                {"model_kind", "gbdt"}, {"explain", "shap"}, {"drivers", true},
+                                {"leakage_free", true}})});
+    templates.push_back({"UC-23", "Target our campaigns at who'll actually respond because of them.",
+                         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                                {"act", true}, {"leakage_free", true}, {"model_kind", "uplift"},
+                                {"incrementality", true}, {"holdout", true},
+                                {"approval_gated", true}})});
+    templates.push_back(
+        {"UC-24", "Read our contracts + flag obligation/renewal risk.",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"model_kind", "document_intelligence"}, {"extraction", true},
+                {"grounded_in_data", true}})});
+
+    // --- The data supply chain (doc 08, DSC-1…8) — the correct data path a pipeline honors ---
+    templates.push_back(
+        {"DSC", "Connect our systems, resolve entities, and build a leakage-safe history to "
+                "learn from — with holdouts kept sacred.",
+         facts({{"connect", true}, {"clean", true},
+                {"entity_resolution", true},   // DSC-2
+                {"point_in_time", true},        // DSC-3 leakage-safe store
+                {"leakage_free", true},
+                {"labels", true},               // DSC-4 outcomes / reward stream
+                {"holdout", true}})});          // DSC-7 evaluation data kept sacred
+
+    // --- Autonomy classes (doc 03 §2.6 / 07 §4.2) — act only under approval ---
+    templates.push_back(
+        {"AC", "Let it observe + recommend, but require approval before it acts on the world.",
+         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
+                {"approval_gated", true}})});  // AC-3 act-under-approval
+
+    // --- Out of scope (ABSTAIN): NOT a data/AI project Orama builds — decline, build nothing ---
+    for (const std::string& ask :
+         {std::string("Write me a poem about our quarterly numbers."),
+          std::string("What's the capital of France?"),
+          std::string("Book me a flight to Tokyo next week.")}) {
+        templates.push_back({"ABSTAIN", ask, facts({{"abstain", true}, {"in_scope", false}})});
+    }
+
     return templates;
 }
 

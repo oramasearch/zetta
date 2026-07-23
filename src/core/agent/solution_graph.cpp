@@ -61,6 +61,15 @@ EndState graph_solution_facts(const ir::ExecutionGraph& graph) {
 StudioAction reference_action_from_facts(const EndState& facts) {
     StudioAction action;
     action.execution_graph = build_solution_graph(facts);
+    // Out of scope (abstain): decline and build NOTHING — no tool calls, a decline message. The
+    // graph still carries the abstain facts so the gate scores the abstain end-state (the agent
+    // must learn to refuse, not fabricate a pipeline — the ABSTAIN discrimination).
+    if (facts.matches("abstain", true)) {
+        action.message =
+            "That isn't something Orama Zetta builds \xE2\x80\x94 it's out of scope, so I won't "
+            "set up a pipeline for it.";
+        return action;
+    }
     // One tool call per pipeline step — what the agent does to build it (mirrors the shape of
     // churn_reference_trajectory), carrying the node's config as arguments.
     for (const auto& node : action.execution_graph.nodes()) {
