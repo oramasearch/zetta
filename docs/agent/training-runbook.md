@@ -91,7 +91,29 @@ serving path. **In progress** — the base-agent serving wiring is the tail of #
 The #555 acceptance: the checkpoint **measurably beats the open-weights start** on the
 #248 enterprise tool-calling eval, with the admission gate green (reference solutions
 pass, negative controls fail). #859 verifies the environment drives the neural policy
-end-to-end first. Record the run in `docs/reports/`.
+end-to-end first.
+
+## Step 5 — write the validation report (REQUIRED, every run)
+
+**Every training / retraining / fine-tune / eval run — of the base agent or a fork — writes a
+dated validation report to [`../reports/`](../reports/README.md).** The report is the deliverable;
+the checkpoint is not — a number with no dated report is not evidence (root `CLAUDE.md`). Name it
+`base-agent-<variant>-validation-YYYY-MM-DD.md`, link it from the tracking issue (#555 / #863 /
+the retrain's issue), and add it to [`../reports/README.md`](../reports/README.md). It states:
+
+- **Version + provenance** — which checkpoint (path + git commit), the base weights it was
+  fine-tuned from, and the corpus (path + task count) + its git commit.
+- **Setup** — env vars (`ZETTA_SFT_EXAMPLES` / `ZETTA_SFT_STEPS`), epochs, EOS/shuffle, the
+  training format (facts vs `{message, tool_calls, execution_graph}` action, #873).
+- **Training curve** — start → end loss, steps, wall-clock, tok/s.
+- **Eval results** — grader pass-rate + mean required-fact score + **parse rate** (valid action
+  JSON) on the held-out set (`base-agent-test-set.jsonl`), abstain recall, false-abstain, and the
+  **discrimination** check (reference passes, negative controls fail). Compare against the prior
+  checkpoint (vN) and the open-weights baseline.
+- **Verdict + regressions** — promote or not, and anything that got worse.
+
+Reproduce the eval with `GenerateFromTrainedBaseAgent` + `EvalGraderPassRate` (see the
+[inference runbook](inference-runbook.md)); paste the `[eval]` block into the report.
 
 ## Related
 

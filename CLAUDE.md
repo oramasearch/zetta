@@ -200,8 +200,17 @@ level can be trusted — a stale card is worse than none.
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
 | **Generating RLVR training data / a task corpus** (from a solutions catalog or a customer's data) | the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
-| **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill |
-| **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill |
+| **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill · **every run writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
+| **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill · **every eval writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
+
+> **Training / eval always produces a validation report.** Any training,
+> retraining, fine-tune, or evaluation run — of the base agent or a fork — MUST
+> write a dated validation report to [`docs/reports/`](docs/reports/README.md)
+> (`<subject>-validation-YYYY-MM-DD.md`) stating **what version** was tested,
+> **against what data**, and the **measured results** (loss/metrics, grader
+> pass-rate, parse rate, discrimination, any regressions), and link it from the
+> tracking issue. A number with no dated report is not evidence — the report is
+> the deliverable, the checkpoint is not. See the runbooks for the template.
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |

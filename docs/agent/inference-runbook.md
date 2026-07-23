@@ -99,6 +99,11 @@ authority used by `admit_corpus` and by the RLVR reward, so an inference score a
 reward mean the same thing. (A batch grader over generations is a natural small follow-up; for
 now the admission-gate tests are the worked example of driving that grader.)
 
+> **Any eval run writes a dated validation report to [`../reports/`](../reports/README.md)** —
+> the results here (grader pass-rate, mean score, parse rate, abstain recall/false-abstain,
+> discrimination) are the deliverable, not a scrollback. Naming + contents: the training
+> runbook's [Step 5](training-runbook.md). This is a root-`CLAUDE.md` rule, not optional.
+
 ## Step 4 — build + run a graph from the ask (`agent_run`, #872)
 
 The base agent is usable **right away** to do real work — it does **not** need the RLVR
