@@ -164,7 +164,7 @@ inserts synthetic accounts with learnable churn signal. The insert is idempotent
 
 ## Step 6 — hand off to training
 
-The generated corpora are committed to [`data/`](../../data/README.md) (`data/corpus.jsonl`,
+The generated corpora are committed to [`data/`](../../data/README.md) (`data/base-agent-training-set.jsonl`,
 `data/autosuggest.jsonl`) — the tracked, versioned copies — and pushed to their private HF
 datasets. From there:
 

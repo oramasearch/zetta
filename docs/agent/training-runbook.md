@@ -2,7 +2,7 @@
 
 How to turn the generated corpus into a trained base-agent checkpoint (#863 → #555). This
 is the step *after* the data is generated — see the
-[training-data runbook](training-data-runbook.md) for producing `data/corpus.jsonl`. The
+[training-data runbook](training-data-runbook.md) for producing `data/base-agent-training-set.jsonl`. The
 method + why it works: [`rlvr-to-production.md`](rlvr-to-production.md); the two models
 (agent vs. pipeline model): [`model-lifecycle.md`](model-lifecycle.md).
 
@@ -13,7 +13,7 @@ method + why it works: [`rlvr-to-production.md`](rlvr-to-production.md); the two
 
 ## Prerequisites
 
-- **The corpus:** `data/corpus.jsonl` (494 gated tasks; committed) — see the data runbook.
+- **The corpus:** `data/base-agent-training-set.jsonl` (494 gated tasks; committed) — see the data runbook.
 - **The weights:** Qwen3-0.6B (validated), Qwen3-8B (downloaded). Pull them **natively**
   (no Python/curl; ADR-17) and point `ZETTA_QWEN_DIR` at the printed directory:
 
@@ -42,7 +42,7 @@ The Python generator's gate is a pre-filter; before training, confirm the corpus
 the **native** `admit_corpus` (the authority training uses):
 
 ```bash
-ZETTA_CORPUS=data/corpus.jsonl ./build/tests/zetta-tests \
+ZETTA_CORPUS=data/base-agent-training-set.jsonl ./build/tests/zetta-tests \
   --gtest_filter='CorpusNativeGate.*'
 ```
 
@@ -59,7 +59,7 @@ the checkpoint.
 
 ```bash
 # a full pass over the corpus (raise steps for more epochs); MLX build required
-ZETTA_QWEN_DIR=<qwen3-0.6b> ZETTA_CORPUS=data/corpus.jsonl \
+ZETTA_QWEN_DIR=<qwen3-0.6b> ZETTA_CORPUS=data/base-agent-training-set.jsonl \
   ZETTA_SFT_EXAMPLES=494 ZETTA_SFT_STEPS=1500 \
   ZETTA_CHECKPOINT_OUT=data/checkpoints/base-agent-0.6b \
   ./build/tests/zetta-tests --gtest_filter='QwenRealCheckpoint.SftBaseAgentOnCorpus'
