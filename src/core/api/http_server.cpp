@@ -25,6 +25,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
 #include "zetta/api/mcp_docs.hpp"
+#include "zetta/api/mcp_prompts.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/api/serving.hpp"
@@ -617,7 +618,9 @@ struct ApiServer::Impl {
         if (method == "initialize") {
             return jsonrpc_result(
                 id, {{"protocolVersion", kProtocolVersion},
-                     {"capabilities", {{"tools", nlohmann::json::object()}}},
+                     {"capabilities",
+                      {{"tools", nlohmann::json::object()},
+                       {"prompts", nlohmann::json::object()}}},
                      {"serverInfo",
                       {{"name", "zetta"}, {"version", zetta::kVersion}}}});
         }
@@ -701,6 +704,26 @@ struct ApiServer::Impl {
             result["structuredContent"] = std::move(payload);
             result["isError"] = !call_result.ok;
             return jsonrpc_result(id, std::move(result));
+        }
+        if (method == "prompts/list") {
+            // Guided workflows over the tools (#872) — no per-prompt scoping: a prompt is a
+            // template the client expands into tool calls, and each of those calls is still
+            // scope-checked at tools/call time.
+            return jsonrpc_result(id, {{"prompts", mcp_prompt_definitions()}});
+        }
+        if (method == "prompts/get") {
+            const auto& params = request.value("params", nlohmann::json::object());
+            const std::string prompt_name = params.value("name", "");
+            if (prompt_name.empty()) {
+                return jsonrpc_error(id, -32602, "params.name is required");
+            }
+            std::string reason;
+            if (std::optional<nlohmann::json> prompt = render_mcp_prompt(
+                    prompt_name, params.value("arguments", nlohmann::json::object()),
+                    &reason)) {
+                return jsonrpc_result(id, std::move(*prompt));
+            }
+            return jsonrpc_error(id, -32602, reason);
         }
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
