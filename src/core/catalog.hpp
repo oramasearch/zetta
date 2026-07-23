@@ -130,6 +130,7 @@ inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
+inline constexpr std::string_view kAgentPrefix = "agent:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
@@ -176,6 +177,9 @@ inline std::string run_key(const std::string& run_id) {
 }
 inline std::string model_key(const std::string& model_id) {
     return std::string(kModelPrefix) + model_id;
+}
+inline std::string agent_key(const std::string& agent_id) {
+    return std::string(kAgentPrefix) + agent_id;
 }
 inline std::string job_key(const std::string& job_id) {
     return std::string(kJobPrefix) + job_id;

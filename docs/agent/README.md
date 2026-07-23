@@ -55,6 +55,16 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 - **Curriculum + observability** — `train_over_corpus` (below).
 
+## The served agent entity (shipped — data model)
+
+- **`AgentRecord`** (`agent_record.hpp`) — the first-class **agent** a user lists, selects,
+  and **chats with** ([#849](https://github.com/oramasearch/zetta/issues/849)): an id + name +
+  description binding a **model** (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace
+  repo id `zetta pull` fetches) to a system prompt and the **tools** it may call. Stored as a
+  replicated `agent:<uuid>` entity (`catalog.hpp`); non-throwing `agent_from_json` +
+  `agent_schema()` are the boundary. The CRUD store, the MCP/REST endpoints, and the GUI/web
+  chat panels build on this record (in flight).
+
 ## The reward primitive (shipped)
 
 - **`EndState`** (`end_state.hpp`) — the observable end-state of a rollout,
