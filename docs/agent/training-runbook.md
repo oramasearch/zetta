@@ -14,8 +14,16 @@ method + why it works: [`rlvr-to-production.md`](rlvr-to-production.md); the two
 ## Prerequisites
 
 - **The corpus:** `data/corpus.jsonl` (494 gated tasks; committed) — see the data runbook.
-- **The weights:** Qwen3-0.6B (validated), Qwen3-8B (downloaded). Point `ZETTA_QWEN_DIR`
-  at the checkpoint dir (the guarded tests use it).
+- **The weights:** Qwen3-0.6B (validated), Qwen3-8B (downloaded). Pull them **natively**
+  (no Python/curl; ADR-17) and point `ZETTA_QWEN_DIR` at the printed directory:
+
+  ```bash
+  ZETTA_QWEN_DIR=$(./build/bin/zetta pull Qwen/Qwen3-0.6B)   # -> ./models/Qwen3-0.6B
+  ```
+
+  `zetta pull` fetches config + tokenizer + safetensors (single or sharded) over the
+  engine's own HTTPS client, following the LFS redirect and streaming each shard to disk
+  (`connect/model_fetch.hpp`). Set `HF_TOKEN` for a gated repo; `--dir PATH` to choose where.
 - **The build:** MLX-on for the fast GPU path (`cmake -S . -B build -DZETTA_ENABLE_MLX=ON`);
   the default CPU build always works, just slower.
 
