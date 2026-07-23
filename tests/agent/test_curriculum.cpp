@@ -141,4 +141,38 @@ TEST(Curriculum, ChurnReferenceActionScoresThroughTheGate) {
     EXPECT_EQ(parsed->execution_graph.node_count(), action.execution_graph.node_count());
 }
 
+// Search — the second Component (#873). It has NO model/calibration step (connect → index →
+// serve): the search gate scores only search checks. This is "not every pipeline is six stages"
+// made concrete, and the blender-rl discrimination on a different pipeline shape.
+TEST(Curriculum, SearchGraphFactsDiscriminate) {
+    using zetta::agent::build_search_graph;
+    using zetta::agent::search_graph_facts;
+    const EndStateGrader grader = zetta::agent::search_solution_case().task.grader();
+    // Correct full-text + semantic references pass.
+    EXPECT_TRUE(grader.grade(search_graph_facts(build_search_graph("bm25f", true, true))).passed);
+    EXPECT_TRUE(
+        grader.grade(search_graph_facts(build_search_graph("semantic", true, true))).passed);
+    // Degenerate pipelines fail: an LLM guess (no index), unranked, not grounded.
+    EXPECT_FALSE(grader.grade(search_graph_facts(build_search_graph("llm", true, true))).passed);
+    EXPECT_FALSE(grader.grade(search_graph_facts(build_search_graph("bm25f", false, true))).passed);
+    EXPECT_FALSE(grader.grade(search_graph_facts(build_search_graph("bm25f", true, false))).passed);
+}
+
+TEST(Curriculum, SearchCaseIsAdmittedByTheGate) {
+    // The admission gate: reference passes + every negative control fails (discrimination).
+    EXPECT_TRUE(zetta::agent::admit_corpus({zetta::agent::search_solution_case()}).admitted);
+}
+
+TEST(Curriculum, SearchReferenceActionScoresThroughTheGate) {
+    const zetta::agent::StudioAction action = zetta::agent::search_reference_action();
+    EXPECT_FALSE(action.message.empty());
+    EXPECT_FALSE(action.tool_calls.empty());
+    // The search pipeline has no Model step — connect → index → serve.
+    EXPECT_TRUE(action.execution_graph.nodes_of_kind(zetta::ir::StepKind::Index).size() == 1);
+    EXPECT_TRUE(action.execution_graph.nodes_of_kind(zetta::ir::StepKind::Model).empty());
+    const EndStateGrader grader = zetta::agent::search_solution_case().task.grader();
+    EXPECT_TRUE(
+        grader.grade(zetta::agent::search_graph_facts(action.execution_graph)).passed);
+}
+
 }  // namespace

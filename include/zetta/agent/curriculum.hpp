@@ -57,4 +57,31 @@ std::vector<ToolCall> churn_reference_trajectory();
 // The training target for the churn use case once the corpus emits actions instead of facts.
 StudioAction churn_reference_action();
 
+// --- Search (the second dogfood Component, #873) — the same pattern, a different shape ---
+// Search pipelines DON'T train a model or calibrate — connect → index → serve. This is where
+// "not every pipeline is six stages" is concrete: the search gate scores only search checks.
+
+// The required facts of a correct search solution: a real index built, real retrieval, ranked
+// results grounded in the indexed data (index_kind/embeddings vary by variant, so aren't
+// required universally).
+EndState search_required();
+
+// Build a search pipeline: connect(documents) → index(kind) → serve(ranked, grounded). A real
+// index kind (bm25f/semantic/hybrid) builds an Index node; a non-index kind (e.g. "llm",
+// "substring") builds a Model node instead — a guess with no retrieval — so degenerate graphs
+// fail the gate and the corpus can discriminate.
+ir::ExecutionGraph build_search_graph(std::string index_kind, bool ranked, bool grounded);
+
+// The facts of a built search graph (index/retrieval/ranked/grounded_in_data + index_kind/
+// embeddings), scored against search_required().
+EndState search_graph_facts(const ir::ExecutionGraph& graph);
+
+// The admission case for search: a correct full-text reference + degenerate controls (an LLM
+// guess with no index; unranked retrieval; retrieval not grounded in the data).
+AdmissionCase search_solution_case();
+
+// The search reference in the agent's ACTION shape (#873) — {message, tool_calls, a
+// build_search_graph pipeline}. Its graph passes the search grader.
+StudioAction search_reference_action();
+
 }  // namespace zetta::agent

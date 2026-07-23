@@ -154,6 +154,98 @@ StudioAction churn_reference_action() {
     return action;
 }
 
+// --- Search (the second dogfood Component, #873) — connect → index → serve, no model ---
+
+EndState search_required() {
+    EndState required;
+    required.set("index", true);             // a real search index was built
+    required.set("retrieval", true);         // real retrieval, not an LLM guess
+    required.set("ranked", true);            // results are ranked
+    required.set("grounded_in_data", true);  // grounded in the indexed data
+    return required;
+}
+
+ir::ExecutionGraph build_search_graph(std::string index_kind, bool ranked, bool grounded) {
+    ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(ir::StepKind::Connect, "documents");
+    const bool real =
+        index_kind == "bm25f" || index_kind == "semantic" || index_kind == "hybrid";
+    const bool embeddings = index_kind == "semantic" || index_kind == "hybrid";
+    // A real index kind builds an Index node (real retrieval); anything else builds a Model node
+    // — a guess with no index — so the degenerate graph fails the gate.
+    const auto retrieve =
+        real ? graph.add_node(ir::StepKind::Index, "search index",
+                              {{"kind", index_kind}, {"embeddings", embeddings}})
+             : graph.add_node(ir::StepKind::Model, "guess", {{"kind", index_kind}});
+    const auto serve = graph.add_node(ir::StepKind::Serve, "search results",
+                                      {{"ranked", ranked}, {"grounded_in_data", grounded}});
+    graph.add_edge(connect->id, retrieve->id);
+    graph.add_edge(retrieve->id, serve->id);
+    return graph;
+}
+
+EndState search_graph_facts(const ir::ExecutionGraph& graph) {
+    EndState facts;
+    const auto index_nodes = graph.nodes_of_kind(ir::StepKind::Index);
+    facts.set("index", !index_nodes.empty());
+    facts.set("retrieval", !index_nodes.empty());  // a real index means real retrieval
+    bool embeddings = false;
+    for (const auto& node : index_nodes) {
+        if (node->attributes.contains("kind")) {
+            facts.set("index_kind", node->attributes.at("kind"));
+        }
+        if (node->attributes.value("embeddings", false)) embeddings = true;
+    }
+    facts.set("embeddings", embeddings);
+
+    bool ranked = false;
+    bool grounded = false;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Serve)) {
+        if (node->attributes.value("ranked", false)) ranked = true;
+        if (node->attributes.value("grounded_in_data", false)) grounded = true;
+    }
+    facts.set("ranked", ranked);
+    facts.set("grounded_in_data", grounded);
+    return facts;
+}
+
+AdmissionCase search_solution_case() {
+    const std::string description =
+        "Make the documents searchable: connect the source, build a full-text (BM25F) search "
+        "index over them, and serve ranked results grounded in the indexed data.";
+    EndState initial;
+    initial.set("data.documents", true);
+    Task task{"uc-search", description, std::move(initial),
+              {"connect", "clean", "model", "index", "serve", "act"}, search_required()};
+
+    EndState reference =
+        search_graph_facts(build_search_graph("bm25f", /*ranked=*/true, /*grounded=*/true));
+    // Negative controls, each failing a required fact:
+    //  1. an LLM guess — no index, no retrieval;
+    //  2. retrieval but no ranking;
+    //  3. results not grounded in the indexed data.
+    EndState llm_guess = search_graph_facts(build_search_graph("llm", true, true));
+    EndState unranked = search_graph_facts(build_search_graph("bm25f", /*ranked=*/false, true));
+    EndState ungrounded = search_graph_facts(build_search_graph("bm25f", true, /*grounded=*/false));
+    return AdmissionCase{std::move(task), std::move(reference),
+                         {std::move(llm_guess), std::move(unranked), std::move(ungrounded)}};
+}
+
+StudioAction search_reference_action() {
+    StudioAction action;
+    action.message =
+        "I'll make your documents searchable: build a full-text search index over them and "
+        "serve ranked results grounded in your data \xE2\x80\x94 no LLM guessing.";
+    action.tool_calls = {
+        ToolCall{"connect", {{"name", "documents"}}},
+        ToolCall{"index", {{"name", "search index"}, {"kind", "bm25f"}}},
+        ToolCall{"serve", {{"name", "search results"}, {"ranked", true},
+                           {"grounded_in_data", true}}},
+    };
+    action.execution_graph = build_search_graph("bm25f", /*ranked=*/true, /*grounded=*/true);
+    return action;
+}
+
 AdmissionCase churn_solution_case() {
     const std::string description =
         "Build a churn-risk pipeline over the account events + communications: connect "
