@@ -3222,54 +3222,15 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
 
-    // Load the agent's model + tokenizer (device-agnostic CPU path; `agent.model` must be
-    // a local checkpoint dir — pull it first with `zetta pull` if it isn't present).
-    std::string load_error;
-    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
-        zetta::tokenizer::BpeTokenizer::from_directory(agent->model, &load_error);
-    if (!tokenizer) {
-        return ApiResult::failure(
-            "engine_error",
-            "could not load the agent's tokenizer from '" + agent->model + "': " + load_error);
-    }
-    const std::optional<zetta::autograd::QwenModel> model =
-        zetta::autograd::load_qwen_model(agent->model, &load_error);
-    if (!model) {
-        return ApiResult::failure(
-            "engine_error",
-            "could not load the agent's model from '" + agent->model + "': " + load_error);
-    }
-
-    // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for
-    // now each records that it ran, so the tool-calling loop closes end to end.
-    zetta::agent::Sandbox sandbox;
-    for (const std::string& tool : agent->tools) {
-        sandbox.register_tool(tool, [tool](zetta::agent::EndState& world,
-                                           const nlohmann::json&) {
-            world.set("ran_" + tool, true);
-            return zetta::agent::ToolResult::success();
-        });
-    }
-
-    // The model is the injected generate function: a fresh KV-cached inference per call
-    // (independent decode), returning just the new text.
-    const auto generate = [&tokenizer, &model, max_new_tokens](
-                              const std::string& prompt) -> std::string {
-        zetta::autograd::QwenInference inference(*model);
-        const std::vector<int> generated =
-            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens);
-        return tokenizer->decode(generated);
-    };
-
-    std::string conversation;
-    if (!agent->system_prompt.empty()) conversation += agent->system_prompt + "\n\n";
-    conversation += "User: " + message + "\nAssistant:";
-
-    const zetta::agent::ChatResult chat =
-        zetta::agent::run_chat_turn(generate, sandbox, conversation, max_rounds);
+    // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
+    // chat panel also uses, so both behave identically. agent.model must be a local
+    // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    const zetta::agent::ChatResponse chat =
+        zetta::agent::respond(*agent, message, max_new_tokens, max_rounds);
+    if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
 
     nlohmann::json tool_calls = nlohmann::json::array();
-    for (const zetta::agent::ChatToolInvocation& invocation : chat.invocations) {
+    for (const zetta::agent::ChatToolInvocation& invocation : chat.result.invocations) {
         nlohmann::json entry;
         entry["tool"] = invocation.call.tool;
         entry["status"] = invocation.status == zetta::agent::ApplyStatus::Ok ? "ok"
@@ -3280,9 +3241,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         tool_calls.push_back(std::move(entry));
     }
     nlohmann::json output;
-    output["reply"] = chat.reply;
+    output["reply"] = chat.result.reply;
     output["tool_calls"] = std::move(tool_calls);
-    output["rounds"] = chat.rounds;
+    output["rounds"] = chat.result.rounds;
     return ApiResult::success(std::move(output));
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "zetta/agent/agent_record.hpp"
 #include "zetta/agent/sandbox.hpp"
 #include "zetta/agent/tool_call.hpp"
 
@@ -42,5 +43,20 @@ using GenerateFn = std::function<std::string(const std::string& prompt)>;
 // reply + the executed calls.
 ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
                          std::string conversation, int max_rounds = 4);
+
+// The outcome of talking to an agent: the chat result, or a load failure.
+struct ChatResponse {
+    bool ok = false;
+    ChatResult result;   // reply + tool invocations + rounds (valid when ok)
+    std::string error;   // the reason (model/tokenizer load failure) when !ok
+};
+
+// Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
+// checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for
+// `message`. Non-throwing — a load failure is ok=false + a reason. BLOCKS for seconds while
+// the model loads + generates, so call it OFF the UI thread. Shared by the `chat` capability
+// (MCP/REST) and the GUI chat panel, so both behave identically.
+ChatResponse respond(const AgentRecord& agent, const std::string& message,
+                     int max_new_tokens = 256, int max_rounds = 3);
 
 }  // namespace zetta::agent

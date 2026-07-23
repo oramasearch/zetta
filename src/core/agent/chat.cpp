@@ -4,8 +4,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "zetta/agent/end_state.hpp"
+#include "zetta/autograd/qwen.hpp"
+#include "zetta/tokenizer/bpe.hpp"
 
 namespace zetta::agent {
 namespace {
@@ -111,6 +116,51 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
     result.reply = generate(conversation);
     result.rounds += 1;
     return result;
+}
+
+ChatResponse respond(const AgentRecord& agent, const std::string& message,
+                     int max_new_tokens, int max_rounds) {
+    ChatResponse response;
+    std::string error;
+    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
+        zetta::tokenizer::BpeTokenizer::from_directory(agent.model, &error);
+    if (!tokenizer) {
+        response.error =
+            "could not load the tokenizer from '" + agent.model + "': " + error;
+        return response;
+    }
+    const std::optional<zetta::autograd::QwenModel> model =
+        zetta::autograd::load_qwen_model(agent.model, &error);
+    if (!model) {
+        response.error = "could not load the model from '" + agent.model + "': " + error;
+        return response;
+    }
+
+    // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
+    // each records that it ran so the tool-calling loop closes end to end.
+    Sandbox sandbox;
+    for (const std::string& tool : agent.tools) {
+        sandbox.register_tool(tool, [tool](EndState& world, const nlohmann::json&) {
+            world.set("ran_" + tool, true);
+            return ToolResult::success();
+        });
+    }
+
+    // A fresh KV-cached inference per generation (independent decode), returning new text.
+    const auto generate = [&tokenizer, &model, max_new_tokens](
+                              const std::string& prompt) -> std::string {
+        zetta::autograd::QwenInference inference(*model);
+        return tokenizer->decode(
+            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens));
+    };
+
+    std::string conversation;
+    if (!agent.system_prompt.empty()) conversation += agent.system_prompt + "\n\n";
+    conversation += "User: " + message + "\nAssistant:";
+
+    response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);
+    response.ok = true;
+    return response;
 }
 
 }  // namespace zetta::agent
