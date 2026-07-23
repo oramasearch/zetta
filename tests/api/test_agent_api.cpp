@@ -116,4 +116,40 @@ TEST_F(AgentApiFixture, ChatWithARealModel) {
     EXPECT_GE(chat.value.at("rounds").get<int>(), 1);
 }
 
+// agent_run (#872): the base agent builds AND runs an execution graph from plain language,
+// with no tool-calling fine-tune (#859). This asserts the capability is wired as a mutating
+// Job — the run path it delegates to is gated + observable like every other run.
+TEST_F(AgentApiFixture, AgentRunIsRegisteredAsAJob) {
+    const std::shared_ptr<const zetta::api::Capability> capability = registry.find("agent_run");
+    ASSERT_NE(capability, nullptr) << "agent_run must be registered";
+    EXPECT_EQ(capability->kind, zetta::api::CapabilityKind::Job);
+    EXPECT_TRUE(capability->mutates);
+}
+
+// The full agent_run composition with a REAL model: the agent reads the ask, the engine
+// compiles a graph from it, and the graph runs. Guarded on ZETTA_QWEN_DIR; a non-churn ask so
+// the run takes the structural path (no background owner needed in this fixture — the churn
+// engine is exercised live in the inference runbook). Proves agent -> compile -> save -> run.
+TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
+    const char* dir = std::getenv("ZETTA_QWEN_DIR");
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to a checkpoint dir to run";
+
+    ApiResult created = call("create_agent",
+                             {{"name", "Base agent"},
+                              {"model", std::string(dir)},
+                              {"tools", {"connect", "serve"}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string id = created.value.at("id").get<std::string>();
+
+    ApiResult run = call("agent_run",
+                         {{"agent", id},
+                          {"message", "Summarize the sales table and export a weekly report."},
+                          {"max_new_tokens", 32}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_FALSE(run.value.at("reply").get<std::string>().empty());
+    EXPECT_FALSE(run.value.at("shape").get<std::string>().empty());
+    EXPECT_GE(run.value.at("steps").size(), 1u);
+    EXPECT_FALSE(run.value.at("run").at("run_id").get<std::string>().empty());
+}
+
 }  // namespace

@@ -42,6 +42,7 @@
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/pipeline/n8n_compile.hpp"
 #include "zetta/pipeline/n8n_import.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -3247,6 +3248,146 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- agent_run: the base agent builds AND runs an execution graph ------------------
+//
+// The point of #872: the base (#555) agent is usable RIGHT AWAY — it does not need the
+// RLVR tool-calling fine-tune (#859) to drive real work. This capability closes the loop
+// end to end from plain language:
+//   1. the agent reads the message and recognizes the use case (chat/respond),
+//   2. the engine compiles that message into a real ExecutionGraph (pipeline::compile_intent
+//      — the same churn-shape heuristic behind compile_intent), stored on a project,
+//   3. the graph runs through the gate + the real churn engine (delegated to handle_run).
+// So "the agent builds and runs a churn graph for Charles" is one call. #859 later lets the
+// agent emit the graph step-by-step itself; today the engine builds it from the same intent.
+const nlohmann::json& agent_run_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agent", "message"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
+          {"message",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the plain-language ask, e.g. 'predict which customers will churn'"}}},
+          {"project",
+           {{"type", "string"},
+            {"description",
+             "land the graph + run on this project (name or uuid); a new project is "
+             "created when omitted"}}},
+          {"graph_name",
+           {{"type", "string"}, {"description", "name for the stored graph (default derived)"}}},
+          {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
+          {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}},
+          {"top_k",
+           {{"type", "integer"}, {"minimum", 0}, {"description", "at-risk list cap (0 = all)"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"description", "a churn dataset dir on the node (default: the built-in demo)"}}},
+          {"model_name", {{"type", "string"}, {"description", "registered model name"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& agent_run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"reply", "shape", "project", "graph", "steps", "run"}},
+        {"properties",
+         {{"reply", {{"type", "string"}, {"description", "the agent's recognition of the ask"}}},
+          {"shape",
+           {{"type", "string"}, {"description", "the compiled template: 'churn' | 'generic'"}}},
+          {"project", {{"type", "string"}}},
+          {"graph", {{"type", "string"}}},
+          {"graph_id", {{"type", "string"}}},
+          {"steps", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"run",
+           {{"type", "object"},
+            {"description", "the run result (run_id + engine + status), poll get_run"}}}}}};
+    return schema;
+}
+
+ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string agent_id = input.at("agent").get<std::string>();
+    const std::string message = input.at("message").get<std::string>();
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+
+    // 1. The agent reads the ask and recognizes the use case (the shared respond() path).
+    const zetta::agent::ChatResponse chat = zetta::agent::respond(
+        *agent, message, input.value("max_new_tokens", 256), input.value("max_rounds", 3));
+    if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
+
+    // 2. The engine compiles the same ask into a real, editable ExecutionGraph.
+    std::string reason;
+    const std::optional<zetta::pipeline::CompiledIntent> compiled =
+        zetta::pipeline::compile_intent(message, &reason);
+    if (!compiled) {
+        return ApiResult::failure("engine_error",
+                                  "the agent could not compile a graph from the ask: " + reason);
+    }
+    const std::string shape = std::string(zetta::pipeline::to_string(compiled->shape));
+    std::vector<std::string> steps;
+    for (const std::shared_ptr<zetta::ir::Node>& node : compiled->graph.nodes()) {
+        steps.push_back(node->name);
+    }
+
+    // Land the graph on a project (the caller's, or a fresh one so a chat needs no setup).
+    std::shared_ptr<zetta::pipeline::Project> project;
+    if (const auto named = input.find("project"); named != input.end()) {
+        project = resolve_project(context, named->get<std::string>());
+        if (!project) {
+            return ApiResult::failure(
+                "not_found", "no project '" + named->get<std::string>() + "' (or with that id)");
+        }
+    } else {
+        const std::string owner =
+            context.acting_key.empty() ? std::string("local") : context.acting_key;
+        project = context.node.create_project(
+            "agent " + shape + " · " + zetta::util::new_uuid().substr(0, 8), owner);
+        if (!project) {
+            return ApiResult::failure("engine_error", "could not create a project for the run");
+        }
+    }
+
+    const std::string graph_name =
+        input.value("graph_name", agent->name.empty() ? shape + " graph"
+                                                       : agent->name + " · " + shape + " graph");
+    const std::shared_ptr<zetta::pipeline::ProjectGraph> stored =
+        project->create_graph(graph_name, std::move(compiled->graph));
+    if (!stored) {
+        return ApiResult::failure(
+            "engine_error", "could not store the graph '" + graph_name + "' on project '" +
+                                project->name() + "' (name clash or empty)");
+    }
+
+    // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
+    nlohmann::json run_input;
+    run_input["project"] = project->name();
+    run_input["graph"] = graph_name;
+    for (const char* passthrough : {"top_k", "dataset_path", "model_name", "coordinate"}) {
+        if (const auto found = input.find(passthrough); found != input.end()) {
+            run_input[passthrough] = *found;
+        }
+    }
+    const ApiResult run_result = handle_run(run_input, context);
+    if (!run_result.ok) return run_result;  // reason already carries the failing step
+
+    nlohmann::json output;
+    output["reply"] = chat.result.reply;
+    output["shape"] = shape;
+    output["project"] = project->name();
+    output["graph"] = graph_name;
+    output["graph_id"] = stored->id();
+    output["steps"] = steps;
+    output["run"] = run_result.value;
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -3602,6 +3743,21 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_chat});
+    registry.add(Capability{
+        "agent_run",
+        "Agent builds + runs a graph",
+        "Give an agent a plain-language ask; it recognizes the use case, compiles a real "
+        "execution graph from it, and runs that graph through the gate + the real engine "
+        "(churn today) — end to end in one call. The base agent needs no tool-calling "
+        "fine-tune for this. Returns the agent's reply, the built graph's steps, and the "
+        "run id (poll get_run / system.runs).",
+        agent_run_schema(),
+        agent_run_output_schema(),
+        CapabilityKind::Job,
+        Operation{CapabilityDomain::Orchestration, "run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_agent_run});
 
     // --- governed serving (#648, docs/api/serving.md) -------------------------
 
