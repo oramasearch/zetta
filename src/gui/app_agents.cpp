@@ -150,9 +150,14 @@ void App::draw_agents() {
     std::vector<MasterRow> rows;
     rows.reserve(agents.size());
     for (const zetta::agent::AgentRecord& agent : agents) {
+        // The row meta is a SHORT label — the model's last path segment (or repo name),
+        // never the full checkpoint path (which would overrun the row).
+        const std::size_t slash = agent.model.find_last_of('/');
+        const std::string model_label =
+            slash == std::string::npos ? agent.model : agent.model.substr(slash + 1);
         rows.push_back({.id = agent.id,
                         .title = agent.name.empty() ? entity_short_id(agent.id) : agent.name,
-                        .meta = agent.model,
+                        .meta = model_label,
                         .id_title = agent.name.empty()});
     }
 
@@ -203,8 +208,13 @@ void App::draw_agents() {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::TextDisabled(
-                "Chat with this agent over the API/MCP `chat` capability; an in-panel chat "
-                "with a selector is coming.");
+                "Talk to this agent in the Chat view (left nav) or over the API/MCP `chat` "
+                "capability.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Open chat")) {
+                chat_agent_ = row.id;  // preselect this agent in the Chat view
+                navigate_to(View::Chat);
+            }
             ImGui::Spacing();
             if (ImGui::Button("Delete agent") && node_.replication() != nullptr) {
                 zetta::agent::AgentStore(*node_.replication()).remove(row.id);
