@@ -87,6 +87,53 @@ detailed statement of this rule, with the precedents to copy, is
 **Distributed-first — every algorithm scales at both levels** under
 [Conventions](#conventions).
 
+## Orama Studio — the product surface this engine wears
+
+**The user-facing product is "Orama Studio"; Zetta is the platform under the
+hood** (direction set 2026-07-20, naming confirmed 2026-07-21 — Studio first,
+Marketplace deferred). The existing GUI
+([`#627`](https://github.com/oramasearch/zetta/issues/627)) and web UI
+([`#647`](https://github.com/oramasearch/zetta/issues/647)) become Studio (epic
+[`#854`](https://github.com/oramasearch/zetta/issues/854)): create → polish →
+ship production-grade AI Components and pipelines, no ML expertise required.
+Two entry paths mirror the two models: **Create a Solution** (the intent agent —
+[`#555`](https://github.com/oramasearch/zetta/issues/555) /
+[`#853`](https://github.com/oramasearch/zetta/issues/853) /
+[`#849`](https://github.com/oramasearch/zetta/issues/849)) and **Discover
+Opportunities** (auto-suggest from a Workspace Profile). Audience: 70–80%
+technical creators building self-serve AI for a larger internal audience.
+
+**Vocabulary contract for user-facing copy** (web UI, GUI, agent replies,
+onboarding — anywhere a user reads): never "execution graph" → **Pipeline**;
+"correctness gate" → **Verification**; "environment profile" → **Workspace
+Profile**; "model checkpoint" → **Saved Version**; "auto-remediation" →
+**Automatic Recovery**; "agent-generated graph" → **Proposed Solution**; the
+RL loop → **continuous testing and improvement**. The agent is **Ask Orama**
+(never "Ask Studio" / "collaborator"; user-built/external agents stay
+distinct). The one sanctioned place raw platform terms surface is the explicit
+**Technical view** escape hatch. This binds *product copy only* — in code,
+docs, and APIs, `ExecutionGraph`, gate checks, etc. remain the correct
+engineering names. Lifecycle invariants the UI encodes (match them, don't
+contradict them): no Deployment without a Saved Version; nothing
+production-ready without a passed Verification; consequential actions get an
+impact preview with a cancel path.
+
+**The design source is Daniel's repo `oramasearch/orama-design`** — the live
+Studio prototype (`src/studio/`, one live version + frozen dated archives), the
+design system (`packages/design-system/`, Storybook = source of truth, IBM Plex
++ Carbon), and the planning surface (16 core flows, 7 journeys, a 14-screen
+plan, 24 confirmed decisions + 12 open implementation contracts). The
+prototype is React and **transfers as tokens, layout, copy, IA, and states —
+not code** (this repo's web UI stays no-framework SSR). Known open tension:
+the headed GUI's design system below (Geist, coral) and the Studio web system
+(IBM Plex, Carbon blue) have not been converged — flag it, don't silently pick
+one. The design's open contracts are questions about what *this engine*
+actually does (real Project lifecycle, agent capabilities, roles, source
+connections, Verification/Deployment/recovery mechanics) — answer them from
+engine truth. Deep inventory + direction cross-reference:
+`docs/projects/orama-studio-marketplace/design-index.md` and `ui-structure.md`
+in https://github.com/oramasearch/orama-bridge.
+
 ## How these docs work — progressive disclosure
 
 This file holds only **identity, the load-bearing rules, build/test, and

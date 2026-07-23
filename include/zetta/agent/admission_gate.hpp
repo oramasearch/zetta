@@ -1,9 +1,11 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "zetta/agent/action.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/task.hpp"
 
@@ -21,6 +23,11 @@ struct AdmissionCase {
     Task task;
     EndState reference;                       // must PASS the task's grader
     std::vector<EndState> negative_controls;  // each must FAIL the task's grader
+    // The reference solution in the agent's ACTION shape (#873): {message, tool_calls,
+    // execution_graph}. Present once the corpus is reshaped from facts to actions (the
+    // generator fills it); the SFT render uses it as the training target when set. The
+    // `reference` facts above stay as the gate's checks on the run pipeline.
+    std::optional<StudioAction> reference_action;
 };
 
 enum class AdmissionFailureKind {

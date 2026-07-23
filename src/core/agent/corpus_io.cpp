@@ -36,11 +36,16 @@ nlohmann::json to_json(const AdmissionCase& admission_case) {
     for (const EndState& control : admission_case.negative_controls) {
         negatives.push_back(to_json(control));
     }
-    return nlohmann::json{
+    nlohmann::json output{
         {"task", to_json(admission_case.task)},
         {"reference", to_json(admission_case.reference)},
         {"negative_controls", std::move(negatives)},
     };
+    // The reference solution in the agent's ACTION shape, when the corpus carries it (#873).
+    if (admission_case.reference_action) {
+        output["action"] = to_json(*admission_case.reference_action);
+    }
+    return output;
 }
 
 std::optional<EndState> end_state_from_json(const nlohmann::json& value,
@@ -140,7 +145,15 @@ std::optional<AdmissionCase> admission_case_from_json(const nlohmann::json& valu
             negatives.push_back(*parsed);
         }
     }
-    return AdmissionCase{*task, *reference, std::move(negatives)};
+    AdmissionCase admission_case{*task, *reference, std::move(negatives)};
+    // The reference solution in the action shape, when present (#873) — optional + validated
+    // (action_from_json sets a path-qualified reason on failure).
+    if (value.contains("action")) {
+        std::optional<StudioAction> action = action_from_json(value["action"], error);
+        if (!action) return std::nullopt;
+        admission_case.reference_action = *std::move(action);
+    }
+    return admission_case;
 }
 
 std::string dump_corpus_jsonl(const std::vector<AdmissionCase>& corpus) {

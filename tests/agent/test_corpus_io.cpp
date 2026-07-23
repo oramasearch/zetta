@@ -47,6 +47,28 @@ TEST(CorpusIo, JsonlCorpusRoundTripsAndAdmits) {
     EXPECT_TRUE(admit_corpus(*corpus).admitted);
 }
 
+// The corpus carries the reference solution in the agent's ACTION shape when present (#873):
+// {message, tool_calls, execution_graph} round-trips through the JSONL alongside the facts.
+TEST(CorpusIo, ReferenceActionRoundTrips) {
+    AdmissionCase with_action = churn_solution_case();
+    with_action.reference_action = zetta::agent::churn_reference_action();
+
+    std::string error;
+    const auto restored = admission_case_from_json(to_json(with_action), &error);
+    ASSERT_TRUE(restored.has_value()) << error;
+    ASSERT_TRUE(restored->reference_action.has_value()) << "the action must survive the trip";
+    EXPECT_FALSE(restored->reference_action->message.empty());
+    EXPECT_EQ(restored->reference_action->tool_calls.size(),
+              with_action.reference_action->tool_calls.size());
+    EXPECT_EQ(restored->reference_action->execution_graph.node_count(),
+              with_action.reference_action->execution_graph.node_count());
+
+    // Backward-compatible: a case with no action still parses, with an empty reference_action.
+    const auto no_action = admission_case_from_json(to_json(churn_solution_case()), &error);
+    ASSERT_TRUE(no_action.has_value()) << error;
+    EXPECT_FALSE(no_action->reference_action.has_value());
+}
+
 TEST(CorpusIo, BlankLinesAreSkipped) {
     std::string error;
     const std::string jsonl = "\n" + dump_corpus_jsonl({churn_solution_case()}) + "  \n";
