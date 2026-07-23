@@ -3,6 +3,7 @@
 #include "gui/app_operations_internal.hpp"
 
 #include "zetta/agent/agent_store.hpp"
+#include "zetta/agent/model_cache.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -11,9 +12,11 @@
 #include <imgui_stdlib.h>
 
 #include <cfloat>
+#include <cstddef>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -145,6 +148,27 @@ void App::draw_agents() {
     draw_add_agent_form();
     banner(Tone::Ok, add_agent_status_);
 
+    // Model cache (#849): how many checkpoints stay resident (default 1) so a warm agent
+    // doesn't reload the multi-GB weights per chat; plus what's currently loaded.
+    {
+        zetta::agent::ModelCache& cache = zetta::agent::ModelCache::instance();
+        int capacity = static_cast<int>(cache.capacity());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Model cache \xC2\xB7 keep");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90.0f);
+        if (ImGui::InputInt("##model_capacity", &capacity)) {
+            cache.set_capacity(capacity < 1 ? 1 : static_cast<std::size_t>(capacity));
+        }
+        ImGui::SameLine();
+        const std::vector<std::string> resident = cache.loaded();
+        ImGui::TextDisabled("model(s) resident \xC2\xB7 %zu loaded", resident.size());
+        if (!resident.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Unload all")) cache.unload_all();
+        }
+    }
+
     // Agents have no lifecycle status (muted dot); each row's title is the name (or the
     // UUID's first segment when unnamed) with the model as meta.
     std::vector<MasterRow> rows;
@@ -216,6 +240,25 @@ void App::draw_agents() {
                 navigate_to(View::Chat);
             }
             ImGui::Spacing();
+            // Load / unload this agent's model in the cache. Loading runs OFF the UI thread
+            // (a detached worker — it only touches the process-wide cache), so the frame never
+            // freezes; the button flips to "Unload" once the weights are resident.
+            zetta::agent::ModelCache& cache = zetta::agent::ModelCache::instance();
+            if (cache.is_loaded(agent->model) && model_loading_path_ == agent->model) {
+                model_loading_path_.clear();
+            }
+            if (model_loading_path_ == agent->model) {
+                ImGui::TextDisabled("loading model\xE2\x80\xA6");
+            } else if (cache.is_loaded(agent->model)) {
+                if (ImGui::Button("Unload model")) cache.unload(agent->model);
+            } else if (ImGui::Button("Load model")) {
+                model_loading_path_ = agent->model;
+                std::thread([path = agent->model]() {
+                    std::string error;
+                    zetta::agent::ModelCache::instance().load(path, &error);
+                }).detach();
+            }
+            ImGui::SameLine();
             if (ImGui::Button("Delete agent") && node_.replication() != nullptr) {
                 zetta::agent::AgentStore(*node_.replication()).remove(row.id);
                 selected_agent_.clear();

@@ -614,6 +614,7 @@ private:
     std::vector<ChatMessage> chat_history_;  // the transcript (user + agent turns)
     std::string chat_error_;                 // a load/turn failure, shown as a banner
     std::shared_ptr<ChatOp> chat_op_;        // non-null while a turn is running
+    std::string model_loading_path_;         // a model being preloaded off-thread (#849), or empty
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_trace_;  // trace id (Traces view); re-resolved each frame
     std::string selected_span_;   // span id within the selected trace ("" = none)

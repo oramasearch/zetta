@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/model_cache.hpp"
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 
@@ -123,19 +124,16 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds) {
     ChatResponse response;
     std::string error;
-    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
-        zetta::tokenizer::BpeTokenizer::from_directory(agent.model, &error);
-    if (!tokenizer) {
-        response.error =
-            "could not load the tokenizer from '" + agent.model + "': " + error;
+    // The model is served from the process-wide cache, so a warm agent doesn't reload the
+    // multi-GB checkpoint on every turn (the #849 latency fix). First turn pays the load.
+    const std::shared_ptr<const LoadedModel> loaded =
+        ModelCache::instance().get(agent.model, &error);
+    if (!loaded) {
+        response.error = error;
         return response;
     }
-    const std::optional<zetta::autograd::QwenModel> model =
-        zetta::autograd::load_qwen_model(agent.model, &error);
-    if (!model) {
-        response.error = "could not load the model from '" + agent.model + "': " + error;
-        return response;
-    }
+    const zetta::tokenizer::BpeTokenizer& tokenizer = loaded->tokenizer;
+    const zetta::autograd::QwenModel& model = loaded->model;
 
     // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
     // each records that it ran so the tool-calling loop closes end to end.
@@ -165,9 +163,9 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // A fresh KV-cached inference per generation (independent decode), returning new text.
     const auto generate = [&tokenizer, &model, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
-        zetta::autograd::QwenInference inference(*model);
-        return tokenizer->decode(
-            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens, eos_id));
+        zetta::autograd::QwenInference inference(model);
+        return tokenizer.decode(
+            inference.generate_greedy(tokenizer.encode(prompt), max_new_tokens, eos_id));
     };
 
     std::string conversation;
