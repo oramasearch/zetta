@@ -1891,22 +1891,25 @@ struct ApiServer::Impl {
                 "served agents \xC2\xB7 a model + prompt + tools you can chat with",
                 {"create_agent", "update_agent", "delete_agent"}, table);
         } else if (view == "chat") {
-            // Talk to a selected agent (#849). A custom form (agent picker + message) POSTed to
-            // /run WITHOUT a _return, so serve_web_run renders the reply inline instead of
-            // redirecting away. The turn blocks for seconds (model load + generation) — fine
-            // for a request/response page.
+            // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
+            // form, two submit buttons: the clicked button's name=cap picks the capability —
+            // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
+            // ask, the engine compiles a graph from it, and runs it). POSTed to /run WITHOUT a
+            // _return, so serve_web_run renders the result inline. The turn blocks for seconds
+            // (model load + generation, then the run) — fine for a request/response page.
             out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
                    web_ui_icon("models") +
-                   "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 it proposes "
-                   "a pipeline and calls tools</span></div>"
+                   "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 or have it "
+                   "build + run a real pipeline from your ask</span></div>"
                    "<form method=\"post\" action=\"/run\">"
-                   "<input type=\"hidden\" name=\"cap\" value=\"chat\">"
                    "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
                    agent_options(context) +
                    "</select></div><div class=\"full\"><label>message</label>"
-                   "<textarea name=\"message\" rows=\"3\" placeholder=\"Ask the agent to build "
-                   "something\xE2\x80\xA6\"></textarea></div></div>"
-                   "<div class=\"dlgact\"><button class=\"btn btn-primary\">Send</button></div>"
+                   "<textarea name=\"message\" rows=\"3\" placeholder=\"e.g. predict which "
+                   "customers are about to churn, with calibrated scores + explanations\"></textarea></div></div>"
+                   "<div class=\"dlgact\"><button class=\"btn\" name=\"cap\" value=\"chat\">Send</button>"
+                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
+                   "run</button></div>"
                    "</form></section>";
         } else if (view == "pipeline") {
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",

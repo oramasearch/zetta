@@ -401,8 +401,11 @@ private:
     void draw_add_agent_form();  // inline "New agent" affordance (create_agent)
     void draw_chat();        // talk to the selected agent (#849) with tool-calling
     // Start a chat turn OFF the UI thread (loads the model + generates, ~seconds); the
-    // worker sets the op done and poll_chat_op() applies the reply on the UI thread.
-    void start_chat_op(const std::string& agent_id, const std::string& message);
+    // worker sets the op done and poll_chat_op() applies the reply on the UI thread. With
+    // build_and_run the worker also compiles the message into a graph (#872); poll_chat_op()
+    // then runs it (a churn graph launches AsyncChurnRun; anything else runs structurally).
+    void start_chat_op(const std::string& agent_id, const std::string& message,
+                       bool build_and_run = false);
     void poll_chat_op();
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
@@ -708,6 +711,9 @@ private:
     // The guided demo (#623) launched churn_run_ — poll_background_ops applies
     // the outcome to the onboarding summary below instead of the Deploy line.
     bool churn_run_from_onboarding_ = false;
+    // The Chat view's "Build & run" (#872) launched churn_run_ — poll_background_ops
+    // posts the trained-model + ranked-list outcome back into the chat transcript.
+    bool churn_run_from_chat_ = false;
     // The async dataset add (null = idle): decode runs on a runtime worker;
     // poll_background_ops() pumps the owner-thread materialize slices.
     std::shared_ptr<zetta::data::AsyncDatasetAdd> dataset_add_;

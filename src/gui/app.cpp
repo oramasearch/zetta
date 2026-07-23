@@ -725,6 +725,25 @@ void App::poll_background_ops() {
                 onboarding_status_ = line;
             }
             churn_run_from_onboarding_ = false;
+        } else if (churn_run_from_chat_) {
+            // The Chat "Build & run" (#872): post the run's outcome back into the
+            // transcript as an agent turn, so the loop the user started in chat closes there.
+            if (!result.ok()) {
+                chat_history_.push_back(
+                    {/*from_user=*/false,
+                     "Run failed: " + (result.execution.error.empty()
+                                           ? std::string("the churn pipeline did not complete")
+                                           : result.execution.error),
+                     {}});
+            } else {
+                std::string line = "Done — trained churn model " + result.model_id.substr(0, 8) +
+                                   " · " + std::to_string(result.ranked.size()) +
+                                   " accounts ranked";
+                if (!result.top_driver.empty()) line += " · top driver: " + result.top_driver;
+                line += ". See it in Operations → Runs.";
+                chat_history_.push_back({/*from_user=*/false, line, {}});
+            }
+            churn_run_from_chat_ = false;
         }
         churn_run_.reset();  // the worker already finished: the join is immediate
     }

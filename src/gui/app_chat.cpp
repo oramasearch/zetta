@@ -5,12 +5,17 @@
 #include "zetta/agent/agent_store.hpp"
 #include "zetta/agent/chat.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -29,24 +34,38 @@ struct ChatOp {
     std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<zetta::agent::ChatResponse> response =
         std::make_shared<zetta::agent::ChatResponse>();
+    // "Build & run" (#872): the worker also compiles the message into a graph, off the UI
+    // thread, so poll_chat_op() can run it. Empty for a plain chat turn.
+    bool build_and_run = false;
+    std::shared_ptr<std::optional<zetta::pipeline::CompiledIntent>> compiled =
+        std::make_shared<std::optional<zetta::pipeline::CompiledIntent>>();
     ~ChatOp() {
         if (worker.joinable()) worker.join();
     }
 };
 
-void App::start_chat_op(const std::string& agent_id, const std::string& message) {
+void App::start_chat_op(const std::string& agent_id, const std::string& message,
+                        bool build_and_run) {
     auto op = std::make_shared<ChatOp>();
+    op->build_and_run = build_and_run;
     std::shared_ptr<std::atomic<bool>> done = op->done;
     std::shared_ptr<zetta::agent::ChatResponse> response = op->response;
-    // The ReplicationManager is mutex-guarded (AgentStore reads its snapshot) and the model
-    // load + generation are pure, so this is safe off the main thread.
+    std::shared_ptr<std::optional<zetta::pipeline::CompiledIntent>> compiled = op->compiled;
+    // The ReplicationManager is mutex-guarded (AgentStore reads its snapshot); the model
+    // load + generation and compile_intent are pure, so this is safe off the main thread.
     zetta::cluster::ReplicationManager* replication = node_.replication();
-    op->worker = std::thread([done, response, replication, agent_id, message]() {
+    op->worker = std::thread([done, response, compiled, build_and_run, replication, agent_id,
+                              message]() {
         if (replication == nullptr) {
             response->error = "agents require a replicated node";
         } else if (std::optional<zetta::agent::AgentRecord> agent =
                        zetta::agent::AgentStore(*replication).get(agent_id)) {
             *response = zetta::agent::respond(*agent, message);
+            // The agent recognizes the ask; the engine compiles the same ask into a real
+            // ExecutionGraph (the churn-shape heuristic). Run happens on the UI thread.
+            if (build_and_run && response->ok) {
+                *compiled = zetta::pipeline::compile_intent(message);
+            }
         } else {
             response->error = "agent '" + agent_id + "' not found";
         }
@@ -69,6 +88,44 @@ void App::poll_chat_op() {
             tools += invocation.call.tool + "(" + status + ")";
         }
         chat_history_.push_back({/*from_user=*/false, response.result.reply, std::move(tools)});
+
+        // "Build & run" (#872): the engine compiled the ask into a real graph — summarize its
+        // steps, then run it. A churn graph runs on the live engine via AsyncChurnRun (its
+        // outcome posts back here from poll_background_ops); anything else runs structurally.
+        if (chat_op_->build_and_run && chat_op_->compiled && chat_op_->compiled->has_value()) {
+            const zetta::pipeline::CompiledIntent& compiled = **chat_op_->compiled;
+            const std::string shape(zetta::pipeline::to_string(compiled.shape));
+            std::string steps;
+            for (const std::shared_ptr<zetta::ir::Node>& node : compiled.graph.nodes()) {
+                if (!steps.empty()) steps += " → ";
+                steps += node->name;
+            }
+            chat_history_.push_back(
+                {/*from_user=*/false,
+                 "Built a " + shape + " graph (" +
+                     std::to_string(compiled.graph.nodes().size()) + " steps): " + steps,
+                 {}});
+            if (zetta::usecases::churn::is_churn_graph(compiled.graph) && !churn_run_) {
+                zetta::usecases::churn::ChurnSolutionOptions options;
+                options.project = "chat";
+                options.graph = "chat-" + shape;
+                churn_run_from_deploy_ = false;
+                churn_run_from_onboarding_ = false;
+                churn_run_from_chat_ = true;
+                churn_run_ = zetta::usecases::churn::AsyncChurnRun::start(
+                    node_, compiled.graph, zetta::usecases::churn::demo_churn_dataset(),
+                    std::move(options));
+                chat_history_.push_back(
+                    {/*from_user=*/false,
+                     "Running it on the demo churn data — the trained model + ranked at-risk "
+                     "list will post here when it finishes.",
+                     {}});
+            } else if (!zetta::usecases::churn::is_churn_graph(compiled.graph)) {
+                node_.run_graph(compiled.graph);  // structural, quick
+                chat_history_.push_back(
+                    {/*from_user=*/false, "Ran the graph structurally.", {}});
+            }
+        }
     } else {
         chat_error_ = response.error;  // the engine's reason, verbatim
     }
@@ -163,24 +220,28 @@ void App::draw_chat() {
 
     banner(Tone::Error, chat_error_);
 
-    // The input row. Disabled while a turn is running (one turn at a time).
+    // The input row. Disabled while a turn is running (one turn at a time). Two actions:
+    // "Send" chats (reply only); "Build & run" (#872) has the agent recognize the ask, the
+    // engine compile a real graph from it, and then runs that graph.
     const bool busy = chat_op_ != nullptr;
     ImGui::BeginDisabled(busy);
-    ImGui::SetNextItemWidth(-96.0f);
+    ImGui::SetNextItemWidth(-200.0f);
     const bool entered = ImGui::InputTextWithHint(
         "##chat_input", "Ask the agent to build something…", &chat_input_,
         ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
-    const bool clicked = ImGui::Button("Send", ImVec2(88.0f, 0.0f));
+    const bool clicked = ImGui::Button("Send", ImVec2(72.0f, 0.0f));
+    ImGui::SameLine();
+    const bool build_clicked = primary_button("Build & run");
     ImGui::EndDisabled();
 
-    if ((clicked || entered) && !busy) {
+    if ((clicked || entered || build_clicked) && !busy) {
         const std::size_t begin = chat_input_.find_first_not_of(" \t\r\n");
         if (begin != std::string::npos) {
             const std::string message = chat_input_.substr(begin);
             chat_history_.push_back({/*from_user=*/true, message, {}});
             chat_error_.clear();
-            start_chat_op(chat_agent_, message);
+            start_chat_op(chat_agent_, message, /*build_and_run=*/build_clicked);
             chat_input_.clear();
         }
     }
