@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "zetta/agent/action.hpp"
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/sandbox.hpp"
@@ -48,5 +49,12 @@ Sandbox churn_sandbox();
 // as the agent's own actions (the series of execution-graph mutations). Applied to a
 // `churn_sandbox()`, they yield a graph whose facts pass the churn grader.
 std::vector<ToolCall> churn_reference_trajectory();
+
+// The churn reference in the Studio auto-AI agent's ACTION shape (#873): a user-facing
+// `message`, the `tool_calls` that build the pipeline (churn_reference_trajectory), and the
+// `execution_graph` (build_churn_graph). Its graph passes the churn grader — the RLVR reward
+// (score `churn_graph_facts(action.execution_graph)` through churn_solution_case().task.grader()).
+// The training target for the churn use case once the corpus emits actions instead of facts.
+StudioAction churn_reference_action();
 
 }  // namespace zetta::agent

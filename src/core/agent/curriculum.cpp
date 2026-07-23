@@ -139,6 +139,21 @@ std::vector<ToolCall> churn_reference_trajectory() {
     };
 }
 
+StudioAction churn_reference_action() {
+    StudioAction action;
+    // The message speaks the user's language — pipeline, no "execution graph" / "gate".
+    action.message =
+        "I'll build a churn pipeline on your accounts + activity: leakage-free, point-in-time "
+        "features, a calibrated gradient-boosted model with per-account reasons (SHAP), and a "
+        "ranked at-risk list with a score-vs-outcome calibration loop.";
+    action.tool_calls = churn_reference_trajectory();
+    // The pipeline itself — the correct churn graph (gbdt + shap, leakage-free, calibrated,
+    // with the calibration loop); its facts pass the churn grader (the RLVR reward).
+    action.execution_graph = build_churn_graph("gbdt", "shap", /*leakage_free=*/true,
+                                               /*calibrated=*/true, /*calibration_loop=*/true);
+    return action;
+}
+
 AdmissionCase churn_solution_case() {
     const std::string description =
         "Build a churn-risk pipeline over the account events + communications: connect "

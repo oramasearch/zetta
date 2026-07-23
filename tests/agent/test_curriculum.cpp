@@ -111,4 +111,34 @@ TEST(Curriculum, ChurnDegenerateTrajectoryFails) {
     EXPECT_FALSE(grader.grade(sandbox.state()).passed);
 }
 
+// The churn reference in the agent's ACTION shape (#873): {message, tool_calls,
+// execution_graph}. The RLVR reward is the action's *graph* run through the churn gate — the
+// reference passes, a wrong pipeline fails (blender-rl's admission-gate discrimination, now in
+// the action shape). This is the training target for churn once the corpus emits actions.
+TEST(Curriculum, ChurnReferenceActionScoresThroughTheGate) {
+    const zetta::agent::StudioAction action = zetta::agent::churn_reference_action();
+    EXPECT_FALSE(action.message.empty());
+    EXPECT_FALSE(action.tool_calls.empty());
+    EXPECT_FALSE(action.execution_graph.empty());
+
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    const zetta::agent::Grade reward =
+        grader.grade(zetta::agent::churn_graph_facts(action.execution_graph));
+    EXPECT_TRUE(reward.passed) << "reference action's pipeline must pass (score " << reward.score
+                              << ")";
+
+    // Discrimination: swap in a wrong pipeline (LLM, no explanation) — the reward must drop.
+    zetta::agent::StudioAction control = action;
+    control.execution_graph = zetta::agent::build_churn_graph("llm", "none", true, true, true);
+    EXPECT_FALSE(grader.grade(zetta::agent::churn_graph_facts(control.execution_graph)).passed);
+
+    // Round-trips through its wire JSON — the training-target form.
+    std::string error;
+    const std::optional<zetta::agent::StudioAction> parsed =
+        zetta::agent::action_from_json(zetta::agent::to_json(action), &error);
+    ASSERT_TRUE(parsed) << error;
+    EXPECT_EQ(parsed->tool_calls.size(), action.tool_calls.size());
+    EXPECT_EQ(parsed->execution_graph.node_count(), action.execution_graph.node_count());
+}
+
 }  // namespace
