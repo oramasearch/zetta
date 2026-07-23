@@ -127,6 +127,55 @@ std::vector<SolutionTemplate> plan_solution_templates() {
                 {"grounded_in_data", true},
                 {"embeddings", true}})});  // RAG: real retrieval + grounding, not an LLM guess
 
+    // --- The methods with no coverage yet (doc 03 §4) — each with its distinguishing checks ---
+    templates.push_back(
+        {"M-11", "Extract the key fields from our invoices/contracts (touchless AP).",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"model_kind", "document_intelligence"}, {"extraction", true},
+                {"grounded_in_data", true}})});
+    templates.push_back(
+        {"M-12", "Score risk across our account/transaction graph using its relationships.",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"model_kind", "graph"}, {"entity_resolution", true}, {"leakage_free", true}})});
+    templates.push_back(
+        {"M-13", "Classify/inspect our images for defects.",
+         facts({{"connect", true}, {"model", true}, {"serve", true},
+                {"model_kind", "vision"}, {"explain", "gradcam"}})});
+    templates.push_back(
+        {"M-14", "Transcribe + analyze our support calls.",
+         facts({{"connect", true}, {"model", true}, {"serve", true}, {"model_kind", "speech"}})});
+    templates.push_back(
+        {"M-15", "Choose offers online + keep learning which works, safely.",
+         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
+                {"model_kind", "bandit"}, {"exploration", true}, {"holdout", true},
+                {"approval_gated", true}})});
+    templates.push_back(
+        {"M-16", "Optimize our plan (routing/allocation) under real constraints.",
+         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
+                {"model_kind", "optimization"}, {"constraints", true},
+                {"approval_gated", true}})});
+    templates.push_back(
+        {"M-17", "Give predictions WITH calibrated uncertainty on sparse data.",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"model_kind", "bayesian"}, {"calibrated", true}, {"uncertainty", true}})});
+    templates.push_back(
+        {"M-18", "Squeeze the most accuracy out by combining models, honestly.",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"leakage_free", true}, {"model_kind", "ensemble"}, {"temporal_validation", true},
+                {"calibrated", true}, {"explain", "shap"}})});
+    templates.push_back(
+        {"M-19", "Get a good model with very few labels (label-efficient).",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"label_efficient", true}, {"active_learning", true}, {"calibrated", true}})});
+    templates.push_back(
+        {"M-20", "Train on sensitive data without exposing it (privacy-preserving).",
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+                {"privacy_preserving", true}, {"synthetic_data", true}})});
+    templates.push_back(
+        {"M-21", "Keep the model fresh as data streams in, watching for drift.",
+         facts({{"connect", true}, {"model", true}, {"serve", true},
+                {"model_kind", "online"}, {"streaming", true}, {"drift_monitoring", true}})});
+
     return templates;
 }
 
