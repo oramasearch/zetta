@@ -52,6 +52,25 @@ TEST(Curriculum, ChurnReferenceGraphFactsPassGrader) {
         << "a correctly built churn graph should pass the grader";
 }
 
+// The AGENT'S ACTIONS build the graph (#859 substrate): applying the reference tool-call
+// trajectory to the graph-building sandbox yields a real ir::ExecutionGraph whose facts pass
+// the churn grader — the "run" target is a genuine execution graph, constructed by tool calls
+// the agent emits, not a hand-written blob. (Wiring the LIVE agent to emit this trajectory
+// instead of the solution facts is the RLVR step; running the graph is the pipeline.)
+TEST(Curriculum, AgentTrajectoryBuildsAGradedChurnGraph) {
+    zetta::agent::Sandbox sandbox = zetta::agent::churn_sandbox();
+    for (const zetta::agent::ToolCall& call : zetta::agent::churn_reference_trajectory()) {
+        const zetta::agent::ApplyOutcome outcome = sandbox.apply(call);
+        EXPECT_TRUE(outcome.ok()) << call.tool << ": " << outcome.reason;
+    }
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    const zetta::agent::Grade grade = grader.grade(sandbox.state());
+    EXPECT_TRUE(grade.passed)
+        << "the agent's tool-call trajectory must build a graph that passes the churn grader "
+           "(score "
+        << grade.score << ")";
+}
+
 TEST(Curriculum, ChurnDegenerateGraphsFailGrader) {
     const EndStateGrader grader = churn_solution_case().task.grader();
     using zetta::agent::build_churn_graph;
