@@ -1,5 +1,7 @@
 #pragma once
 
+#include "zetta/agent/action.hpp"
+#include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/ir/execution_graph.hpp"
 
@@ -25,5 +27,14 @@ ir::ExecutionGraph build_solution_graph(const EndState& facts);
 // The facts of a pipeline: each node's step-kind presence + every node attribute. The inverse
 // of build_solution_graph for the facts it carries (generic; works for any use case's graph).
 EndState graph_solution_facts(const ir::ExecutionGraph& graph);
+
+// The reference solution in the agent's ACTION shape, built generically from its `facts`: the
+// build_solution_graph pipeline, one tool call per pipeline step, and a message. graph_solution_
+// facts(action.execution_graph) satisfies `facts`, so the action passes the task's grader.
+StudioAction reference_action_from_facts(const EndState& facts);
+
+// Attach a generic reference action (from the case's reference facts) to an admission case, so
+// the corpus carries an action the SFT render can target. Overwrites any existing action.
+void attach_reference_action(AdmissionCase& admission_case);
 
 }  // namespace zetta::agent

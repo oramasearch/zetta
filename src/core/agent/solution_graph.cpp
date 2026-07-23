@@ -56,4 +56,24 @@ EndState graph_solution_facts(const ir::ExecutionGraph& graph) {
     return facts;
 }
 
+StudioAction reference_action_from_facts(const EndState& facts) {
+    StudioAction action;
+    action.execution_graph = build_solution_graph(facts);
+    // One tool call per pipeline step — what the agent does to build it (mirrors the shape of
+    // churn_reference_trajectory), carrying the node's config as arguments.
+    for (const auto& node : action.execution_graph.nodes()) {
+        nlohmann::json arguments =
+            node->attributes.is_object() ? node->attributes : nlohmann::json::object();
+        arguments["name"] = node->name;
+        action.tool_calls.emplace_back(std::string(ir::to_string(node->kind)),
+                                       std::move(arguments));
+    }
+    action.message = "Here's the pipeline I'll build and run for your request.";
+    return action;
+}
+
+void attach_reference_action(AdmissionCase& admission_case) {
+    admission_case.reference_action = reference_action_from_facts(admission_case.reference);
+}
+
 }  // namespace zetta::agent
