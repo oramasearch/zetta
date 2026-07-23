@@ -584,6 +584,7 @@ add_library(zetta-core STATIC
   src/core/agent/solution_graph.cpp
   src/core/dataset/base_agent_generator.cpp
   src/core/dataset/dataset_generator_factory.cpp
+  src/core/dataset/plan_templates.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
   src/core/agent/grader.cpp

@@ -40,15 +40,17 @@ TEST(DatasetGenerator, BaseAgentProducesAGatedCorpus) {
     spec.variants_per_subject = 2;
     const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
 
-    // Two subjects (churn + search) × 2 variants = 4 gated cases, each with a reference action.
-    EXPECT_EQ(dataset.subjects.size(), 2u);
-    ASSERT_EQ(dataset.cases.size(), 4u);
+    // Churn + search + the plan templates (#878), each × 2 variants. Coverage grows, so assert a
+    // floor rather than an exact count; every case is gated with a gradeable reference action.
+    EXPECT_GE(dataset.subjects.size(), 12u) << "grows toward full-plan coverage";
+    EXPECT_EQ(dataset.cases.size(), dataset.subjects.size() * spec.variants_per_subject);
     for (const zetta::agent::AdmissionCase& admission_case : dataset.cases) {
         ASSERT_TRUE(admission_case.reference_action.has_value()) << "each case carries its action";
         EXPECT_TRUE(admission_case.task.grader()
                         .grade(zetta::agent::graph_solution_facts(
                             admission_case.reference_action->execution_graph))
-                        .passed);
+                        .passed)
+            << "subject " << admission_case.task.id() << " pipeline must pass its grader";
     }
 
     // The whole generated corpus ADMITS — reference passes, negative controls fail everywhere.
