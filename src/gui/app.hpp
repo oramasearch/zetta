@@ -171,6 +171,7 @@ private:
         Models,    // trained models (system.models) + register/import
         Agents,    // served agents (agent:<id>) — list + create (#849)
         Chat,      // talk to a selected agent, with tool-calling (#849)
+        DataGen,   // native training-dataset generators (#873)
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -404,6 +405,11 @@ private:
     // seeded from `agent`; Save calls AgentStore::put (mirrors the update_agent capability).
     void draw_edit_agent_form(const zetta::agent::AgentRecord& agent);
     void draw_chat();        // talk to the selected agent (#849) with tool-calling
+    void draw_datagen();     // native training-dataset generators (#873): list + generate
+    std::string datagen_status_;  // last generation outcome (banner in the DataGen view)
+    bool datagen_failed_ = false;
+    std::string datagen_path_;    // optional file to write the gated JSONL to
+    int datagen_variants_ = 1;    // task variants per plan subject
     // Start a chat turn OFF the UI thread (loads the model + generates, ~seconds); the
     // worker sets the op done and poll_chat_op() applies the reply on the UI thread. With
     // build_and_run the worker also compiles the message into a graph (#872); poll_chat_op()

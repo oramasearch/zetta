@@ -26,6 +26,7 @@
 #include "zetta/api/llms.hpp"
 #include "zetta/api/mcp_docs.hpp"
 #include "zetta/api/mcp_prompts.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/api/serving.hpp"
@@ -1967,6 +1968,24 @@ struct ApiServer::Impl {
                    "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
                    "run</button></div>"
                    "</form></section>";
+        } else if (view == "datagen") {
+            // Native dataset generators (#873): the factory's generators + a Generate action.
+            std::string rows;
+            for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
+                 zetta::dataset::DatasetGeneratorFactory::builtin().generators()) {
+                rows += "<tr><td><code>" + web_ui_escape(generator->kind()) + "</code></td><td>" +
+                        web_ui_escape(generator->title()) + "</td><td>" +
+                        web_ui_escape(generator->description()) + "</td></tr>";
+            }
+            const std::string table =
+                "<table class=\"grid\"><thead><tr><th>Kind</th><th>Name</th>"
+                "<th>What it generates</th></tr></thead><tbody>" +
+                rows + "</tbody></table>";
+            out += render_action_panel(
+                context, view, "datagen", "Data generators",
+                "native training-dataset generators \xC2\xB7 grow + gate a corpus grounded in the "
+                "solutions plan, inside Zetta (ADR-17) \xC2\xB7 Generate writes gated JSONL",
+                {"generate_dataset"}, table);
         } else if (view == "pipeline") {
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",
