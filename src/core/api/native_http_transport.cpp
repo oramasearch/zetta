@@ -4,7 +4,9 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -163,6 +165,66 @@ void drop_secret_headers(connect::HttpRequest& request) {
     request.secret_headers.clear();
 }
 
+// Read a system CA bundle (PEM) for verifying public HTTPS peers. The OpenSSL
+// backend in corosio does NOT wire `SSL_CTX_set_default_verify_paths`, so a client
+// context starts with an EMPTY trust store and every public-CA handshake fails
+// "certificate verify failed". We therefore load the roots explicitly (the same
+// `add_certificate_authority` path the cluster's mTLS uses) — honoring
+// `SSL_CERT_FILE` first, then the common platform locations. Empty (+ a reason)
+// when none is found.
+std::string load_system_ca_bundle(std::string& reason) {
+    std::vector<std::string> candidates;
+    if (const char* env = std::getenv("SSL_CERT_FILE");
+        env != nullptr && env[0] != '\0') {
+        candidates.emplace_back(env);
+    }
+    candidates.insert(candidates.end(), {
+                                            "/etc/ssl/cert.pem",  // macOS / some BSD/Linux
+                                            "/opt/homebrew/etc/openssl@3/cert.pem",  // brew arm64
+                                            "/usr/local/etc/openssl@3/cert.pem",  // brew x86_64
+                                            "/etc/ssl/certs/ca-certificates.crt",  // Debian/Ubuntu
+                                            "/etc/pki/tls/certs/ca-bundle.crt",  // RHEL/Fedora
+                                        });
+    for (const std::string& path : candidates) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) continue;
+        std::string contents((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
+        if (!contents.empty()) return contents;
+    }
+    reason = "no CA bundle at SSL_CERT_FILE or the common system paths";
+    return std::string();
+}
+
+// Add every root in a PEM `bundle` to `context`, ONE cert per call. corosio's
+// `add_certificate_authority` reads only the FIRST certificate out of whatever PEM
+// it is handed (`init_ssl` does a single `PEM_read_bio_X509`), so a whole ~150-root
+// system bundle passed as one blob would load only the first root and drop the
+// rest — the chain then never builds. Split on the PEM markers and add each. Non-
+// throwing; returns false (+ reason) only if not one certificate parsed.
+bool add_ca_bundle(net::tls_context& context, const std::string& bundle,
+                   std::string& reason) {
+    constexpr std::string_view kBegin = "-----BEGIN CERTIFICATE-----";
+    constexpr std::string_view kEnd = "-----END CERTIFICATE-----";
+    std::size_t position = 0;
+    int added = 0;
+    for (;;) {
+        const std::size_t begin = bundle.find(kBegin, position);
+        if (begin == std::string::npos) break;
+        const std::size_t end = bundle.find(kEnd, begin);
+        if (end == std::string::npos) break;
+        const std::size_t block_end = end + kEnd.size();
+        const std::string one = bundle.substr(begin, block_end - begin) + "\n";
+        if (!context.add_certificate_authority(one)) ++added;  // skip a bad cert
+        position = block_end;
+    }
+    if (added == 0) {
+        reason = "no certificates parsed from the CA bundle";
+        return false;
+    }
+    return true;
+}
+
 // --- The shared TLS contexts ---------------------------------------------------
 //
 // One `tls_context` per peer hostname, built once and never mutated afterwards:
@@ -182,8 +244,16 @@ public:
 
         auto context = std::make_shared<net::tls_context>();
         context->set_hostname(host);  // SNI + hostname verification (returns void)
-        if (const std::error_code error = context->set_default_verify_paths()) {
-            reason = "could not load the system CA trust store: " + error.message();
+        // Load the system roots explicitly — set_default_verify_paths is a no-op in
+        // this backend, so without this the store is empty and verification fails.
+        std::string bundle_reason;
+        const std::string ca_bundle = load_system_ca_bundle(bundle_reason);
+        if (ca_bundle.empty()) {
+            reason = "could not find a system CA trust store (" + bundle_reason + ")";
+            return nullptr;
+        }
+        if (!add_ca_bundle(*context, ca_bundle, reason)) {
+            reason = "could not load the system CA trust store: " + reason;
             return nullptr;
         }
         if (const std::error_code error =
@@ -293,9 +363,12 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
     }
 
     // Stream the body to a file when asked (keeps a multi-GB download off the
-    // heap), else buffer it in response.body.
+    // heap), else buffer it in response.body. Only a 2xx goes to the file — an
+    // error status (404, ...) is buffered so the caller sees the reason and no
+    // junk file is left behind.
     std::ofstream file;
-    const bool to_file = !request.download_to_path.empty();
+    const bool to_file = !request.download_to_path.empty() &&
+                         response.status >= 200 && response.status < 300;
     if (to_file) {
         file.open(request.download_to_path,
                   std::ios::binary | std::ios::out | std::ios::trunc);
