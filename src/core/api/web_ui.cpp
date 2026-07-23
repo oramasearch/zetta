@@ -683,6 +683,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "projects") return "AI projects: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy \xE2\x86\x92 run";
         if (key == "data") return "Databases, tables, rows, and files (blobs)";
         if (key == "models") return "Trained models + serving";
+        if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
+        if (key == "chat") return "Talk to a selected agent, with tool-calling";
         if (key == "pipeline") return "Graphs, deployments, runs, and jobs \xE2\x80\x94 the execution pipeline";
         if (key == "observability") return "Traces, spans, and crashes";
         if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
@@ -714,7 +716,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") +
            link("cluster", "Cluster") + link("projects", "Projects");
     out += "<div class=\"group\">Workloads</div>" + link("data", "Data") + link("models", "Models") +
-           link("pipeline", "Pipeline");
+           link("agents", "Agents") + link("chat", "Chat") + link("pipeline", "Pipeline");
     out += "<div class=\"group\">Operate</div>" + link("observability", "Observability") +
            link("governance", "Governance");
     out += "<div class=\"group\">Build</div>" + link("shell", "Shell") + link("notebooks", "Notebooks");

@@ -29,5 +29,13 @@ applied on the UI thread by `poll_chat_op()` in `poll_background_ops()`, the #62
 a ~13 s turn never freezes the frame. The reply shows with a one-line tool summary
 (`connect(ok) · serve(ok)`); a load failure surfaces as the panel's error `banner`.
 
-**In flight:** the web-app equivalent (Agents section + chat + selector) — see
-[#849](https://github.com/oramasearch/zetta/issues/849).
+## Web app
+
+The server-rendered web UI (`src/core/api/http_server.cpp`, #647) has the same two views in
+its nav (Workloads → **Agents** / **Chat**): the Agents page lists the records + carries the
+create/update/delete_agent action forms; the **Chat** page is a form with an **agent `<select>`**
+(the `agent`-field picker → `agent_options`, from the live agent list) + a message box that
+POSTs to `/run` (the `chat` capability) and renders the reply inline. The turn blocks the
+request for seconds (model load + generation) — fine for a request/response page (the GUI's
+off-thread `ChatOp` is what a live-repainting client needs). Same `agent::respond` path as the
+GUI + MCP/REST, so all three behave identically.

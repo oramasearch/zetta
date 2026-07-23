@@ -30,6 +30,7 @@
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
+#include "zetta/agent/agent_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -1048,6 +1049,16 @@ struct ApiServer::Impl {
             options += form_option(db_name, db_name, false);
         return options;
     }
+    // The served agents (agent:<id>) as a picker, so the Chat form is a selector (#849).
+    std::string agent_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select an agent\xE2\x80\xA6</option>";
+        if (context.node.replication() != nullptr)
+            for (const zetta::agent::AgentRecord& agent :
+                 zetta::agent::AgentStore(*context.node.replication()).list())
+                options += form_option(agent.name.empty() ? agent.id : agent.name, agent.id,
+                                       false);
+        return options;
+    }
 
     // The saved source connections, so the connector dialog offers a picker
     // instead of asking for a credential again (#827). Names only — the store's
@@ -1207,6 +1218,8 @@ struct ApiServer::Impl {
                 options = index_options(context);
             } else if (key == "model") {
                 options = model_options(context);
+            } else if (key == "agent") {
+                options = agent_options(context);
             } else if (key == "database") {
                 options = database_options(context);
             } else if (key == "connection") {
@@ -1847,6 +1860,54 @@ struct ApiServer::Impl {
                 "one to serve predictions",
                 {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
+        } else if (view == "agents") {
+            // The served agents (#849). No system.agents view yet, so the list is rendered
+            // straight from the replicated records; create/update/delete are the capabilities.
+            std::string table;
+            if (context.node.replication() != nullptr) {
+                std::string rows;
+                for (const zetta::agent::AgentRecord& agent :
+                     zetta::agent::AgentStore(*context.node.replication()).list()) {
+                    std::string tools;
+                    for (const std::string& tool : agent.tools) {
+                        if (!tools.empty()) tools += ", ";
+                        tools += tool;
+                    }
+                    rows += "<tr><td>" +
+                            web_ui_escape(agent.name.empty() ? agent.id : agent.name) +
+                            "</td><td>" + web_ui_escape(agent.model) + "</td><td>" +
+                            web_ui_escape(tools) + "</td></tr>";
+                }
+                if (!rows.empty())
+                    table = "<table class=\"grid\"><thead><tr><th>Name</th><th>Model</th>"
+                            "<th>Tools</th></tr></thead><tbody>" +
+                            rows + "</tbody></table>";
+            }
+            if (table.empty())
+                table = "<p class=\"muted\">No agents yet \xE2\x80\x94 create one above, then talk "
+                        "to it in the Chat view.</p>";
+            out += render_action_panel(
+                context, view, "models", "Agents",
+                "served agents \xC2\xB7 a model + prompt + tools you can chat with",
+                {"create_agent", "update_agent", "delete_agent"}, table);
+        } else if (view == "chat") {
+            // Talk to a selected agent (#849). A custom form (agent picker + message) POSTed to
+            // /run WITHOUT a _return, so serve_web_run renders the reply inline instead of
+            // redirecting away. The turn blocks for seconds (model load + generation) — fine
+            // for a request/response page.
+            out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
+                   web_ui_icon("models") +
+                   "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 it proposes "
+                   "a pipeline and calls tools</span></div>"
+                   "<form method=\"post\" action=\"/run\">"
+                   "<input type=\"hidden\" name=\"cap\" value=\"chat\">"
+                   "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
+                   agent_options(context) +
+                   "</select></div><div class=\"full\"><label>message</label>"
+                   "<textarea name=\"message\" rows=\"3\" placeholder=\"Ask the agent to build "
+                   "something\xE2\x80\xA6\"></textarea></div></div>"
+                   "<div class=\"dlgact\"><button class=\"btn btn-primary\">Send</button></div>"
+                   "</form></section>";
         } else if (view == "pipeline") {
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",
