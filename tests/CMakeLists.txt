@@ -178,6 +178,7 @@ add_executable(zetta-tests
   data/test_large_object_replication.cpp
   agent/test_agent_record.cpp
   agent/test_agent_store.cpp
+  agent/test_chat.cpp
   agent/test_end_state_grader.cpp
   agent/test_task.cpp
   agent/test_sandbox.cpp
