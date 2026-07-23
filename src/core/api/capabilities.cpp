@@ -1,6 +1,7 @@
 #include "zetta/api/capabilities.hpp"
 
 #include <chrono>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -32,6 +33,8 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/agent/agent_store.hpp"
 #include "zetta/agent/chat.hpp"
+#include "zetta/agent/corpus_io.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 #include "zetta/util/timestamp.hpp"
@@ -3388,6 +3391,111 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- dataset generation (#873): native, in-Zetta training-corpus synthesis ------------------
+
+const nlohmann::json& list_dataset_generators_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"}, {"additionalProperties", false}, {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_dataset_generators_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"generators",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"kind", {{"type", "string"}}},
+                {"title", {{"type", "string"}}},
+                {"description", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_list_dataset_generators(const nlohmann::json&, ApiContext&) {
+    nlohmann::json generators = nlohmann::json::array();
+    for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
+         zetta::dataset::DatasetGeneratorFactory::builtin().generators()) {
+        generators.push_back({{"kind", generator->kind()},
+                              {"title", generator->title()},
+                              {"description", generator->description()}});
+    }
+    return ApiResult::success(nlohmann::json{{"generators", std::move(generators)}});
+}
+
+const nlohmann::json& generate_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"kind"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"kind",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "a generator kind from list_dataset_generators (e.g. 'base-agent')"}}},
+          {"variants_per_subject",
+           {{"type", "integer"}, {"minimum", 1}, {"description", "task variants per plan subject"}}},
+          {"held_out_fraction",
+           {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"description", "canary fraction"}}},
+          {"path",
+           {{"type", "string"},
+            {"description", "write the gated JSONL corpus to this file on the node (optional)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& generate_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"kind", {{"type", "string"}}},
+          {"cases", {{"type", "integer"}}},
+          {"subjects", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"held_out", {{"type", "integer"}}},
+          {"admitted", {{"type", "boolean"}}},
+          {"path", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
+    const std::string kind = input.at("kind").get<std::string>();
+    const std::shared_ptr<const zetta::dataset::DatasetGenerator> generator =
+        zetta::dataset::DatasetGeneratorFactory::builtin().create(kind);
+    if (!generator) {
+        return ApiResult::failure("not_found", "no dataset generator '" + kind + "'");
+    }
+    zetta::dataset::DatasetGenSpec spec;
+    spec.variants_per_subject = input.value("variants_per_subject", 1);
+    spec.held_out_fraction = input.value("held_out_fraction", 0.0);
+    const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+
+    // Gate it (blender-lr discipline) — the generator builds gated cases, but the corpus is only
+    // trusted once admit_corpus confirms it (reference passes, controls fail).
+    const zetta::agent::AdmissionResult gate = zetta::agent::admit_corpus(dataset.cases);
+
+    nlohmann::json output;
+    output["kind"] = kind;
+    output["cases"] = dataset.cases.size();
+    output["subjects"] = dataset.subjects;
+    output["held_out"] = dataset.held_out;
+    output["admitted"] = gate.admitted;
+    if (!gate.admitted && !gate.failures.empty()) {
+        output["gate_failure"] = std::string(zetta::agent::to_string(gate.failures.front().kind)) +
+                                 " (task '" + gate.failures.front().task_id + "')";
+    }
+    if (const auto path = input.find("path"); path != input.end()) {
+        std::ofstream file(path->get<std::string>());
+        if (!file) {
+            return ApiResult::failure(
+                "engine_error", "could not open '" + path->get<std::string>() + "' for writing");
+        }
+        file << zetta::agent::dump_corpus_jsonl(dataset.cases);
+        output["path"] = *path;
+    }
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -3758,6 +3866,36 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_agent_run});
+
+    // --- dataset generation (#873) -------------------------------------------
+    registry.add(Capability{
+        "list_dataset_generators",
+        "List dataset generators",
+        "Read the native training-dataset generators available on this node (the base agent's "
+        "corpus, Auto-Suggest, …) — each grows + gates a corpus grounded in the solutions plan. "
+        "No side effects.",
+        list_dataset_generators_schema(),
+        list_dataset_generators_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_dataset_generators});
+    registry.add(Capability{
+        "generate_dataset",
+        "Generate a dataset",
+        "Synthesize an admission-gated training corpus natively (ADR-17), grounded in the "
+        "solutions plan: pick a generator kind, get the gated cases (reference passes, negative "
+        "controls fail) with reference actions, and optionally write the JSONL to a path. This is "
+        "the native replacement for the offline Python generators + what a per-customer fork "
+        "(#853) uses to grow its own corpus.",
+        generate_dataset_schema(),
+        generate_dataset_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_generate_dataset});
 
     // --- governed serving (#648, docs/api/serving.md) -------------------------
 
