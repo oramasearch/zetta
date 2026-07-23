@@ -118,11 +118,27 @@ contradict them): no Deployment without a Saved Version; nothing
 production-ready without a passed Verification; consequential actions get an
 impact preview with a cancel path.
 
-**The design source is Daniel's repo `oramasearch/orama-design`** — the live
-Studio prototype (`src/studio/`, one live version + frozen dated archives), the
-design system (`packages/design-system/`, Storybook = source of truth, IBM Plex
-+ Carbon), and the planning surface (16 core flows, 7 journeys, a 14-screen
-plan, 24 confirmed decisions + 12 open implementation contracts). The
+**Rendering philosophy for both Studio surfaces** (Steve, 2026-07-23): the web
+app stays **C++ server-rendered** — its response time is part of the product.
+Hand-write minimal JavaScript only where interaction genuinely demands it (an
+in-place update that would otherwise full-page flicker, streaming a chat
+reply); never a framework, never client rendering for something the server can
+emit. The desktop app is **SDL3-first**: Dear ImGui is a temporary crutch —
+keep it only where it already gives a good experience; new design-led rendering
+goes custom SDL3 (pixel-perfect control), because the desktop must match the
+web app and the design's style **and motion design** at the highest achievable
+parity.
+
+**The design source is Daniel's repo `oramasearch/orama-design`**, reviewed
+through its **Orama Project Hub** (`/workspace/` on the Vercel preview — the
+front door showing current focus, next review, and sequence). Four major
+destinations: the **Orama Website** (selected Alpha v2 marketing direction),
+the **Orama Studio Web Platform** (the live prototype, `src/studio/`, one live
+version + frozen dated archives), the **Storybook Design System**
+(`packages/design-system/`, Storybook = source of truth, IBM Plex + Carbon),
+and **Roadmap and Design Documentation** (the planning surface: 16 core flows,
+7 journeys, a 14-screen plan, 24 confirmed decisions + 12 open implementation
+contracts). The
 prototype is React and **transfers as tokens, layout, copy, IA, and states —
 not code** (this repo's web UI stays no-framework SSR). Known open tension:
 the headed GUI's design system below (Geist, coral) and the Studio web system
@@ -582,6 +598,12 @@ Project skills live in `.claude/skills/` (committed, shared):
   gate + difficulty tiers + a held-out split, synthesized from a solutions catalog
   (→ a private HF dataset) or a customer's schema (→ Postgres). Reproduces (does not
   embed) `homer6/blender-rl`'s dataset strategy.
+- **studio-design-sync** — sync the Orama Studio design between
+  `oramasearch/orama-design` and zetta's two Studio surfaces (the web app in
+  `src/core/api/web_ui.cpp`, the desktop GUI in `src/gui/`): forward = import
+  tokens/IA/copy/states (never React code or vendored Motion+), reverse =
+  backport engine features into the design as dated specs. The transfer
+  contract, both repo maps, and the token/icon translation tables.
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **new-connector** — add a new source connector (pull rows from a warehouse /
