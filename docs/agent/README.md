@@ -62,8 +62,12 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   description binding a **model** (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace
   repo id `zetta pull` fetches) to a system prompt and the **tools** it may call. Stored as a
   replicated `agent:<uuid>` entity (`catalog.hpp`); non-throwing `agent_from_json` +
-  `agent_schema()` are the boundary. The CRUD store, the MCP/REST endpoints, and the GUI/web
-  chat panels build on this record (in flight).
+  `agent_schema()` are the boundary.
+- **`AgentStore`** (`agent_store.hpp`) — CRUD over the `agent:` entities (put/get/list/remove
+  capture into / read the CRDT document, so agents replicate + persist like every other entity).
+- **The CRUD surface** — `create_agent` / `list_agents` / `get_agent` / `update_agent` /
+  `delete_agent` capabilities (`api/capabilities.cpp`), exposed on **both MCP and REST** by the
+  capability registry. The GUI/web chat panels build on these (chat + tool-calling in flight).
 
 ## The reward primitive (shipped)
 

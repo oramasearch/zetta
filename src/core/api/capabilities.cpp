@@ -30,6 +30,9 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/agent/agent_store.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -2995,6 +2998,181 @@ const nlohmann::json& get_spec_output_schema() {
     return schema;
 }
 
+// --- agents: CRUD for the served, selectable agent entity (#849) --------------
+
+const nlohmann::json& agent_fields_schema() {
+    // The agent record shape — reused as the create/get/update output schema.
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"description", {{"type", "string"}}},
+          {"model", {{"type", "string"}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"created_at", {{"type", "string"}}},
+          {"updated_at", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_agent_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "model"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1}}},
+          {"description", {{"type", "string"}}},
+          {"model",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "checkpoint dir, model:<uuid>, or a HuggingFace repo id"}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_agent_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id", {{"type", "string"}, {"minLength", 1}}},
+          {"name", {{"type", "string"}, {"minLength", 1}}},
+          {"description", {{"type", "string"}}},
+          {"model", {{"type", "string"}, {"minLength", 1}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+const nlohmann::json& agent_id_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"id"}},
+        {"additionalProperties", false},
+        {"properties", {{"id", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& list_agents_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_agents_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agents"}},
+        {"properties",
+         {{"agents", {{"type", "array"}, {"items", agent_fields_schema()}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_agent_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"removed"}},
+        {"properties",
+         {{"removed", {{"type", "boolean"}}}, {"id", {{"type", "string"}}}}}};
+    return schema;
+}
+
+// Apply the provided fields of a create/update input onto `base` (a fresh record on
+// create, the existing one on update). Only present fields overwrite.
+zetta::agent::AgentRecord agent_from_input(const nlohmann::json& input,
+                                           zetta::agent::AgentRecord base) {
+    if (input.contains("name")) base.name = input.at("name").get<std::string>();
+    if (input.contains("description")) {
+        base.description = input.at("description").get<std::string>();
+    }
+    if (input.contains("model")) base.model = input.at("model").get<std::string>();
+    if (input.contains("system_prompt")) {
+        base.system_prompt = input.at("system_prompt").get<std::string>();
+    }
+    if (input.contains("tools") && input.at("tools").is_array()) {
+        base.tools.clear();
+        for (const nlohmann::json& tool : input.at("tools")) {
+            if (tool.is_string()) base.tools.push_back(tool.get<std::string>());
+        }
+    }
+    return base;
+}
+
+ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    zetta::agent::AgentRecord agent;
+    agent.id = zetta::util::new_uuid();
+    agent.created_at = zetta::util::now_iso8601();
+    agent.updated_at = agent.created_at;
+    agent = agent_from_input(input, std::move(agent));
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    std::string error;
+    const std::optional<zetta::agent::AgentRecord> stored = store.put(agent, &error);
+    if (!stored) return ApiResult::failure("invalid_argument", error);
+    return ApiResult::success(zetta::agent::to_json(*stored));
+}
+
+ApiResult handle_list_agents(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json agents = nlohmann::json::array();
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        for (const zetta::agent::AgentRecord& agent : store.list()) {
+            agents.push_back(zetta::agent::to_json(agent));
+        }
+    }
+    nlohmann::json output;
+    output["agents"] = std::move(agents);
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_get_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    return ApiResult::success(zetta::agent::to_json(*agent));
+}
+
+ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
+    if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    zetta::agent::AgentRecord updated = agent_from_input(input, *existing);
+    updated.updated_at = zetta::util::now_iso8601();
+    std::string error;
+    const std::optional<zetta::agent::AgentRecord> stored = store.put(updated, &error);
+    if (!stored) return ApiResult::failure("invalid_argument", error);
+    return ApiResult::success(zetta::agent::to_json(*stored));
+}
+
+ApiResult handle_delete_agent(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("id").get<std::string>();
+    bool removed = false;
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        removed = store.remove(id);
+    }
+    nlohmann::json output;
+    output["removed"] = removed;
+    output["id"] = id;
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -3276,6 +3454,66 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    // --- agents (#849): CRUD for the served, selectable agent entity ----------
+    registry.add(Capability{
+        "create_agent",
+        "Create an agent",
+        "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a "
+        "HuggingFace repo id) plus an optional system prompt and the tools it may call. "
+        "Returns the stored record with its generated id; replicates to every node.",
+        create_agent_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_agent});
+    registry.add(Capability{
+        "list_agents",
+        "List agents",
+        "Read every agent on this node (id, name, model, tools). No side effects.",
+        list_agents_schema(),
+        list_agents_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_agents});
+    registry.add(Capability{
+        "get_agent",
+        "Get one agent",
+        "Read one agent by id. No side effects.",
+        agent_id_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_agent});
+    registry.add(Capability{
+        "update_agent",
+        "Update an agent",
+        "Update the provided fields of an agent (name, description, model, system prompt, "
+        "tools); replicates. Returns the updated record.",
+        update_agent_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_agent});
+    registry.add(Capability{
+        "delete_agent",
+        "Delete an agent",
+        "Remove an agent by id (a CRDT tombstone; replicates). Idempotent.",
+        agent_id_schema(),
+        delete_agent_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_agent});
 
     // --- governed serving (#648, docs/api/serving.md) -------------------------
 

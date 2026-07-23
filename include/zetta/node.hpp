@@ -318,6 +318,12 @@ public:
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
 
+    // The node's CRDT document manager (null when standalone/unreplicated). Exposed
+    // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
+    // its keys via `agent::AgentStore` without a bespoke method per verb here. Prefer
+    // a typed accessor above where one exists; a served node always has one (main.cpp).
+    zetta::cluster::ReplicationManager* replication() { return replication_; }
+
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
     // models, indexes are keyed by id (no human name), so find / drop take the id;
