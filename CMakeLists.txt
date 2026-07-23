@@ -749,6 +749,7 @@ add_executable(zetta
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
   src/gui/app_agents.cpp
+  src/gui/app_chat.cpp
   src/gui/app_datasets.cpp
   src/gui/app_search.cpp
   src/gui/app_jobs.cpp

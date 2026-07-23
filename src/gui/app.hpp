@@ -47,6 +47,16 @@ namespace zetta::gui { struct VmSizesOp; }
 namespace zetta::api { class Registry; }
 namespace zetta::api { class BackgroundActions; }
 namespace zetta::gui { struct CloudInspectOp; }
+namespace zetta::gui { struct ChatOp; }        // a chat turn running off the UI thread (#849)
+
+namespace zetta::gui {
+// One rendered chat message: a user turn or the agent's reply (+ a one-line tool summary).
+struct ChatMessage {
+    bool from_user = false;
+    std::string text;
+    std::string tools;  // "connect(ok) · serve(ok)" for an agent turn; empty otherwise
+};
+}  // namespace zetta::gui
 namespace zetta::usecases::churn { class AsyncChurnRun; }
 namespace zetta::data { class AsyncDatasetAdd; }
 
@@ -158,7 +168,8 @@ private:
         Traces,    // the trace pane (#640): every operation's spans, from the ring
         Runs,      // runs / outputs / lineage
         Models,    // trained models (system.models) + register/import
-        Agents,    // served agents (agent:<id>) — list, create, and chat (#849)
+        Agents,    // served agents (agent:<id>) — list + create (#849)
+        Chat,      // talk to a selected agent, with tool-calling (#849)
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -388,6 +399,11 @@ private:
     void draw_models();      // standalone models (system.models): list + detail + add
     void draw_agents();      // served agents (agent:<id>): list + detail + create (#849)
     void draw_add_agent_form();  // inline "New agent" affordance (create_agent)
+    void draw_chat();        // talk to the selected agent (#849) with tool-calling
+    // Start a chat turn OFF the UI thread (loads the model + generates, ~seconds); the
+    // worker sets the op done and poll_chat_op() applies the reply on the UI thread.
+    void start_chat_op(const std::string& agent_id, const std::string& message);
+    void poll_chat_op();
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
     // re-validated against the Model JSON Schema at this boundary, so malformed
@@ -591,6 +607,13 @@ private:
     std::string add_agent_tools_;    // comma-separated tool names
     std::string add_agent_error_;
     std::string add_agent_status_;
+    // The Chat view (#849): the selected agent, the input, the transcript, and the
+    // in-flight off-thread turn (chat_op_) applied by poll_chat_op().
+    std::string chat_agent_;                 // selected agent id (the chat selector)
+    std::string chat_input_;                 // the message being typed
+    std::vector<ChatMessage> chat_history_;  // the transcript (user + agent turns)
+    std::string chat_error_;                 // a load/turn failure, shown as a banner
+    std::shared_ptr<ChatOp> chat_op_;        // non-null while a turn is running
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_trace_;  // trace id (Traces view); re-resolved each frame
     std::string selected_span_;   // span id within the selected trace ("" = none)

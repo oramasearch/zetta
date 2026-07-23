@@ -18,6 +18,16 @@ agents you can chat with. A thin, read-only viewer over the replicated `agent:<i
 Model to point an agent at: a local checkpoint dir (pull open weights with `zetta pull`), a
 `model:<uuid>`, or a HuggingFace repo id.
 
-**In flight:** the in-panel **chat** with an **agent selector** (the slow `chat` turn runs
-off the UI thread via the #624 background-op pattern) and the web-app equivalent — see
+## Chat view
+
+The **Chat** section (Operations → Chat, `src/gui/app_chat.cpp`) — talk to a selected agent
+with tool-calling. An **agent selector** (combo) picks which agent to talk to; the transcript
+scrolls above a pinned input row. A message runs the agent's `chat` turn (model load +
+generation + the tool-calling loop, via `agent::respond` — the same path the MCP/REST `chat`
+capability uses) **off the UI thread** through a `ChatOp` (a `std::thread` + shared done flag,
+applied on the UI thread by `poll_chat_op()` in `poll_background_ops()`, the #624 pattern), so
+a ~13 s turn never freezes the frame. The reply shows with a one-line tool summary
+(`connect(ok) · serve(ok)`); a load failure surfaces as the panel's error `banner`.
+
+**In flight:** the web-app equivalent (Agents section + chat + selector) — see
 [#849](https://github.com/oramasearch/zetta/issues/849).

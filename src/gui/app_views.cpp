@@ -42,6 +42,7 @@ std::span<const App::ViewInfo> App::view_registry() {
         {View::Runs, "Operations", "Runs", &App::draw_runs, nullptr},
         {View::Models, "Operations", "Models", &App::draw_models, nullptr},
         {View::Agents, "Operations", "Agents", &App::draw_agents, nullptr},
+        {View::Chat, "Operations", "Chat", &App::draw_chat, nullptr},
         {View::Jobs, "Operations", "Compute jobs", &App::draw_jobs,
          &App::jobs_badge},
         {View::Cluster, "Operations", "Cluster", &App::draw_cluster,

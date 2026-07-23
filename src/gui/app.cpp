@@ -615,6 +615,7 @@ void App::poll_background_ops() {
     // Runs once per frame on the UI thread (the node's owner). Each block is a
     // cheap no-op when its action is idle.
     poll_cloud_inspect();
+    poll_chat_op();  // apply a finished agent chat turn (#849)
 
     // External activity (#620): drain the hook's queue into the strip's
     // presentation state. The engine state an external call mutated is
