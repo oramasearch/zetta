@@ -159,6 +159,21 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     conversation += "User: " + message + "\nAssistant:";
 
     response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);
+
+    // The base agent was SFT'd on a single "Correct solution (facts): {...}" block and has no
+    // trained stop token, so in an open-ended chat it tends to REPEAT that block until it hits
+    // the token limit. Keep only the first block (truncate at the second marker occurrence).
+    std::string& reply = response.result.reply;
+    constexpr std::string_view marker = "Correct solution (facts):";
+    const std::size_t first = reply.find(marker);
+    if (first != std::string::npos) {
+        const std::size_t second = reply.find(marker, first + marker.size());
+        if (second != std::string::npos) {
+            reply.erase(second);
+            const std::size_t last = reply.find_last_not_of(" \t\r\n");
+            reply.erase(last == std::string::npos ? 0 : last + 1);
+        }
+    }
     response.ok = true;
     return response;
 }
