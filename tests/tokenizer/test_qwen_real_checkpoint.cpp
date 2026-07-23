@@ -661,6 +661,115 @@ TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     }
 }
 
+// The first BALANCED JSON object in `text` (depth-counted, string-aware) — so a clean
+// solution parses and a delimiter-leak tail is ignored. Empty if none.
+static std::string first_json_object(const std::string& text) {
+    const std::size_t begin = text.find('{');
+    if (begin == std::string::npos) return "";
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t i = begin; i < text.size(); ++i) {
+        const char c = text[i];
+        if (in_string) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '{') {
+            ++depth;
+        } else if (c == '}' && --depth == 0) {
+            return text.substr(begin, i - begin + 1);
+        }
+    }
+    return "";
+}
+
+// GRADER PASS-RATE over a held-out eval corpus (ZETTA_EVAL): for each task, generate the
+// solution facts and check them against the task's required facts via the deterministic
+// grader — the quantitative counterpart to GenerateFromTrainedBaseAgent's eyeballing. Also
+// reports abstain recall (did it decline the out-of-scope tasks) and the false-abstain rate
+// (did it wrongly decline an in-scope task). Point ZETTA_QWEN_DIR at the checkpoint to score.
+TEST(QwenRealCheckpoint, EvalGraderPassRate) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the checkpoint) to run";
+    const char* eval_path = std::getenv("ZETTA_EVAL");
+    if (eval_path == nullptr) GTEST_SKIP() << "set ZETTA_EVAL to an eval corpus JSONL to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenInference> model =
+        zetta::compute::model::MlxQwenInference::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    std::ifstream file(eval_path);
+    ASSERT_TRUE(file.good()) << "cannot open " << eval_path;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const std::optional<std::vector<zetta::agent::AdmissionCase>> corpus =
+        zetta::agent::load_corpus_jsonl(buffer.str(), &error);
+    ASSERT_TRUE(corpus.has_value()) << error;
+    ASSERT_FALSE(corpus->empty());
+
+    int total = 0, passed = 0, parsed = 0;
+    double score_sum = 0.0;                   // mean fraction of required facts satisfied
+    int abstain_tasks = 0, abstain_hit = 0;  // required declares abstain
+    int scope_tasks = 0, false_abstain = 0;  // in-scope task the model wrongly abstained on
+    for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
+        const zetta::agent::Task& task = admission_case.task;
+        model->reset();
+        const std::string prompt = task.description() + "\n\nCorrect solution (facts):\n";
+        const std::vector<int> generated =
+            model->generate_greedy(tokenizer->encode(prompt), /*max_new_tokens=*/96);
+        const std::string decoded = tokenizer->decode(generated);
+        ++total;
+
+        zetta::agent::EndState observed;
+        const std::string object = first_json_object(decoded);
+        if (!object.empty()) {
+            const nlohmann::json value = nlohmann::json::parse(object, nullptr, false);
+            if (!value.is_discarded()) {
+                if (std::optional<zetta::agent::EndState> parsed_state =
+                        zetta::agent::end_state_from_json(value, nullptr)) {
+                    observed = *std::move(parsed_state);
+                    ++parsed;
+                }
+            }
+        }
+        // Exact-match pass is strict (each fresh task has its own key vocabulary); the mean
+        // fraction of required facts satisfied is the softer, more comparable signal.
+        const zetta::agent::Grade grade = task.grader().grade(observed);
+        if (grade.passed) ++passed;
+        score_sum += grade.score;
+
+        const auto& required_facts = task.required().facts();
+        const auto& observed_facts = observed.facts();
+        const bool required_abstain = required_facts.count("abstain") != 0 &&
+                                      required_facts.at("abstain") == true;
+        const bool observed_abstain = observed_facts.count("abstain") != 0 &&
+                                      observed_facts.at("abstain") == true;
+        if (required_abstain) {
+            ++abstain_tasks;
+            if (observed_abstain) ++abstain_hit;
+        } else {
+            ++scope_tasks;
+            if (observed_abstain) ++false_abstain;
+        }
+    }
+
+    const double rate = total != 0 ? 100.0 * passed / total : 0.0;
+    const double mean_score = total != 0 ? score_sum / total : 0.0;
+    std::cerr << "\n[eval] " << dir << " on " << eval_path << "\n"
+              << "  grader pass (exact):      " << passed << "/" << total << " (" << rate
+              << "%)\n"
+              << "  mean required-fact score: " << mean_score << "\n"
+              << "  parsed valid JSON:        " << parsed << "/" << total << "\n"
+              << "  abstain recall:           " << abstain_hit << "/" << abstain_tasks << "\n"
+              << "  false-abstain (in-scope): " << false_abstain << "/" << scope_tasks << "\n";
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
