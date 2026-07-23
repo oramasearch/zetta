@@ -554,12 +554,23 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
     std::vector<int> argnums(model->parameters().size());
     std::iota(argnums.begin(), argnums.end(), 0);
+    // SHUFFLE the example order, reshuffled every epoch. The corpus is block-ordered
+    // (churn seed, supervised, search, then abstain last), so training it in order feeds
+    // long contiguous runs of near-identical tasks — which mode-collapses onto the easy
+    // trailing block (all-abstain was observed without this). SGD needs shuffled batches.
+    std::mt19937 order_rng(1234U);
+    std::vector<std::size_t> order(examples.size());
+    std::iota(order.begin(), order.end(), 0U);
+    std::shuffle(order.begin(), order.end(), order_rng);
     double first_loss = 0.0;
     double last_loss = 0.0;
     double min_loss = 1e30;
     for (int step = 0; step < steps; ++step) {
-        const std::vector<int>& example =
-            examples[static_cast<std::size_t>(step) % examples.size()];
+        const std::size_t position = static_cast<std::size_t>(step) % examples.size();
+        if (position == 0 && step > 0) {
+            std::shuffle(order.begin(), order.end(), order_rng);  // reshuffle each epoch
+        }
+        const std::vector<int>& example = examples[order[position]];
         const mx::array tokens(example.data(),
                                mx::Shape{static_cast<int>(example.size())}, mx::int32);
         const auto loss_fn = [&](const std::vector<mx::array>& params) {
