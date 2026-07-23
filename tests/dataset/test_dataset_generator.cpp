@@ -57,4 +57,18 @@ TEST(DatasetGenerator, BaseAgentProducesAGatedCorpus) {
     EXPECT_TRUE(zetta::agent::admit_corpus(dataset.cases).admitted);
 }
 
+TEST(DatasetGenerator, AutoSuggestProducesAGatedCorpus) {
+    const auto generator =
+        zetta::dataset::DatasetGeneratorFactory::builtin().create("auto-suggest");
+    ASSERT_NE(generator, nullptr);
+    EXPECT_EQ(generator->kind(), "auto-suggest");
+
+    const zetta::dataset::GeneratedDataset dataset =
+        generator->generate(zetta::dataset::DatasetGenSpec{});
+    EXPECT_GE(dataset.subjects.size(), 5u);           // several data-state scenarios
+    EXPECT_FALSE(dataset.cases.empty());
+    // Discrimination: suggest the present, withhold the absent — the corpus admits.
+    EXPECT_TRUE(zetta::agent::admit_corpus(dataset.cases).admitted);
+}
+
 }  // namespace
