@@ -2,9 +2,11 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/base_prompt.hpp"
 #include "zetta/ir/step_kind.hpp"
 
 namespace zetta::agent {
@@ -74,6 +76,15 @@ StudioAction reference_action_from_facts(const EndState& facts) {
 
 void attach_reference_action(AdmissionCase& admission_case) {
     admission_case.reference_action = reference_action_from_facts(admission_case.reference);
+}
+
+std::pair<std::string, std::string> render_action_example(const AdmissionCase& admission_case) {
+    std::string prompt = agent_prompt_format(base_agent_system_prompt(),
+                                             admission_case.task.description());
+    const StudioAction action = admission_case.reference_action
+                                    ? *admission_case.reference_action
+                                    : reference_action_from_facts(admission_case.reference);
+    return {std::move(prompt), to_json(action).dump()};
 }
 
 }  // namespace zetta::agent

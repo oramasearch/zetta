@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <utility>
+
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/end_state.hpp"
@@ -36,5 +39,12 @@ StudioAction reference_action_from_facts(const EndState& facts);
 // Attach a generic reference action (from the case's reference facts) to an admission case, so
 // the corpus carries an action the SFT render can target. Overwrites any existing action.
 void attach_reference_action(AdmissionCase& admission_case);
+
+// One SFT training example for the reshaped agent (#873): {prompt, target}. The prompt is the
+// Studio system prompt + the task's ask (agent_prompt_format); the target is the reference
+// ACTION as JSON — the case's own reference_action when set, else built from its facts. This is
+// the single place the SFT render + any tokenized training pipeline get their (prompt, target),
+// so training targets the action, not the facts.
+std::pair<std::string, std::string> render_action_example(const AdmissionCase& admission_case);
 
 }  // namespace zetta::agent

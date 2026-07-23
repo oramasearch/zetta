@@ -75,6 +75,25 @@ TEST(SolutionGraph, AttachSetsAGradeableActionOnTheCase) {
                     .passed);
 }
 
+// The SFT training example targets the ACTION, not the facts (#873): the prompt is the Studio
+// system prompt + the ask; the target parses back to a StudioAction whose pipeline passes the
+// grader. This is what training now learns to emit.
+TEST(SolutionGraph, RenderActionExampleTargetsTheAction) {
+    zetta::agent::AdmissionCase churn = zetta::agent::churn_solution_case();
+    zetta::agent::attach_reference_action(churn);
+    const auto [prompt, target] = zetta::agent::render_action_example(churn);
+
+    // Prompt: the Studio identity + the task's ask.
+    EXPECT_NE(prompt.find("Orama Studio"), std::string::npos);
+    EXPECT_NE(prompt.find("churn"), std::string::npos);
+
+    // Target: a valid action whose pipeline passes the grader.
+    const auto action = zetta::agent::parse_studio_action(target);
+    ASSERT_TRUE(action);
+    EXPECT_TRUE(
+        churn.task.grader().grade(graph_solution_facts(action->execution_graph)).passed);
+}
+
 // Acceptance for the reshape (guarded on ZETTA_CORPUS): EVERY task in the real corpus gets a
 // reference action whose pipeline passes that task's own grader — the whole corpus becomes
 // actions, discrimination intact. Skipped in CI (no corpus file); run with

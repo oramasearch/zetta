@@ -22,6 +22,7 @@
 #include "zetta/agent/admission_gate.hpp"  // admit_corpus (native re-gate)
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
+#include "zetta/agent/solution_graph.hpp"  // render_action_example (#873 action target)
 #include "zetta/autograd/transformer.hpp"  // autograd::Adam
 #include "zetta/compute/mlx_device.hpp"
 #include "zetta/compute/mlx_qwen.hpp"
@@ -541,9 +542,9 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     std::vector<std::vector<int>> examples;
     for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
-        const std::string prompt =
-            admission_case.task.description() + "\n\nCorrect solution (facts):\n";
-        const std::string target = zetta::agent::to_json(admission_case.task.required()).dump();
+        // #873: train on the ACTION, not the facts — prompt is the Studio system prompt + the
+        // ask, target is the reference {message, tool_calls, execution_graph} JSON.
+        const auto [prompt, target] = zetta::agent::render_action_example(admission_case);
         std::vector<int> tokens = tokenizer->encode(prompt);
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
