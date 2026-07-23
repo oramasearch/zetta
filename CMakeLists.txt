@@ -577,6 +577,7 @@ add_library(zetta-core STATIC
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
   src/core/agent/agent_record.cpp
+  src/core/agent/agent_store.cpp
   src/core/agent/grader.cpp
   src/core/agent/sandbox.cpp
   src/core/agent/rollout.cpp
