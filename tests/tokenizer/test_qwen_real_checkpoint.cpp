@@ -20,9 +20,10 @@
 #include <sstream>
 #include <system_error>
 #include "zetta/agent/admission_gate.hpp"  // admit_corpus (native re-gate)
+#include "zetta/agent/base_prompt.hpp"     // base_agent_system_prompt, agent_prompt_format
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
-#include "zetta/agent/solution_graph.hpp"  // render_action_example (#873 action target)
+#include "zetta/agent/solution_graph.hpp"  // render_action_example, graph_solution_facts (#873)
 #include "zetta/autograd/transformer.hpp"  // autograd::Adam
 #include "zetta/compute/mlx_device.hpp"
 #include "zetta/compute/mlx_qwen.hpp"
@@ -672,7 +673,8 @@ TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     std::cerr << "\n===== trained base agent — generations (" << dir << ") =====\n";
     for (const std::string& input : user_inputs) {
         model->reset();
-        const std::string prompt = input + "\n\nCorrect solution (facts):\n";
+        const std::string prompt =
+            zetta::agent::agent_prompt_format(zetta::agent::base_agent_system_prompt(), input);
         const std::vector<int> generated = model->generate_greedy(
             tokenizer->encode(prompt), /*max_new_tokens=*/80, /*eos_id=*/151645);
         std::cerr << "\nUSER : " << input << "\nAGENT: " << tokenizer->decode(generated) << "\n";
@@ -738,23 +740,21 @@ TEST(QwenRealCheckpoint, EvalGraderPassRate) {
     for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
         const zetta::agent::Task& task = admission_case.task;
         model->reset();
-        const std::string prompt = task.description() + "\n\nCorrect solution (facts):\n";
+        // #873: prompt with the Studio system prompt; the model emits the ACTION, and we score
+        // its PIPELINE through the same grader (graph_solution_facts) — the RLVR reward.
+        const std::string prompt =
+            zetta::agent::agent_prompt_format(zetta::agent::base_agent_system_prompt(),
+                                              task.description());
         const std::vector<int> generated = model->generate_greedy(
-            tokenizer->encode(prompt), /*max_new_tokens=*/96, /*eos_id=*/151645);
+            tokenizer->encode(prompt), /*max_new_tokens=*/256, /*eos_id=*/151645);
         const std::string decoded = tokenizer->decode(generated);
         ++total;
 
         zetta::agent::EndState observed;
-        const std::string object = first_json_object(decoded);
-        if (!object.empty()) {
-            const nlohmann::json value = nlohmann::json::parse(object, nullptr, false);
-            if (!value.is_discarded()) {
-                if (std::optional<zetta::agent::EndState> parsed_state =
-                        zetta::agent::end_state_from_json(value, nullptr)) {
-                    observed = *std::move(parsed_state);
-                    ++parsed;
-                }
-            }
+        if (const std::optional<zetta::agent::StudioAction> action =
+                zetta::agent::parse_studio_action(decoded)) {
+            observed = zetta::agent::graph_solution_facts(action->execution_graph);
+            ++parsed;
         }
         // Exact-match pass is strict (each fresh task has its own key vocabulary); the mean
         // fraction of required facts satisfied is the softer, more comparable signal.
