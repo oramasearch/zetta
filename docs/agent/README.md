@@ -45,6 +45,10 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   [`inference-runbook.md`](inference-runbook.md); **build + run a real graph from a plain-language
   ask** (`agent_run`, the base agent working end to end — no #859 needed) →
   [`build-and-run-runbook.md`](build-and-run-runbook.md).
+- **Cards** (#880) — the honest datasheets + model cards: the base agent's
+  [data card](data-card-base-agent.md) + [model card](model-card-base-agent.md), and
+  Auto-Suggest's [data card](data-card-auto-suggest.md) + [model card](model-card-auto-suggest.md).
+  Coverage status: [training-coverage-checklist.md](training-coverage-checklist.md).
 - **Why it works** — [`rlvr-to-production.md`](rlvr-to-production.md): how the corpus →
   RLVR → the *same* correctness gate makes your production pipelines correct by construction.
 - **The two models** — [`model-lifecycle.md`](model-lifecycle.md): the agent vs. the
