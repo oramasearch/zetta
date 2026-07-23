@@ -1,5 +1,6 @@
 #include "zetta/agent/chat.hpp"
 
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -146,12 +147,27 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
         });
     }
 
+    // The model's EOS id, so generation STOPS when an EOS-trained model emits it (a model
+    // trained without a stop token repeats — see the SFT driver). Read from config.json.
+    int eos_id = 151645;  // fallback: Qwen <|im_end|>
+    {
+        std::ifstream config_file(agent.model + "/config.json");
+        if (config_file) {
+            const nlohmann::json config =
+                nlohmann::json::parse(config_file, nullptr, /*allow_exceptions=*/false);
+            if (!config.is_discarded() && config.contains("eos_token_id") &&
+                config["eos_token_id"].is_number_integer()) {
+                eos_id = config["eos_token_id"].get<int>();
+            }
+        }
+    }
+
     // A fresh KV-cached inference per generation (independent decode), returning new text.
-    const auto generate = [&tokenizer, &model, max_new_tokens](
+    const auto generate = [&tokenizer, &model, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
         zetta::autograd::QwenInference inference(*model);
         return tokenizer->decode(
-            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens));
+            inference.generate_greedy(tokenizer->encode(prompt), max_new_tokens, eos_id));
     };
 
     std::string conversation;

@@ -519,7 +519,23 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     ASSERT_TRUE(corpus.has_value()) << error;
     ASSERT_TRUE(zetta::agent::admit_corpus(*corpus).admitted) << "corpus must pass the native gate";
 
-    // Render SFT examples: prompt (the intent) + target (the required-facts solution).
+    // The model's EOS id — appended to every target so the model learns to STOP after the
+    // solution (without it there is no stop token in the training data, and the model repeats
+    // the solution block in open-ended generation). Read from the checkpoint's config.json.
+    int eos_id = 151645;  // fallback: Qwen <|im_end|>
+    {
+        std::ifstream config_file(std::string(dir) + "/config.json");
+        if (config_file) {
+            const nlohmann::json config =
+                nlohmann::json::parse(config_file, nullptr, /*allow_exceptions=*/false);
+            if (!config.is_discarded() && config.contains("eos_token_id") &&
+                config["eos_token_id"].is_number_integer()) {
+                eos_id = config["eos_token_id"].get<int>();
+            }
+        }
+    }
+
+    // Render SFT examples: prompt (the intent) + target (the required-facts solution) + EOS.
     const int max_examples =
         std::getenv("ZETTA_SFT_EXAMPLES") ? std::atoi(std::getenv("ZETTA_SFT_EXAMPLES")) : 64;
     std::vector<std::vector<int>> examples;
@@ -531,6 +547,7 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         std::vector<int> tokens = tokenizer->encode(prompt);
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
+        tokens.push_back(eos_id);  // teach the model to stop after the solution
         if (tokens.size() >= 4) examples.push_back(std::move(tokens));
     }
     ASSERT_FALSE(examples.empty());
@@ -655,8 +672,8 @@ TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     for (const std::string& input : user_inputs) {
         model->reset();
         const std::string prompt = input + "\n\nCorrect solution (facts):\n";
-        const std::vector<int> generated =
-            model->generate_greedy(tokenizer->encode(prompt), /*max_new_tokens=*/80);
+        const std::vector<int> generated = model->generate_greedy(
+            tokenizer->encode(prompt), /*max_new_tokens=*/80, /*eos_id=*/151645);
         std::cerr << "\nUSER : " << input << "\nAGENT: " << tokenizer->decode(generated) << "\n";
     }
 }
@@ -721,8 +738,8 @@ TEST(QwenRealCheckpoint, EvalGraderPassRate) {
         const zetta::agent::Task& task = admission_case.task;
         model->reset();
         const std::string prompt = task.description() + "\n\nCorrect solution (facts):\n";
-        const std::vector<int> generated =
-            model->generate_greedy(tokenizer->encode(prompt), /*max_new_tokens=*/96);
+        const std::vector<int> generated = model->generate_greedy(
+            tokenizer->encode(prompt), /*max_new_tokens=*/96, /*eos_id=*/151645);
         const std::string decoded = tokenizer->decode(generated);
         ++total;
 
