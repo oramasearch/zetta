@@ -581,6 +581,7 @@ add_library(zetta-core STATIC
   src/core/agent/agent_record.cpp
   src/core/agent/agent_store.cpp
   src/core/agent/base_prompt.cpp
+  src/core/agent/solution_graph.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
   src/core/agent/grader.cpp
