@@ -29,13 +29,26 @@ applied on the UI thread by `poll_chat_op()` in `poll_background_ops()`, the #62
 a ~13 s turn never freezes the frame. The reply shows with a one-line tool summary
 (`connect(ok) · serve(ok)`); a load failure surfaces as the panel's error `banner`.
 
+### Build & run (#872)
+
+Beside **Send**, a **Build & run** button makes the base agent do real work — no #859
+tool-calling fine-tune needed. The same off-thread `ChatOp` runs `respond` **and**
+`pipeline::compile_intent(message)`; `poll_chat_op()` then summarizes the compiled graph's
+steps into the transcript and **runs it** — a churn graph launches `AsyncChurnRun` on the live
+engine (its trained-model + ranked-list outcome posts back into the transcript via the
+`churn_run_from_chat_` branch of `poll_background_ops()`), anything else runs structurally.
+It is the GUI face of the `agent_run` capability (`docs/agent/inference-runbook.md`).
+
 ## Web app
 
 The server-rendered web UI (`src/core/api/http_server.cpp`, #647) has the same two views in
 its nav (Workloads → **Agents** / **Chat**): the Agents page lists the records + carries the
 create/update/delete_agent action forms; the **Chat** page is a form with an **agent `<select>`**
 (the `agent`-field picker → `agent_options`, from the live agent list) + a message box that
-POSTs to `/run` (the `chat` capability) and renders the reply inline. The turn blocks the
-request for seconds (model load + generation) — fine for a request/response page (the GUI's
-off-thread `ChatOp` is what a live-repainting client needs). Same `agent::respond` path as the
-GUI + MCP/REST, so all three behave identically.
+POSTs to `/run` and renders the result inline. The Chat page carries **two** submit buttons —
+**Send** (`cap=chat`, reply only) and **Build & run** (`cap=agent_run`, #872) — the clicked
+button's `name=cap` picks the capability; `serve_web_run` already wires the background action
+owner, so the churn run works with no extra plumbing. The turn blocks the request for seconds
+(model load + generation, then the run) — fine for a request/response page (the GUI's
+off-thread `ChatOp` is what a live-repainting client needs). Same `agent::respond` +
+`agent_run` paths as the GUI + MCP/REST, so all surfaces behave identically.

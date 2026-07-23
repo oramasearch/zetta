@@ -99,13 +99,40 @@ authority used by `admit_corpus` and by the RLVR reward, so an inference score a
 reward mean the same thing. (A batch grader over generations is a natural small follow-up; for
 now the admission-gate tests are the worked example of driving that grader.)
 
-## Scope — spec vs. trajectory
+## Step 4 — build + run a graph from the ask (`agent_run`, #872)
 
-The base agent emits a solution **specification** (the correct facts). The full **tool-call
-trajectory** that drives `Sandbox` → `ir::ExecutionGraph` (connect → features → model → serve)
-is what [#859](https://github.com/oramasearch/zetta/issues/859) wires the neural policy to,
-graded by `grpo_step` over the native grader. Until then, treat the generation as *the target
-the agent is aiming at*, verified by the grader — not yet an executed graph.
+The base agent is usable **right away** to do real work — it does **not** need the RLVR
+tool-calling fine-tune ([#859](https://github.com/oramasearch/zetta/issues/859)) first. The
+`agent_run` capability closes the loop end to end from plain language:
+
+1. the agent reads the ask and recognizes the use case (the `respond` path above),
+2. the engine compiles the same ask into a real `ir::ExecutionGraph`
+   (`pipeline::compile_intent` — the churn-shape heuristic), stored on a project,
+3. the graph runs through the gate + the real engine (delegates to `run`; a churn graph
+   trains a churn model over the live cluster).
+
+```bash
+# one call: the agent builds AND runs a churn graph for Charles
+curl -s -X POST http://127.0.0.1:4800/v1/agent_run \
+  -H "Authorization: Bearer $ZETTA_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"agent":"<agent-id>","message":"predict which customers are about to churn, with calibrated scores and explanations","top_k":10}'
+# -> {reply, shape:"churn", steps:[connect..act], run:{run_id, engine:"churn", status:"running"}}
+# poll get_run <run_id> -> succeeded, outputs include a trained churn model
+```
+
+It is the same capability behind the **"Build & run"** button in the GUI + web Chat views
+(`docs/gui/agents.md`). Verified live: the 0.6B base agent recognized the churn ask, the engine
+built the 7-step `connect → clean → model → index → serve → act` graph, and the run succeeded
+with a trained churn model.
+
+## Scope — engine-compiled today, agent-emitted next (#859)
+
+`agent_run` builds the graph by **compiling the agent's recognized intent** (`compile_intent`).
+The complementary path — the agent **emitting the tool-call trajectory** itself, step by step,
+driving `Sandbox` → `ir::ExecutionGraph` graded by `grpo_step` — is
+[#859](https://github.com/oramasearch/zetta/issues/859)'s RLVR fine-tune. #859 is an
+**enhancement** (a more autonomous agent), not a prerequisite: the base agent builds + runs
+graphs today via `agent_run`.
 
 ## Related
 
@@ -113,4 +140,7 @@ the agent is aiming at*, verified by the grader — not yet an executed graph.
 - [training-data-runbook.md](training-data-runbook.md) — generate the corpus it was trained on.
 - **native-ai-dev** skill — `MlxQwenInference`, the KV cache, the fused decode path.
 - [#555](https://github.com/oramasearch/zetta/issues/555) (the base agent) ·
-  [#859](https://github.com/oramasearch/zetta/issues/859) (env wiring → executed graphs).
+  [#872](https://github.com/oramasearch/zetta/issues/872) (`agent_run` — build + run a graph
+  from the ask, no #859 needed) ·
+  [#859](https://github.com/oramasearch/zetta/issues/859) (RLVR trajectory — the agent emits
+  the graph itself).
