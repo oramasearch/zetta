@@ -13,6 +13,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <utility>
@@ -150,6 +152,28 @@ TEST_F(NativeHttpTransportFixture, RejectsAUrlThatIsNotAbsoluteHttp) {
     });
     EXPECT_FALSE(response.error.empty());
     EXPECT_EQ(response.status, 0);
+}
+
+// A large download streams straight to a file instead of buffering the body on
+// the heap (the weights fetch relies on this for multi-GB shards).
+TEST_F(NativeHttpTransportFixture, StreamsTheBodyToAFileWhenAsked) {
+    const std::string path = (dir.path() / "server_info.json").string();
+    zetta::connect::HttpRequest request = get("/v1/server_info", owner_secret);
+    request.download_to_path = path;
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(request);
+    });
+    EXPECT_TRUE(response.error.empty()) << response.error;
+    EXPECT_EQ(response.status, 200);
+    EXPECT_TRUE(response.body.empty());  // streamed to disk, not buffered in memory
+
+    std::ifstream file(path, std::ios::binary);
+    ASSERT_TRUE(file.good());
+    const std::string contents((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    EXPECT_NE(contents.find("\"node_id\""), std::string::npos) << contents;
 }
 
 // The property Part 3's distributed fetch rests on: N exchanges in flight at

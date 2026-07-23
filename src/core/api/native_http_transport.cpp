@@ -1,8 +1,10 @@
 #include "zetta/api/native_http_transport.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -10,6 +12,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/http/config.hpp>
@@ -119,6 +122,47 @@ std::string host_header_value(const RequestTarget& parsed) {
     return default_port ? host : host + ":" + parsed.port;
 }
 
+// Resolve a redirect `Location` against the URL it came from. HuggingFace sends an
+// absolute CDN URL; the root-relative and relative forms are handled for
+// correctness. Returns the target verbatim when the base cannot be parsed.
+std::string resolve_location(const std::string& base_url,
+                             const std::string& location) {
+    if (location.starts_with("http://") || location.starts_with("https://")) {
+        return location;
+    }
+    RequestTarget base;
+    if (!parse_request_target(base_url, base)) return location;
+    const std::string origin =
+        (base.secure ? "https://" : "http://") + host_header_value(base);
+    if (location.starts_with("/")) return origin + location;  // root-relative
+    const std::size_t slash = base.target.find_last_of('/');
+    const std::string dir =
+        slash == std::string::npos ? "/" : base.target.substr(0, slash + 1);
+    return origin + dir + location;
+}
+
+// Drop the secret headers (and forget they were secret) before a cross-host
+// redirect hop, so a bearer minted for one origin never travels to another.
+void drop_secret_headers(connect::HttpRequest& request) {
+    const auto is_secret = [&request](const std::string& name) {
+        return std::any_of(
+            request.secret_headers.begin(), request.secret_headers.end(),
+            [&name](const std::string& secret) {
+                return name.size() == secret.size() &&
+                       std::equal(name.begin(), name.end(), secret.begin(),
+                                  [](char left, char right) {
+                                      return std::tolower(static_cast<unsigned char>(left)) ==
+                                             std::tolower(static_cast<unsigned char>(right));
+                                  });
+            });
+    };
+    std::erase_if(request.headers,
+                  [&is_secret](const std::pair<std::string, std::string>& header) {
+                      return is_secret(header.first);
+                  });
+    request.secret_headers.clear();
+}
+
 // --- The shared TLS contexts ---------------------------------------------------
 //
 // One `tls_context` per peer hostname, built once and never mutated afterwards:
@@ -193,12 +237,17 @@ void apply_headers(http::request& message, const connect::HttpRequest& request,
 }
 
 // Send the request and read the response over an already-connected stream.
-// Returns the reason on failure, empty on success. Never names a secret.
+// Returns the reason on failure, empty on success. Never names a secret. When the
+// status is a 3xx and `redirects_remaining > 0`, captures `Location` into
+// `location` and stops before the body (the caller re-dials). Otherwise the body
+// streams to `request.download_to_path` when set, else into `response.body`.
 template <class Stream>
 runtime::io_task<std::string> exchange_over(Stream& stream,
                                             const connect::HttpRequest& request,
                                             const RequestTarget& parsed,
-                                            connect::HttpResponse& response) {
+                                            connect::HttpResponse& response,
+                                            int redirects_remaining,
+                                            std::string& location) {
     const http::method method =
         http::string_to_method(request.method) == http::method::unknown
             ? http::method::get
@@ -218,8 +267,13 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
         co_return {{}, "could not send the request: " + write_error.message()};
     }
 
+    // A caller (the weights fetch) may raise the cap above the connector default.
+    const std::uint64_t body_limit =
+        request.max_response_bytes != 0
+            ? static_cast<std::uint64_t>(request.max_response_bytes)
+            : kResponseBodyLimit;
     http::parser_config limits(/*server=*/false);
-    limits.body_limit = kResponseBodyLimit;
+    limits.body_limit = body_limit;
     http::response_parser parser(http::make_parser_config(limits));
     parser.reset();  // prepare for a new stream — required before the first start()
     parser.start();
@@ -227,8 +281,28 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
         co_return {{}, "could not read the response header: " +
                            header_error.message()};
     }
-    parser.set_body_limit(kResponseBodyLimit);
+    parser.set_body_limit(body_limit);
     response.status = static_cast<int>(parser.get().status_int());
+
+    // A redirect we will follow: capture Location and stop. The body is not the
+    // payload, and `Connection: close` lets us drop the socket without draining.
+    if (response.status >= 300 && response.status < 400 && redirects_remaining > 0 &&
+        parser.get().count(http::field::location) > 0) {
+        location = std::string(parser.get().at(http::field::location));
+        if (!location.empty()) co_return {{}, std::string()};
+    }
+
+    // Stream the body to a file when asked (keeps a multi-GB download off the
+    // heap), else buffer it in response.body.
+    std::ofstream file;
+    const bool to_file = !request.download_to_path.empty();
+    if (to_file) {
+        file.open(request.download_to_path,
+                  std::ios::binary | std::ios::out | std::ios::trunc);
+        if (!file) {
+            co_return {{}, "could not open the download file for writing"};
+        }
+    }
 
     auto body = parser.source_for(stream);
     boost::capy::const_buffer chunk[16];
@@ -241,11 +315,20 @@ runtime::io_task<std::string> exchange_over(Stream& stream,
         }
         std::size_t consumed = 0;
         for (const boost::capy::const_buffer& buffer : buffers) {
-            response.body.append(static_cast<const char*>(buffer.data()),
-                                 buffer.size());
+            if (to_file) {
+                file.write(static_cast<const char*>(buffer.data()),
+                           static_cast<std::streamsize>(buffer.size()));
+            } else {
+                response.body.append(static_cast<const char*>(buffer.data()),
+                                     buffer.size());
+            }
             consumed += buffer.size();
         }
         body.consume(consumed);
+    }
+    if (to_file) {
+        file.flush();
+        if (!file) co_return {{}, "could not write the download file"};
     }
     co_return {{}, std::string()};
 }
@@ -296,25 +379,26 @@ private:
         }
     }
 
-    // Resolve, connect, (optionally) handshake, exchange — all on the io_context
-    // thread. Sets `finished` exactly once, on every path.
-    runtime::task<> perform(std::shared_ptr<Exchange> exchange) {
-        connect::HttpResponse& response = exchange->response;
+    // One connection to `url`: resolve, connect, (optionally) handshake, exchange.
+    // Returns the failure reason (empty on success). On a followed redirect,
+    // `location` is set and the body is not read.
+    runtime::task<std::string> perform_url(const std::string& url,
+                                           const connect::HttpRequest& request,
+                                           connect::HttpResponse& response,
+                                           std::chrono::seconds deadline,
+                                           int redirects_remaining,
+                                           std::string& location) {
         RequestTarget parsed;
-        if (!parse_request_target(exchange->request.url, parsed)) {
-            response.error = "not an absolute http(s) URL";
-            exchange->finished.set();
-            co_return;
+        if (!parse_request_target(url, parsed)) {
+            co_return std::string("not an absolute http(s) URL");
         }
 
         net::resolver resolver(io_context_);
         auto [resolve_error, results] =
             co_await resolver.resolve(parsed.host, parsed.port);
         if (resolve_error) {
-            response.error =
-                "could not resolve " + parsed.host + ": " + resolve_error.message();
-            exchange->finished.set();
-            co_return;
+            co_return "could not resolve " + parsed.host + ": " +
+                resolve_error.message();
         }
 
         net::tcp_socket socket(io_context_);
@@ -330,56 +414,76 @@ private:
             connect_reason = "could not connect to " + parsed.host + ":" +
                              parsed.port + ": " + connect_error.message();
         }
-        if (!connected) {
-            response.error = connect_reason;
-            exchange->finished.set();
-            co_return;
-        }
-
-        const std::chrono::seconds deadline(
-            exchange->request.timeout_seconds > 0
-                ? exchange->request.timeout_seconds
-                : 60);
+        if (!connected) co_return connect_reason;
 
         if (!parsed.secure) {
             // Plaintext is only reachable for an explicitly http:// URL — a
             // loopback fixture or a sidecar proxy. Nothing constructs one for a
             // real source.
             auto [error, reason] = co_await runtime::timeout(
-                exchange_over(socket, exchange->request, parsed, response),
+                exchange_over(socket, request, parsed, response,
+                              redirects_remaining, location),
                 deadline);
-            response.error = error ? timeout_reason(error) : reason;
-            exchange->finished.set();
-            co_return;
+            co_return error ? timeout_reason(error) : reason;
         }
 
         std::string tls_reason;
         const std::shared_ptr<const net::tls_context> tls_context =
             tls_contexts().get(parsed.host, tls_reason);
-        if (!tls_context) {
-            response.error = tls_reason;
-            exchange->finished.set();
-            co_return;
-        }
+        if (!tls_context) co_return tls_reason;
 
         // Reference mode: `socket` outlives `secure` (both live in this frame).
         net::openssl_stream secure(&socket, *tls_context);
         if (auto [handshake_error] =
                 co_await secure.handshake(net::tls_stream::client);
             handshake_error) {
-            response.error = "TLS handshake with " + parsed.host +
-                             " failed: " + handshake_error.message();
-            exchange->finished.set();
-            co_return;
+            co_return "TLS handshake with " + parsed.host +
+                " failed: " + handshake_error.message();
         }
 
         auto [error, reason] = co_await runtime::timeout(
-            exchange_over(secure, exchange->request, parsed, response), deadline);
-        response.error = error ? timeout_reason(error) : reason;
+            exchange_over(secure, request, parsed, response, redirects_remaining,
+                          location),
+            deadline);
 
         // Best-effort close_notify: the answer is already in hand, so a peer
         // that hangs up first is not an error worth reporting.
         [[maybe_unused]] const auto shutdown_result = co_await secure.shutdown();
+        co_return error ? timeout_reason(error) : reason;
+    }
+
+    // Drive the exchange, following up to `max_redirects` `Location` hops. Sets
+    // `finished` exactly once, on every path.
+    runtime::task<> perform(std::shared_ptr<Exchange> exchange) {
+        connect::HttpResponse& response = exchange->response;
+        const std::chrono::seconds deadline(
+            exchange->request.timeout_seconds > 0
+                ? exchange->request.timeout_seconds
+                : 60);
+
+        connect::HttpRequest hop = exchange->request;  // url + headers may change
+        int redirects_remaining = exchange->request.max_redirects;
+        for (;;) {
+            std::string location;
+            std::string reason = co_await perform_url(
+                hop.url, hop, response, deadline, redirects_remaining, location);
+            if (!reason.empty()) {
+                response.error = reason;
+                break;
+            }
+            if (location.empty() || redirects_remaining <= 0) break;  // final answer
+
+            const std::string next = resolve_location(hop.url, location);
+            RequestTarget before, after;
+            const bool cross_host =
+                parse_request_target(hop.url, before) &&
+                parse_request_target(next, after) && before.host != after.host;
+            hop.url = next;
+            if (cross_host) drop_secret_headers(hop);
+            response.status = 0;
+            response.body.clear();
+            --redirects_remaining;
+        }
         exchange->finished.set();
     }
 
