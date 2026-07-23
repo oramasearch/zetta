@@ -41,4 +41,10 @@ std::optional<StudioAction> action_from_json(const nlohmann::json& document,
 // action shape, for callers/tests and the capability/tool boundary.
 const nlohmann::json& studio_action_schema();
 
+// Extract the agent's action from free-form generation (#873): find the JSON object the model
+// emitted (from the first `{` to the last `}`) and parse it via action_from_json. Returns
+// nullopt when there is no parseable action object (a message-only turn with no JSON, or
+// malformed output) — the inference counterpart of the SFT target. Used by agent::respond.
+std::optional<StudioAction> parse_studio_action(const std::string& generation);
+
 }  // namespace zetta::agent

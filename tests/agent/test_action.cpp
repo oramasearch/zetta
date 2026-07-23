@@ -59,6 +59,27 @@ TEST(StudioAction, PartsAreOptional) {
     EXPECT_TRUE(parsed->execution_graph.empty());
 }
 
+TEST(StudioAction, ParsesFromFreeFormGeneration) {
+    // The model's generation is the action JSON, possibly with surrounding text.
+    const std::string generation =
+        "Sure! Here's the pipeline:\n"
+        "{\"message\": \"Building your churn pipeline.\", "
+        "\"tool_calls\": [{\"tool\": \"run\", \"arguments\": {\"top_k\": 10}}], "
+        "\"execution_graph\": {\"nodes\": [], \"edges\": []}}\n"
+        "Let me know if you'd like changes.";
+    const std::optional<zetta::agent::StudioAction> action =
+        zetta::agent::parse_studio_action(generation);
+    ASSERT_TRUE(action);
+    EXPECT_EQ(action->message, "Building your churn pipeline.");
+    ASSERT_EQ(action->tool_calls.size(), 1u);
+    EXPECT_EQ(action->tool_calls[0].tool, "run");
+}
+
+TEST(StudioAction, ParseReturnsNulloptWithoutAnObject) {
+    EXPECT_FALSE(zetta::agent::parse_studio_action("no json here"));
+    EXPECT_FALSE(zetta::agent::parse_studio_action("{ not valid json"));
+}
+
 TEST(StudioAction, RejectsMalformed) {
     std::string error;
     EXPECT_FALSE(zetta::agent::action_from_json(nlohmann::json::array(), &error));  // not object

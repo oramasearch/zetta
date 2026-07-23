@@ -63,6 +63,21 @@ std::optional<StudioAction> action_from_json(const nlohmann::json& document,
     return action;
 }
 
+std::optional<StudioAction> parse_studio_action(const std::string& generation) {
+    // The action is the JSON object the model emitted; take the first `{` to the last `}` (the
+    // model is trained to emit one object). A balanced scan isn't needed for a single object,
+    // and non-JSON preamble/suffix is tolerated.
+    const std::size_t begin = generation.find('{');
+    const std::size_t end = generation.rfind('}');
+    if (begin == std::string::npos || end == std::string::npos || begin >= end) {
+        return std::nullopt;
+    }
+    const nlohmann::json document = nlohmann::json::parse(
+        generation.substr(begin, end - begin + 1), nullptr, /*allow_exceptions=*/false);
+    if (document.is_discarded()) return std::nullopt;
+    return action_from_json(document);
+}
+
 const nlohmann::json& studio_action_schema() {
     static const nlohmann::json schema = [] {
         nlohmann::json tool_item;
