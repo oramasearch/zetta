@@ -176,20 +176,26 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
 
     response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);
 
-    // The base agent was SFT'd on a single "Correct solution (facts): {...}" block and has no
-    // trained stop token, so in an open-ended chat it tends to REPEAT that block until it hits
-    // the token limit. Keep only the first block (truncate at the second marker occurrence).
     std::string& reply = response.result.reply;
+    // Strip the special stop/turn markers the decoder emits as literal text.
+    for (const std::string_view special : {"<|im_end|>", "<|endoftext|>", "<|im_start|>"}) {
+        for (std::size_t pos = reply.find(special); pos != std::string::npos;
+             pos = reply.find(special)) {
+            reply.erase(pos, special.size());
+        }
+    }
+    // A pre-EOS checkpoint (no trained stop token) repeats the "Correct solution (facts): {...}"
+    // block; keep only the first. (An EOS-trained checkpoint stops on its own — this is a
+    // no-op there.)
     constexpr std::string_view marker = "Correct solution (facts):";
     const std::size_t first = reply.find(marker);
     if (first != std::string::npos) {
         const std::size_t second = reply.find(marker, first + marker.size());
-        if (second != std::string::npos) {
-            reply.erase(second);
-            const std::size_t last = reply.find_last_not_of(" \t\r\n");
-            reply.erase(last == std::string::npos ? 0 : last + 1);
-        }
+        if (second != std::string::npos) reply.erase(second);
     }
+    const std::size_t last = reply.find_last_not_of(" \t\r\n");
+    reply.erase(last == std::string::npos ? 0 : last + 1);
+
     response.ok = true;
     return response;
 }
