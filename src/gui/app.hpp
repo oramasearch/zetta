@@ -158,6 +158,7 @@ private:
         Traces,    // the trace pane (#640): every operation's spans, from the ring
         Runs,      // runs / outputs / lineage
         Models,    // trained models (system.models) + register/import
+        Agents,    // served agents (agent:<id>) — list, create, and chat (#849)
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -385,6 +386,8 @@ private:
     // file-local render_*) because the links go through entity_link.
     void draw_run_detail(const zetta::pipeline::Run& run);
     void draw_models();      // standalone models (system.models): list + detail + add
+    void draw_agents();      // served agents (agent:<id>): list + detail + create (#849)
+    void draw_add_agent_form();  // inline "New agent" affordance (create_agent)
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
     // re-validated against the Model JSON Schema at this boundary, so malformed
@@ -579,6 +582,15 @@ private:
     std::string selected_run_;  // run id; re-resolved each frame like the others
     std::string selected_dataset_;  // dataset table id; re-resolved each frame
     std::string selected_model_;  // model id; re-resolved each frame
+    std::string selected_agent_;  // agent id (Agents view); re-resolved each frame
+    // The inline "New agent" form (create_agent) + its outcome banners (#849).
+    std::string add_agent_name_;
+    std::string add_agent_model_;
+    std::string add_agent_description_;
+    std::string add_agent_system_prompt_;
+    std::string add_agent_tools_;    // comma-separated tool names
+    std::string add_agent_error_;
+    std::string add_agent_status_;
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_trace_;  // trace id (Traces view); re-resolved each frame
     std::string selected_span_;   // span id within the selected trace ("" = none)
