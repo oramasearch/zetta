@@ -121,6 +121,72 @@ void App::draw_add_agent_form() {
     }
 }
 
+// Edit an existing agent in the detail pane (#849). The working copy lives in edit_agent_*
+// (seeded when Edit is pressed, in draw_agents); Save writes it back through AgentStore::put —
+// the same record the update_agent capability produces, so the GUI + MCP/REST + web agree.
+// The model isn't reloaded on a prompt change: respond() applies the prompt per turn, so the
+// edit takes effect on the very next chat message.
+void App::draw_edit_agent_form(const zetta::agent::AgentRecord& agent) {
+    ImGui::TextDisabled("Edit agent");
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Name");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##ea_name", "required", &edit_agent_name_);
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Model");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##ea_model", "a checkpoint dir, or a pulled HuggingFace repo id",
+                             &edit_agent_model_);
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Description");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##ea_desc", "optional", &edit_agent_description_);
+    ImGui::Spacing();
+    ImGui::TextUnformatted("System prompt");
+    ImGui::InputTextMultiline("##ea_prompt", &edit_agent_system_prompt_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5.0f));
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Tools");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##ea_tools", "comma-separated, e.g. connect, clean, model, serve",
+                             &edit_agent_tools_);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    banner(Tone::Error, edit_agent_error_);
+
+    if (primary_button("Save changes")) {
+        edit_agent_error_.clear();
+        if (node_.replication() == nullptr) {
+            edit_agent_error_ = "agents require a replicated node";
+        } else if (edit_agent_name_.empty()) {
+            edit_agent_error_ = "name is required";
+        } else if (edit_agent_model_.empty()) {
+            edit_agent_error_ = "model is required";
+        } else {
+            zetta::agent::AgentRecord updated = agent;  // preserves id + created_at
+            updated.name = edit_agent_name_;
+            updated.model = edit_agent_model_;
+            updated.description = edit_agent_description_;
+            updated.system_prompt = edit_agent_system_prompt_;
+            updated.tools = split_tools(edit_agent_tools_);
+            updated.updated_at = zetta::util::now_iso8601();
+            std::string error;
+            if (zetta::agent::AgentStore(*node_.replication()).put(updated, &error)) {
+                add_agent_status_ = "Updated agent '" + updated.name + "'";
+                edit_agent_id_.clear();  // back to the read-only detail
+            } else {
+                edit_agent_error_ = error;  // the engine's reason, verbatim
+            }
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        edit_agent_id_.clear();
+        edit_agent_error_.clear();
+    }
+}
+
 // The Agents section (#849): the served agents you can chat with. A thin, read-only viewer
 // over the replicated agent:<id> records (AgentStore over the CRDT — the same source the
 // MCP/REST list_agents reads), plus the inline "New agent" affordance. Held by id and
@@ -198,6 +264,12 @@ void App::draw_agents() {
             }
             if (agent == nullptr) return;
 
+            // Editing this agent replaces the read-only detail with the edit form.
+            if (edit_agent_id_ == agent->id) {
+                draw_edit_agent_form(*agent);
+                return;
+            }
+
             if (!agent->description.empty()) {
                 ImGui::TextWrapped("%s", agent->description.c_str());
                 ImGui::Spacing();
@@ -238,6 +310,23 @@ void App::draw_agents() {
             if (ImGui::SmallButton("Open chat")) {
                 chat_agent_ = row.id;  // preselect this agent in the Chat view
                 navigate_to(View::Chat);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Edit")) {
+                // Seed the working copy from the record, then the detail pane swaps to the
+                // edit form (the branch at the top of this lambda).
+                edit_agent_id_ = agent->id;
+                edit_agent_name_ = agent->name;
+                edit_agent_model_ = agent->model;
+                edit_agent_description_ = agent->description;
+                edit_agent_system_prompt_ = agent->system_prompt;
+                edit_agent_tools_.clear();
+                for (const std::string& tool : agent->tools) {
+                    if (!edit_agent_tools_.empty()) edit_agent_tools_ += ", ";
+                    edit_agent_tools_ += tool;
+                }
+                edit_agent_error_.clear();
+                add_agent_status_.clear();
             }
             ImGui::Spacing();
             // Load / unload this agent's model in the cache. Loading runs OFF the UI thread

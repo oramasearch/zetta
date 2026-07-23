@@ -1886,6 +1886,9 @@ struct ApiServer::Impl {
         } else if (view == "agents") {
             // The served agents (#849). No system.agents view yet, so the list is rendered
             // straight from the replicated records; create/update/delete are the capabilities.
+            // Each row carries an inline, PRE-FILLED update_agent form (the system prompt +
+            // name/description/tools are editable in place — the generic action form below is
+            // blank, so this is how you edit an existing agent's prompt without retyping it).
             std::string table;
             if (context.node.replication() != nullptr) {
                 std::string rows;
@@ -1896,14 +1899,43 @@ struct ApiServer::Impl {
                         if (!tools.empty()) tools += ", ";
                         tools += tool;
                     }
+                    // The tools field is a JSON array at the boundary (coerce_query_value
+                    // JSON-parses it), so pre-fill it as JSON, not the comma view above.
+                    const std::string tools_json =
+                        web_ui_escape(nlohmann::json(agent.tools).dump());
+                    // Empty fields aren't sent (web_form_input skips them) -> update_agent
+                    // keeps the existing value, so a partial edit only changes what you touch.
+                    const std::string edit_form =
+                        "<details><summary class=\"btn small\">Edit</summary>"
+                        "<form method=\"post\" action=\"/run\" class=\"agent-edit\">"
+                        "<input type=\"hidden\" name=\"cap\" value=\"update_agent\">"
+                        "<input type=\"hidden\" name=\"_return\" value=\"/?view=agents\">"
+                        "<input type=\"hidden\" name=\"id\" value=\"" +
+                        web_ui_escape(agent.id) +
+                        "\">"
+                        "<label>name</label><input name=\"name\" value=\"" +
+                        web_ui_escape(agent.name) +
+                        "\">"
+                        "<label>description</label><input name=\"description\" value=\"" +
+                        web_ui_escape(agent.description) +
+                        "\">"
+                        "<label>system prompt</label>"
+                        "<textarea name=\"system_prompt\" rows=\"4\">" +
+                        web_ui_escape(agent.system_prompt) +
+                        "</textarea>"
+                        "<label>tools (JSON array)</label><input name=\"tools\" value=\"" +
+                        tools_json +
+                        "\">"
+                        "<div class=\"dlgact\"><button class=\"btn btn-primary\">Save</button>"
+                        "</div></form></details>";
                     rows += "<tr><td>" +
                             web_ui_escape(agent.name.empty() ? agent.id : agent.name) +
                             "</td><td>" + web_ui_escape(agent.model) + "</td><td>" +
-                            web_ui_escape(tools) + "</td></tr>";
+                            web_ui_escape(tools) + "</td><td>" + edit_form + "</td></tr>";
                 }
                 if (!rows.empty())
                     table = "<table class=\"grid\"><thead><tr><th>Name</th><th>Model</th>"
-                            "<th>Tools</th></tr></thead><tbody>" +
+                            "<th>Tools</th><th></th></tr></thead><tbody>" +
                             rows + "</tbody></table>";
             }
             if (table.empty())
@@ -1911,7 +1943,8 @@ struct ApiServer::Impl {
                         "to it in the Chat view.</p>";
             out += render_action_panel(
                 context, view, "models", "Agents",
-                "served agents \xC2\xB7 a model + prompt + tools you can chat with",
+                "served agents \xC2\xB7 a model + prompt + tools you can chat with \xC2\xB7 "
+                "Edit a row to change its system prompt",
                 {"create_agent", "update_agent", "delete_agent"}, table);
         } else if (view == "chat") {
             // Talk to a selected agent (#849), or have it build + run a real graph (#872). One

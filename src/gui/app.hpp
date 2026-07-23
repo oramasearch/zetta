@@ -48,6 +48,7 @@ namespace zetta::api { class Registry; }
 namespace zetta::api { class BackgroundActions; }
 namespace zetta::gui { struct CloudInspectOp; }
 namespace zetta::gui { struct ChatOp; }        // a chat turn running off the UI thread (#849)
+namespace zetta::agent { struct AgentRecord; }  // a served agent record (#849)
 
 namespace zetta::gui {
 // One rendered chat message: a user turn or the agent's reply (+ a one-line tool summary).
@@ -399,6 +400,9 @@ private:
     void draw_models();      // standalone models (system.models): list + detail + add
     void draw_agents();      // served agents (agent:<id>): list + detail + create (#849)
     void draw_add_agent_form();  // inline "New agent" affordance (create_agent)
+    // Edit an existing agent's fields in place (name/description/model/system prompt/tools),
+    // seeded from `agent`; Save calls AgentStore::put (mirrors the update_agent capability).
+    void draw_edit_agent_form(const zetta::agent::AgentRecord& agent);
     void draw_chat();        // talk to the selected agent (#849) with tool-calling
     // Start a chat turn OFF the UI thread (loads the model + generates, ~seconds); the
     // worker sets the op done and poll_chat_op() applies the reply on the UI thread. With
@@ -610,6 +614,15 @@ private:
     std::string add_agent_tools_;    // comma-separated tool names
     std::string add_agent_error_;
     std::string add_agent_status_;
+    // Editing an existing agent in the detail pane (#849): the id being edited (empty = not
+    // editing) + the working copy of its fields, seeded from the record when Edit is pressed.
+    std::string edit_agent_id_;
+    std::string edit_agent_name_;
+    std::string edit_agent_description_;
+    std::string edit_agent_model_;
+    std::string edit_agent_system_prompt_;
+    std::string edit_agent_tools_;    // comma-separated tool names
+    std::string edit_agent_error_;
     // The Chat view (#849): the selected agent, the input, the transcript, and the
     // in-flight off-thread turn (chat_op_) applied by poll_chat_op().
     std::string chat_agent_;                 // selected agent id (the chat selector)

@@ -330,6 +330,11 @@ pre{margin:8px 0 0;padding:13px;white-space:pre-wrap;word-break:break-word;font-
 .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;}
 .fgrid .full{grid-column:1/-1;}
 @media (max-width:620px){.fgrid{grid-template-columns:1fr;}}
+.agent-edit{display:flex;flex-direction:column;gap:6px;padding:10px 0 4px;max-width:560px;}
+.agent-edit input,.agent-edit textarea{width:100%;}
+.agent-edit .dlgact{margin-top:8px;}
+details>summary.btn{display:inline-block;cursor:pointer;list-style:none;}
+details>summary.btn::-webkit-details-marker{display:none;}
 
 /* A nested object input (the connector config on create_dataset_from_query,
    #827): its own flat surface inside the dialog's grid, so the structure of
