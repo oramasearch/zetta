@@ -15,6 +15,8 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(zetta-tests
   api/test_registry.cpp
+  api/test_agent_api.cpp
+  api/test_mcp_prompts.cpp
   api/test_consent.cpp
   api/test_auth_gate.cpp
   api/test_mcp_server.cpp
@@ -146,6 +148,7 @@ add_executable(zetta-tests
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp
   connect/test_native_http_transport.cpp
+  connect/test_model_fetch.cpp
   usecases/churn/test_churn_dataset.cpp
   pipeline/test_n8n_import.cpp
   pipeline/test_n8n_compile.cpp
@@ -174,12 +177,61 @@ add_executable(zetta-tests
   cluster/test_data_replication.cpp
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
+  agent/test_action.cpp
+  agent/test_solution_graph.cpp
+  dataset/test_dataset_generator.cpp
+  agent/test_agent_record.cpp
+  agent/test_agent_store.cpp
+  agent/test_base_prompt.cpp
+  agent/test_chat.cpp
+  agent/test_end_state_grader.cpp
+  agent/test_task.cpp
+  agent/test_sandbox.cpp
+  agent/test_rollout.cpp
+  agent/test_reward.cpp
+  agent/test_admission_gate.cpp
+  agent/test_curriculum.cpp
+  agent/test_corpus_io.cpp
+  agent/test_corpus_native_gate.cpp
+  agent/test_softmax_policy.cpp
+  agent/test_advantage.cpp
+  agent/test_policy_gradient.cpp
+  agent/test_training.cpp
+  agent/test_sequence_training.cpp
+  agent/test_corpus_training.cpp
+  agent/test_linear_policy.cpp
+  agent/test_distributed.cpp
+  agent/test_distributed_training.cpp
+  agent/test_collectives_allreduce.cpp
+  agent/test_neural_training.cpp
+  agent/test_judge.cpp
+  agent/test_qwen_rlvr.cpp
+  agent/test_text_generation.cpp
+  autograd/test_autograd.cpp
+  autograd/test_transformer.cpp
+  autograd/test_qwen.cpp
+  autograd/test_safetensors.cpp
+  autograd/test_device_agnostic.cpp
+  tokenizer/test_byte_encoding.cpp
+  tokenizer/test_pre_tokenizer.cpp
+  tokenizer/test_bpe.cpp
+  tokenizer/test_qwen_real_checkpoint.cpp
+  compute/test_mlx_device.cpp
+  compute/test_mlx_transformer.cpp
+  compute/test_safetensors.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)
 target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The MLX-backend tests (compute/test_mlx_transformer.cpp) include <mlx/mlx.h>
+# directly to exercise the tensor building blocks, so they need MLX's headers when
+# the backend is enabled. libmlx itself arrives transitively via zetta-compute.
+if(ZETTA_ENABLE_MLX)
+  target_include_directories(zetta-tests PRIVATE ${MLX_INCLUDE_DIR})
+endif()
 # Path to test fixture files (e.g. the n8n churn workflow) so tests can load
 # them at runtime without depending on the working directory; and the repo's
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).

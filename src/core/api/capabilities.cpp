@@ -1,6 +1,7 @@
 #include "zetta/api/capabilities.hpp"
 
 #include <chrono>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -30,12 +31,21 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/agent/agent_store.hpp"
+#include "zetta/agent/chat.hpp"
+#include "zetta/agent/corpus_io.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
+#include "zetta/autograd/qwen.hpp"
+#include "zetta/tokenizer/bpe.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/pipeline/n8n_compile.hpp"
 #include "zetta/pipeline/n8n_import.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -2995,6 +3005,497 @@ const nlohmann::json& get_spec_output_schema() {
     return schema;
 }
 
+// --- agents: CRUD for the served, selectable agent entity (#849) --------------
+
+const nlohmann::json& agent_fields_schema() {
+    // The agent record shape — reused as the create/get/update output schema.
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"description", {{"type", "string"}}},
+          {"model", {{"type", "string"}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"created_at", {{"type", "string"}}},
+          {"updated_at", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_agent_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "model"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1}}},
+          {"description", {{"type", "string"}}},
+          {"model",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "checkpoint dir, model:<uuid>, or a HuggingFace repo id"}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_agent_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id", {{"type", "string"}, {"minLength", 1}}},
+          {"name", {{"type", "string"}, {"minLength", 1}}},
+          {"description", {{"type", "string"}}},
+          {"model", {{"type", "string"}, {"minLength", 1}}},
+          {"system_prompt", {{"type", "string"}}},
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+const nlohmann::json& agent_id_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"id"}},
+        {"additionalProperties", false},
+        {"properties", {{"id", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& list_agents_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_agents_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agents"}},
+        {"properties",
+         {{"agents", {{"type", "array"}, {"items", agent_fields_schema()}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_agent_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"removed"}},
+        {"properties",
+         {{"removed", {{"type", "boolean"}}}, {"id", {{"type", "string"}}}}}};
+    return schema;
+}
+
+// Apply the provided fields of a create/update input onto `base` (a fresh record on
+// create, the existing one on update). Only present fields overwrite.
+zetta::agent::AgentRecord agent_from_input(const nlohmann::json& input,
+                                           zetta::agent::AgentRecord base) {
+    if (input.contains("name")) base.name = input.at("name").get<std::string>();
+    if (input.contains("description")) {
+        base.description = input.at("description").get<std::string>();
+    }
+    if (input.contains("model")) base.model = input.at("model").get<std::string>();
+    if (input.contains("system_prompt")) {
+        base.system_prompt = input.at("system_prompt").get<std::string>();
+    }
+    if (input.contains("tools") && input.at("tools").is_array()) {
+        base.tools.clear();
+        for (const nlohmann::json& tool : input.at("tools")) {
+            if (tool.is_string()) base.tools.push_back(tool.get<std::string>());
+        }
+    }
+    return base;
+}
+
+ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    zetta::agent::AgentRecord agent;
+    agent.id = zetta::util::new_uuid();
+    agent.created_at = zetta::util::now_iso8601();
+    agent.updated_at = agent.created_at;
+    agent = agent_from_input(input, std::move(agent));
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    std::string error;
+    const std::optional<zetta::agent::AgentRecord> stored = store.put(agent, &error);
+    if (!stored) return ApiResult::failure("invalid_argument", error);
+    return ApiResult::success(zetta::agent::to_json(*stored));
+}
+
+ApiResult handle_list_agents(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json agents = nlohmann::json::array();
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        for (const zetta::agent::AgentRecord& agent : store.list()) {
+            agents.push_back(zetta::agent::to_json(agent));
+        }
+    }
+    nlohmann::json output;
+    output["agents"] = std::move(agents);
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_get_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    return ApiResult::success(zetta::agent::to_json(*agent));
+}
+
+ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
+    if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    zetta::agent::AgentRecord updated = agent_from_input(input, *existing);
+    updated.updated_at = zetta::util::now_iso8601();
+    std::string error;
+    const std::optional<zetta::agent::AgentRecord> stored = store.put(updated, &error);
+    if (!stored) return ApiResult::failure("invalid_argument", error);
+    return ApiResult::success(zetta::agent::to_json(*stored));
+}
+
+ApiResult handle_delete_agent(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("id").get<std::string>();
+    bool removed = false;
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        removed = store.remove(id);
+    }
+    nlohmann::json output;
+    output["removed"] = removed;
+    output["id"] = id;
+    return ApiResult::success(std::move(output));
+}
+
+// --- chat: talk to an agent, with tool-calling (#849) -------------------------
+
+const nlohmann::json& chat_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agent", "message"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
+          {"message", {{"type", "string"}, {"minLength", 1}}},
+          {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
+          {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
+    return schema;
+}
+
+const nlohmann::json& chat_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"reply", "tool_calls", "rounds"}},
+        {"properties",
+         {{"reply", {{"type", "string"}}},
+          {"rounds", {{"type", "integer"}}},
+          {"tool_calls",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"tool", {{"type", "string"}}},
+                {"status", {{"type", "string"}}},
+                {"detail", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string agent_id = input.at("agent").get<std::string>();
+    const std::string message = input.at("message").get<std::string>();
+    const int max_new_tokens = input.value("max_new_tokens", 256);
+    const int max_rounds = input.value("max_rounds", 3);
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+
+    // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
+    // chat panel also uses, so both behave identically. agent.model must be a local
+    // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    const zetta::agent::ChatResponse chat =
+        zetta::agent::respond(*agent, message, max_new_tokens, max_rounds);
+    if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
+
+    nlohmann::json tool_calls = nlohmann::json::array();
+    for (const zetta::agent::ChatToolInvocation& invocation : chat.result.invocations) {
+        nlohmann::json entry;
+        entry["tool"] = invocation.call.tool;
+        entry["status"] = invocation.status == zetta::agent::ApplyStatus::Ok ? "ok"
+                          : invocation.status == zetta::agent::ApplyStatus::UnknownTool
+                              ? "unknown_tool"
+                              : "failed";
+        if (!invocation.detail.empty()) entry["detail"] = invocation.detail;
+        tool_calls.push_back(std::move(entry));
+    }
+    nlohmann::json output;
+    output["reply"] = chat.result.reply;
+    output["tool_calls"] = std::move(tool_calls);
+    output["rounds"] = chat.result.rounds;
+    return ApiResult::success(std::move(output));
+}
+
+// --- agent_run: the base agent builds AND runs an execution graph ------------------
+//
+// The point of #872: the base (#555) agent is usable RIGHT AWAY — it does not need the
+// RLVR tool-calling fine-tune (#859) to drive real work. This capability closes the loop
+// end to end from plain language:
+//   1. the agent reads the message and recognizes the use case (chat/respond),
+//   2. the engine compiles that message into a real ExecutionGraph (pipeline::compile_intent
+//      — the same churn-shape heuristic behind compile_intent), stored on a project,
+//   3. the graph runs through the gate + the real churn engine (delegated to handle_run).
+// So "the agent builds and runs a churn graph for Charles" is one call. #859 later lets the
+// agent emit the graph step-by-step itself; today the engine builds it from the same intent.
+const nlohmann::json& agent_run_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"agent", "message"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
+          {"message",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the plain-language ask, e.g. 'predict which customers will churn'"}}},
+          {"project",
+           {{"type", "string"},
+            {"description",
+             "land the graph + run on this project (name or uuid); a new project is "
+             "created when omitted"}}},
+          {"graph_name",
+           {{"type", "string"}, {"description", "name for the stored graph (default derived)"}}},
+          {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
+          {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}},
+          {"top_k",
+           {{"type", "integer"}, {"minimum", 0}, {"description", "at-risk list cap (0 = all)"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"description", "a churn dataset dir on the node (default: the built-in demo)"}}},
+          {"model_name", {{"type", "string"}, {"description", "registered model name"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& agent_run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"reply", "shape", "project", "graph", "steps", "run"}},
+        {"properties",
+         {{"reply", {{"type", "string"}, {"description", "the agent's recognition of the ask"}}},
+          {"shape",
+           {{"type", "string"}, {"description", "the compiled template: 'churn' | 'generic'"}}},
+          {"project", {{"type", "string"}}},
+          {"graph", {{"type", "string"}}},
+          {"graph_id", {{"type", "string"}}},
+          {"steps", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"run",
+           {{"type", "object"},
+            {"description", "the run result (run_id + engine + status), poll get_run"}}}}}};
+    return schema;
+}
+
+ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("not_found", "no agents on a standalone node");
+    }
+    const std::string agent_id = input.at("agent").get<std::string>();
+    const std::string message = input.at("message").get<std::string>();
+
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+
+    // 1. The agent reads the ask and recognizes the use case (the shared respond() path).
+    const zetta::agent::ChatResponse chat = zetta::agent::respond(
+        *agent, message, input.value("max_new_tokens", 256), input.value("max_rounds", 3));
+    if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
+
+    // 2. The engine compiles the same ask into a real, editable ExecutionGraph.
+    std::string reason;
+    const std::optional<zetta::pipeline::CompiledIntent> compiled =
+        zetta::pipeline::compile_intent(message, &reason);
+    if (!compiled) {
+        return ApiResult::failure("engine_error",
+                                  "the agent could not compile a graph from the ask: " + reason);
+    }
+    const std::string shape = std::string(zetta::pipeline::to_string(compiled->shape));
+    std::vector<std::string> steps;
+    for (const std::shared_ptr<zetta::ir::Node>& node : compiled->graph.nodes()) {
+        steps.push_back(node->name);
+    }
+
+    // Land the graph on a project (the caller's, or a fresh one so a chat needs no setup).
+    std::shared_ptr<zetta::pipeline::Project> project;
+    if (const auto named = input.find("project"); named != input.end()) {
+        project = resolve_project(context, named->get<std::string>());
+        if (!project) {
+            return ApiResult::failure(
+                "not_found", "no project '" + named->get<std::string>() + "' (or with that id)");
+        }
+    } else {
+        const std::string owner =
+            context.acting_key.empty() ? std::string("local") : context.acting_key;
+        project = context.node.create_project(
+            "agent " + shape + " · " + zetta::util::new_uuid().substr(0, 8), owner);
+        if (!project) {
+            return ApiResult::failure("engine_error", "could not create a project for the run");
+        }
+    }
+
+    const std::string graph_name =
+        input.value("graph_name", agent->name.empty() ? shape + " graph"
+                                                       : agent->name + " · " + shape + " graph");
+    const std::shared_ptr<zetta::pipeline::ProjectGraph> stored =
+        project->create_graph(graph_name, std::move(compiled->graph));
+    if (!stored) {
+        return ApiResult::failure(
+            "engine_error", "could not store the graph '" + graph_name + "' on project '" +
+                                project->name() + "' (name clash or empty)");
+    }
+
+    // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
+    nlohmann::json run_input;
+    run_input["project"] = project->name();
+    run_input["graph"] = graph_name;
+    for (const char* passthrough : {"top_k", "dataset_path", "model_name", "coordinate"}) {
+        if (const auto found = input.find(passthrough); found != input.end()) {
+            run_input[passthrough] = *found;
+        }
+    }
+    const ApiResult run_result = handle_run(run_input, context);
+    if (!run_result.ok) return run_result;  // reason already carries the failing step
+
+    nlohmann::json output;
+    output["reply"] = chat.result.reply;
+    output["shape"] = shape;
+    output["project"] = project->name();
+    output["graph"] = graph_name;
+    output["graph_id"] = stored->id();
+    output["steps"] = steps;
+    output["run"] = run_result.value;
+    return ApiResult::success(std::move(output));
+}
+
+// --- dataset generation (#873): native, in-Zetta training-corpus synthesis ------------------
+
+const nlohmann::json& list_dataset_generators_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"}, {"additionalProperties", false}, {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_dataset_generators_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"generators",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"kind", {{"type", "string"}}},
+                {"title", {{"type", "string"}}},
+                {"description", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_list_dataset_generators(const nlohmann::json&, ApiContext&) {
+    nlohmann::json generators = nlohmann::json::array();
+    for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
+         zetta::dataset::DatasetGeneratorFactory::builtin().generators()) {
+        generators.push_back({{"kind", generator->kind()},
+                              {"title", generator->title()},
+                              {"description", generator->description()}});
+    }
+    return ApiResult::success(nlohmann::json{{"generators", std::move(generators)}});
+}
+
+const nlohmann::json& generate_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"kind"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"kind",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "a generator kind from list_dataset_generators (e.g. 'base-agent')"}}},
+          {"variants_per_subject",
+           {{"type", "integer"}, {"minimum", 1}, {"description", "task variants per plan subject"}}},
+          {"held_out_fraction",
+           {{"type", "number"}, {"minimum", 0}, {"maximum", 1}, {"description", "canary fraction"}}},
+          {"path",
+           {{"type", "string"},
+            {"description", "write the gated JSONL corpus to this file on the node (optional)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& generate_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"kind", {{"type", "string"}}},
+          {"cases", {{"type", "integer"}}},
+          {"subjects", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"held_out", {{"type", "integer"}}},
+          {"admitted", {{"type", "boolean"}}},
+          {"path", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
+    const std::string kind = input.at("kind").get<std::string>();
+    const std::shared_ptr<const zetta::dataset::DatasetGenerator> generator =
+        zetta::dataset::DatasetGeneratorFactory::builtin().create(kind);
+    if (!generator) {
+        return ApiResult::failure("not_found", "no dataset generator '" + kind + "'");
+    }
+    zetta::dataset::DatasetGenSpec spec;
+    spec.variants_per_subject = input.value("variants_per_subject", 1);
+    spec.held_out_fraction = input.value("held_out_fraction", 0.0);
+    const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+
+    // Gate it (blender-lr discipline) — the generator builds gated cases, but the corpus is only
+    // trusted once admit_corpus confirms it (reference passes, controls fail).
+    const zetta::agent::AdmissionResult gate = zetta::agent::admit_corpus(dataset.cases);
+
+    nlohmann::json output;
+    output["kind"] = kind;
+    output["cases"] = dataset.cases.size();
+    output["subjects"] = dataset.subjects;
+    output["held_out"] = dataset.held_out;
+    output["admitted"] = gate.admitted;
+    if (!gate.admitted && !gate.failures.empty()) {
+        output["gate_failure"] = std::string(zetta::agent::to_string(gate.failures.front().kind)) +
+                                 " (task '" + gate.failures.front().task_id + "')";
+    }
+    if (const auto path = input.find("path"); path != input.end()) {
+        std::ofstream file(path->get<std::string>());
+        if (!file) {
+            return ApiResult::failure(
+                "engine_error", "could not open '" + path->get<std::string>() + "' for writing");
+        }
+        file << zetta::agent::dump_corpus_jsonl(dataset.cases);
+        output["path"] = *path;
+    }
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -3276,6 +3777,125 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    // --- agents (#849): CRUD for the served, selectable agent entity ----------
+    registry.add(Capability{
+        "create_agent",
+        "Create an agent",
+        "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a "
+        "HuggingFace repo id) plus an optional system prompt and the tools it may call. "
+        "Returns the stored record with its generated id; replicates to every node.",
+        create_agent_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_agent});
+    registry.add(Capability{
+        "list_agents",
+        "List agents",
+        "Read every agent on this node (id, name, model, tools). No side effects.",
+        list_agents_schema(),
+        list_agents_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_agents});
+    registry.add(Capability{
+        "get_agent",
+        "Get one agent",
+        "Read one agent by id. No side effects.",
+        agent_id_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_agent});
+    registry.add(Capability{
+        "update_agent",
+        "Update an agent",
+        "Update the provided fields of an agent (name, description, model, system prompt, "
+        "tools); replicates. Returns the updated record.",
+        update_agent_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_agent});
+    registry.add(Capability{
+        "delete_agent",
+        "Delete an agent",
+        "Remove an agent by id (a CRDT tombstone; replicates). Idempotent.",
+        agent_id_schema(),
+        delete_agent_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_agent"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_agent});
+    registry.add(Capability{
+        "chat",
+        "Chat with an agent",
+        "Send a message to an agent and get its reply, with tool-calling: the agent's model "
+        "generates, any tool calls it emits run in its sandbox and feed back, until it "
+        "answers. Loads the agent's model (a local checkpoint dir). No persistent side "
+        "effects.",
+        chat_schema(),
+        chat_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_chat});
+    registry.add(Capability{
+        "agent_run",
+        "Agent builds + runs a graph",
+        "Give an agent a plain-language ask; it recognizes the use case, compiles a real "
+        "execution graph from it, and runs that graph through the gate + the real engine "
+        "(churn today) — end to end in one call. The base agent needs no tool-calling "
+        "fine-tune for this. Returns the agent's reply, the built graph's steps, and the "
+        "run id (poll get_run / system.runs).",
+        agent_run_schema(),
+        agent_run_output_schema(),
+        CapabilityKind::Job,
+        Operation{CapabilityDomain::Orchestration, "run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_agent_run});
+
+    // --- dataset generation (#873) -------------------------------------------
+    registry.add(Capability{
+        "list_dataset_generators",
+        "List dataset generators",
+        "Read the native training-dataset generators available on this node (the base agent's "
+        "corpus, Auto-Suggest, …) — each grows + gates a corpus grounded in the solutions plan. "
+        "No side effects.",
+        list_dataset_generators_schema(),
+        list_dataset_generators_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_dataset_generators});
+    registry.add(Capability{
+        "generate_dataset",
+        "Generate a dataset",
+        "Synthesize an admission-gated training corpus natively (ADR-17), grounded in the "
+        "solutions plan: pick a generator kind, get the gated cases (reference passes, negative "
+        "controls fail) with reference actions, and optionally write the JSONL to a path. This is "
+        "the native replacement for the offline Python generators + what a per-customer fork "
+        "(#853) uses to grow its own corpus.",
+        generate_dataset_schema(),
+        generate_dataset_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "run"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_generate_dataset});
 
     // --- governed serving (#648, docs/api/serving.md) -------------------------
 

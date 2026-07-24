@@ -25,11 +25,14 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
 #include "zetta/api/mcp_docs.hpp"
+#include "zetta/api/mcp_prompts.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
+#include "zetta/agent/agent_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -616,7 +619,9 @@ struct ApiServer::Impl {
         if (method == "initialize") {
             return jsonrpc_result(
                 id, {{"protocolVersion", kProtocolVersion},
-                     {"capabilities", {{"tools", nlohmann::json::object()}}},
+                     {"capabilities",
+                      {{"tools", nlohmann::json::object()},
+                       {"prompts", nlohmann::json::object()}}},
                      {"serverInfo",
                       {{"name", "zetta"}, {"version", zetta::kVersion}}}});
         }
@@ -700,6 +705,26 @@ struct ApiServer::Impl {
             result["structuredContent"] = std::move(payload);
             result["isError"] = !call_result.ok;
             return jsonrpc_result(id, std::move(result));
+        }
+        if (method == "prompts/list") {
+            // Guided workflows over the tools (#872) — no per-prompt scoping: a prompt is a
+            // template the client expands into tool calls, and each of those calls is still
+            // scope-checked at tools/call time.
+            return jsonrpc_result(id, {{"prompts", mcp_prompt_definitions()}});
+        }
+        if (method == "prompts/get") {
+            const auto& params = request.value("params", nlohmann::json::object());
+            const std::string prompt_name = params.value("name", "");
+            if (prompt_name.empty()) {
+                return jsonrpc_error(id, -32602, "params.name is required");
+            }
+            std::string reason;
+            if (std::optional<nlohmann::json> prompt = render_mcp_prompt(
+                    prompt_name, params.value("arguments", nlohmann::json::object()),
+                    &reason)) {
+                return jsonrpc_result(id, std::move(*prompt));
+            }
+            return jsonrpc_error(id, -32602, reason);
         }
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
@@ -1048,6 +1073,16 @@ struct ApiServer::Impl {
             options += form_option(db_name, db_name, false);
         return options;
     }
+    // The served agents (agent:<id>) as a picker, so the Chat form is a selector (#849).
+    std::string agent_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select an agent\xE2\x80\xA6</option>";
+        if (context.node.replication() != nullptr)
+            for (const zetta::agent::AgentRecord& agent :
+                 zetta::agent::AgentStore(*context.node.replication()).list())
+                options += form_option(agent.name.empty() ? agent.id : agent.name, agent.id,
+                                       false);
+        return options;
+    }
 
     // The saved source connections, so the connector dialog offers a picker
     // instead of asking for a credential again (#827). Names only — the store's
@@ -1207,6 +1242,8 @@ struct ApiServer::Impl {
                 options = index_options(context);
             } else if (key == "model") {
                 options = model_options(context);
+            } else if (key == "agent") {
+                options = agent_options(context);
             } else if (key == "database") {
                 options = database_options(context);
             } else if (key == "connection") {
@@ -1847,6 +1884,108 @@ struct ApiServer::Impl {
                 "one to serve predictions",
                 {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
+        } else if (view == "agents") {
+            // The served agents (#849). No system.agents view yet, so the list is rendered
+            // straight from the replicated records; create/update/delete are the capabilities.
+            // Each row carries an inline, PRE-FILLED update_agent form (the system prompt +
+            // name/description/tools are editable in place — the generic action form below is
+            // blank, so this is how you edit an existing agent's prompt without retyping it).
+            std::string table;
+            if (context.node.replication() != nullptr) {
+                std::string rows;
+                for (const zetta::agent::AgentRecord& agent :
+                     zetta::agent::AgentStore(*context.node.replication()).list()) {
+                    std::string tools;
+                    for (const std::string& tool : agent.tools) {
+                        if (!tools.empty()) tools += ", ";
+                        tools += tool;
+                    }
+                    // The tools field is a JSON array at the boundary (coerce_query_value
+                    // JSON-parses it), so pre-fill it as JSON, not the comma view above.
+                    const std::string tools_json =
+                        web_ui_escape(nlohmann::json(agent.tools).dump());
+                    // Empty fields aren't sent (web_form_input skips them) -> update_agent
+                    // keeps the existing value, so a partial edit only changes what you touch.
+                    const std::string edit_form =
+                        "<details><summary class=\"btn small\">Edit</summary>"
+                        "<form method=\"post\" action=\"/run\" class=\"agent-edit\">"
+                        "<input type=\"hidden\" name=\"cap\" value=\"update_agent\">"
+                        "<input type=\"hidden\" name=\"_return\" value=\"/?view=agents\">"
+                        "<input type=\"hidden\" name=\"id\" value=\"" +
+                        web_ui_escape(agent.id) +
+                        "\">"
+                        "<label>name</label><input name=\"name\" value=\"" +
+                        web_ui_escape(agent.name) +
+                        "\">"
+                        "<label>description</label><input name=\"description\" value=\"" +
+                        web_ui_escape(agent.description) +
+                        "\">"
+                        "<label>system prompt</label>"
+                        "<textarea name=\"system_prompt\" rows=\"4\">" +
+                        web_ui_escape(agent.system_prompt) +
+                        "</textarea>"
+                        "<label>tools (JSON array)</label><input name=\"tools\" value=\"" +
+                        tools_json +
+                        "\">"
+                        "<div class=\"dlgact\"><button class=\"btn btn-primary\">Save</button>"
+                        "</div></form></details>";
+                    rows += "<tr><td>" +
+                            web_ui_escape(agent.name.empty() ? agent.id : agent.name) +
+                            "</td><td>" + web_ui_escape(agent.model) + "</td><td>" +
+                            web_ui_escape(tools) + "</td><td>" + edit_form + "</td></tr>";
+                }
+                if (!rows.empty())
+                    table = "<table class=\"grid\"><thead><tr><th>Name</th><th>Model</th>"
+                            "<th>Tools</th><th></th></tr></thead><tbody>" +
+                            rows + "</tbody></table>";
+            }
+            if (table.empty())
+                table = "<p class=\"muted\">No agents yet \xE2\x80\x94 create one above, then talk "
+                        "to it in the Chat view.</p>";
+            out += render_action_panel(
+                context, view, "models", "Agents",
+                "served agents \xC2\xB7 a model + prompt + tools you can chat with \xC2\xB7 "
+                "Edit a row to change its system prompt",
+                {"create_agent", "update_agent", "delete_agent"}, table);
+        } else if (view == "chat") {
+            // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
+            // form, two submit buttons: the clicked button's name=cap picks the capability —
+            // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
+            // ask, the engine compiles a graph from it, and runs it). POSTed to /run WITHOUT a
+            // _return, so serve_web_run renders the result inline. The turn blocks for seconds
+            // (model load + generation, then the run) — fine for a request/response page.
+            out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
+                   web_ui_icon("models") +
+                   "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 or have it "
+                   "build + run a real pipeline from your ask</span></div>"
+                   "<form method=\"post\" action=\"/run\">"
+                   "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
+                   agent_options(context) +
+                   "</select></div><div class=\"full\"><label>message</label>"
+                   "<textarea name=\"message\" rows=\"3\" placeholder=\"e.g. predict which "
+                   "customers are about to churn, with calibrated scores + explanations\"></textarea></div></div>"
+                   "<div class=\"dlgact\"><button class=\"btn\" name=\"cap\" value=\"chat\">Send</button>"
+                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
+                   "run</button></div>"
+                   "</form></section>";
+        } else if (view == "datagen") {
+            // Native dataset generators (#873): the factory's generators + a Generate action.
+            std::string rows;
+            for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
+                 zetta::dataset::DatasetGeneratorFactory::builtin().generators()) {
+                rows += "<tr><td><code>" + web_ui_escape(generator->kind()) + "</code></td><td>" +
+                        web_ui_escape(generator->title()) + "</td><td>" +
+                        web_ui_escape(generator->description()) + "</td></tr>";
+            }
+            const std::string table =
+                "<table class=\"grid\"><thead><tr><th>Kind</th><th>Name</th>"
+                "<th>What it generates</th></tr></thead><tbody>" +
+                rows + "</tbody></table>";
+            out += render_action_panel(
+                context, view, "datagen", "Data generators",
+                "native training-dataset generators \xC2\xB7 grow + gate a corpus grounded in the "
+                "solutions plan, inside Zetta (ADR-17) \xC2\xB7 Generate writes gated JSONL",
+                {"generate_dataset"}, table);
         } else if (view == "pipeline") {
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",

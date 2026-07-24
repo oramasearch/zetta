@@ -316,6 +316,8 @@ endif()
 
 option(ZETTA_ENABLE_CUDA
   "Build the optional CUDA compute backend (requires the CUDA toolkit)" OFF)
+option(ZETTA_ENABLE_MLX
+  "Build the optional MLX (Apple-Silicon/Metal) compute backend (requires libmlx)" OFF)
 
 set(ZETTA_COMPUTE_SOURCES
   src/core/compute/device_buffer.cpp
@@ -333,6 +335,23 @@ if(ZETTA_ENABLE_CUDA)
 else()
   message(STATUS "CUDA compute backend: disabled (CPU-only build). "
                  "Enable with -DZETTA_ENABLE_CUDA=ON on a host with the CUDA toolkit.")
+endif()
+
+if(ZETTA_ENABLE_MLX)
+  # MLX is a normal C++ library (no separate language, unlike CUDA): find its
+  # header + shared lib and add the backend TU. REQUIRED so an explicit opt-in
+  # fails loudly when libmlx is absent rather than silently dropping the backend.
+  find_path(MLX_INCLUDE_DIR mlx/mlx.h REQUIRED)
+  find_library(MLX_LIBRARY mlx REQUIRED)
+  list(APPEND ZETTA_COMPUTE_SOURCES
+    src/core/compute/mlx_device.cpp
+    src/core/compute/mlx_transformer.cpp
+    src/core/compute/mlx_qwen.cpp
+    src/core/compute/safetensors.cpp)
+  message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
+else()
+  message(STATUS "MLX compute backend: disabled (CPU-only build). "
+                 "Enable with -DZETTA_ENABLE_MLX=ON on a host with libmlx (macOS).")
 endif()
 
 add_library(zetta-compute STATIC ${ZETTA_COMPUTE_SOURCES})
@@ -373,6 +392,23 @@ if(ZETTA_ENABLE_CUDA)
   endif()
 endif()
 
+if(ZETTA_ENABLE_MLX)
+  # ZETTA_WITH_MLX is PUBLIC so consumers (the device registry, tests) guard their
+  # use of MlxDevice on it. The MLX headers + libmlx are PRIVATE so they link into
+  # the final binary without leaking into zetta-core's public surface. On macOS
+  # libmlx pulls the Metal/Foundation frameworks it was built against.
+  target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_MLX=1)
+  target_include_directories(zetta-compute PRIVATE ${MLX_INCLUDE_DIR})
+  # nlohmann/json (header-only) for the safetensors header; the include path comes
+  # via the interface target set up above.
+  target_link_libraries(zetta-compute PRIVATE ${MLX_LIBRARY} nlohmann_json)
+  if(APPLE)
+    target_link_libraries(zetta-compute PRIVATE
+      "-framework Metal" "-framework Foundation" "-framework QuartzCore"
+      "-framework Accelerate")
+  endif()
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
@@ -387,6 +423,7 @@ add_library(zetta-core STATIC
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
+  src/core/api/mcp_prompts.cpp
   src/core/api/registry.cpp
   src/core/api/rest.cpp
   src/core/api/serving.cpp
@@ -501,6 +538,7 @@ add_library(zetta-core STATIC
   src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
   src/core/connect/http_transport.cpp
+  src/core/connect/model_fetch.cpp
   src/core/usecases/churn/churn_dataset.cpp
   src/core/pipeline/n8n_import.cpp
   src/core/pipeline/n8n_compile.cpp
@@ -539,6 +577,45 @@ add_library(zetta-core STATIC
   src/core/ml/local_featurize_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
+  src/core/agent/action.cpp
+  src/core/agent/agent_record.cpp
+  src/core/agent/agent_store.cpp
+  src/core/agent/base_prompt.cpp
+  src/core/agent/solution_graph.cpp
+  src/core/dataset/auto_suggest_generator.cpp
+  src/core/dataset/base_agent_generator.cpp
+  src/core/dataset/dataset_generator_factory.cpp
+  src/core/dataset/plan_templates.cpp
+  src/core/agent/chat.cpp
+  src/core/agent/model_cache.cpp
+  src/core/agent/grader.cpp
+  src/core/agent/sandbox.cpp
+  src/core/agent/rollout.cpp
+  src/core/agent/reward.cpp
+  src/core/agent/admission_gate.cpp
+  src/core/agent/curriculum.cpp
+  src/core/agent/corpus_io.cpp
+  src/core/agent/softmax_policy.cpp
+  src/core/agent/advantage.cpp
+  src/core/agent/policy_gradient.cpp
+  src/core/agent/training.cpp
+  src/core/agent/sequence_training.cpp
+  src/core/agent/corpus_training.cpp
+  src/core/agent/linear_policy.cpp
+  src/core/agent/distributed.cpp
+  src/core/agent/distributed_training.cpp
+  src/core/agent/collectives_allreduce.cpp
+  src/core/agent/neural_training.cpp
+  src/core/agent/judge.cpp
+  src/core/agent/qwen_rlvr.cpp
+  src/core/agent/text_generation.cpp
+  src/core/autograd/tensor.cpp
+  src/core/autograd/transformer.cpp
+  src/core/autograd/qwen.cpp
+  src/core/autograd/safetensors.cpp
+  src/core/tokenizer/byte_encoding.cpp
+  src/core/tokenizer/pre_tokenizer.cpp
+  src/core/tokenizer/bpe.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
@@ -680,6 +757,9 @@ add_executable(zetta
   src/gui/app_traces.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
+  src/gui/app_agents.cpp
+  src/gui/app_chat.cpp
+  src/gui/app_datagen.cpp
   src/gui/app_datasets.cpp
   src/gui/app_search.cpp
   src/gui/app_jobs.cpp

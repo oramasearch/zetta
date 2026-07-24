@@ -46,3 +46,21 @@ compile_commands.json
 
 # Node data directory (default data_dir; UUID-named db/table folders + JSONL)
 /zetta-data/
+
+# Python tooling (scripts/ generators; run via `uv run` — deps are PEP 723 inline)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Generated training-data corpus (docs/agent/training-data-runbook.md). Root-level outputs
+# are SCRATCH — ignored; the tracked, committed corpora live in data/ (see data/README.md).
+# Root-anchored so both data/*.jsonl and the test fixtures (tests/fixtures/*.jsonl) stay tracked.
+/corpus.jsonl
+/corpus*.jsonl
+
+/autosuggest.jsonl
+/autosuggest*.jsonl
+
+# Trained checkpoints — large (~GBs); kept local and pushed to a private HF model repo,
+# never committed. The training-metrics log lives alongside (data/checkpoints/*/train.log).
+/data/checkpoints/

@@ -330,6 +330,11 @@ pre{margin:8px 0 0;padding:13px;white-space:pre-wrap;word-break:break-word;font-
 .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;}
 .fgrid .full{grid-column:1/-1;}
 @media (max-width:620px){.fgrid{grid-template-columns:1fr;}}
+.agent-edit{display:flex;flex-direction:column;gap:6px;padding:10px 0 4px;max-width:560px;}
+.agent-edit input,.agent-edit textarea{width:100%;}
+.agent-edit .dlgact{margin-top:8px;}
+details>summary.btn{display:inline-block;cursor:pointer;list-style:none;}
+details>summary.btn::-webkit-details-marker{display:none;}
 
 /* A nested object input (the connector config on create_dataset_from_query,
    #827): its own flat surface inside the dialog's grid, so the structure of
@@ -625,7 +630,8 @@ std::string web_ui_icon(std::string_view name) {
     if (name == "bolt") return svg("<path d='M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z'/>");
     if (name == "chevron") return svg("<path d='m9 6 6 6-6 6'/>");
     if (name == "play") return svg("<path d='m7 4.5 12 7.5-12 7.5z'/>");
-    if (name == "dataset" || name == "datasets" || name == "database" || name == "databases")
+    if (name == "dataset" || name == "datasets" || name == "database" || name == "databases" ||
+        name == "datagen")
         return svg("<ellipse cx='12' cy='5.5' rx='7.5' ry='2.8'/>"
                    "<path d='M4.5 5.5v13c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-13'/>"
                    "<path d='M4.5 12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8'/>");
@@ -683,6 +689,9 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "projects") return "AI projects: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy \xE2\x86\x92 run";
         if (key == "data") return "Databases, tables, rows, and files (blobs)";
         if (key == "models") return "Trained models + serving";
+        if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
+        if (key == "chat") return "Talk to a selected agent, with tool-calling";
+        if (key == "datagen") return "Generate + gate training datasets natively (grounded in the solutions plan)";
         if (key == "pipeline") return "Graphs, deployments, runs, and jobs \xE2\x80\x94 the execution pipeline";
         if (key == "observability") return "Traces, spans, and crashes";
         if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
@@ -714,10 +723,11 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") +
            link("cluster", "Cluster") + link("projects", "Projects");
     out += "<div class=\"group\">Workloads</div>" + link("data", "Data") + link("models", "Models") +
-           link("pipeline", "Pipeline");
+           link("agents", "Agents") + link("chat", "Chat") + link("pipeline", "Pipeline");
     out += "<div class=\"group\">Operate</div>" + link("observability", "Observability") +
            link("governance", "Governance");
-    out += "<div class=\"group\">Build</div>" + link("shell", "Shell") + link("notebooks", "Notebooks");
+    out += "<div class=\"group\">Build</div>" + link("shell", "Shell") + link("notebooks", "Notebooks") +
+           link("datagen", "Data generators");
     out += "</nav><main class=\"main\">";
     out += content;
     out += "</main></div></body></html>";

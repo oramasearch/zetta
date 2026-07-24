@@ -50,7 +50,11 @@ std::string render_mcp_md(std::string_view origin, bool token_required) {
 
     md += "\n---\n\nOnce connected, the node exposes its capabilities as MCP tools "
           "(`tools/list`). The same surface is available as REST (`" + std::string(origin) +
-          "/v1/openapi.json`) and for orientation as `" + std::string(origin) + "/llms.txt`.\n";
+          "/v1/openapi.json`) and for orientation as `" + std::string(origin) + "/llms.txt`.\n\n";
+    md += "It also ships guided **prompts** (`prompts/list`) — reusable workflows over the "
+          "tools your client surfaces as slash commands. Start with **`build_and_run`**: give "
+          "it a plain-language ask and it has an agent build + run a real execution graph "
+          "(e.g. churn) and report the result.\n";
     return md;
 }
 

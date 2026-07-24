@@ -87,6 +87,69 @@ detailed statement of this rule, with the precedents to copy, is
 **Distributed-first — every algorithm scales at both levels** under
 [Conventions](#conventions).
 
+## Orama Studio — the product surface this engine wears
+
+**The user-facing product is "Orama Studio"; Zetta is the platform under the
+hood** (direction set 2026-07-20, naming confirmed 2026-07-21 — Studio first,
+Marketplace deferred). The existing GUI
+([`#627`](https://github.com/oramasearch/zetta/issues/627)) and web UI
+([`#647`](https://github.com/oramasearch/zetta/issues/647)) become Studio (epic
+[`#854`](https://github.com/oramasearch/zetta/issues/854)): create → polish →
+ship production-grade AI Components and pipelines, no ML expertise required.
+Two entry paths mirror the two models: **Create a Solution** (the intent agent —
+[`#555`](https://github.com/oramasearch/zetta/issues/555) /
+[`#853`](https://github.com/oramasearch/zetta/issues/853) /
+[`#849`](https://github.com/oramasearch/zetta/issues/849)) and **Discover
+Opportunities** (auto-suggest from a Workspace Profile). Audience: 70–80%
+technical creators building self-serve AI for a larger internal audience.
+
+**Vocabulary contract for user-facing copy** (web UI, GUI, agent replies,
+onboarding — anywhere a user reads): never "execution graph" → **Pipeline**;
+"correctness gate" → **Verification**; "environment profile" → **Workspace
+Profile**; "model checkpoint" → **Saved Version**; "auto-remediation" →
+**Automatic Recovery**; "agent-generated graph" → **Proposed Solution**; the
+RL loop → **continuous testing and improvement**. The agent is **Ask Orama**
+(never "Ask Studio" / "collaborator"; user-built/external agents stay
+distinct). The one sanctioned place raw platform terms surface is the explicit
+**Technical view** escape hatch. This binds *product copy only* — in code,
+docs, and APIs, `ExecutionGraph`, gate checks, etc. remain the correct
+engineering names. Lifecycle invariants the UI encodes (match them, don't
+contradict them): no Deployment without a Saved Version; nothing
+production-ready without a passed Verification; consequential actions get an
+impact preview with a cancel path.
+
+**Rendering philosophy for both Studio surfaces** (Steve, 2026-07-23): the web
+app stays **C++ server-rendered** — its response time is part of the product.
+Hand-write minimal JavaScript only where interaction genuinely demands it (an
+in-place update that would otherwise full-page flicker, streaming a chat
+reply); never a framework, never client rendering for something the server can
+emit. The desktop app is **SDL3-first**: Dear ImGui is a temporary crutch —
+keep it only where it already gives a good experience; new design-led rendering
+goes custom SDL3 (pixel-perfect control), because the desktop must match the
+web app and the design's style **and motion design** at the highest achievable
+parity.
+
+**The design source is Daniel's repo `oramasearch/orama-design`**, reviewed
+through its **Orama Project Hub** (`/workspace/` on the Vercel preview — the
+front door showing current focus, next review, and sequence). Four major
+destinations: the **Orama Website** (selected Alpha v2 marketing direction),
+the **Orama Studio Web Platform** (the live prototype, `src/studio/`, one live
+version + frozen dated archives), the **Storybook Design System**
+(`packages/design-system/`, Storybook = source of truth, IBM Plex + Carbon),
+and **Roadmap and Design Documentation** (the planning surface: 16 core flows,
+7 journeys, a 14-screen plan, 24 confirmed decisions + 12 open implementation
+contracts). The
+prototype is React and **transfers as tokens, layout, copy, IA, and states —
+not code** (this repo's web UI stays no-framework SSR). Known open tension:
+the headed GUI's design system below (Geist, coral) and the Studio web system
+(IBM Plex, Carbon blue) have not been converged — flag it, don't silently pick
+one. The design's open contracts are questions about what *this engine*
+actually does (real Project lifecycle, agent capabilities, roles, source
+connections, Verification/Deployment/recovery mechanics) — answer them from
+engine truth. Deep inventory + direction cross-reference:
+`docs/projects/orama-studio-marketplace/design-index.md` and `ui-structure.md`
+in https://github.com/oramasearch/orama-bridge.
+
 ## How these docs work — progressive disclosure
 
 This file holds only **identity, the load-bearing rules, build/test, and
@@ -135,6 +198,20 @@ level can be trusted — a stale card is worse than none.
 | Devices, schedulers, jobs, autoscaler, near-data | [`docs/compute/`](docs/compute/README.md) |
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
+| **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
+| **Generating RLVR training data / a task corpus** (from the solutions plan or a customer's data) | **native, in-Zetta**: the `DatasetGenerator` seam + factory (`generate_dataset` / `list_dataset_generators`; base-agent + Auto-Suggest; plan-grounded + admission-gated) → [`docs/dataset/`](docs/dataset/README.md) · the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
+| **The models + their corpora** — honest datasheets + model cards | [`docs/agent/cards/`](docs/agent/cards/README.md) — `models/` (base agent #555, Auto-Suggest #554) + `datasets/`; coverage: [`docs/agent/training-coverage-checklist.md`](docs/agent/training-coverage-checklist.md). **Update the card in the same change as a data/model change.** |
+| **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill · **every run writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
+| **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill · **every eval writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
+
+> **Training / eval always produces a validation report.** Any training,
+> retraining, fine-tune, or evaluation run — of the base agent or a fork — MUST
+> write a dated validation report to [`docs/reports/`](docs/reports/README.md)
+> (`<subject>-validation-YYYY-MM-DD.md`) stating **what version** was tested,
+> **against what data**, and the **measured results** (loss/metrics, grader
+> pass-rate, parse rate, discrimination, any regressions), and link it from the
+> tracking issue. A number with no dated report is not evidence — the report is
+> the deliverable, the checkpoint is not. See the runbooks for the template.
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
@@ -320,6 +397,7 @@ include/zetta/   zetta-core PUBLIC API (no SDL/ImGui)
   cluster.hpp signal.hpp collectives.hpp replication.hpp   the distributed plane
   ir/ query/ input/               ExecutionGraph IR · dialect-agnostic SQL · language frontends
   compute/ ddf/ ml/ index/        devices+schedulers · dataframes · native ML · indexes
+  agent/ dataset/                 RLVR agent (action, prompt, solution-graph bridge, grader) · native corpus generators
   parquet/ repl/ testkit/ checks/ native Parquet · console · in-app tests · gate checks
 src/core/        zetta-core impl (catalog.hpp = internal CRDT key scheme)
 src/gui/         App — links SDL3 + ImGui; app.hpp forward-declares, only app.cpp
@@ -520,6 +598,23 @@ Project skills live in `.claude/skills/` (committed, shared):
   the safety rules and the prove-the-fault-landed discipline.
 - **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
   FedEx-test rule, the nine-step recipe).
+- **native-ai-dev** — build AI natively: a model / layer / autograd op / tokenizer
+  / training or RLVR loop on `zetta::autograd` + the `ComputeDevice` seam + the BPE
+  tokenizer, **no foreign runtime** (ADR-17). The gradient-check discipline, the
+  Qwen exemplar, checkpoint load/save, generation, and the performance playbook.
+  Points at [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md).
+- **rlvr-training-data** — generate the verifiable-reward **training corpora** that
+  train the agents, following blender-rl's *grow by generation, gate by verification*
+  method: reference solutions + negative-control **discrimination** + the admission
+  gate + difficulty tiers + a held-out split, synthesized from a solutions catalog
+  (→ a private HF dataset) or a customer's schema (→ Postgres). Reproduces (does not
+  embed) `homer6/blender-rl`'s dataset strategy.
+- **studio-design-sync** — sync the Orama Studio design between
+  `oramasearch/orama-design` and zetta's two Studio surfaces (the web app in
+  `src/core/api/web_ui.cpp`, the desktop GUI in `src/gui/`): forward = import
+  tokens/IA/copy/states (never React code or vendored Motion+), reverse =
+  backport engine features into the design as dated specs. The transfer
+  contract, both repo maps, and the token/icon translation tables.
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **new-connector** — add a new source connector (pull rows from a warehouse /

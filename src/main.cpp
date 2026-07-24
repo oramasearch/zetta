@@ -9,6 +9,8 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/connect/http_transport.hpp"
+#include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/cloud/node_bootstrap_env.hpp"
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -237,9 +240,70 @@ std::string load_or_create_node_id(const std::string& data_dir) {
     return id;
 }
 
+// `zetta pull <owner/model> [--revision REV] [--dir PATH]` — download open-weights
+// model files natively (config + tokenizer + safetensors, sharded or single) into
+// PATH, using the engine's own HTTPS client (no Python, no curl; ADR-17). The
+// printed directory is what `ZETTA_QWEN_DIR` / the base-agent training consume.
+int run_pull(int argc, char** argv) {
+    std::string repo;
+    std::string revision = "main";
+    std::string dir;
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--dir" && i + 1 < argc) {
+            dir = argv[++i];
+        } else if (arg == "--revision" && i + 1 < argc) {
+            revision = argv[++i];
+        } else if (!arg.empty() && arg.front() == '-') {
+            std::fprintf(stderr, "zetta pull: unknown option %s\n", argv[i]);
+            return 2;
+        } else if (repo.empty()) {
+            repo = argv[i];
+        } else {
+            std::fprintf(stderr, "zetta pull: unexpected argument %s\n", argv[i]);
+            return 2;
+        }
+    }
+    if (repo.empty()) {
+        std::fprintf(stderr,
+                     "usage: zetta pull <owner/model> [--revision REV] [--dir PATH]\n"
+                     "  download open-weights model files (config + tokenizer +\n"
+                     "  safetensors) into PATH (default ./models/<model>); set HF_TOKEN\n"
+                     "  in the environment for a gated/private repo\n");
+        return 2;
+    }
+    if (dir.empty()) {
+        const std::string base = repo.substr(repo.find_last_of('/') + 1);
+        dir = (std::filesystem::path("models") / base).string();
+    }
+    const char* token_env = std::getenv("HF_TOKEN");  // never logged; a secret header
+    const std::string token = token_env != nullptr ? token_env : "";
+
+    zetta::api::install_native_http_transport();
+    std::fprintf(stderr, "pulling %s (%s) -> %s\n", repo.c_str(), revision.c_str(),
+                 dir.c_str());
+    const zetta::connect::ModelFetchResult result = zetta::connect::fetch_hf_model(
+        zetta::connect::default_http_transport(), repo, revision, dir, token,
+        [](const std::string& file, const std::string& note) {
+            std::fprintf(stderr, "  %s: %s\n", file.c_str(), note.c_str());
+        });
+    zetta::api::shutdown_native_http_transport();
+
+    if (!result.ok) {
+        std::fprintf(stderr, "zetta pull: %s\n", result.reason.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "done: %zu files\n", result.files.size());
+    std::printf("%s\n", dir.c_str());  // the directory to point ZETTA_QWEN_DIR at
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "pull") {
+        return run_pull(argc, argv);
+    }
     Options opts = parse_args(argc, argv);
     if (opts.bad_usage) {
         print_usage(argv[0]);

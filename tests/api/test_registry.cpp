@@ -59,8 +59,13 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 50u);
+    EXPECT_EQ(registry.size(), 59u);
     EXPECT_TRUE(registry.find("server_info"));
+    // The #849 agent CRUD surface (create/list/get/update/delete).
+    for (const char* name :
+         {"create_agent", "list_agents", "get_agent", "update_agent", "delete_agent"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // The #825 create path for a full-text index over a loaded table.
     EXPECT_TRUE(registry.find("create_index"));
     // The visual graph workspace's read + save path.

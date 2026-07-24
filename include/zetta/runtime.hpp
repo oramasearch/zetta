@@ -133,6 +133,14 @@ void spawn(task<> coroutine, std::function<void()> on_complete);
 // that parallelism is not worth the dispatch (the body then runs inline).
 std::size_t parallel_chunks(std::size_t count) noexcept;
 
+// parallel_chunks with an explicit grain (minimum items per chunk). The default
+// grain is tuned for cheap per-item work (a few float ops); callers whose per-item
+// work is heavy — a matmul column is a full dot product — pass a smaller grain so
+// the loop still parallelizes below the default 8192-item floor. Still capped at
+// the worker count, and returns 1 (inline) when count / grain <= 1.
+std::size_t parallel_chunks(std::size_t count,
+                            std::size_t min_items_per_chunk) noexcept;
+
 // Run `body(chunk_index, begin, end)` over the parallel_chunks(count) disjoint
 // contiguous sub-ranges that tile [0, count), concurrently on the shared runtime
 // thread pool, and block until every sub-range has completed. The body is called
@@ -149,6 +157,14 @@ std::size_t parallel_chunks(std::size_t count) noexcept;
 // coroutine backend.
 void parallel_for(
     std::size_t count,
+    const std::function<void(std::size_t chunk_index, std::size_t begin,
+                             std::size_t end)>& body);
+
+// parallel_for with an explicit grain (see the two-arg parallel_chunks). Use for
+// heavy per-item work (matmul rows/columns) so it parallelizes below the default
+// item floor; the body contract is identical.
+void parallel_for(
+    std::size_t count, std::size_t min_items_per_chunk,
     const std::function<void(std::size_t chunk_index, std::size_t begin,
                              std::size_t end)>& body);
 

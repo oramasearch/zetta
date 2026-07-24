@@ -13,3 +13,4 @@ A report states **when** it was produced and **against what version**, because i
 decays. A number with no date is not evidence.
 
 - [backlog-grooming-2026-07-20.md](backlog-grooming-2026-07-20.md) — full pass over the open backlog: verdicts, priority changes, issues created, and the conventions adopted during it.
+- [qwen3-real-checkpoint-validation-2026-07-21.md](qwen3-real-checkpoint-validation-2026-07-21.md) — the native tokenizer + Qwen3-parity model validated against the real `Qwen/Qwen3-0.6B` checkpoint: tokenizer bit-exact (9/9), correct generation from real weights, and post-training that changes predictions.
