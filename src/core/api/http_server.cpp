@@ -2489,7 +2489,9 @@ struct ApiServer::Impl {
             std::string content;
             std::string meta;
             std::string assist_agent;
+            long long project_count = 0;
             co_await bridge.run_on_owner([&] {
+                project_count = static_cast<long long>(node.project_names().size());
                 // The Ask Orama rail talks to the first served agent (the base
                 // agent when one is loaded); no agent → the rail's honest
                 // empty state.
@@ -2516,11 +2518,11 @@ struct ApiServer::Impl {
                 content = render_dashboard_content(context, view, route);
             });
             body = web_ui_shell(view, user_name.empty() ? user_id : user_name, meta, content,
-                                static_cast<long long>(node.project_names().size()),
-                                assist_agent);
+                                project_count, assist_agent);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
@@ -2540,6 +2542,7 @@ struct ApiServer::Impl {
             const std::string body = web_ui_login("Invalid or expired token.");
             route.status(http::status::unauthorized);
             route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
             stamp_response_headers(route, body);
             auto [send_error] = co_await route.send(body);
             if (send_error) co_return http::route_error(send_error);
@@ -2628,11 +2631,25 @@ struct ApiServer::Impl {
                 if (redirect_error) co_return http::route_error(redirect_error);
                 co_return http::route_done;
             }
+            // Same shell state as every page (badge + rail), so navigation
+            // never differs on a result page. Node reads ride the owner
+            // thread, like everything else.
+            std::string assist_agent;
+            long long project_count = 0;
+            co_await bridge.run_on_owner([&] {
+                project_count = static_cast<long long>(node.project_names().size());
+                if (node.replication() != nullptr) {
+                    const auto agents = zetta::agent::AgentStore(*node.replication()).list();
+                    if (!agents.empty()) assist_agent = agents.front().id;
+                }
+            });
             body = web_ui_shell("console",
-                                user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content);
+                                user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content,
+                                project_count, assist_agent);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);

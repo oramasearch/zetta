@@ -808,6 +808,10 @@ std::string web_ui_icon(std::string_view name) {
         return svg("<rect x='4' y='7' width='16' height='11' rx='2.5'/><path d='M12 7V4M9 4h6'/>"
                    "<path d='M9 11.5v1.6M15 11.5v1.6'/><path d='M2 11v4M22 11v4'/>");
     if (name == "connections") return web_ui_icon("api");
+    if (name == "agents") return web_ui_icon("chatbot");
+    if (name == "chat")
+        return svg("<path d='M4 5.5h16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H9l-4.5 3.5V6.5a1 1 0 0 1 1-1z'/>"
+                   "<path d='M8 10h8M8 13h5'/>");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
