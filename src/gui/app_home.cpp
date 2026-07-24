@@ -216,8 +216,17 @@ void App::draw_home() {
                           ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        section_card("##home_create", "Create a Solution", [&] {
-            eyebrow(g_mono_font, "Start with a goal");
+        // The design's card hierarchy: small accent eyebrow, then the big
+        // title in the heading face, then the body and the one action.
+        section_card("##home_create", "", [&] {
+            if (g_mono_font) ImGui::PushFont(g_mono_font);
+            ImGui::TextColored(kAccent, "START WITH A GOAL");
+            if (g_mono_font) ImGui::PopFont();
+            ImGui::Spacing();
+            if (heading_font_) ImGui::PushFont(heading_font_);
+            ImGui::TextColored(kInkPrimary, "Create a Solution");
+            if (heading_font_) ImGui::PopFont();
+            ImGui::Spacing();
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(
                 kInkMuted,
@@ -234,8 +243,15 @@ void App::draw_home() {
         // Honest state: the Auto-Suggest model that reads a Workspace Profile
         // (your data, connections, and daily work) is in training — the card
         // holds the design's place with no mock flow behind it.
-        section_card("##home_discover", "Discover Opportunities", [&] {
-            eyebrow(g_mono_font, "Start with your data");
+        section_card("##home_discover", "", [&] {
+            if (g_mono_font) ImGui::PushFont(g_mono_font);
+            ImGui::TextColored(kInkQuiet, "START WITH YOUR DATA");
+            if (g_mono_font) ImGui::PopFont();
+            ImGui::Spacing();
+            if (heading_font_) ImGui::PushFont(heading_font_);
+            ImGui::TextColored(kInkPrimary, "Discover Opportunities");
+            if (heading_font_) ImGui::PopFont();
+            ImGui::Spacing();
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(
                 kInkMuted,
@@ -402,51 +418,68 @@ void App::draw_home() {
             auto& slot = latest_run[run->project()];
             if (!slot || run->updated() > slot->updated()) slot = run;
         }
-        for (const std::string& name : project_names) {
-            const auto project = node_.find_project(name);
-            if (!project) continue;
-            ImGui::PushID(name.c_str());
-            if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
-                selected_project_ = name;
-                navigate_to(View::Graph);  // open it in the workspace
-            }
-            // The state word + the next useful action, from live engine
-            // state: the newest run wins; otherwise where the project sits
-            // in the authoring flow.
-            const auto run_found = latest_run.find(project->id());
-            const auto run =
-                run_found == latest_run.end() ? nullptr : run_found->second;
-            std::string last_active = project->updated();
-            if (run && run->updated() > last_active)
-                last_active = run->updated();
-            ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 1.2f, 0.0f));
-            ImGui::SameLine();
-            if (run) {
-                status_label(tone_of(run->status()),
-                             std::string(label_of(run->status())).c_str());
-                ImGui::SameLine();
-                const char* next =
-                    run->status() == zetta::pipeline::RunStatus::Running
-                        ? "Review run"
-                        : run->status() == zetta::pipeline::RunStatus::Failed
-                              ? "Review failure"
-                              : "Review results";
-                entity_link(next, View::Runs, run->id());
-            } else if (project->graph_count() > 0) {
-                status_label(Tone::Ok, "ready");
-                ImGui::SameLine();
-                entity_link("Verify and deploy", View::Gate, {});
-            } else {
-                status_label(Tone::Muted, "draft");
-                ImGui::SameLine();
+        // The design's worklist columns: state | project (+ last active) |
+        // the next useful action.
+        if (ImGui::BeginTable("##home_worklist", 3,
+                              ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("state", ImGuiTableColumnFlags_WidthFixed,
+                                    ImGui::GetFontSize() * 8.0f);
+            ImGui::TableSetupColumn("project",
+                                    ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("action", ImGuiTableColumnFlags_WidthFixed,
+                                    ImGui::GetFontSize() * 11.0f);
+            for (const std::string& name : project_names) {
+                const auto project = node_.find_project(name);
+                if (!project) continue;
+                ImGui::PushID(name.c_str());
+                const auto run_found = latest_run.find(project->id());
+                const auto run =
+                    run_found == latest_run.end() ? nullptr : run_found->second;
+                std::string last_active = project->updated();
+                if (run && run->updated() > last_active)
+                    last_active = run->updated();
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (run) {
+                    status_label(tone_of(run->status()),
+                                 std::string(label_of(run->status())).c_str());
+                } else if (project->graph_count() > 0) {
+                    status_label(Tone::Ok, "ready");
+                } else {
+                    status_label(Tone::Muted, "draft");
+                }
                 if (g_mono_font) ImGui::PushFont(g_mono_font);
-                ImGui::TextColored(kInkMuted, "Capture an intent");
+                ImGui::TextColored(kInkQuiet, "%s",
+                                   day_clock(last_active).c_str());
                 if (g_mono_font) ImGui::PopFont();
+
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
+                    selected_project_ = name;
+                    navigate_to(View::Graph);  // open it in the workspace
+                }
+
+                ImGui::TableNextColumn();
+                if (run) {
+                    const char* next =
+                        run->status() == zetta::pipeline::RunStatus::Running
+                            ? "Review run"
+                            : run->status() ==
+                                      zetta::pipeline::RunStatus::Failed
+                                  ? "Review failure"
+                                  : "Review results";
+                    entity_link(next, View::Runs, run->id());
+                } else if (project->graph_count() > 0) {
+                    entity_link("Verify and deploy", View::Gate, {});
+                } else {
+                    if (g_mono_font) ImGui::PushFont(g_mono_font);
+                    ImGui::TextColored(kInkMuted, "Capture an intent");
+                    if (g_mono_font) ImGui::PopFont();
+                }
+                ImGui::PopID();
             }
-            ImGui::SameLine();
-            mono_line(kInkQuiet, "· last active ", day_clock(last_active));
-            ImGui::PopID();
-            ImGui::Spacing();
+            ImGui::EndTable();
         }
     });
 }

@@ -82,6 +82,26 @@ TEST(WebUiStudio, ShellUtilitiesUserCardAndBadge) {
     EXPECT_FALSE(contains(anonymous, "class=\"badge\""));
 }
 
+TEST(WebUiStudio, AskOramaRailAndThemeToggle) {
+    // With a served agent: the collaborator rail carries the chat surface,
+    // wired to POST /assist with that agent id.
+    const std::string with_agent =
+        web_ui_shell("overview", "owner", "", "", -1, "agent-123");
+    EXPECT_TRUE(contains(with_agent, "Ask Orama"));
+    EXPECT_TRUE(contains(with_agent, "Studio collaborator"));
+    EXPECT_TRUE(contains(with_agent, "id=\"railchat\""));
+    EXPECT_TRUE(contains(with_agent, "\"agent-123\""));
+    EXPECT_TRUE(contains(with_agent, "/assist"));
+    // Without one: the honest empty state — no mock conversation surface.
+    const std::string without = web_ui_shell("overview", "owner", "", "");
+    EXPECT_TRUE(contains(without, "Ask Orama"));
+    EXPECT_TRUE(contains(without, "railempty"));
+    EXPECT_FALSE(contains(without, "id=\"railchat\""));
+    // The theme toggle + the pre-paint pin ride every page.
+    EXPECT_TRUE(contains(with_agent, "id=\"themetoggle\""));
+    EXPECT_TRUE(contains(with_agent, "zetta-theme"));
+}
+
 TEST(WebUiStudio, VocabularyContractHolds) {
     const std::string shell = web_ui_shell("overview", "", "", "");
     const std::string login = web_ui_login("");

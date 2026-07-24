@@ -46,7 +46,24 @@ constexpr std::string_view kCss = R"CSS(
   --font-sans:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;
   --font-mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
 }
-@media (prefers-color-scheme:dark){:root{
+/* The paired dark theme: the same overrides ride the OS preference (unless the
+   user pinned light) AND the explicit topbar toggle (data-theme on <html>). */
+:root[data-theme=dark]{
+  --accent:#78A9FF; --accent-wash:rgba(120,169,255,.14); --accent-hover:#A6C8FF;
+  --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
+  --ink-primary:#F4F4F4; --ink-secondary:#C6C6C6; --ink-muted:#A8A8A8; --ink-quiet:#8D8D8D;
+  --surface:#262626; --canvas:#161616; --sidebar:#212121; --border:#393939;
+  --rule-hair:rgba(255,255,255,.08); --rule-card:rgba(255,255,255,.10); --rule-emph:rgba(255,255,255,.16);
+  --wash-hover:rgba(255,255,255,.05); --wash-selected:rgba(255,255,255,.08);
+  --ok-fg:#42BE65; --ok-bg:rgba(66,190,101,.14); --warn-fg:#F1C21B; --warn-bg:rgba(241,194,27,.12);
+  --err-fg:#FA4D56; --err-bg:rgba(250,77,86,.12);
+  --info-fg:#78A9FF; --info-bg:rgba(120,169,255,.12);
+  --dot-active:#42BE65; --dot-inactive:#6F6F6F;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.5),0 1px 1px rgba(0,0,0,.4);
+  --shadow-md:0 6px 22px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.35);
+  --shadow-pop:0 12px 36px rgba(0,0,0,.6);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --accent:#78A9FF; --accent-wash:rgba(120,169,255,.14); --accent-hover:#A6C8FF;
   --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
   --ink-primary:#F4F4F4; --ink-secondary:#C6C6C6; --ink-muted:#A8A8A8; --ink-quiet:#8D8D8D;
@@ -101,6 +118,36 @@ form.inline{display:inline;margin:0;}
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sideuser .who span{font:10.5px/1.4 var(--font-mono);color:var(--ink-quiet);}
 .sideuser .btn.small{padding:5px 9px;font-size:11px;flex:none;}
+
+/* The Ask Orama rail (#874): the design's collaborator column — blue header,
+   context note, transcript, and the ask box pinned to the bottom. Renders as
+   a third grid column on wide screens; below that it collapses away (the Chat
+   view stays one click away). */
+.rail{background:var(--surface);border-left:1px solid var(--rule-hair);position:sticky;top:52px;
+  align-self:stretch;height:calc(100vh - 52px);display:flex;flex-direction:column;padding:14px;gap:12px;}
+.railhead{background:var(--accent-solid);color:#fff;border-radius:11px;padding:13px 15px;
+  display:flex;flex-direction:column;gap:3px;}
+.railhead .rl{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;opacity:.85;}
+.railhead b{font-size:15px;font-weight:600;}
+.railnote{border:1px solid var(--accent);color:var(--ink-secondary);border-radius:10px;
+  padding:10px 12px;font-size:12px;line-height:1.5;}
+.railbubble{background:var(--accent-wash);color:var(--ink-secondary);border-radius:10px;
+  padding:10px 12px;font-size:12.5px;line-height:1.5;}
+.railchat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:40px;}
+.railchat .rmsg{border-radius:10px;padding:9px 11px;font-size:12.5px;line-height:1.55;max-width:94%;
+  white-space:pre-wrap;word-break:break-word;}
+.railchat .rme{align-self:flex-end;background:var(--accent-wash);color:var(--ink-primary);}
+.railchat .ragent{align-self:flex-start;background:var(--wash-hover);color:var(--ink-secondary);}
+.railchat .rthinking{color:var(--ink-quiet);font:11.5px var(--font-mono);}
+.railask label{margin:0 0 6px;font:10.5px/1 var(--font-mono);text-transform:uppercase;
+  letter-spacing:.08em;color:var(--ink-quiet);}
+.railask .rrow{display:flex;gap:8px;align-items:flex-end;}
+.railask textarea{min-height:44px;font-family:var(--font-sans);font-size:13px;resize:none;}
+.railask .btn-primary{padding:10px 12px;}
+.railempty{color:var(--ink-quiet);font-size:12.5px;line-height:1.6;}
+.railempty a{color:var(--accent);}
+@media (max-width:1279px){.rail{display:none;}.layout.withrail{grid-template-columns:224px 1fr;}}
+@media (min-width:1280px){.layout.withrail{grid-template-columns:224px 1fr 340px;}}
 .side .group{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   padding:16px 10px 7px;}
 .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:9px;color:var(--ink-secondary);
@@ -455,6 +502,11 @@ std::string head(std::string_view title) {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
+        // Pre-paint theme pin: apply the stored choice before first paint so a
+        // pinned theme never flashes the other one. System preference needs no
+        // attribute (the media query handles it).
+        "<script>try{var t=localStorage.getItem('zetta-theme');"
+        "if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>"
         "<link rel=\"icon\" href=\"/favicon.svg?v=" + version + "\" type=\"image/svg+xml\">"
         "<link rel=\"stylesheet\" href=\"/style.css?v=" + version + "\">"
         "<title>";
@@ -694,6 +746,8 @@ std::string web_ui_icon(std::string_view name) {
     if (name == "bell")
         return svg("<path d='M18 8.5a6 6 0 0 0-12 0c0 6-2.5 7.5-2.5 7.5h17S18 14.5 18 8.5'/>"
                    "<path d='M10 19.5a2.2 2.2 0 0 0 4 0'/>");
+    if (name == "moon")
+        return svg("<path d='M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z'/>");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
@@ -778,7 +832,8 @@ std::string web_ui_login(std::string_view error) {
 }
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
-                         std::string_view content, long long project_count) {
+                         std::string_view content, long long project_count,
+                         std::string_view assist_agent) {
     // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
     // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
     // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
@@ -844,8 +899,14 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<a class=\"util\" title=\"Get help\" href=\"/llms.txt\">" + web_ui_icon("docs") + "</a>";
     out += "<a class=\"util\" title=\"Runs and activity\" href=\"/?view=pipeline\">" +
            web_ui_icon("bell") + "</a>";
+    // The theme toggle: light → dark → back to following the system. Pure
+    // presentation, stored locally; the pre-paint pin in head() applies it.
+    out += "<button class=\"util\" id=\"themetoggle\" title=\"Theme\" type=\"button\">" +
+           web_ui_icon("moon") + "</button>";
     out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span></div>";
-    out += "<div class=\"layout\"><nav class=\"side\">";
+    out += "<div class=\"layout";
+    out += " withrail";
+    out += "\"><nav class=\"side\">";
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
            link("projects", "Projects",
                 project_count >= 0 ? std::to_string(project_count) : std::string()) +
@@ -873,7 +934,56 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     }
     out += "</nav><main class=\"main\">";
     out += content;
-    out += "</main></div></body></html>";
+    out += "</main>";
+    // The Ask Orama rail — the design's collaborator column, backed by the
+    // node's served agent through POST /assist → the `chat` capability. No
+    // agent → the honest empty state (never a mock conversation).
+    out += "<aside class=\"rail\"><div class=\"railhead\"><span class=\"rl\">Studio "
+           "collaborator</span><b>Ask Orama</b></div>";
+    if (assist_agent.empty()) {
+        out += "<div class=\"railnote\">Every reply comes from an agent served by this "
+               "node, and every call is audited.</div>";
+        out += "<div class=\"railempty\">No served agent on this node yet. Create one in "
+               "<a href=\"/?view=agents\">Agents</a> and Ask Orama comes to life here.</div>";
+    } else {
+        out += "<div class=\"railnote\">Replies come from this node's served agent \xC2\xB7 "
+               "every call is audited and traced.</div>";
+        out += "<div class=\"railbubble\">I can explain the current Studio state, or draft "
+               "the intent for a new Project \xE2\x80\x94 ask below.</div>";
+        out += "<div class=\"railchat\" id=\"railchat\"></div>";
+        out += "<div class=\"railask\"><label for=\"railq\">Ask in Studio</label>"
+               "<div class=\"rrow\"><textarea id=\"railq\" rows=\"1\" placeholder=\"Ask "
+               "about Studio\xE2\x80\xA6\"></textarea>"
+               "<button class=\"btn btn-primary\" id=\"railsend\" type=\"button\">" +
+               web_ui_icon("play") + "</button></div></div>";
+        out += "<script>(function(){var agent=" +
+               nlohmann::json(std::string(assist_agent)).dump() +
+               R"JS(;var chat=document.getElementById('railchat'),q=document.getElementById('railq'),send=document.getElementById('railsend');
+function esc(s){return String(s==null?'':s);}
+function bubble(cls,text){var d=document.createElement('div');d.className='rmsg '+cls;d.textContent=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d;}
+var busy=false;
+async function ask(){var m=q.value.trim();if(!m||busy)return;busy=true;q.value='';bubble('rme',m);
+  var t=bubble('ragent rthinking','thinking…');
+  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m})});
+    var j=await res.json();
+    var v=j&&j.value?j.value:{};
+    t.classList.remove('rthinking');
+    t.textContent=esc(j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed')));
+  }catch(e){t.classList.remove('rthinking');t.textContent='error: '+e;}
+  busy=false;chat.scrollTop=chat.scrollHeight;}
+send.onclick=ask;
+q.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();}});
+})();</script>)JS";
+    }
+    out += "</aside>";
+    // The theme toggle cycle: system → light → dark → system.
+    out += R"JS(<script>(function(){var b=document.getElementById('themetoggle');if(!b)return;
+b.onclick=function(){var cur;try{cur=localStorage.getItem('zetta-theme');}catch(e){}
+  var next=cur==='light'?'dark':(cur==='dark'?null:'light');
+  try{if(next)localStorage.setItem('zetta-theme',next);else localStorage.removeItem('zetta-theme');}catch(e){}
+  if(next)document.documentElement.dataset.theme=next;else delete document.documentElement.dataset.theme;};
+})();</script>)JS";
+    out += "</div></body></html>";
     return out;
 }
 

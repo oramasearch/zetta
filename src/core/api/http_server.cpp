@@ -2169,9 +2169,14 @@ struct ApiServer::Impl {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
         std::string user_id;
+        std::string user_name;
         if (!token.empty())
-            co_await bridge.run_on_owner(
-                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+            co_await bridge.run_on_owner([&] {
+                if (auto user = node.authenticate_token(token)) {
+                    user_id = user->id();
+                    user_name = user->name();
+                }
+            });
         std::string body;
         if (user_id.empty()) {
             body = web_ui_login("");
@@ -2179,7 +2184,16 @@ struct ApiServer::Impl {
             const std::string view = query_param(route, "view", "overview");
             std::string content;
             std::string meta;
+            std::string assist_agent;
             co_await bridge.run_on_owner([&] {
+                // The Ask Orama rail talks to the first served agent (the base
+                // agent when one is loaded); no agent → the rail's honest
+                // empty state.
+                if (node.replication() != nullptr) {
+                    const auto agents =
+                        zetta::agent::AgentStore(*node.replication()).list();
+                    if (!agents.empty()) assist_agent = agents.front().id;
+                }
                 ApiContext context{node, cluster, user_id,
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
                                    &background};
@@ -2197,9 +2211,9 @@ struct ApiServer::Impl {
                 }
                 content = render_dashboard_content(context, view, route);
             });
-            body = web_ui_shell(view, user_id.size() > 12 ? user_id.substr(0, 12) : user_id, meta,
-                                content,
-                                static_cast<long long>(node.project_names().size()));
+            body = web_ui_shell(view, user_name.empty() ? user_id : user_name, meta, content,
+                                static_cast<long long>(node.project_names().size()),
+                                assist_agent);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
@@ -2317,6 +2331,50 @@ struct ApiServer::Impl {
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /assist — the Ask Orama rail (#874): a cookie-authed JSON body
+    // {agent, message} invoked through the same `chat` capability the MCP/REST
+    // surfaces expose, audited as the signed-in user. The reply is the served
+    // agent's; the turn blocks while the model loads + generates (the rail's
+    // JS shows a thinking state — streaming is a later slice).
+    boost::http::route_task serve_assist(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"ok":false,"error":"unauthorized"})";
+        } else {
+            nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            if (input.is_discarded() || !input.is_object()) {
+                json_body = R"({"ok":false,"error":"malformed json"})";
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, user_id,
+                                       zetta::observability::make_root_trace(),
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = true;
+                    ApiResult result = capability_registry.call("chat", input, context);
+                    json_body = result.ok
+                                    ? nlohmann::json{{"ok", true}, {"value", result.value}}.dump()
+                                    : nlohmann::json{{"ok", false},
+                                                     {"error", result.error.message}}
+                                          .dump();
+                });
+            }
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
@@ -2655,6 +2713,9 @@ bool ApiServer::start() {
     });
     router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_run(route);
+    });
+    router.add(http::method::post, "/assist", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_assist(route);
     });
     router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_shell(route);

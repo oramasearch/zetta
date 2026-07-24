@@ -67,19 +67,33 @@ live Projects count badge, dotted status pills, and a bounded content column.
 The GUI sidebar leads with the Orama Studio lockup and the Pipeline-workspace
 row carries the project-count badge.
 
-**Deliberately skipped (and why):**
-- **Ask Orama topbar utility**: not added. zetta's `chat` view talks to
-  *served/user-built agents*; the design keeps Ask Orama (the product agent)
-  distinct from user-built agents, and the product-agent surface (#849) isn't
-  the web chat yet. Adding the branded entry now would conflate the two —
-  exactly what the design forbids.
-- **Search / Get help / Notifications topbar utilities**: no backing
-  capability surfaced in the web shell yet (search exists per-index inside the
-  data views); Documentation group covers help.
+**Fourth pass — the Ask Orama rail, the theme toggle, and the identity.** The
+design's collaborator column is real: every page renders the right-hand **Ask
+Orama rail**, backed by the node's served agent through `POST /assist` -> the
+same `chat` capability the MCP/REST surfaces expose (cookie-authed, audited,
+traced). With no served agent the rail shows its honest empty state pointing
+at Agents - never a mock conversation. This supersedes the first-pass skip:
+the base agent (#555/#849) **is** the product agent, so the naming is honest
+now. The topbar gains the **theme toggle** (light -> dark -> follow-the-system;
+a pre-paint pin so a stored choice never flashes; `data-theme` +
+`prefers-color-scheme` share one override set), and the sidebar identity card
+shows the **resolved user name** (`authenticate_token` -> `User::name`)
+instead of a key id. The rail's chat JS is the sanctioned kind - streaming
+chat is exactly the "only when the interaction demands it" case. Desktop: the
+entry cards carry the design's hierarchy (accent eyebrow -> heading-face
+title -> body -> action) and Continue your work is the design's three-column
+layout (state · project · next action). The Pipeline editor stays on both
+surfaces, untouched.
+
+**Still deliberately out (and why):**
 - **The six project tabs / discovery / lifecycle screens**: no backing engine
   capabilities for Opportunities, Verification criteria editing, Saved
   Versions, or Continuous health as designed — the web app renders engine
   truth, no mock screens. These arrive with their capabilities.
+- **Notifications as a real inbox**: the bell routes to Runs and activity (the
+  live feed); a per-user notification store does not exist in the engine.
+- (The first-pass skips — fonts, the utility cluster, Ask Orama — were closed
+  by passes three and four above.)
 
 ## 2026-07-23 — desktop GUI (#875)
 
