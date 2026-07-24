@@ -73,17 +73,18 @@
 #include <vector>
 
 #include "zetta_font_sans.hpp"
+#include "zetta_font_heading.hpp"
 #include "zetta_font_mono.hpp"
 
 namespace zetta::gui {
 namespace {
 
 // Base logical font size; multiplied by the OS content scale and the user's
-// View → Text size multiplier. The Geist Mono face is built a touch smaller
+// View → Text size multiplier. The IBM Plex Mono face is built a touch smaller
 // (kMonoScale) for the design system's label / count / metric role.
 constexpr float kBaseFontPixels = 17.0f;
 constexpr float kMonoScale = 0.86f;
-// Larger Geist cut for page_header titles (the heading role).
+// Larger IBM Plex Sans SemiBold cut for page_header titles (the heading role).
 constexpr float kHeadingScale = 1.35f;
 
 float ui_content_scale(SDL_Window* window) {
@@ -164,7 +165,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 
 }  // namespace
 
-// Ambient Geist Mono face for the file-local render_* helpers — declared
+// Ambient IBM Plex Mono face for the file-local render_* helpers — declared
 // extern in app_internal.hpp, defined here (and assigned once per frame at the
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
@@ -332,7 +333,7 @@ void App::apply_display_scale() {
 
     // Glyph coverage beyond ImGui's default Latin-1: General Punctuation (so a
     // stray en/em-dash, bullet, or ellipsis renders instead of a "?" tofu) plus
-    // arrows. Geist covers these. Static so the pointer stays valid until Build.
+    // arrows. IBM Plex covers these. Static so the pointer stays valid until Build.
     static const ImWchar kRanges[] = {
         0x0020, 0x00FF,  // Basic Latin + Latin-1 Supplement
         0x2010, 0x205E,  // General Punctuation: – — ' ' " " • …
@@ -355,12 +356,12 @@ void App::apply_display_scale() {
                                               &cfg, kRanges);
     };
 
-    // Geist (sans) is the default UI face; Geist Mono (a touch smaller) is the
+    // IBM Plex Sans is the default UI face; IBM Plex Mono (a touch smaller) is the
     // design system's label / count / metric face, captured for PushFont.
-    add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * scale);
-    mono_font_ = add_font(kGeistMono, kGeistMono_len,
+    add_font(kPlexSans, kPlexSans_len, kBaseFontPixels * scale);
+    mono_font_ = add_font(kPlexMono, kPlexMono_len,
                           kBaseFontPixels * kMonoScale * scale);
-    heading_font_ = add_font(kGeistSans, kGeistSans_len,
+    heading_font_ = add_font(kPlexSansSemiBold, kPlexSansSemiBold_len,
                              kBaseFontPixels * kHeadingScale * scale);
 
     io.Fonts->Build();

@@ -29,9 +29,12 @@ TEST(WebUiStudio, StylesheetCarriesTheStudioTokens) {
     const std::string css = web_ui_stylesheet();
     // The one action hue: Carbon Blue 60, light and solid variants.
     EXPECT_TRUE(contains(css, "#0F62FE"));
-    // IBM Plex with a system fallback; the old Geist stack is gone.
+    // IBM Plex, self-hosted: @font-face over the node's own /fonts routes
+    // (never an external request), with the system fallback stack behind it.
     EXPECT_TRUE(contains(css, "'IBM Plex Sans'"));
     EXPECT_TRUE(contains(css, "'IBM Plex Mono'"));
+    EXPECT_TRUE(contains(css, "url('/fonts/plex-sans-400.woff2')"));
+    EXPECT_TRUE(contains(css, "url('/fonts/plex-mono-400.woff2')"));
     EXPECT_FALSE(contains(css, "Geist"));
     EXPECT_FALSE(contains(css, "#2563EB"));
     // The paired dark theme rides prefers-color-scheme.
@@ -59,6 +62,24 @@ TEST(WebUiStudio, ShellRendersTheFiveStudioGroups) {
     EXPECT_TRUE(contains(html, "href=\"/llms.txt\""));
     EXPECT_TRUE(contains(html, "href=\"/mcp.md\""));
     EXPECT_TRUE(contains(html, "href=\"/v1/openapi.json\""));
+}
+
+TEST(WebUiStudio, ShellUtilitiesUserCardAndBadge) {
+    const std::string html = web_ui_shell("overview", "owner", "node-1", "", 6);
+    // The topbar utility cluster — every icon a real destination.
+    EXPECT_TRUE(contains(html, "class=\"util\" title=\"Search\""));
+    EXPECT_TRUE(contains(html, "class=\"util\" title=\"Get help\""));
+    EXPECT_TRUE(contains(html, "class=\"util\" title=\"Runs and activity\""));
+    // The signed-in identity card pins to the sidebar bottom and owns Sign out.
+    EXPECT_TRUE(contains(html, "class=\"sideuser\""));
+    EXPECT_TRUE(contains(html, ">owner</b>"));
+    EXPECT_TRUE(contains(html, "action=\"/logout\""));
+    // The Projects nav row carries the live count badge.
+    EXPECT_TRUE(contains(html, "class=\"badge\">6</span>"));
+    // No user → no identity card; count -1 → no badge.
+    const std::string anonymous = web_ui_shell("overview", "", "", "");
+    EXPECT_FALSE(contains(anonymous, "sideuser"));
+    EXPECT_FALSE(contains(anonymous, "class=\"badge\""));
 }
 
 TEST(WebUiStudio, VocabularyContractHolds) {

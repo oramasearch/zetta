@@ -54,12 +54,20 @@ and Continue your work (every Project with live status + next useful action
 from `system.runs` / the authoring stage). The workspace counts moved to the
 top of Runs and activity; the cluster table already lived on Infrastructure.
 
-**Deliberately skipped (and why):**
+**Third pass — full design parity.** The follow-ups closed: **IBM Plex is
+now real on both surfaces** — the node serves the woff2 latin subsets itself
+at `GET /fonts/*.woff2` (embedded at build time, immutable-cacheable, no
+external requests; `@font-face` in the stylesheet), and the GUI embeds the
+Plex TTFs (Sans Regular + SemiBold for headings + Mono; `assets/fonts/`,
+`cmake/embed_font.cmake`). The web shell gained the design's chrome: topbar
+utility cluster (Search → Data library, Get help → the docs index, the
+activity bell → Runs and activity — every icon a real destination), the
+signed-in identity card pinned to the sidebar bottom (owning Sign out), the
+live Projects count badge, dotted status pills, and a bounded content column.
+The GUI sidebar leads with the Orama Studio lockup and the Pipeline-workspace
+row carries the project-count badge.
 
-- **IBM Plex font files** are not embedded/served yet — pages keep the
-  self-contained no-external-assets rule and fall back to the system stack
-  until the font-serving follow-up lands. (OFL licensing is fine; the open
-  question is binary size vs a `/fonts/*` route.)
+**Deliberately skipped (and why):**
 - **Ask Orama topbar utility**: not added. zetta's `chat` view talks to
   *served/user-built agents*; the design keeps Ask Orama (the product agent)
   distinct from user-built agents, and the product-agent surface (#849) isn't

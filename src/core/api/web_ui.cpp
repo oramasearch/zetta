@@ -25,6 +25,10 @@ namespace {
 // first: the top bar wraps, the nav scrolls horizontally, content is one full-width column, tables
 // scroll.
 constexpr std::string_view kCss = R"CSS(
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/plex-sans-400.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/plex-sans-500.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/plex-sans-600.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/plex-mono-400.woff2') format('woff2');}
 :root{
   color-scheme:light dark;
   --accent:#0F62FE; --accent-wash:rgba(15,98,254,.08); --accent-hover:#0043CE;
@@ -73,6 +77,9 @@ a{color:var(--ink-secondary);text-decoration:none;}
 .spacer{flex:1;min-width:8px;}
 .meta{font:11px/1.3 var(--font-mono);color:var(--ink-quiet);}
 .user{font-size:12px;color:var(--ink-muted);}
+.util{width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-muted);transition:background .12s,color .12s;}
+.util:hover{background:var(--wash-hover);color:var(--ink-primary);}
+.util svg{width:17px;height:17px;}
 .connpill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;padding:4px 8px;border-radius:8px;background:var(--wash-hover);color:var(--ink-quiet);}
 .connpill.ok{color:var(--ok-fg);background:var(--ok-bg);}
@@ -80,7 +87,20 @@ form.inline{display:inline;margin:0;}
 
 .layout{display:grid;grid-template-columns:224px 1fr;align-items:start;}
 .side{background:var(--sidebar);border-right:1px solid var(--rule-hair);padding:14px 10px;
-  position:sticky;top:52px;align-self:stretch;min-height:calc(100vh - 52px);}
+  position:sticky;top:52px;align-self:stretch;min-height:calc(100vh - 52px);
+  display:flex;flex-direction:column;max-height:calc(100vh - 52px);overflow-y:auto;}
+.side .badge{margin-left:auto;font:10.5px/1 var(--font-mono);color:var(--ink-quiet);
+  background:var(--wash-hover);border-radius:12px;padding:3px 8px;flex:none;}
+.sideuser{margin-top:auto;display:flex;align-items:center;gap:10px;padding:12px 10px 4px;
+  border-top:1px solid var(--rule-hair);}
+.sideuser .avatar{width:30px;height:30px;border-radius:8px;background:var(--accent-solid);color:#fff;
+  display:inline-flex;align-items:center;justify-content:center;font:12px var(--font-mono);
+  font-weight:600;text-transform:uppercase;flex:none;}
+.sideuser .who{flex:1;min-width:0;}
+.sideuser .who b{display:block;font-size:12.5px;font-weight:600;color:var(--ink-primary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sideuser .who span{font:10.5px/1.4 var(--font-mono);color:var(--ink-quiet);}
+.sideuser .btn.small{padding:5px 9px;font-size:11px;flex:none;}
 .side .group{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   padding:16px 10px 7px;}
 .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:9px;color:var(--ink-secondary);
@@ -89,7 +109,8 @@ form.inline{display:inline;margin:0;}
 .side a:hover{background:var(--wash-hover);color:var(--ink-primary);}
 .side a.active{background:var(--wash-selected);color:var(--ink-primary);font-weight:500;}
 .side a.active svg{opacity:1;color:var(--accent);}
-.main{padding:24px 28px 60px;min-width:0;}  /* fill all available width — no max cap */
+.main{padding:24px 32px 60px;min-width:0;width:100%;max-width:1360px;margin:0 auto;}
+/* Wide data surfaces still scroll inside their own containers (.twrap etc.). */
 
 /* Web shell — the console surface; rides the theme like everything else */
 .term{background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;font:14.5px/1.7 var(--font-mono);
@@ -135,9 +156,9 @@ form.inline{display:inline;margin:0;}
 
 @media (max-width:760px){
   .layout{grid-template-columns:1fr;}
-  .side{position:sticky;top:52px;min-height:0;display:flex;gap:2px;overflow-x:auto;
+  .side{position:sticky;top:52px;min-height:0;max-height:none;display:flex;flex-direction:row;gap:2px;overflow-x:auto;
     -webkit-overflow-scrolling:touch;border-right:none;border-bottom:1px solid var(--rule-hair);padding:6px 10px;z-index:9;}
-  .side .group{display:none;}
+  .side .group,.side .badge,.sideuser{display:none;}
   .main{padding:14px;}
   body{font-size:13.5px;}
   .card .num{font-size:23px;}
@@ -165,7 +186,8 @@ form.inline{display:inline;margin:0;}
 .path .pbody{font-size:13.5px;line-height:1.6;color:var(--ink-muted);flex:1;}
 .path .pnote{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-quiet);background:var(--wash-hover);border-radius:8px;padding:6px 10px;margin-top:12px;}
 .path .pnote .dot{flex:none;}
-.path .pact{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule-hair);}
+.path .pact{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule-hair);
+  display:flex;justify-content:flex-end;}
 .path .pact a{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;font-weight:500;color:var(--accent);}
 .path .pact a svg{width:15px;height:15px;}
 .path.muted .pico{background:var(--wash-hover);color:var(--ink-quiet);}
@@ -174,7 +196,7 @@ form.inline{display:inline;margin:0;}
 .workrow{display:flex;align-items:center;gap:16px;padding:13px 4px;border-bottom:1px solid var(--rule-hair);color:inherit;}
 .workrow:last-child{border-bottom:none;}
 .workrow:hover{background:var(--wash-hover);}
-.workrow .wstat{flex:0 0 110px;display:flex;flex-direction:column;gap:4px;}
+.workrow .wstat{flex:0 0 118px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;}
 .workrow .wage{font:11px var(--font-mono);color:var(--ink-quiet);}
 .workrow .wname{flex:1;font-size:14px;font-weight:600;color:var(--ink-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .workrow .wnext{font-size:13px;color:var(--ink-muted);flex:none;}
@@ -343,8 +365,9 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
 .gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}
 
-.pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
-  letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
+.pill{display:inline-flex;align-items:center;gap:6px;font:10px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
+  letter-spacing:.05em;border-radius:999px;padding:4px 9px;color:var(--ink-secondary);background:var(--wash-hover);}
+.pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
 .pill.err{color:var(--err-fg);background:var(--err-bg);}
 .status{display:inline-flex;align-items:center;gap:6px;color:var(--ink-secondary);}
@@ -668,6 +691,9 @@ std::string web_ui_icon(std::string_view name) {
                    "<path d='M12 16.5v4'/>");
     if (name == "api")
         return svg("<path d='m8 7.5-4.5 4.5L8 16.5M16 7.5l4.5 4.5L16 16.5'/><path d='m13.3 5-2.6 14'/>");
+    if (name == "bell")
+        return svg("<path d='M18 8.5a6 6 0 0 0-12 0c0 6-2.5 7.5-2.5 7.5h17S18 14.5 18 8.5'/>"
+                   "<path d='M10 19.5a2.2 2.2 0 0 0 4 0'/>");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
@@ -752,7 +778,7 @@ std::string web_ui_login(std::string_view error) {
 }
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
-                         std::string_view content) {
+                         std::string_view content, long long project_count) {
     // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
     // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
     // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
@@ -773,7 +799,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "notebooks") return "SQL / Python cells, saved in your browser";
         return "";
     };
-    auto link = [&](std::string_view key, std::string_view label) -> std::string {
+    auto link = [&](std::string_view key, std::string_view label,
+                    std::string_view badge = {}) -> std::string {
         std::string anchor = "<a title=\"";
         anchor += web_ui_escape(nav_title(key));
         anchor += "\" class=\"";
@@ -784,7 +811,13 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         anchor += web_ui_icon(key);  // nav keys map 1:1 to icon names
         anchor += "<span>";
         anchor += label;
-        anchor += "</span></a>";
+        anchor += "</span>";
+        if (!badge.empty()) {
+            anchor += "<span class=\"badge\">";
+            anchor += web_ui_escape(badge);
+            anchor += "</span>";
+        }
+        anchor += "</a>";
         return anchor;
     };
     // Server-rendered documentation pages (public discovery docs, real routes).
@@ -802,14 +835,21 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         return anchor;
     };
     std::string out = head("Orama Studio");
+    // The topbar: the lockup, then the design's utility cluster — every icon a
+    // real destination (Search → the Data library's search, Get help → the
+    // documentation index, the activity bell → Runs and activity).
     out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Studio</div>";
     out += "<span class=\"connpill ok\">connected</span><span class=\"spacer\"></span>";
-    out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span>";
-    if (!user.empty()) out += "<span class=\"user\">" + web_ui_escape(user) + "</span>";
-    out += "<form class=\"inline\" method=\"post\" action=\"/logout\"><button class=\"btn small\">Sign out</button></form></div>";
+    out += "<a class=\"util\" title=\"Search\" href=\"/?view=data\">" + web_ui_icon("search") + "</a>";
+    out += "<a class=\"util\" title=\"Get help\" href=\"/llms.txt\">" + web_ui_icon("docs") + "</a>";
+    out += "<a class=\"util\" title=\"Runs and activity\" href=\"/?view=pipeline\">" +
+           web_ui_icon("bell") + "</a>";
+    out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span></div>";
     out += "<div class=\"layout\"><nav class=\"side\">";
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
-           link("projects", "Projects") + link("data", "Data library") + link("models", "Models");
+           link("projects", "Projects",
+                project_count >= 0 ? std::to_string(project_count) : std::string()) +
+           link("data", "Data library") + link("models", "Models");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
            link("observability", "Observability") + link("governance", "Governance");
     out += "<div class=\"group\">Developer</div>" + link("shell", "Shell") +
@@ -820,6 +860,17 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
            doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
     out += "<div class=\"group\">Advanced</div>" + link("cluster", "Infrastructure");
+    // The signed-in identity card pins to the sidebar's bottom (the design's
+    // profile row); sign-out lives here, not in the topbar.
+    if (!user.empty()) {
+        const char initial = std::toupper(static_cast<unsigned char>(user.front()));
+        out += "<div class=\"sideuser\"><span class=\"avatar\">";
+        out += initial;
+        out += "</span><span class=\"who\"><b>" + web_ui_escape(user) +
+               "</b><span>signed in</span></span>"
+               "<form class=\"inline\" method=\"post\" action=\"/logout\">"
+               "<button class=\"btn small\">Sign out</button></form></div>";
+    }
     out += "</nav><main class=\"main\">";
     out += content;
     out += "</main></div></body></html>";

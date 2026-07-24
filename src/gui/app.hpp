@@ -237,6 +237,7 @@ private:
     // Sidebar badges: cheap per-frame reads of live engine state.
     std::string jobs_badge() const;     // running compute jobs ("" when none)
     std::string cluster_badge() const;  // cluster member count
+    std::string projects_badge() const; // project count ("" when none)
 
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto

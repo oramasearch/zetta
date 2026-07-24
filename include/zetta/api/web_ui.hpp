@@ -36,8 +36,10 @@ std::string web_ui_login(std::string_view error);
 
 // Wrap `content` in the full page shell (sticky top bar + responsive nav). `active` is the current
 // nav key, `user` the acting user's label, `meta` the node meta line (id · version · N nodes).
+// `project_count` >= 0 renders the count badge on the Projects nav row (the
+// Studio shell's one live count); pass -1 to omit it.
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
-                         std::string_view content);
+                         std::string_view content, long long project_count = -1);
 
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);

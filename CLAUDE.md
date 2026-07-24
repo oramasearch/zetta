@@ -142,9 +142,9 @@ contracts). The
 prototype is React and **transfers as tokens, layout, copy, IA, and states —
 not code** (this repo's web UI stays no-framework SSR). Both surfaces are
 converged on the Studio system (#874 web, #875 GUI): accent = Carbon Blue 60,
-Studio shell IA, the vocabulary contract; IBM Plex is the web font stack and
-the GUI's font-asset swap is a recorded follow-up (the embedded faces are
-still Geist — see the design-sync ledger). The design's open contracts are
+Studio shell IA, the vocabulary contract, and IBM Plex on both surfaces —
+the node serves the woff2 files itself (GET /fonts/*) and the GUI embeds the
+Plex TTFs (see the design-sync ledger). The design's open contracts are
 questions about what *this engine*
 actually does (real Project lifecycle, agent capabilities, roles, source
 connections, Verification/Deployment/recovery mechanics) — answer them from
@@ -470,9 +470,9 @@ search, aggregation, resolution, import.
 The headed app follows the **Orama Studio design system**: light surfaces, ink
 text, the one action hue **Carbon Blue 60** (`kAccent`) used *surgically*,
 semantic green/amber/red for status, sentence case, no em-dashes in product
-copy (use `·`/colons). The embedded faces are still **Geist + Geist Mono**
-until the IBM Plex font assets land (a recorded follow-up in
-[`docs/product/experience/design-sync.md`](docs/product/experience/design-sync.md)).
+copy (use `·`/colons). The embedded faces are **IBM Plex Sans (+ SemiBold
+headings) and IBM Plex Mono** (`assets/fonts/`, embedded at build time; the
+import ledger is [`docs/product/experience/design-sync.md`](docs/product/experience/design-sync.md)).
 **Read [`docs/gui/design-system.md`](docs/gui/design-system.md) before adding
 or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,

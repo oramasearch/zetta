@@ -27,9 +27,9 @@ whenever you add or change GUI.
 2. **Density over decoration.** Practitioner tool: tight, typographic, no
    ornament. Visual interest comes from type + measure, not boxes/gradients.
 3. **Typographic hierarchy, not chrome.** Hierarchy from size, weight, colour,
-   and case — not shadows or borders-for-show. (Geist is a variable font; we
-   render its Regular instance, so there is effectively one weight — lean on size
-   and colour.)
+   and case — not shadows or borders-for-show. (IBM Plex Sans Regular carries
+   the body; the SemiBold face is reserved for the heading role — headings plus
+   the sidebar lockup.)
 4. **Architectural rigor.** Hairline rules, mono labels, dots as markers,
    deliberate negative space. Everything sits on a known plane.
 
@@ -70,7 +70,7 @@ Hover/selected washes and ghost-button fills are black at low alpha
 
 ## Typography
 
-- **Geist** (sans) is the UI face; **Geist Mono** is the label / count / metric /
+- **IBM Plex Sans** is the UI face (SemiBold for headings); **IBM Plex Mono** is the label / count / metric /
   code face. Both are embedded (see [build.md](../build.md) and
   `assets/fonts/README.md`); `App::mono_font_` holds the mono face, pushed via
   `ImGui::PushFont` where the mono role applies.
@@ -136,7 +136,7 @@ Hover/selected washes and ghost-button fills are black at low alpha
 ## Self-check before adding GUI
 
 - Sentence case; no Title Case, no em-dashes in copy.
-- Numbers/IDs/paths/labels in Geist Mono.
+- Numbers/IDs/paths/labels in IBM Plex Mono.
 - The accent only for "you are here" / one focal action — never status, never hover,
   at most a few per screen.
 - Status uses the semantic green/amber/red, with a dot **and** a word.
@@ -145,6 +145,6 @@ Hover/selected washes and ghost-button fills are black at low alpha
 
 ## Related
 
-- [build.md](../build.md) — how the Geist fonts are embedded.
+- [build.md](../build.md) — how the IBM Plex fonts are embedded.
 - [cloud-inspector.md](../cloud/cloud-inspector.md) — a worked example of the grammar
   (dots, eyebrows, mono code, the consent callout).

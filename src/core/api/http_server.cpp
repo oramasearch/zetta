@@ -21,6 +21,11 @@
 #include <boost/http/server/router.hpp>
 #include <boost/json.hpp>
 
+#include "zetta_web_font_mono_400.hpp"
+#include "zetta_web_font_sans_400.hpp"
+#include "zetta_web_font_sans_500.hpp"
+#include "zetta_web_font_sans_600.hpp"
+
 #include "zetta/api/background.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
@@ -2193,7 +2198,8 @@ struct ApiServer::Impl {
                 content = render_dashboard_content(context, view, route);
             });
             body = web_ui_shell(view, user_id.size() > 12 ? user_id.substr(0, 12) : user_id, meta,
-                                content);
+                                content,
+                                static_cast<long long>(node.project_names().size()));
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
@@ -2587,6 +2593,23 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // GET /fonts/<name>.woff2 — the IBM Plex faces, embedded at build time and
+    // served by the node itself (the self-contained page rule: no external
+    // font requests, ever). Immutable-cacheable: the bytes only change with
+    // the binary.
+    boost::http::route_task serve_font(boost::http::route_params& route,
+                                       const unsigned char* data, unsigned length) {
+        namespace http = boost::http;
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "font/woff2");
+        route.res.set(http::field::cache_control, "public, max-age=31536000, immutable");
+        const std::string_view body(reinterpret_cast<const char*>(data), length);
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /favicon.svg — the self-contained favicon.
     boost::http::route_task serve_favicon(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -2656,6 +2679,22 @@ bool ApiServer::start() {
     router.add(http::method::get, "/favicon.svg", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_favicon(route);
     });
+    router.add(http::method::get, "/fonts/plex-sans-400.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff400, kPlexSansWoff400_len);
+               });
+    router.add(http::method::get, "/fonts/plex-sans-500.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff500, kPlexSansWoff500_len);
+               });
+    router.add(http::method::get, "/fonts/plex-sans-600.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff600, kPlexSansWoff600_len);
+               });
+    router.add(http::method::get, "/fonts/plex-mono-400.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexMonoWoff400, kPlexMonoWoff400_len);
+               });
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
     // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI

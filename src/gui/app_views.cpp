@@ -28,7 +28,7 @@ std::span<const App::ViewInfo> App::view_registry() {
     static const ViewInfo kViews[] = {
         {View::Home, "", "Home", &App::draw_home, nullptr},
         {View::Graph, "Workspace", "Pipeline workspace", &App::draw_graph_workspace,
-         nullptr},
+         &App::projects_badge},
         {View::Gate, "Workspace", "Verification", &App::draw_gate, nullptr},
         {View::Deploy, "Workspace", "Deploy", &App::draw_deploy, nullptr},
         {View::Models, "Workspace", "Models", &App::draw_models, nullptr},
@@ -144,12 +144,34 @@ std::string App::cluster_badge() const {
     return std::to_string(cluster_.nodes().size());
 }
 
+std::string App::projects_badge() const {
+    const std::size_t count = node_.project_names().size();
+    return count == 0 ? std::string() : std::to_string(count);
+}
+
 void App::draw_sidebar() {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float width = ImGui::GetFontSize() * 11.0f;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, kSidebar);
     ImGui::BeginChild("##sidebar", ImVec2(width, 0.0f),
                       ImGuiChildFlags_AlwaysUseWindowPadding);
+
+    // The Studio lockup leads the rail (the design's brand row): the accent
+    // dot + the wordmark, in the heading weight when available.
+    {
+        const ImVec2 dot_pos = ImGui::GetCursorScreenPos();
+        const float dot_radius = ImGui::GetFontSize() * 0.18f;
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(dot_pos.x + dot_radius,
+                   dot_pos.y + ImGui::GetTextLineHeight() * 0.55f),
+            dot_radius, ImGui::GetColorU32(kAccent));
+        ImGui::Dummy(ImVec2(dot_radius * 2.0f + style.ItemSpacing.x, 0.0f));
+        ImGui::SameLine();
+        if (heading_font_) ImGui::PushFont(heading_font_);
+        ImGui::TextColored(kInkPrimary, "Orama Studio");
+        if (heading_font_) ImGui::PopFont();
+        ImGui::Spacing();
+    }
 
     bool first_row = true;
     std::string_view current_section;
