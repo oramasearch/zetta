@@ -56,7 +56,7 @@ than something wrong.
   No copy is kept; the "Live run" checkbox (on by default) hides the overlay.
 - **Canvas** (`draw_graph_canvas`): per step a `tone_of(StepRunStatus)` status
   dot top-right (pending renders as a hollow ring), a time-eased amber pulse
-  around the running step, a red border on a failed one (coral stays the
+  around the running step, a red border on a failed one (the accent stays the
   selection accent — status never borrows it), and the first output's short id
   bottom-right in mono. Hovering a step shows status · reason · full outputs.
 - **Run strip** (`draw_graph_run_status`, below the canvas): the run's

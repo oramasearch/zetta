@@ -23,7 +23,7 @@ SEES the cluster answer.
 - **The cluster answering** (#643): one node box per answering node
   (coordinator + every scattered peer, from the result's `NodeContribution`s),
   the same box grammar as the Cluster view's canvas — the coordinator wears
-  the coral "you are here" border; each box shows the node's short id,
+  the accent "you are here" border; each box shows the node's short id,
   pre-merge hits · sub-indexes, and latency. On a completed search the
   scatter-gather is **replayed over the boxes as
   [#590 flows](cluster-pipeline-animation.md)**: a scatter comet coordinator →

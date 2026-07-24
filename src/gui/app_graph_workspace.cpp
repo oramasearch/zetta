@@ -37,11 +37,11 @@ namespace {
 
 // The canvas colours (kCanvasBox*, kCanvasEdge*) come from the shared canvas
 // palette in app_internal.hpp (#630): nodes are white boxes with hairline
-// borders laid out in columns by StepKind; the selected node gets a coral
+// borders laid out in columns by StepKind; the selected node gets an accent
 // border (the "you are here" accent); edges are grey (data) / amber (control).
 
 // The colour a step's projected cluster placement is drawn in (#591): the
-// shared placement tone (#636) — coral stays the "you are here" accent, never
+// shared placement tone (#636) — the accent stays "you are here", never
 // status.
 ImVec4 placement_color(zetta::pipeline::StepPlacement placement) {
     return tone_color(tone_of(placement));
@@ -98,7 +98,7 @@ void App::draw_graph_workspace() {
         }
     }
 
-    ImGui::SeparatorText("Graph workspace");
+    ImGui::SeparatorText("Pipeline workspace");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each
@@ -113,13 +113,13 @@ void App::draw_graph_workspace() {
         // (Home lists them; clicking one lands back in this workspace).
         if (node_.project_names().empty()) {
             if (empty_state("No projects yet",
-                            "A project holds your execution graphs and turns "
-                            "an intent into a deployed pipeline.",
+                            "A project holds your Pipelines and turns "
+                            "an intent into deployed intelligence.",
                             "New project…")) {
                 new_project_modal_requested_ = true;
             }
         } else if (empty_state("No project selected",
-                               "Pick a project and its execution graphs open "
+                               "Pick a project and its Pipelines open "
                                "here.",
                                "Open home")) {
             navigate_to(View::Home);
@@ -542,8 +542,8 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                                             : (hovered ? kCanvasBoxFillHover : kCanvasBoxFill);
                 draw->AddRectFilled(item.top_left, item.bottom_right, fill,
                                     rounding);
-                // A failed step is pinned red; the coral selection accent still
-                // wins ("you are here" stays coral — status never borrows it).
+                // A failed step is pinned red; the accent selection still
+                // wins ("you are here" stays the accent — status never borrows it).
                 const ImU32 border =
                     selected ? kCanvasBoxBorderSelected
                              : (step_failed
@@ -759,7 +759,7 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
     legend_item(zetta::pipeline::StepPlacement::Coordinator, "runs once on the coordinator");
 
     // The current cluster as a node strip. When a step is selected in the canvas
-    // (or the table below), the nodes it is projected to run on get the coral
+    // (or the table below), the nodes it is projected to run on get the accent
     // "runs here" treatment — the direct graph↔cluster link.
     const zetta::pipeline::StepPlan* selected_step = nullptr;
     for (const zetta::pipeline::StepPlan& step : plan.steps)

@@ -37,7 +37,7 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   The recipe: docs/gui/architecture.md → "Adding a view".
 - **Orama design system, always:** light surfaces, ink text, Geist + Geist
   Mono (`g_mono_font` for labels/counts/metrics; `g_heading_font` only via
-  `page_header`), coral used surgically, semantic green/amber/red for status,
+  `page_header`), the accent blue (Carbon Blue 60) used surgically, semantic green/amber/red for status,
   **sentence case**, **no em-dashes** in product copy (use `·`/colons).
   Run the design-system self-check before shipping.
 - **Compose the widget grammar — never hand-roll visuals.** Panels build from

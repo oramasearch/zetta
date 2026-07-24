@@ -99,9 +99,9 @@ float ui_pixel_density(SDL_Window* window) {
 }
 
 // Paint the ImGui style with the Orama design system (light). Flat surfaces,
-// hairline borders, modest radii, ink text on canvas. Coral is reserved for the
-// "you are here" accent (menu checkmarks, selected-graph node border, the one
-// focal action); status uses the semantic green/amber/red, never coral.
+// hairline borders, modest radii, ink text on canvas. The accent blue is reserved for
+// "you are here" (menu checkmarks, selected-graph node border, the one
+// focal action); status uses the semantic green/amber/red, never the accent.
 void apply_orama_theme(ImGuiStyle& style) {
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text] = kInkPrimary;
@@ -121,15 +121,15 @@ void apply_orama_theme(ImGuiStyle& style) {
     colors[ImGuiCol_ScrollbarGrab] = wash(0.16f);
     colors[ImGuiCol_ScrollbarGrabHovered] = wash(0.24f);
     colors[ImGuiCol_ScrollbarGrabActive] = wash(0.32f);
-    colors[ImGuiCol_CheckMark] = kCoral;        // "you are here" (active view)
+    colors[ImGuiCol_CheckMark] = kAccent;        // "you are here" (active view)
     colors[ImGuiCol_SliderGrab] = kInkMuted;
-    colors[ImGuiCol_SliderGrabActive] = kCoral;
+    colors[ImGuiCol_SliderGrabActive] = kAccent;
     // Ghost buttons: a faint wash + hairline border, ink text.
     colors[ImGuiCol_Button] = wash(0.03f);
     colors[ImGuiCol_ButtonHovered] = wash(0.06f);
     colors[ImGuiCol_ButtonActive] = wash(0.10f);
-    // Selection (Selectable / MenuItem / Header): a soft wash, never a coral or
-    // charcoal fill — coral stays reserved for the accent.
+    // Selection (Selectable / MenuItem / Header): a soft wash, never an accent or
+    // charcoal fill — the accent blue stays reserved for "you are here".
     colors[ImGuiCol_Header] = wash(0.05f);
     colors[ImGuiCol_HeaderHovered] = wash(0.04f);
     colors[ImGuiCol_HeaderActive] = wash(0.06f);
@@ -142,7 +142,7 @@ void apply_orama_theme(ImGuiStyle& style) {
     colors[ImGuiCol_PlotHistogram] = kInkSecondary;  // metric / confidence bars
     colors[ImGuiCol_PlotHistogramHovered] = kInkPrimary;
     colors[ImGuiCol_TextSelectedBg] = ImVec4(0.886f, 0.329f, 0.353f, 0.18f);
-    colors[ImGuiCol_NavHighlight] = kCoral;
+    colors[ImGuiCol_NavHighlight] = kAccent;
 
     // Flat + measured: hairline borders, modest radii (design radius-8), no
     // decorative rounding on the full-window root.
@@ -263,7 +263,7 @@ bool App::init() {
         if (win_h < 600) win_h = 600;
     }
 
-    const std::string title = std::string{"Orama Zetta "} + kVersion;
+    const std::string title = std::string{"Orama Studio "} + kVersion;
     window_ = SDL_CreateWindow(
         title.c_str(), win_w, win_h,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -451,7 +451,7 @@ void App::draw_menu_bar() {
             }
             ImGui::EndMenu();
         }
-        if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
+        if (ImGui::MenuItem("About Orama Studio")) about_requested_ = true;
         ImGui::EndMenu();
     }
 

@@ -67,4 +67,47 @@ wears").
 
 ## 2026-07-23 — desktop GUI (#875)
 
-See the entry appended by the GUI import branch (`feat/studio-design-import-gui`).
+**Source pin:** same as the web import — `oramasearch/orama-design` `main` @
+`5bdbc27`, design system v0.3.0. The GUI inherits the token decisions the web
+import recorded.
+
+**What moved:**
+
+- **Theme table** (`src/gui/app_internal.hpp` — the one shared grammar
+  header): the accent is now named after its role — `kCoral`/`kCoralHover`/
+  `kCoralWash` became **`kAccent` (Carbon Blue 60 `#0f62fe`) / `kAccentHover`
+  (Blue 70) / `kAccentWash` (Blue 10)** — and the canvas draw-list selected
+  fill/border follow. Both render paths consume the same table: the ImGui
+  style (`apply_orama_theme`) and the custom SDL3 draw-list canvases
+  (`kCanvasBox*`). The "one accent, used surgically; never for status"
+  discipline is unchanged — only the hue and the naming converged.
+- **Shell IA** (`App::view_registry()`, app_views.cpp): the Studio sidebar
+  groups — Workspace (Pipeline workspace · Verification · Deploy · Models),
+  Data library (Explorer · Datasets · Search), Operate (Activity · Traces ·
+  Runs · Compute jobs · Test suite · Admin & audit), Developer (SQL query ·
+  Console · Agents · Chat · Data generators), Advanced (Infrastructure ·
+  Cloud inspector). View enum names stay the engine's; labels speak Studio.
+- **Vocabulary contract**: "Graph workspace" → **Pipeline workspace**,
+  "Correctness gate" → **Verification**, "Cluster" → **Infrastructure**
+  (demoted to Advanced); every user-facing "execution graph" / "correctness
+  gate" string in panel copy and onboarding rewrote to Pipeline /
+  Verification. Window title, About dialog, and menu are **Orama Studio**
+  (the About copy states Studio is the surface of the Zetta platform).
+- **Docs**: `docs/gui/design-system.md` reground on the Studio system
+  (canonical source = `oramasearch/orama-design` `packages/design-system/`);
+  the coral-era wording swept from every `docs/gui/` page and the rule-cards.
+
+**Deliberately skipped (and why):**
+
+- **IBM Plex faces**: the GUI embeds Geist/Geist Mono TTFs; swapping requires
+  adding the Plex font binaries — a follow-up shared with the web surface's
+  font-serving question. The type *scale* and grammar are unchanged.
+- **Custom-SDL3 rewrites of ImGui views**: the rendering philosophy (SDL3
+  first, ImGui as the temporary crutch) governs *new* design-led surfaces;
+  this import recolors and regroups the existing views rather than rewriting
+  them — motion parity work rides the SDL3 surfaces as they land.
+- **Documentation nav group**: the GUI has no in-app docs views yet; the web
+  surface links the public discovery docs. No mock screens.
+- **Ask Orama entry**: same reason as the web — the `chat` view talks to
+  user-built/served agents, which the design keeps distinct from the product
+  agent.

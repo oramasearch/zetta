@@ -36,7 +36,7 @@ JSON format.
    `iso8601_seconds_ago`, the #622 pattern).
 5. **Projects**: each with short id, graph count, and **last active** — the
    later of the project's `updated` stamp and the newest run referencing it.
-   Clicking a project opens it in the Graph workspace.
+   Clicking a project opens it in the Pipeline workspace.
 6. **Recent activity**: the newest 5 entries of the same feed the Activity
    view renders (`observability::activity_entries`, recomputed per frame).
 

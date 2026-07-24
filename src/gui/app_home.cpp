@@ -138,7 +138,7 @@ std::optional<double> median_intent_to_deploy_seconds(const zetta::Node& node) {
 
 void App::draw_about_modal() {
     if (about_requested_) {
-        ImGui::OpenPopup("About Orama Zetta");
+        ImGui::OpenPopup("About Orama Studio");
         about_requested_ = false;
     }
 
@@ -148,18 +148,18 @@ void App::draw_about_modal() {
                              ImGuiCond_Appearing);
 
     bool stay_open = true;
-    if (!ImGui::BeginPopupModal("About Orama Zetta", &stay_open,
+    if (!ImGui::BeginPopupModal("About Orama Studio", &stay_open,
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
     }
 
-    ImGui::Text("Orama Zetta");
+    ImGui::Text("Orama Studio");
     ImGui::SameLine();
     ImGui::TextDisabled("%s", kVersion);
-    ImGui::TextColored(kCoral, "Intelligence Velocity for Big Thinkers.");
+    ImGui::TextColored(kAccent, "Intelligence Velocity for Big Thinkers.");
     ImGui::Spacing();
     ImGui::TextColored(kInkSecondary,
-        "Orama Zetta turns a question into running, deployed intelligence. "
+        "Orama Studio turns a question into running, deployed intelligence. "
         "Describe a data or AI problem in plain language, or hand over an "
         "artifact you already have, and it architects a correct data + AI "
         "pipeline, deploys it onto infrastructure you control, runs it, and "
@@ -178,7 +178,8 @@ void App::draw_about_modal() {
 
     ImGui::Spacing();
     ImGui::TextDisabled(
-        "\"zetta\" is the binary codename for the product Orama Zetta.");
+        "Orama Studio is the product surface of the Orama Zetta platform; "
+        "\"zetta\" is the platform binary codename.");
 
     ImGui::Spacing();
     if (ImGui::Button("Close") || !stay_open) {
@@ -312,7 +313,7 @@ void App::draw_home() {
                 "Turn a question into deployed intelligence",
                 "Describe a data or AI problem in plain language, or bring an "
                 "artifact you already have (an n8n workflow, a SQL script, a "
-                "notebook), and Orama Zetta architects the pipeline, deploys "
+                "notebook), and Orama Studio architects the Pipeline, deploys "
                 "it onto infrastructure you control, and runs it.",
                 "New project…")) {
             new_project_modal_requested_ = true;

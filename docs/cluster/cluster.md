@@ -98,7 +98,7 @@ or drops out of the grid and the selection falls back to self — the view track
 membership with no separate copy of it. The boxes reuse the
 [graph workspace](../pipeline/execution-graph.md)'s `ImDrawList` rect + invisible-hit-test
 pattern and the same Orama canvas palette (white cards, hairline borders, a soft
-wash on hover, a coral border when selected), and the per-frame layout is one cheap
+wash on hover, an accent border when selected), and the per-frame layout is one cheap
 pass, so it stays within the `render_frame` / `SDL_WaitEventTimeout` cadence and
 doesn't starve a live resize. This canvas is the **spatial foundation** the
 add-nodes control, per-node gauges, algorithm animation, and the graph-over-cluster

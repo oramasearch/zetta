@@ -38,7 +38,7 @@ lens on a cluster that is primarily driven programmatically
 - Structure: the view registry, the widget grammar, one status language,
   `navigate_to` + entity links ([../gui/architecture.md](../../gui/architecture.md)).
 - Look + copy: the Orama design system ([../gui/design-system.md](../../gui/design-system.md))
-  — sentence case, product language, coral as "you are here". Engine enums
+  — sentence case, product language, the accent blue as "you are here". Engine enums
   render as product words (`label_of`, one mapping site); the raw wire values
   stay in SQL and the API ([../gui/copy-audit.md](../../gui/copy-audit.md)).
 - Empty states teach (one sentence + the single next action); feedback quotes

@@ -140,10 +140,12 @@ and **Roadmap and Design Documentation** (the planning surface: 16 core flows,
 7 journeys, a 14-screen plan, 24 confirmed decisions + 12 open implementation
 contracts). The
 prototype is React and **transfers as tokens, layout, copy, IA, and states —
-not code** (this repo's web UI stays no-framework SSR). Known open tension:
-the headed GUI's design system below (Geist, coral) and the Studio web system
-(IBM Plex, Carbon blue) have not been converged — flag it, don't silently pick
-one. The design's open contracts are questions about what *this engine*
+not code** (this repo's web UI stays no-framework SSR). Both surfaces are
+converged on the Studio system (#874 web, #875 GUI): accent = Carbon Blue 60,
+Studio shell IA, the vocabulary contract; IBM Plex is the web font stack and
+the GUI's font-asset swap is a recorded follow-up (the embedded faces are
+still Geist — see the design-sync ledger). The design's open contracts are
+questions about what *this engine*
 actually does (real Project lifecycle, agent capabilities, roles, source
 connections, Verification/Deployment/recovery mechanics) — answer them from
 engine truth. Deep inventory + direction cross-reference:
@@ -465,9 +467,12 @@ search, aggregation, resolution, import.
 
 ### Design system — follow it for all GUI work
 
-The headed app follows the **Orama design system**: light surfaces, ink text,
-**Geist + Geist Mono**, coral used *surgically*, semantic green/amber/red for
-status, sentence case, no em-dashes in product copy (use `·`/colons).
+The headed app follows the **Orama Studio design system**: light surfaces, ink
+text, the one action hue **Carbon Blue 60** (`kAccent`) used *surgically*,
+semantic green/amber/red for status, sentence case, no em-dashes in product
+copy (use `·`/colons). The embedded faces are still **Geist + Geist Mono**
+until the IBM Plex font assets land (a recorded follow-up in
+[`docs/product/experience/design-sync.md`](docs/product/experience/design-sync.md)).
 **Read [`docs/gui/design-system.md`](docs/gui/design-system.md) before adding
 or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,

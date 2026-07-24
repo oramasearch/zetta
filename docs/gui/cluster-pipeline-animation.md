@@ -62,7 +62,7 @@ strip says so and the canvas stays quiet.
 The flow vocabulary makes "wire-bytes-vs-local-bytes" legible at a glance:
 **near-data / local work reads green** (`kDotActive` — it stays home, the near-data
 win the instrumentation makes checkable), **wire / collective movement reads ink**
-(`kInkMuted` / `kInkSecondary` — it crosses the network). **Coral is never used** —
+(`kInkMuted` / `kInkSecondary` — it crosses the network). **The accent is never used** —
 it stays the surgical "you are here" selection accent (the node-box border); the
 semantic green/amber/red stays the [resource gauges'](cluster-node-gauges.md).
 

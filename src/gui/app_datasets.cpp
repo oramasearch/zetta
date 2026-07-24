@@ -234,7 +234,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
                         dataset.partitions.size(), node_order.size());
 
     // One node box per node (the same spatial grammar as the Cluster view): a node
-    // that owns a partition of this dataset is highlighted (coral), one that owns
+    // that owns a partition of this dataset is highlighted (accent), one that owns
     // none is dimmed — so the overlay reads "which node holds which slice" at a
     // glance. The box caption is the share it owns (count of partitions).
     const float font = ImGui::GetFontSize();
@@ -263,7 +263,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             const ImVec2 bottom_right(top_left.x + box_w, top_left.y + box_h);
 
             // A node holding a slice of this dataset is the highlighted state
-            // (coral wash + border, the "you are here"/owner accent); one holding
+            // (accent wash + border, the "you are here"/owner accent); one holding
             // none is the plain card. No hit-test — this is a read-only overlay.
             draw->AddRectFilled(top_left, bottom_right,
                                 owns ? kCanvasBoxFillSelected : kCanvasBoxFill,
