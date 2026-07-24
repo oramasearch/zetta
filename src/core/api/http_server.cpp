@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <map>
 #include <thread>
 #include <utility>
 
@@ -1603,6 +1604,123 @@ struct ApiServer::Impl {
         return out;
     }
 
+    // The Studio home (#874 second pass) — the design's create-first welcome:
+    // hero ("What would you like to create?"), the two entry paths (Create a
+    // Solution · Discover Opportunities), and Continue your work (every
+    // Project with its live status + the next useful action, derived from
+    // engine state — never a fixture). The operator dashboard this replaced
+    // lives on the Operate views (Runs and activity, Infrastructure).
+    std::string render_studio_home(ApiContext& context) {
+        ApiResult info =
+            capability_registry.call("server_info", nlohmann::json::object(), context);
+        const long long nodes =
+            (info.ok && info.value.contains("cluster_members") &&
+             info.value["cluster_members"].is_array())
+                ? static_cast<long long>(info.value["cluster_members"].size())
+                : 0;
+
+        std::string out = "<div class=\"hero\">";
+        out += "<div class=\"heyebrow\"><span class=\"hico\">" + web_ui_icon("home") +
+               "</span>Studio home</div>";
+        out += "<h1>What would you like to create?</h1>";
+        out += "<div class=\"hsub\">Start with a goal, or let Studio study the data you "
+               "already have.</div>";
+        out += "<div class=\"hmeta\"><span>Workspace <b>" +
+               web_ui_escape(info.ok ? info.value.value("node_id", "").substr(0, 8) : "") +
+               "</b></span><span>Nodes <b>" + std::to_string(nodes) +
+               "</b></span><span>Version <b>v" +
+               web_ui_escape(info.ok ? info.value.value("version", "") : "") +
+               "</b></span></div></div>";
+
+        // The two entry paths. Create a Solution is fully backed (create_project
+        // → capture_intent → compile). Discover Opportunities renders honestly:
+        // the Auto-Suggest model that reads a Workspace Profile (your data,
+        // connectors, and daily work) is in training — no mock flow behind it.
+        out += "<div class=\"paths\">";
+        out += "<div class=\"path\"><div class=\"peyebrow\"><span class=\"pico\">" +
+               web_ui_icon("bolt") +
+               "</span>Start with a goal</div><h3>Create a Solution</h3>"
+               "<div class=\"pbody\">Describe your goal. Studio proposes a Solution, builds "
+               "it, verifies it against your success measures, and gets it ready for "
+               "production.</div>"
+               "<div class=\"pact\"><a href=\"/?view=projects\">Describe your goal " +
+               web_ui_icon("chevron") + "</a></div></div>";
+        out += "<div class=\"path muted\"><div class=\"peyebrow\"><span class=\"pico\">" +
+               web_ui_icon("observability") +
+               "</span>Start with your data</div><h3>Discover Opportunities</h3>"
+               "<div class=\"pbody\">Not sure where to start? Studio studies your Workspace "
+               "Profile \xE2\x80\x94 the data you hold, your connections, and your daily "
+               "work \xE2\x80\x94 and recommends what you could create from it.</div>"
+               "<div class=\"pnote\"><span class=\"dot\"></span>Auto-Suggest is in training "
+               "\xC2\xB7 not available on this node yet</div></div>";
+        out += "</div>";
+
+        // Continue your work — live Projects with the next useful action. The
+        // latest run per project (system.runs) decides the state; a project
+        // with no runs falls back to where it is in the authoring flow.
+        struct LatestRun { std::string status; std::string started; };
+        std::map<std::string, LatestRun> latest_by_project;
+        ApiResult runs = capability_registry.call(
+            "sql", nlohmann::json{{"sql", "SELECT project, status, started FROM system.runs"}},
+            context);
+        if (runs.ok && runs.value.contains("rows") && runs.value["rows"].is_array())
+            for (const auto& row : runs.value["rows"]) {
+                if (!row.is_object()) continue;
+                const std::string project = row.value("project", "");
+                const std::string started = row.value("started", "");
+                if (project.empty()) continue;
+                LatestRun& latest = latest_by_project[project];
+                if (started >= latest.started)
+                    latest = {row.value("status", ""), started};
+            }
+
+        std::string rows;
+        ApiResult projects =
+            capability_registry.call("list_projects", nlohmann::json::object(), context);
+        if (projects.ok)
+            for (const auto& name : projects.value.value("projects", nlohmann::json::array())) {
+                if (!name.is_string()) continue;
+                const std::string pname = name.get<std::string>();
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", pname}}, context);
+                if (!detail.ok) continue;
+                const std::string uuid = detail.value.value("id", "");
+                const std::size_t inputs =
+                    detail.value.value("inputs", nlohmann::json::array()).size();
+                const std::size_t graphs =
+                    detail.value.value("graphs", nlohmann::json::array()).size();
+                std::string pill = "Draft", tone, next = "Capture an intent", age;
+                if (auto found = latest_by_project.find(uuid);
+                    found != latest_by_project.end()) {
+                    const std::string status = found->second.status;
+                    age = found->second.started.substr(0, 10);
+                    if (status == "Running") { pill = "Running"; tone = "warn"; next = "Review run"; }
+                    else if (status == "Failed") { pill = "Failed"; tone = "err"; next = "Review failure"; }
+                    else { pill = "Succeeded"; tone = "ok"; next = "Review results"; }
+                } else if (graphs > 0) {
+                    pill = "Ready"; tone = "ok"; next = "Verify and deploy";
+                    age = detail.value.value("updated", "").substr(0, 10);
+                } else {
+                    if (inputs > 0) next = "Compile the intent";
+                    age = detail.value.value("updated", "").substr(0, 10);
+                }
+                rows += "<a class=\"workrow\" href=\"/?view=projects&p=" + web_ui_escape(pname) +
+                        "\"><span class=\"wstat\"><span class=\"pill " + tone + "\">" + pill +
+                        "</span><span class=\"wage\">" + web_ui_escape(age) +
+                        "</span></span><span class=\"wname\">" + web_ui_escape(pname) +
+                        "</span><span class=\"wnext\">" + next +
+                        "</span><span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>";
+            }
+        if (rows.empty())
+            rows = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
+                   "</span><span class=\"et\">No projects yet</span><span class=\"eh\">"
+                   "Describe a goal to create your first Solution.</span></div>";
+        out += web_ui_panel("Continue your work",
+                            "active Projects and the next useful action",
+                            "<div class=\"worklist\">" + rows + "</div>");
+        return out;
+    }
+
     // An explanatory legend for the pipeline model — the answer to "what's a run vs a job".
     std::string pipeline_legend() {
         return "<div class=\"legend\"><div class=\"legendhd\"><span class=\"ico\">" +
@@ -1839,16 +1957,10 @@ struct ApiServer::Impl {
         };
         std::string out;
         if (view == "overview") {
-            ApiResult info =
-                capability_registry.call("server_info", nlohmann::json::object(), context);
-            if (info.ok)
-                out += web_ui_panel(
-                    "Overview", "",
-                    web_ui_overview_cards(info.value) + "<div class=\"metaline mono\">" +
-                        web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
-                        web_ui_escape(info.value.value("version", "")) + "</div>");
-            out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
-                                ptable("SELECT * FROM system.nodes", "n"));
+            // The Studio home — create-first per the design. The workspace
+            // counts moved to Runs and activity; the cluster table lives on
+            // Infrastructure.
+            out += render_studio_home(context);
         } else if (view == "cluster") {
             out += render_action_panel(
                 context, view, "cluster", "Nodes",
@@ -1991,6 +2103,16 @@ struct ApiServer::Impl {
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",
                                                      "gate", "deploy", "run"});
+            // The workspace-at-a-glance counts (moved off the Studio home —
+            // Runs and activity is the operator's landing).
+            if (ApiResult info = capability_registry.call("server_info",
+                                                          nlohmann::json::object(), context);
+                info.ok)
+                out += web_ui_panel(
+                    "Workspace at a glance", "",
+                    web_ui_overview_cards(info.value) + "<div class=\"metaline mono\">" +
+                        web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
+                        web_ui_escape(info.value.value("version", "")) + "</div>");
             out += pipeline_legend();
             out += render_graph_editor(context);
             out += web_ui_panel(

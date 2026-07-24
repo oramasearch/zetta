@@ -145,6 +145,41 @@ form.inline{display:inline;margin:0;}
   table{font-size:12px;} th,td{padding:8px 10px;}
   .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
+/* Studio home (#874 second pass): the design's create-first welcome — eyebrow,
+   hero headline, two entry-path cards, and the Continue-your-work list. */
+.hero{margin:18px 2px 26px;}
+.hero .heyebrow{display:flex;align-items:center;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin-bottom:14px;}
+.hero .hico{width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-solid);color:#fff;}
+.hero .hico svg{width:18px;height:18px;}
+.hero h1{margin:0 0 10px;font-size:34px;line-height:1.15;font-weight:600;letter-spacing:-.02em;color:var(--ink-primary);}
+.hero .hsub{font-size:15px;color:var(--ink-muted);margin-bottom:14px;}
+.hero .hmeta{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px;color:var(--ink-quiet);border-top:1px solid var(--rule-hair);padding-top:12px;}
+.hero .hmeta b{font:12px var(--font-mono);color:var(--ink-secondary);font-weight:500;}
+.paths{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
+@media (max-width:900px){.paths{grid-template-columns:1fr;} .hero h1{font-size:26px;}}
+.path{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;}
+.path .peyebrow{display:flex;align-items:center;gap:12px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin-bottom:12px;}
+.path .pico{width:40px;height:40px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-wash);color:var(--accent);flex:none;}
+.path .pico svg{width:19px;height:19px;}
+.path h3{margin:0 0 8px;font-size:19px;font-weight:600;letter-spacing:-.015em;color:var(--ink-primary);}
+.path .pbody{font-size:13.5px;line-height:1.6;color:var(--ink-muted);flex:1;}
+.path .pnote{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-quiet);background:var(--wash-hover);border-radius:8px;padding:6px 10px;margin-top:12px;}
+.path .pnote .dot{flex:none;}
+.path .pact{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule-hair);}
+.path .pact a{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;font-weight:500;color:var(--accent);}
+.path .pact a svg{width:15px;height:15px;}
+.path.muted .pico{background:var(--wash-hover);color:var(--ink-quiet);}
+.path.muted .peyebrow{color:var(--ink-quiet);}
+.worklist{display:flex;flex-direction:column;}
+.workrow{display:flex;align-items:center;gap:16px;padding:13px 4px;border-bottom:1px solid var(--rule-hair);color:inherit;}
+.workrow:last-child{border-bottom:none;}
+.workrow:hover{background:var(--wash-hover);}
+.workrow .wstat{flex:0 0 110px;display:flex;flex-direction:column;gap:4px;}
+.workrow .wage{font:11px var(--font-mono);color:var(--ink-quiet);}
+.workrow .wname{flex:1;font-size:14px;font-weight:600;color:var(--ink-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.workrow .wnext{font-size:13px;color:var(--ink-muted);flex:none;}
+.workrow .warr{color:var(--accent);flex:none;display:inline-flex;}
+.workrow .warr svg{width:16px;height:16px;}
 .panel{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
 .phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
 .phead .ico{width:27px;height:27px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
