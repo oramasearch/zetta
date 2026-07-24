@@ -396,7 +396,7 @@ struct ConsoleRoute {
 
 std::string console_help_json() {
     return nlohmann::json{{"messages", nlohmann::json::array({
-        "Orama Zetta console \xE2\x80\x94 one box, auto-detected.",
+        "Orama Studio console \xE2\x80\x94 one box, auto-detected.",
         "  type SQL directly        SELECT * FROM system.tables",
         "  type Python directly     model = rank(customers)",
         "  /sql <statement>         force SQL",
@@ -404,8 +404,8 @@ std::string console_help_json() {
         "  /tables                  list the system.* tables",
         "  /help                    this message",
         "  /clear                   clear the transcript (browser)",
-        "SQL runs through the query engine; Python lowers to the execution graph, passes the",
-        "correctness gate, then runs \xE2\x80\x94 every statement is audited."})}}.dump();
+        "SQL runs through the query engine; Python lowers to a Pipeline, passes",
+        "Verification, then runs \xE2\x80\x94 every statement is audited."})}}.dump();
 }
 
 bool is_sql_leading_keyword(std::string word) {
@@ -1549,13 +1549,13 @@ struct ApiServer::Impl {
             if (list.empty())
                 list = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
                        "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
-                       "project below, then capture an intent, compile it, gate, deploy, and "
-                       "run.</span></div>";
+                       "project below, then capture an intent, compile it to a Pipeline, verify, "
+                       "deploy, and run.</span></div>";
             std::string out = render_action_bar(context, "projects", {"create_project"});
             out += web_ui_panel(
                 "Projects",
-                "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
-                "\xE2\x86\x92 run",
+                "an AI project: intent \xE2\x86\x92 Pipeline \xE2\x86\x92 Verification \xE2\x86\x92 "
+                "deploy \xE2\x86\x92 run",
                 "<div class=\"prjlist\">" + list + "</div>");
             return out;
         }
@@ -1591,7 +1591,7 @@ struct ApiServer::Impl {
             "Inputs", "captured intents + imported artifacts",
             web_ui_table(nlohmann::json::array(), project.value("inputs", nlohmann::json::array())));
         out += web_ui_panel(
-            "Graphs", "compiled execution graphs",
+            "Pipelines", "what this project's intent compiled to",
             web_ui_table(nlohmann::json::array(), project.value("graphs", nlohmann::json::array())));
         if (safe_uuid(uuid)) {
             out += web_ui_panel("Runs", "",
@@ -1607,22 +1607,22 @@ struct ApiServer::Impl {
     std::string pipeline_legend() {
         return "<div class=\"legend\"><div class=\"legendhd\"><span class=\"ico\">" +
                web_ui_icon("pipeline") +
-               "</span><b>How a pipeline works</b></div>"
+               "</span><b>How a Pipeline works</b></div>"
                "<div class=\"legendflow\">Project <span>\xE2\x86\x92</span> Intent <span>\xE2\x86\x92"
-               "</span> <em>Graph</em> <span>\xE2\x86\x92</span> Gate <span>\xE2\x86\x92</span> Deploy "
+               "</span> <em>Pipeline</em> <span>\xE2\x86\x92</span> Verification <span>\xE2\x86\x92</span> Deploy "
                "<span>\xE2\x86\x92</span> <em>Run</em> <span>\xE2\x86\x92</span> <em>Jobs</em> "
                "<span>\xE2\x86\x92</span> Model</div>"
                "<div class=\"legenddefs\">"
-               "<div><b>Graph</b> the compiled pipeline (connect \xE2\x86\x92 clean \xE2\x86\x92 model "
+               "<div><b>Pipeline</b> the compiled steps (connect \xE2\x86\x92 clean \xE2\x86\x92 model "
                "\xE2\x86\x92 serve) a project's intent lowers to.</div>"
-               "<div><b>Run</b> one end-to-end execution of a graph; produces a Model + outputs. One "
+               "<div><b>Run</b> one end-to-end execution of a Pipeline; produces a Model + outputs. One "
                "row per run.</div>"
                "<div><b>Job</b> a unit of native distributed compute a run fans out into (featurize / "
                "train / score) across the cluster \xE2\x80\x94 many jobs per run.</div>"
                "</div></div>";
     }
 
-    // The Graphs panel — aggregates every project's compiled execution graphs (there is no
+    // The Pipelines panel — aggregates every project's compiled execution graphs (there is no
     // system.graphs view; graphs are owned by projects, reached via get_project).
     // The visual graph editor panel: embeds every project graph's structure (via
     // get_graph) and mounts the interactive SVG editor over it (kGraphEditorJs),
@@ -1652,13 +1652,13 @@ struct ApiServer::Impl {
 
         if (graphs.empty())
             return web_ui_panel(
-                "Graph editor",
-                "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean \xE2\x86\x92 model "
-                "\xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                "Pipeline editor",
+                "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 connect "
+                "\xE2\x86\x92 clean \xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
                 "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
-                    "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">Compile a "
+                    "</span><span class=\"et\">No Pipelines yet</span><span class=\"eh\">Compile a "
                     "project's intent (Projects \xE2\x86\x92 open one \xE2\x86\x92 compile) to get an "
-                    "editable graph here.</span></div>");
+                    "editable Pipeline here.</span></div>");
 
         std::string options;
         for (std::size_t i = 0; i < graphs.size(); ++i)
@@ -1683,9 +1683,10 @@ struct ApiServer::Impl {
             "<div id=\"ge-toast\" class=\"getoast\"></div>"
             "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
             "<script>" + std::string(kGraphEditorJs) + "</script>";
-        return web_ui_panel("Graph editor",
-                            "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean "
-                            "\xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+        return web_ui_panel("Pipeline editor",
+                            "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 "
+                            "connect \xE2\x86\x92 clean \xE2\x86\x92 model \xE2\x86\x92 index "
+                            "\xE2\x86\x92 serve \xE2\x86\x92 act",
                             body);
     }
 
@@ -1712,13 +1713,13 @@ struct ApiServer::Impl {
         std::string html =
             rows.empty()
                 ? "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
-                      "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">A graph is "
-                      "created when you compile a project's intent (Projects \xE2\x86\x92 open a "
-                      "project \xE2\x86\x92 compile). Then gate, deploy, and run it.</span></div>"
-                : "<div class=\"twrap\"><table><thead><tr><th>Graph</th><th>Project</th><th>id</th>"
+                      "</span><span class=\"et\">No Pipelines yet</span><span class=\"eh\">A Pipeline "
+                      "is created when you compile a project's intent (Projects \xE2\x86\x92 open a "
+                      "project \xE2\x86\x92 compile). Then verify, deploy, and run it.</span></div>"
+                : "<div class=\"twrap\"><table><thead><tr><th>Pipeline</th><th>Project</th><th>id</th>"
                   "</tr></thead><tbody>" + rows + "</tbody></table></div>";
-        return web_ui_panel("Graphs",
-                            "compiled execution pipelines \xC2\xB7 what a project's intent lowers to",
+        return web_ui_panel("Pipelines",
+                            "compiled Pipelines \xC2\xB7 what a project's intent lowers to",
                             html);
     }
 

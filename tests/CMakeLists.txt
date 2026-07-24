@@ -31,6 +31,7 @@ add_executable(zetta-tests
   api/test_scoped_grants_api.cpp
   api/test_row_security_api.cpp
   api/test_web_ui_forms.cpp
+  api/test_web_ui_studio.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp

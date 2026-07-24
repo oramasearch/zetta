@@ -9,7 +9,8 @@ did.
 
 | Experience | Audience | Spec |
 |---|---|---|
-| [ux.md](ux.md) | Humans operating the cluster — the desktop lens + the planned web interface | gui/architecture.md · gui/design-system.md · control-surfaces.md |
+| [ux.md](ux.md) | Humans operating the cluster — the desktop lens + the web interface in the Orama Studio shell | gui/architecture.md · gui/design-system.md · control-surfaces.md |
+| [design-sync.md](design-sync.md) | The Studio design import ledger — per-sync pin, what moved, what was skipped and why | the studio-design-sync skill · gui/design-system.md |
 | [dx.md](dx.md) | People building zetta — the disclosure network, conventions, skills, traced suite | architecture/coding-conventions.md · observability.md · the rule-cards |
 | [ax.md](ax.md) | Agents driving the cluster — MCP parity + prompts, llms.txt endpoints, the spec index, traces threaded back | api/registry-design.md · api/adding-a-capability.md |
 

@@ -14,12 +14,17 @@ lens on a cluster that is primarily driven programmatically
   the node's own `:4800` HTTP server, `src/core/api/web_ui.cpp`) — the same read model +
   registry rendered **server-side as straight HTML** in a browser, for operators away from the
   desktop and for sharing a cluster view across a team. Cookie-authed (`zetta_session`); strictly
-  a rendering/invocation of the existing capability surface, never a fourth behavior path. Nav:
-  **Overview** (clickable stat tiles), **Cluster**, **Projects** (index + rich detail: overview,
-  inputs, graphs, runs, models + the lifecycle actions), **Data** (a databases → tables → rows
-  explorer plus a **Files** panel over `system.large_objects` — upload/download/delete), **Models**,
-  **Pipeline** (a run-vs-job legend, graphs, deployments, runs, jobs), **Observability**,
-  **Governance**, **Shell** (a unified SQL/Python REPL with `/` commands), and **Notebooks**.
+  a rendering/invocation of the existing capability surface, never a fourth behavior path. It wears
+  the **Orama Studio shell** ([#874](https://github.com/oramasearch/zetta/issues/874),
+  [design-sync.md](design-sync.md)): IBM Plex + Carbon Blue 60 tokens with a paired dark theme,
+  and five sidebar groups — **Workspace** (Home stat tiles · Projects: index + rich detail with the
+  lifecycle actions · Data library: a databases → tables → rows explorer plus a **Files** panel over
+  `system.large_objects` · Models), **Operate** (Runs and activity: a run-vs-job legend, Pipelines,
+  deployments, runs, jobs · Observability · Governance), **Developer** (Shell: a unified SQL/Python
+  REPL with `/` commands · Notebooks · Agents · Chat · Data generators), **Documentation**
+  (llms.txt · MCP · OpenAPI), and **Advanced** (Infrastructure — the cluster view, demoted per the
+  design). User-facing copy follows the Studio vocabulary contract (Pipeline / Verification; raw
+  graph terms only in the explicitly labeled Technical view).
 - **A coding agent (Claude Code first)** — for many users the primary way to
   operate zetta: they say what they want in their own words, the agent drives
   the MCP surface on their behalf, and the desktop/web lens shows them what

@@ -16,35 +16,56 @@ namespace zetta::api {
 namespace {
 
 // The whole design lives in one inline stylesheet (no external assets — air-gapped nodes have no
-// egress). Orama design system: light surfaces, ink text, a cool accent blue used surgically (the one
-// brand dot / active icon / focus ring — red is reserved for alarms only), semantic green/amber/red
-// status, Geist/Geist Mono with a system-font fallback. Mobile-first: the
-// top bar wraps, the nav scrolls horizontally, content is one full-width column, tables scroll.
+// egress). Orama Studio design system (imported from oramasearch/orama-design, #874): neutral
+// operational surfaces, ink text, ONE action hue — Carbon Blue 60 — used surgically (the brand dot /
+// active icon / focus ring / primary action; red is reserved for alarms only), semantic
+// green/amber/red status always paired with text, IBM Plex Sans / IBM Plex Mono with a system-font
+// fallback (font files are a documented follow-up — no external font requests, ever). Paired light +
+// dark themes: every color is a custom property; dark overrides ride prefers-color-scheme. Mobile-
+// first: the top bar wraps, the nav scrolls horizontally, content is one full-width column, tables
+// scroll.
 constexpr std::string_view kCss = R"CSS(
 :root{
-  --accent:#2563EB; --accent-wash:rgba(37,99,235,.09); --accent-hover:#1D4FD8;
-  --ink-primary:#1C1C1A; --ink-secondary:#444441; --ink-muted:#5F5F5C; --ink-quiet:#7D7D7A;
-  --white:#FFFFFF; --canvas:#FAFAF8; --sidebar:#F5F4F2; --border:#E0E0E0;
-  --rule-hair:rgba(0,0,0,.06); --rule-card:rgba(0,0,0,.08); --rule-emph:rgba(0,0,0,.12);
-  --wash-hover:rgba(0,0,0,.04); --wash-selected:rgba(0,0,0,.05);
-  --ok-fg:#0F6E56; --ok-bg:#E1F5EE; --warn-fg:#854F0B; --warn-bg:#FAEEDA; --err-fg:#B42318; --err-bg:#FBE9E8;
-  --info-fg:#3457B2; --info-bg:#EAEFFB;
-  --dot-active:#1D9E75; --dot-inactive:#888780;
-  --shadow-sm:0 1px 2px rgba(24,24,20,.04),0 1px 1px rgba(24,24,20,.03);
-  --shadow-md:0 6px 22px rgba(24,24,20,.06),0 2px 6px rgba(24,24,20,.04);
-  --shadow-pop:0 12px 36px rgba(24,24,20,.14);
-  --font-sans:'Geist',-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;
-  --font-mono:'Geist Mono',ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
+  color-scheme:light dark;
+  --accent:#0F62FE; --accent-wash:rgba(15,98,254,.08); --accent-hover:#0043CE;
+  --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
+  --ink-primary:#161616; --ink-secondary:#393939; --ink-muted:#525252; --ink-quiet:#6F6F6F;
+  --surface:#FFFFFF; --canvas:#F4F4F4; --sidebar:#F0F0F0; --border:#E0E0E0;
+  --rule-hair:rgba(0,0,0,.07); --rule-card:rgba(0,0,0,.09); --rule-emph:rgba(0,0,0,.14);
+  --wash-hover:rgba(0,0,0,.04); --wash-selected:rgba(0,0,0,.06);
+  --ok-fg:#0E6027; --ok-bg:#DEFBE6; --warn-fg:#684E00; --warn-bg:#FCF4D6; --err-fg:#A2191F; --err-bg:#FFF1F1;
+  --info-fg:#0043CE; --info-bg:#EDF5FF;
+  --dot-active:#24A148; --dot-inactive:#8D8D8D;
+  --shadow-sm:0 1px 2px rgba(22,22,22,.04),0 1px 1px rgba(22,22,22,.03);
+  --shadow-md:0 6px 22px rgba(22,22,22,.06),0 2px 6px rgba(22,22,22,.04);
+  --shadow-pop:0 12px 36px rgba(22,22,22,.14);
+  --font-sans:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
 }
+@media (prefers-color-scheme:dark){:root{
+  --accent:#78A9FF; --accent-wash:rgba(120,169,255,.14); --accent-hover:#A6C8FF;
+  --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
+  --ink-primary:#F4F4F4; --ink-secondary:#C6C6C6; --ink-muted:#A8A8A8; --ink-quiet:#8D8D8D;
+  --surface:#262626; --canvas:#161616; --sidebar:#212121; --border:#393939;
+  --rule-hair:rgba(255,255,255,.08); --rule-card:rgba(255,255,255,.10); --rule-emph:rgba(255,255,255,.16);
+  --wash-hover:rgba(255,255,255,.05); --wash-selected:rgba(255,255,255,.08);
+  --ok-fg:#42BE65; --ok-bg:rgba(66,190,101,.14); --warn-fg:#F1C21B; --warn-bg:rgba(241,194,27,.12);
+  --err-fg:#FA4D56; --err-bg:rgba(250,77,86,.12);
+  --info-fg:#78A9FF; --info-bg:rgba(120,169,255,.12);
+  --dot-active:#42BE65; --dot-inactive:#6F6F6F;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.5),0 1px 1px rgba(0,0,0,.4);
+  --shadow-md:0 6px 22px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.35);
+  --shadow-pop:0 12px 36px rgba(0,0,0,.6);
+}}
 *{box-sizing:border-box;}
 html,body{margin:0;}
-body{background:var(--canvas);color:var(--ink-primary);font:15px/1.55 var(--font-sans);
+body{background:var(--canvas);color:var(--ink-primary);font:14px/1.55 var(--font-sans);
   -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
 .mono,code,pre{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
 .q{color:var(--ink-quiet);}
 a{color:var(--ink-secondary);text-decoration:none;}
 
-.top{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:10px 16px;background:var(--white);
+.top{display:flex;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:10px 16px;background:var(--surface);
   border-bottom:1px solid var(--rule-hair);position:sticky;top:0;z-index:10;}
 .brand{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:500;letter-spacing:-.01em;color:var(--ink-primary);}
 .brand .live{width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none;}
@@ -70,7 +91,7 @@ form.inline{display:inline;margin:0;}
 .side a.active svg{opacity:1;color:var(--accent);}
 .main{padding:24px 28px 60px;min-width:0;}  /* fill all available width — no max cap */
 
-/* Web shell — a terminal surface (charcoal), the one deliberately dark panel */
+/* Web shell — the console surface; rides the theme like everything else */
 .term{background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;font:14.5px/1.7 var(--font-mono);
   overflow-x:auto;}
 .term>div{margin-bottom:18px;}
@@ -89,7 +110,7 @@ form.inline{display:inline;margin:0;}
 .term .cmd{color:var(--ink-primary);white-space:pre-wrap;}
 .shellrow{display:flex;gap:8px;margin-top:14px;position:relative;align-items:flex-end;}
 .shellrow textarea{font:14.5px/1.6 var(--font-mono);padding:12px 14px;min-height:48px;max-height:240px;resize:none;overflow-y:auto;}
-.acmenu{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--white);border:1px solid var(--rule-emph);
+.acmenu{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--surface);border:1px solid var(--rule-emph);
   border-radius:11px;box-shadow:var(--shadow-pop);max-height:238px;overflow-y:auto;z-index:40;display:none;padding:6px;}
 .acmenu.show{display:block;}
 .acitem{display:flex;justify-content:space-between;align-items:baseline;gap:18px;padding:9px 11px;border-radius:8px;cursor:pointer;}
@@ -100,7 +121,7 @@ form.inline{display:inline;margin:0;}
 
 /* Pagination + capability action forms + notebooks */
 .pager{display:flex;gap:12px;align-items:center;margin-top:12px;font:11.5px/1 var(--font-mono);color:var(--ink-quiet);}
-.pager a{color:var(--ink-secondary);padding:5px 11px;border:1px solid var(--rule-emph);border-radius:7px;background:var(--white);}
+.pager a{color:var(--ink-secondary);padding:5px 11px;border:1px solid var(--rule-emph);border-radius:7px;background:var(--surface);}
 .pager a:hover{background:var(--wash-hover);color:var(--ink-primary);}
 .pager .pspacer{flex:1;}
 .actionsub{font-size:11px;color:var(--ink-muted);}
@@ -124,7 +145,7 @@ form.inline{display:inline;margin:0;}
   table{font-size:12px;} th,td{padding:8px 10px;}
   .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
-.panel{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
+.panel{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
 .phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
 .phead .ico{width:27px;height:27px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
   background:var(--accent-wash);color:var(--accent);flex:none;}
@@ -145,13 +166,13 @@ form.inline{display:inline;margin:0;}
 .err-box{color:var(--err-fg);background:var(--err-bg);border:1px solid rgba(180,35,24,.14);border-radius:9px;padding:11px 13px;font:12px/1.5 var(--font-mono);margin-bottom:12px;}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px;}
-.card{display:block;color:inherit;text-decoration:none;background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:16px;
+.card{display:block;color:inherit;text-decoration:none;background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:16px;
   transition:border-color .14s ease,background .14s ease;}
 .card:hover{border-color:var(--rule-emph);background:var(--wash-hover);}
-.card:hover .cico{background:var(--accent);color:#fff;}
+.card:hover .cico{background:var(--accent-solid);color:#fff;}
 .card .chd{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;}
 .card .cico{width:32px;height:32px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
-  background:rgba(37,99,235,.13);color:var(--accent);}
+  background:var(--accent-wash);color:var(--accent);}
 .card .cico svg{width:17px;height:17px;stroke-width:2;}
 .card .num{font:29px/1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
 .card .lbl{margin-top:8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
@@ -160,7 +181,7 @@ form.inline{display:inline;margin:0;}
 /* Explanatory legend (e.g. the pipeline model on the Pipeline view) */
 .legend{background:var(--accent-wash);border:1px solid var(--rule-card);border-radius:14px;padding:16px 18px;margin-bottom:18px;}
 .legendhd{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
-.legendhd .ico{width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:var(--white);color:var(--accent);flex:none;}
+.legendhd .ico{width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:var(--surface);color:var(--accent);flex:none;}
 .legendhd .ico svg{width:15px;height:15px;}
 .legendhd b{font-size:14px;color:var(--ink-primary);}
 .legendflow{display:flex;flex-wrap:wrap;align-items:center;font:13px/1.9 var(--font-mono);color:var(--ink-secondary);margin-bottom:12px;}
@@ -228,7 +249,7 @@ code.j{font-size:11px;color:var(--ink-muted);}
 .searchbar input{flex:1;width:auto;}
 .searchbar .btn{flex:none;}
 .hits{display:flex;flex-direction:column;gap:11px;}
-.hit{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:14px 16px;transition:border-color .14s ease;}
+.hit{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:14px 16px;transition:border-color .14s ease;}
 .hit:hover{border-color:var(--rule-emph);}
 .hitmeta{display:flex;align-items:baseline;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-quiet);margin-bottom:8px;}
 .hitmeta .rank{font-weight:600;color:var(--ink-secondary);}
@@ -238,7 +259,7 @@ code.j{font-size:11px;color:var(--ink-muted);}
 
 /* Action toolbar + modal dialogs — real affordances, not a stack of open forms. */
 .toolbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:16px;}
-dialog.dlg{border:none;border-radius:16px;padding:0;box-shadow:0 16px 48px rgba(18,20,26,.24);width:min(520px,92vw);color:var(--ink-primary);background:var(--white);}
+dialog.dlg{border:none;border-radius:16px;padding:0;box-shadow:0 16px 48px rgba(18,20,26,.24);width:min(520px,92vw);color:var(--ink-primary);background:var(--surface);}
 dialog.dlg::backdrop{background:rgba(18,20,26,.42);}
 dialog.dlg form{padding:22px 24px 20px;margin:0;}
 .dlghd{display:flex;align-items:center;justify-content:space-between;gap:10px;}
@@ -266,11 +287,11 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .gesvg{display:block;}
 .genode{cursor:grab;}
 .genode:active{cursor:grabbing;}
-.generect{fill:var(--white);stroke:var(--rule-emph);stroke-width:1.4;}
+.generect{fill:var(--surface);stroke:var(--rule-emph);stroke-width:1.4;}
 .genode:hover .generect{stroke:var(--accent);}
 .genkind{font:10px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;fill:var(--ink-quiet);}
 .genname{font:13px var(--font-sans);font-weight:500;fill:var(--ink-primary);}
-.geport{fill:var(--accent);stroke:var(--white);stroke-width:2;cursor:crosshair;}
+.geport{fill:var(--accent);stroke:var(--surface);stroke-width:2;cursor:crosshair;}
 .gedel{font:15px var(--font-sans);fill:var(--ink-quiet);cursor:pointer;opacity:0;text-anchor:middle;}
 .genode:hover .gedel{opacity:1;}
 .gedel:hover{fill:var(--err-fg);}
@@ -279,11 +300,11 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .geedge.ctrl{stroke-dasharray:5 4;}
 .geghost{stroke:var(--accent);stroke-dasharray:4 4;pointer-events:none;}
 .gehint{margin-top:10px;font-size:11.5px;color:var(--ink-quiet);}
-.genameedit{position:absolute;width:132px;font:13px var(--font-sans);padding:4px 7px;border:1.5px solid var(--accent);border-radius:7px;background:var(--white);color:var(--ink-primary);z-index:5;box-shadow:var(--shadow-pop);}
-.getoast{position:fixed;right:24px;bottom:24px;background:var(--ink-primary);color:var(--white);font:13px var(--font-sans);font-weight:500;padding:11px 17px;border-radius:11px;box-shadow:var(--shadow-pop);opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none;z-index:60;}
+.genameedit{position:absolute;width:132px;font:13px var(--font-sans);padding:4px 7px;border:1.5px solid var(--accent);border-radius:7px;background:var(--surface);color:var(--ink-primary);z-index:5;box-shadow:var(--shadow-pop);}
+.getoast{position:fixed;right:24px;bottom:24px;background:var(--ink-primary);color:var(--surface);font:13px var(--font-sans);font-weight:500;padding:11px 17px;border-radius:11px;box-shadow:var(--shadow-pop);opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none;z-index:60;}
 .getoast.show{opacity:1;transform:translateY(0);}
 .getoast.err{background:var(--err-fg);}
-.gk-connect .generect{stroke:#2563EB;} .gk-clean .generect{stroke:#0F6E56;}
+.gk-connect .generect{stroke:#0F62FE;} .gk-clean .generect{stroke:#0E6027;}
 .gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
 .gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}
 
@@ -295,16 +316,16 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--dot-inactive);}
 .status.ok .dot{background:var(--dot-active);}
 
-.btn{font:13.5px/1 var(--font-sans);font-weight:500;color:var(--ink-primary);background:var(--white);border:1px solid var(--rule-emph);
+.btn{font:13.5px/1 var(--font-sans);font-weight:500;color:var(--ink-primary);background:var(--surface);border:1px solid var(--rule-emph);
   border-radius:9px;padding:10px 15px;cursor:pointer;transition:background .12s,border-color .12s,box-shadow .12s;}
 .btn:hover{background:var(--wash-hover);}
 .btn.small{padding:6px 11px;font-size:12px;border-radius:8px;}
-.btn-primary{display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:#fff;border-color:var(--accent);}
-.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
+.btn-primary{display:inline-flex;align-items:center;gap:7px;background:var(--accent-solid);color:#fff;border-color:var(--accent-solid);}
+.btn-primary:hover{background:var(--accent-solid-hover);border-color:var(--accent-solid-hover);}
 .btn-primary svg{width:14px;height:14px;}
 input,textarea,select{font:14px var(--font-sans);padding:10px 12px;border:1px solid var(--rule-emph);border-radius:9px;
   background:var(--canvas);color:var(--ink-primary);width:100%;transition:border-color .12s,box-shadow .12s,background .12s;}
-input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);background:var(--white);box-shadow:0 0 0 3px var(--accent-wash);}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);background:var(--surface);box-shadow:0 0 0 3px var(--accent-wash);}
 input::placeholder{color:var(--ink-quiet);}
 textarea{font-family:var(--font-mono);font-size:13px;min-height:92px;resize:vertical;}
 label{display:block;margin:12px 0 5px;font-size:12px;font-weight:500;color:var(--ink-secondary);}
@@ -313,7 +334,7 @@ pre{margin:8px 0 0;padding:13px;white-space:pre-wrap;word-break:break-word;font-
   color:var(--ink-primary);background:var(--canvas);border:1px solid var(--rule-hair);border-radius:9px;overflow-x:auto;}
 
 /* Collapsible action forms (native details/summary) + 2-col field grid */
-.action{border:1px solid var(--rule-card);border-radius:12px;margin-bottom:12px;background:var(--white);overflow:hidden;transition:box-shadow .14s;}
+.action{border:1px solid var(--rule-card);border-radius:12px;margin-bottom:12px;background:var(--surface);overflow:hidden;transition:box-shadow .14s;}
 .action[open]{box-shadow:var(--shadow-sm);}
 .action>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:11px;padding:14px 16px;}
 .action>summary::-webkit-details-marker{display:none;}
@@ -346,7 +367,7 @@ details>summary.btn::-webkit-details-marker{display:none;}
 .fgroup input[type=password]{letter-spacing:.12em;}
 
 .loginwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
-.logincard{background:var(--white);border:1px solid var(--rule-emph);border-radius:14px;padding:26px;
+.logincard{background:var(--surface);border:1px solid var(--rule-emph);border-radius:14px;padding:26px;
   width:min(400px,94vw);display:flex;flex-direction:column;gap:14px;}
 .logincard .sub{margin:0;font-size:12px;color:var(--ink-muted);}
 )CSS";
@@ -375,6 +396,7 @@ std::string head(std::string_view title) {
     std::string out =
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<meta name=\"color-scheme\" content=\"light dark\">"
         "<link rel=\"icon\" href=\"/favicon.svg?v=" + version + "\" type=\"image/svg+xml\">"
         "<link rel=\"stylesheet\" href=\"/style.css?v=" + version + "\">"
         "<title>";
@@ -595,9 +617,22 @@ std::string web_ui_icon(std::string_view name) {
                "stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
                std::string(body) + "</svg>";
     };
-    if (name == "overview")
+    // Icon semantics follow the Studio design contract (one icon = one meaning): home = Studio
+    // home, folder = Projects, database = data, book/plug/brackets = the documentation pages.
+    if (name == "overview" || name == "home")
+        return svg("<path d='M3.5 10.5 12 3.5l8.5 7'/><path d='M5.5 9v10.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9'/>"
+                   "<path d='M9.8 20.5v-6h4.4v6'/>");
+    if (name == "grid")
         return svg("<rect x='3' y='3' width='7' height='7' rx='1.5'/><rect x='14' y='3' width='7' height='7' rx='1.5'/>"
                    "<rect x='3' y='14' width='7' height='7' rx='1.5'/><rect x='14' y='14' width='7' height='7' rx='1.5'/>");
+    if (name == "docs")
+        return svg("<path d='M4 4.5A2 2 0 0 1 6 2.5h13.5v17H6a2 2 0 0 0-2 2z'/>"
+                   "<path d='M4 19.5A2 2 0 0 1 6 17.5h13.5M8 7h7M8 10.5h5'/>");
+    if (name == "mcp")
+        return svg("<path d='M9 7V3.5M15 7V3.5'/><path d='M6.5 7h11v4a5.5 5.5 0 0 1-11 0z'/>"
+                   "<path d='M12 16.5v4'/>");
+    if (name == "api")
+        return svg("<path d='m8 7.5-4.5 4.5L8 16.5M16 7.5l4.5 4.5L16 16.5'/><path d='m13.3 5-2.6 14'/>");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
@@ -669,9 +704,9 @@ std::string web_ui_icon(std::string_view name) {
 }
 
 std::string web_ui_login(std::string_view error) {
-    std::string out = head("Orama Zetta \xE2\x80\x94 sign in");
+    std::string out = head("Orama Studio \xE2\x80\x94 sign in");
     out += "<div class=\"loginwrap\"><form class=\"logincard\" method=\"post\" action=\"/login\">";
-    out += "<div class=\"brand big\"><span class=\"live\"></span>Orama Zetta</div>";
+    out += "<div class=\"brand big\"><span class=\"live\"></span>Orama Studio</div>";
     out += "<p class=\"sub\">Sign in with an admin bearer token. It is kept only as an HttpOnly "
            "session cookie for this browser and validated on every request.</p>";
     if (!error.empty()) out += "<div class=\"err-box\">" + web_ui_escape(error) + "</div>";
@@ -683,16 +718,20 @@ std::string web_ui_login(std::string_view error) {
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content) {
+    // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
+    // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
+    // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
+    // Nav keys (the ?view= values) are stable — only grouping and labels follow the design.
     auto nav_title = [](std::string_view key) -> std::string_view {
-        if (key == "overview") return "Cluster health + counts at a glance";
-        if (key == "cluster") return "Nodes, metrics, and deployments; add capacity";
-        if (key == "projects") return "AI projects: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy \xE2\x86\x92 run";
-        if (key == "data") return "Databases, tables, rows, and files (blobs)";
+        if (key == "overview") return "Studio home \xE2\x80\x94 cluster health + counts at a glance";
+        if (key == "cluster") return "Infrastructure \xE2\x80\x94 nodes, metrics, and deployments; add capacity";
+        if (key == "projects") return "AI projects: intent \xE2\x86\x92 Pipeline \xE2\x86\x92 Verification \xE2\x86\x92 deploy \xE2\x86\x92 run";
+        if (key == "data") return "Data library \xE2\x80\x94 databases, tables, rows, and files";
         if (key == "models") return "Trained models + serving";
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
         if (key == "datagen") return "Generate + gate training datasets natively (grounded in the solutions plan)";
-        if (key == "pipeline") return "Graphs, deployments, runs, and jobs \xE2\x80\x94 the execution pipeline";
+        if (key == "pipeline") return "Runs and activity \xE2\x80\x94 Pipelines, deployments, runs, and jobs";
         if (key == "observability") return "Traces, spans, and crashes";
         if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
         if (key == "shell") return "SQL + Python REPL, auto-detected";
@@ -713,21 +752,39 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         anchor += "</span></a>";
         return anchor;
     };
-    std::string out = head("Orama Zetta");
-    out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Zetta</div>";
+    // Server-rendered documentation pages (public discovery docs, real routes).
+    auto doc_link = [&](std::string_view href, std::string_view icon, std::string_view label,
+                        std::string_view title) -> std::string {
+        std::string anchor = "<a title=\"";
+        anchor += web_ui_escape(title);
+        anchor += "\" href=\"";
+        anchor += href;
+        anchor += "\">";
+        anchor += web_ui_icon(icon);
+        anchor += "<span>";
+        anchor += label;
+        anchor += "</span></a>";
+        return anchor;
+    };
+    std::string out = head("Orama Studio");
+    out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Studio</div>";
     out += "<span class=\"connpill ok\">connected</span><span class=\"spacer\"></span>";
     out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span>";
     if (!user.empty()) out += "<span class=\"user\">" + web_ui_escape(user) + "</span>";
     out += "<form class=\"inline\" method=\"post\" action=\"/logout\"><button class=\"btn small\">Sign out</button></form></div>";
     out += "<div class=\"layout\"><nav class=\"side\">";
-    out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") +
-           link("cluster", "Cluster") + link("projects", "Projects");
-    out += "<div class=\"group\">Workloads</div>" + link("data", "Data") + link("models", "Models") +
-           link("agents", "Agents") + link("chat", "Chat") + link("pipeline", "Pipeline");
-    out += "<div class=\"group\">Operate</div>" + link("observability", "Observability") +
-           link("governance", "Governance");
-    out += "<div class=\"group\">Build</div>" + link("shell", "Shell") + link("notebooks", "Notebooks") +
+    out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
+           link("projects", "Projects") + link("data", "Data library") + link("models", "Models");
+    out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
+           link("observability", "Observability") + link("governance", "Governance");
+    out += "<div class=\"group\">Developer</div>" + link("shell", "Shell") +
+           link("notebooks", "Notebooks") + link("agents", "Agents") + link("chat", "Chat") +
            link("datagen", "Data generators");
+    out += "<div class=\"group\">Documentation</div>" +
+           doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
+           doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
+           doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
+    out += "<div class=\"group\">Advanced</div>" + link("cluster", "Infrastructure");
     out += "</nav><main class=\"main\">";
     out += content;
     out += "</main></div></body></html>";
@@ -755,7 +812,7 @@ std::string panel_icon_for(std::string_view title) {
     if (has("polic")) return web_ui_icon("policy");
     if (has("consent")) return web_ui_icon("consent");
     if (has("audit") || has("govern")) return web_ui_icon("audit");
-    return web_ui_icon("overview");
+    return web_ui_icon("grid");
 }
 
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body) {
@@ -837,7 +894,7 @@ std::string web_ui_overview_cards(const nlohmann::json& info) {
 std::string web_ui_stylesheet() { return std::string(kCss); }
 
 std::string web_ui_favicon() {
-    return R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#2563EB"/><text x="16" y="23" font-family="Geist,-apple-system,Helvetica,Arial,sans-serif" font-size="20" font-weight="600" fill="#fff" text-anchor="middle">O</text></svg>)SVG";
+    return R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0F62FE"/><text x="16" y="23" font-family="'IBM Plex Sans',-apple-system,Helvetica,Arial,sans-serif" font-size="20" font-weight="600" fill="#fff" text-anchor="middle">O</text></svg>)SVG";
 }
 
 namespace {
@@ -889,7 +946,7 @@ std::string web_ui_shell_repl() {
         "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" + web_ui_icon("shell") +
         "</span><h2>Shell</h2>"
         "<span class=\"psub\">SQL or Python, multi-line \xC2\xB7 Enter = newline, Shift/\xE2\x8C\x98+Enter runs \xC2\xB7 type / for commands</span></div>"
-        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta console \xC2\xB7 type SQL or Python \xC2\xB7 <b>/</b> for commands.</div></div>"
+        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Studio console \xC2\xB7 type SQL or Python \xC2\xB7 <b>/</b> for commands.</div></div>"
         "<div class=\"shellrow\"><textarea id=\"cmd\" rows=\"1\" placeholder=\"SELECT * FROM system.nodes   \xE2\x80\x94 or type /\" autocomplete=\"off\" spellcheck=\"false\" autofocus></textarea>"
         "<button class=\"btn btn-primary\" id=\"run\">Run</button>"
         "<div class=\"acmenu\" id=\"acmenu\"></div></div></section><script>";
