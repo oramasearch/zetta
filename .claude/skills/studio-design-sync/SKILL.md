@@ -138,3 +138,22 @@ One issue per surface per sync wave on `oramasearch/zetta`: priority label
 (`p1`–`p4`), area label if present, body cites the pinned design ref, the
 design-index URL, and the scope table (tokens / IA / copy / states / icons).
 Never `fixes #N` — issues stay open through validation.
+
+## Conflicts stop the line — ask Steve
+
+Wiring a designed screen to the live engine (or building a designed view) will
+hit mismatches. A mismatch is a **decision, not an implementation detail**. A
+conflict is any of:
+
+- the design expects **data or a capability the engine does not have**;
+- the design introduced **scope beyond the recorded strategy** (a new object,
+  flow, role, or promise the product direction never confirmed);
+- **engine truth contradicts** the design's copy, states, or semantics.
+
+Never silently pick a side: don't quietly build backend support, don't quietly
+cut design scope, don't ship a mock to paper over the gap. Surface the
+conflict to Steve with the concrete options — typically **build the backend
+support** (file the zetta issue), **rescope the design** (file the design-repo
+issue), or **an honest degraded state** in the meantime — plus a
+recommendation. Batch related conflicts into one ask; record the ruling in the
+design-sync ledger so the next sync doesn't re-litigate it.
