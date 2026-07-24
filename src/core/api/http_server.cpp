@@ -2586,6 +2586,63 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // POST /session — the SPA's JSON login (#884): exchange a bearer token for
+    // the same HttpOnly session cookie the form login sets, returning the
+    // resolved identity as JSON. POST /session/logout clears it. The token
+    // never lives in the page's JavaScript.
+    boost::http::route_task serve_session_login(boost::http::route_params& route) {
+        namespace http = boost::http;
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string token;
+        if (nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            input.is_object() && input.contains("token") && input["token"].is_string())
+            token = input["token"].get<std::string>();
+        std::string user_id;
+        std::string user_name;
+        if (!token.empty())
+            co_await bridge.run_on_owner([&] {
+                if (auto user = node.authenticate_token(token)) {
+                    user_id = user->id();
+                    user_name = user->name();
+                }
+            });
+        std::string body;
+        if (user_id.empty()) {
+            route.status(http::status::unauthorized);
+            body = nlohmann::json{{"ok", false}, {"error", "invalid or expired token"}}.dump();
+        } else {
+            std::string cookie =
+                "zetta_session=" + token + "; HttpOnly; SameSite=Strict; Path=/";
+            if (request_is_https(route)) cookie += "; Secure";
+            route.status(http::status::ok);
+            route.res.set(http::field::set_cookie, cookie);
+            body = nlohmann::json{{"ok", true},
+                                  {"user", {{"id", user_id}, {"name", user_name}}}}
+                       .dump();
+        }
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set(http::field::cache_control, "no-store");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    boost::http::route_task serve_session_logout(boost::http::route_params& route) {
+        namespace http = boost::http;
+        route.status(http::status::ok);
+        route.res.set(http::field::set_cookie,
+                      "zetta_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+        const std::string body = R"({"ok":true})";
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set(http::field::cache_control, "no-store");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // POST /run — invoke a capability from a Console form (input coerced by its schema).
     boost::http::route_task serve_web_run(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -3095,6 +3152,12 @@ bool ApiServer::start() {
     });
     router.add(http::method::post, "/login", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_login(route);
+    });
+    router.add(http::method::post, "/session", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_session_login(route);
+    });
+    router.add(http::method::post, "/session/logout", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_session_logout(route);
     });
     router.add(http::method::post, "/logout", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_logout(route);

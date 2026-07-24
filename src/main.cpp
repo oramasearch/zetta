@@ -115,7 +115,8 @@ void print_usage(const char* argv0) {
         "flags above — a provisioned node auto-joins with no manual flags):\n"
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
-        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n",
+        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
+        "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -370,6 +371,12 @@ int main(int argc, char** argv) {
             }
             std::printf("%s\n", summary.c_str());
         }
+    }
+
+    // The Studio web app bundle (#883): the image bakes the bundle and seats
+    // ZETTA_WEBAPP_DIR; an explicit --webapp-dir always wins.
+    if (opts.webapp_dir.empty()) {
+        if (const char* env = std::getenv("ZETTA_WEBAPP_DIR")) opts.webapp_dir = env;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
