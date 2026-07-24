@@ -2474,6 +2474,17 @@ struct ApiServer::Impl {
     // GET / — the dashboard (or the login page when the session cookie is absent/invalid).
     boost::http::route_task serve_web_root(boost::http::route_params& route) {
         namespace http = boost::http;
+        // The React Studio app replaces the server-rendered UI when a bundle
+        // is configured (2026-07-24): / lands on the SPA entry.
+        if (!options.webapp_dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(options.webapp_dir) / "index.html")) {
+            route.status(http::status::found);
+            route.res.set(http::field::location, "/studio/");
+            stamp_response_headers(route, "");
+            auto [redirect_error] = co_await route.send("");
+            if (redirect_error) co_return http::route_error(redirect_error);
+            co_return http::route_done;
+        }
         const std::string token = cookie_value(route, "zetta_session");
         std::string user_id;
         std::string user_name;
@@ -2998,13 +3009,9 @@ struct ApiServer::Impl {
     // routes. Public like /style.css — the bundle is the static shell; its
     // only data path is the gated /v1 surface. Small local reads, same
     // blocking pattern as the other asset routes.
-    boost::http::route_task serve_webapp(boost::http::route_params& route) {
+    boost::http::route_task serve_webapp(boost::http::route_params& route,
+                                         std::string rel_url) {
         namespace http = boost::http;
-        std::string rel_url;
-        for (const auto& [parameter, value] : route.params) {
-            if (!rel_url.empty()) rel_url += '/';
-            rel_url += value;
-        }
         std::string body;
         std::string served;
         if (!options.webapp_dir.empty()) {
@@ -3137,19 +3144,36 @@ bool ApiServer::start() {
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_font(route, kPlexMonoWoff400, kPlexMonoWoff400_len);
                });
-    // The Studio web app bundle (SPA): /app plus up to three path segments
-    // (index.html + assets/… covers a Vite build).
-    router.add(http::method::get, "/app", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_webapp(route);
+    // The Studio web app bundle (the design repo's React build) REPLACES the
+    // server-rendered UI when --webapp-dir is set (2026-07-24): / redirects to
+    // /studio/, the SPA entry; the bundle's asset paths serve here, pre-gate,
+    // exactly like /style.css. The SSR pages remain the no-bundle fallback.
+    auto joined = [](http::route_params& route, std::string prefix) {
+        for (const auto& [parameter, value] : route.params) {
+            if (!prefix.empty()) prefix += '/';
+            prefix += value;
+        }
+        return prefix;
+    };
+    router.add(http::method::get, "/studio", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "");  // the SPA entry (client route)
     });
-    router.add(http::method::get, "/app/:p1", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_webapp(route);
+    router.add(http::method::get, "/studio/:p1", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "");  // client subroutes → index.html
     });
-    router.add(http::method::get, "/app/:p1/:p2", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_webapp(route);
+    router.add(http::method::get, "/assets/:p1", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "assets"));
     });
-    router.add(http::method::get, "/app/:p1/:p2/:p3", [&impl](http::route_params& route) -> http::route_task {
-        return impl.serve_webapp(route);
+    router.add(http::method::get, "/assets/:p1/:p2", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "assets"));
+    });
+    router.add(http::method::get, "/favicon.png", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "favicon.png");
+    });
+    // The bundle's own fonts (Geist etc.) — the embedded Plex routes above
+    // stay first; anything else under /fonts resolves from the bundle.
+    router.add(http::method::get, "/fonts/:p1", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "fonts"));
     });
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
@@ -3204,6 +3228,16 @@ bool ApiServer::start() {
                    if (send_error) co_return http::route_error(send_error);
                    co_return http::route_done;
                });
+
+    // Root-level bundle files (brand marks, og images) and top-level client
+    // routes — GET, single segment, registered after every named public route
+    // so it shadows nothing. Deeper unknown paths still hit the gate (401).
+    router.add(http::method::get, "/:file", [&impl](http::route_params& route) -> http::route_task {
+        std::string file;
+        for (const auto& [parameter, value] : route.params)
+            if (parameter == "file") file = value;
+        return impl.serve_webapp(route, std::move(file));
+    });
 
     // The ONE auth gate (#745, epic #743): a single middleware at the router
     // seam that runs before EVERY gated route (cors handles the CORS preflight

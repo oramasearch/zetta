@@ -30,7 +30,7 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    int worker_coroutines = 4;
+    int worker_coroutines = 32;  // the SPA fetches many assets in parallel (Chrome opens 6+ connections)
     // The built Studio web app (the design repo's React bundle). When set, the
     // node serves it statically at /app with an SPA fallback to index.html —
     // the app's only data path is the /v1 surface. Empty = /app is 404.
