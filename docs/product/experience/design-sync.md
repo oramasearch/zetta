@@ -46,6 +46,14 @@ wears").
 - **Locked by** `tests/api/test_web_ui_studio.cpp` (tokens, groups, vocabulary,
   icons — the renderers are pure, so the contract is directly testable).
 
+**Second pass — the Studio home.** The `overview` view became the design's
+create-first welcome: hero ("What would you like to create?"), the two entry
+paths (Create a Solution — fully backed; Discover Opportunities — honest
+in-training state for the Auto-Suggest model that reads a Workspace Profile),
+and Continue your work (every Project with live status + next useful action
+from `system.runs` / the authoring stage). The workspace counts moved to the
+top of Runs and activity; the cluster table already lived on Infrastructure.
+
 **Deliberately skipped (and why):**
 
 - **IBM Plex font files** are not embedded/served yet — pages keep the
@@ -96,6 +104,16 @@ import recorded.
 - **Docs**: `docs/gui/design-system.md` reground on the Studio system
   (canonical source = `oramasearch/orama-design` `packages/design-system/`);
   the coral-era wording swept from every `docs/gui/` page and the rule-cards.
+
+**Second pass — the Studio home** (mirrors the web): `draw_home` is
+create-first — the hero question via `page_header`, the two entry-path
+`section_card`s side by side (Create a Solution → the New Project modal;
+Discover Opportunities with the honest in-training state), Needs attention
+only when non-empty, and Continue your work (per-Project live state + next
+action: newest run → Review run/failure/results; compiled Pipelines →
+Verify and deploy; else Capture an intent). The cluster-health strip, recent
+runs, and recent activity dropped off Home — their owning panels are one
+click away in Operate. `docs/gui/home-dashboard.md` rewrote to match.
 
 **Deliberately skipped (and why):**
 
