@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -46,6 +47,15 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);
+
+// Sanitize a /app/<...> request into a bundle-relative file path for the
+// Studio web app: empty or "/" becomes index.html, traversal ("..", a leading
+// slash kept, backslashes) is rejected with nullopt. Pure — the caller does
+// the filesystem work.
+std::optional<std::string> web_ui_webapp_path(std::string_view url_path);
+
+// The Content-Type for a bundle file, by extension (text/html fallback).
+std::string_view web_ui_content_type(std::string_view path);
 
 // The Studio page hero (every view): mono eyebrow, title, one-line sub, the
 // mono meta strip (pre-built HTML, e.g. "<span>Nodes <b>3</b></span>…"), and

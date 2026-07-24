@@ -51,6 +51,7 @@ struct Options {
     zetta::cluster::ClusterConfig cluster;
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
+    std::string webapp_dir;                     // --webapp-dir PATH (the Studio SPA bundle)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
@@ -79,6 +80,7 @@ void print_usage(const char* argv0) {
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
+        "  --webapp-dir PATH   Serve the built Studio web app at /app from PATH\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
         "                      hashed at rest, never logged. If omitted on a\n"
@@ -134,6 +136,9 @@ Options parse_args(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--no-mcp") {
             o.mcp_enabled = false;
+        } else if (arg == "--webapp-dir") {
+            const char* v = take_value(argc, argv, i, o, "--webapp-dir");
+            if (v) o.webapp_dir = v;
         } else if (arg == "--mcp-listen") {
             const char* v = take_value(argc, argv, i, o, "--mcp-listen");
             if (v) o.mcp_listen = v;
@@ -620,6 +625,7 @@ int main(int argc, char** argv) {
         }
         api_options.listen_address = opts.mcp_listen.substr(0, colon);
         api_options.port = api_port;
+        api_options.webapp_dir = opts.webapp_dir;
         // The default-deny gate is always on (#799) and has no toggle: every
         // HTTP/MCP/REST path needs a bearer that resolves to a user via the token
         // store, else 401. There is no opt-out and no legacy shared-secret bypass.

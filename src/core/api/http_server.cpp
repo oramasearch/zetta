@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <cctype>
 #include <map>
 #include <thread>
@@ -2989,6 +2992,63 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // GET /app[/...] — the built Studio web app (the design repo's React
+    // bundle, #874 architecture revision 2026-07-24): static files from
+    // options.webapp_dir with an SPA fallback to index.html for client-side
+    // routes. Public like /style.css — the bundle is the static shell; its
+    // only data path is the gated /v1 surface. Small local reads, same
+    // blocking pattern as the other asset routes.
+    boost::http::route_task serve_webapp(boost::http::route_params& route) {
+        namespace http = boost::http;
+        std::string rel_url;
+        for (const auto& [parameter, value] : route.params) {
+            if (!rel_url.empty()) rel_url += '/';
+            rel_url += value;
+        }
+        std::string body;
+        std::string served;
+        if (!options.webapp_dir.empty()) {
+            if (const auto rel = web_ui_webapp_path(rel_url)) {
+                const std::filesystem::path root(options.webapp_dir);
+                const auto read_file = [&](const std::filesystem::path& file) {
+                    std::ifstream in(file, std::ios::binary);
+                    if (!in) return false;
+                    std::ostringstream buffer;
+                    buffer << in.rdbuf();
+                    body = std::move(buffer).str();
+                    return true;
+                };
+                if (read_file(root / *rel)) {
+                    served = *rel;
+                } else if (rel->find('.') == std::string::npos &&
+                           read_file(root / "index.html")) {
+                    served = "index.html";  // the SPA fallback for client routes
+                }
+            }
+        }
+        if (served.empty()) {
+            const std::string message =
+                options.webapp_dir.empty()
+                    ? "No web app bundle configured - start the node with --webapp-dir PATH."
+                    : "Not found in the web app bundle.";
+            route.status(http::status::not_found);
+            route.res.set(http::field::content_type, "text/plain; charset=utf-8");
+            stamp_response_headers(route, message);
+            auto [send_error] = co_await route.send(message);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, std::string(web_ui_content_type(served)));
+        route.res.set(http::field::cache_control,
+                      served == "index.html" ? "no-store"
+                                             : "public, max-age=31536000, immutable");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /favicon.svg — the self-contained favicon.
     boost::http::route_task serve_favicon(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -3077,6 +3137,20 @@ bool ApiServer::start() {
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_font(route, kPlexMonoWoff400, kPlexMonoWoff400_len);
                });
+    // The Studio web app bundle (SPA): /app plus up to three path segments
+    // (index.html + assets/… covers a Vite build).
+    router.add(http::method::get, "/app", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route);
+    });
+    router.add(http::method::get, "/app/:p1", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route);
+    });
+    router.add(http::method::get, "/app/:p1/:p2", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route);
+    });
+    router.add(http::method::get, "/app/:p1/:p2/:p3", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route);
+    });
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
     // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI

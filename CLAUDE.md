@@ -118,16 +118,19 @@ contradict them): no Deployment without a Saved Version; nothing
 production-ready without a passed Verification; consequential actions get an
 impact preview with a cancel path.
 
-**Rendering philosophy for both Studio surfaces** (Steve, 2026-07-23): the web
-app stays **C++ server-rendered** — its response time is part of the product.
-Hand-write minimal JavaScript only where interaction genuinely demands it (an
-in-place update that would otherwise full-page flicker, streaming a chat
-reply); never a framework, never client rendering for something the server can
-emit. The desktop app is **SDL3-first**: Dear ImGui is a temporary crutch —
-keep it only where it already gives a good experience; new design-led rendering
-goes custom SDL3 (pixel-perfect control), because the desktop must match the
-web app and the design's style **and motion design** at the highest achievable
-parity.
+**Rendering philosophy for both Studio surfaces** (revised by Steve,
+2026-07-24 — supersedes the 07-23 SSR-first rule): the web app is **the React
+Studio app from the design repo, wired to `/v1` JSON and served by the node**
+— the client-side app navigates faster for the full-page experience, and the
+design repo's real-code lanes now build production screens in it. The engine's
+role shifts to **data + serving**: the capability registry's `/v1` surface is
+the web app's only data source (no new behavior paths), the node serves the
+built bundle as an embedded/static asset (no npm in zetta's build; the bundle
+is built in the design repo), and the C++ SSR pages remain as the zero-JS
+fallback until screen parity, then retire. The desktop app is **SDL3-first**:
+Dear ImGui is a temporary crutch — keep it only where it already gives a good
+experience; new design-led rendering goes custom SDL3 (pixel-perfect control),
+matching the web and the design's style **and motion design**.
 
 **The design source is Daniel's repo `oramasearch/orama-design`**, reviewed
 through its **Orama Project Hub** (`/workspace/` on the Vercel preview — the

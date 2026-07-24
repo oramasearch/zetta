@@ -59,15 +59,13 @@ reduced-motion, impact previews).
 - The web app's **self-contained page rule** (`web_ui.hpp` header comment): no
   external assets, no framework — fonts are embedded/served by the node or
   fall back to the system stack.
-- **Rendering philosophy** (Steve, 2026-07-23). Web: **C++ server-rendered
-  stays** — the response time is part of the product; prefer CSS for motion;
-  hand-write minimal JavaScript only where interaction genuinely demands it
-  (avoiding a full-page flicker on an in-place update, streaming chat — the
-  Shell REPL/Notebooks pattern is the precedent), never a framework. Desktop:
-  **SDL3-first** — Dear ImGui is a temporary crutch, kept only where it
-  already gives a good experience; new design-led rendering goes custom SDL3
-  (pixel-perfect), so the desktop matches the web and the design's style
-  **and motion design** at the highest achievable parity.
+- **Rendering philosophy** (revised 2026-07-24). Web: **the React Studio app
+  from the design repo is the real web UI** — wired to /v1 JSON, bundle built
+  in the design repo, served by the node; the C++ SSR pages are the zero-JS
+  fallback until parity, then retire. Desktop: **SDL3-first** — Dear ImGui is
+  a temporary crutch, kept only where it already gives a good experience; new
+  design-led rendering goes custom SDL3 (pixel-perfect), matching the web and
+  the design's style **and motion design**.
 - Style convergence is a **recorded decision, not a side effect**: the design
   system (IBM Plex + Carbon Blue 60 `#0f62fe`) differs from zetta's current
   web palette (Geist + `#2563EB`) and from the GUI rules (Geist + coral). An

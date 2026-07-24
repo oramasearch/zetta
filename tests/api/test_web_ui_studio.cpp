@@ -126,4 +126,23 @@ TEST(WebUiStudio, FaviconUsesTheActionBlue) {
     EXPECT_TRUE(contains(web_ui_favicon(), "#0F62FE"));
 }
 
+TEST(WebUiStudio, WebappPathSanitizesAndFallsBack) {
+    using zetta::api::web_ui_content_type;
+    using zetta::api::web_ui_webapp_path;
+    // Empty / root → the SPA entry.
+    EXPECT_EQ(web_ui_webapp_path("").value(), "index.html");
+    EXPECT_EQ(web_ui_webapp_path("/").value(), "index.html");
+    EXPECT_EQ(web_ui_webapp_path("assets/index-abc123.js").value(),
+              "assets/index-abc123.js");
+    // Traversal and junk are rejected outright.
+    EXPECT_FALSE(web_ui_webapp_path("../etc/passwd").has_value());
+    EXPECT_FALSE(web_ui_webapp_path("assets/../../secret").has_value());
+    EXPECT_FALSE(web_ui_webapp_path("a\\b").has_value());
+    // Content types for the bundle's file kinds.
+    EXPECT_EQ(web_ui_content_type("index.html"), "text/html; charset=utf-8");
+    EXPECT_EQ(web_ui_content_type("assets/app.js"), "text/javascript; charset=utf-8");
+    EXPECT_EQ(web_ui_content_type("assets/app.css"), "text/css; charset=utf-8");
+    EXPECT_EQ(web_ui_content_type("fonts/plex.woff2"), "font/woff2");
+}
+
 }  // namespace

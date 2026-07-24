@@ -31,6 +31,10 @@ struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
     int worker_coroutines = 4;
+    // The built Studio web app (the design repo's React bundle). When set, the
+    // node serves it statically at /app with an SPA fallback to index.html —
+    // the app's only data path is the /v1 surface. Empty = /app is 404.
+    std::string webapp_dir;
     // The default-deny auth gate is ALWAYS on (#799) — there is no toggle and no
     // legacy shared-secret. EVERY gated route is closed unless the request
     // carries a bearer that resolves, via the token store (#744: salted-hash +

@@ -157,6 +157,16 @@ on explicit nulls in system rows could kill the node from a render path — all
 row reads are now null-safe (the no-exceptions boundary applies to renderers
 too).
 
+**Architecture revision (Steve, 2026-07-24).** The web surface adopts the
+design repo's **React Studio app as the real web UI**: screens wired to the
+`/v1` JSON surface (the capability registry stays the only behavior path),
+the node serves the built bundle (built in the design repo — no npm enters
+zetta's build), and the C++ SSR pages remain as the zero-JS fallback until
+screen parity, then retire. Supersedes the 07-23 SSR-first rule; the
+division of labor follows the design repo's lane docs (Codex builds the
+screens; zetta owns serving, auth, and the API contract). Tracking:
+the adoption-plan issue on oramasearch/zetta.
+
 **Deliberately skipped (and why):**
 
 - **IBM Plex faces**: the GUI embeds Geist/Geist Mono TTFs; swapping requires

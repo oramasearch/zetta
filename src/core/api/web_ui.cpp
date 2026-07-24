@@ -8,6 +8,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -1103,6 +1104,33 @@ std::string panel_icon_for(std::string_view title) {
     if (has("consent")) return web_ui_icon("consent");
     if (has("audit") || has("govern")) return web_ui_icon("audit");
     return web_ui_icon("grid");
+}
+
+std::optional<std::string> web_ui_webapp_path(std::string_view url_path) {
+    std::string rel(url_path);
+    while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+    if (rel.empty()) return std::string("index.html");
+    // Reject anything that could escape the bundle root. Encoded traversal is
+    // already decoded by the router; backslashes never appear in bundle paths.
+    if (rel.find("..") != std::string::npos) return std::nullopt;
+    if (rel.find('\\') != std::string::npos) return std::nullopt;
+    if (rel.find('\0') != std::string::npos) return std::nullopt;
+    return rel;
+}
+
+std::string_view web_ui_content_type(std::string_view path) {
+    const auto dot = path.rfind('.');
+    const std::string_view ext = dot == std::string_view::npos ? "" : path.substr(dot + 1);
+    if (ext == "html") return "text/html; charset=utf-8";
+    if (ext == "js" || ext == "mjs") return "text/javascript; charset=utf-8";
+    if (ext == "css") return "text/css; charset=utf-8";
+    if (ext == "json" || ext == "map") return "application/json";
+    if (ext == "svg") return "image/svg+xml";
+    if (ext == "png") return "image/png";
+    if (ext == "ico") return "image/x-icon";
+    if (ext == "woff2") return "font/woff2";
+    if (ext == "txt") return "text/plain; charset=utf-8";
+    return "text/html; charset=utf-8";
 }
 
 std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
