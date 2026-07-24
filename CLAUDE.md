@@ -118,6 +118,15 @@ contradict them): no Deployment without a Saved Version; nothing
 production-ready without a passed Verification; consequential actions get an
 impact preview with a cancel path.
 
+**Auth for Studio** (Steve, 2026-07-24): **Clerk is preferred; a native
+bearer/session token is the fallback for easy on-prem.** The node's auth gate
+accepts either — native token store / `zetta_session` cookie ([#884](https://github.com/oramasearch/zetta/issues/884)),
+**or** a Clerk JWT verified against Clerk's JWKS when `CLERK_ISSUER` is set
+([#889](https://github.com/oramasearch/zetta/issues/889)). **No `CLERK_ISSUER`
+→ bearer-only**, so air-gapped/on-prem installs need no Clerk egress — Clerk is
+never mandatory in the engine. Both sources resolve to the same default-deny
+principal model. Workflow: the `clerk-ops` skill in `oramasearch/orama-bridge`.
+
 **Rendering philosophy for both Studio surfaces** (revised by Steve,
 2026-07-24 — supersedes the 07-23 SSR-first rule): the web app is **the React
 Studio app from the design repo, wired to `/v1` JSON and served by the node**
