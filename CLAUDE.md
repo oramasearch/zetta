@@ -199,7 +199,8 @@ level can be trusted — a stale card is worse than none.
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
-| **Generating RLVR training data / a task corpus** (from a solutions catalog or a customer's data) | the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
+| **Generating RLVR training data / a task corpus** (from the solutions plan or a customer's data) | **native, in-Zetta**: the `DatasetGenerator` seam + factory (`generate_dataset` / `list_dataset_generators`; base-agent + Auto-Suggest; plan-grounded + admission-gated) → [`docs/dataset/`](docs/dataset/README.md) · the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
+| **The models + their corpora** — honest datasheets + model cards | [`docs/agent/cards/`](docs/agent/cards/README.md) — `models/` (base agent #555, Auto-Suggest #554) + `datasets/`; coverage: [`docs/agent/training-coverage-checklist.md`](docs/agent/training-coverage-checklist.md). **Update the card in the same change as a data/model change.** |
 | **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill · **every run writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
 | **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill · **every eval writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
 
@@ -396,6 +397,7 @@ include/zetta/   zetta-core PUBLIC API (no SDL/ImGui)
   cluster.hpp signal.hpp collectives.hpp replication.hpp   the distributed plane
   ir/ query/ input/               ExecutionGraph IR · dialect-agnostic SQL · language frontends
   compute/ ddf/ ml/ index/        devices+schedulers · dataframes · native ML · indexes
+  agent/ dataset/                 RLVR agent (action, prompt, solution-graph bridge, grader) · native corpus generators
   parquet/ repl/ testkit/ checks/ native Parquet · console · in-app tests · gate checks
 src/core/        zetta-core impl (catalog.hpp = internal CRDT key scheme)
 src/gui/         App — links SDL3 + ImGui; app.hpp forward-declares, only app.cpp
