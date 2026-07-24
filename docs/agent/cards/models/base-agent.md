@@ -22,7 +22,7 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 
 - **Architecture.** Qwen3-0.6B, run on Zetta's native autograd + `ComputeDevice` (MLX GPU on
   Apple silicon; CPU fallback). No foreign runtime (ADR-17): native tokenizer, native decode.
-- **Training data.** [data-card-base-agent.md](data-card-base-agent.md) — the admission-gated,
+- **Training data.** [data-card-base-agent.md](../datasets/base-agent.md) — the admission-gated,
   plan-grounded corpus in the action shape.
 - **Objective.** SFT (`next_token_loss` + AdamW) on `intent → action`, the Studio system prompt
   (`base_prompt.cpp`) baked into every example (train == inference framing) → then RLVR
@@ -41,7 +41,7 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
   `graph_solution_facts` → the task grader (`EvalGraderPassRate`).
 - **Acceptance (#555).** The checkpoint measurably beats the open-weights start on the #248
   enterprise eval, gate green. **Every training/eval run writes a dated validation report to
-  [`../reports/`](../reports/README.md)** (root `CLAUDE.md` rule) — the checkpoint is not the
+  [`../reports/`](../../../reports/README.md)** (root `CLAUDE.md` rule) — the checkpoint is not the
   deliverable, the report is.
 - **Prior evidence.** `../reports/qwen3-real-checkpoint-validation-2026-07-21.md` (tokenizer
   bit-exact, real-weight generation, post-training changes predictions). The action-corpus v6
@@ -53,7 +53,7 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
   flat facts, so parse rate is a first-class metric. 8B paths are #864/#865.
 - The base agent recognizes + specs the pipeline; **it doesn't yet emit tool-call trajectories
   step-by-step** as the fully autonomous #859 policy will — today the engine compiles the
-  recognized intent (see [inference-runbook.md](inference-runbook.md) §scope).
+  recognized intent (see [inference-runbook.md](../../inference-runbook.md) §scope).
 - Generated reference pipelines are structural skeletons (churn + search are the hand-built
   exemplars); richer graphs are a corpus follow-up.
 - Coverage is broad but shallow per subject (see the data card).
@@ -66,5 +66,5 @@ your model, your agent harness, your tools.
 
 ## See also
 
-[data-card-base-agent.md](data-card-base-agent.md) · [model-card-auto-suggest.md](model-card-auto-suggest.md) ·
-[training-runbook.md](training-runbook.md) · [inference-runbook.md](inference-runbook.md).
+[data-card-base-agent.md](../datasets/base-agent.md) · [model-card-auto-suggest.md](auto-suggest.md) ·
+[training-runbook.md](../../training-runbook.md) · [inference-runbook.md](../../inference-runbook.md).

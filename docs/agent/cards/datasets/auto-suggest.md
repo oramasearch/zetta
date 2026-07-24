@@ -17,7 +17,7 @@ correct suggestions), with DISTRACTOR use cases whose data is ABSENT and must NO
 
 ## Method
 
-Same blender-lr discipline as the base-agent corpus ([data-card-base-agent.md](data-card-base-agent.md)):
+Same blender-lr discipline as the base-agent corpus ([data-card-base-agent.md](base-agent.md)):
 grow by generation, gate by verification. Modeled as **admission-gated cases** so it rides the
 same gate: `task` = the data state (`initial_state`), `required` = suggest the present use cases
 (true) **and** withhold the absent ones (false); `reference` = the correct suggestion set;
@@ -48,8 +48,8 @@ data is present).
   the environment-profile modeling (beyond present/absent tables) is a follow-up.
 - **Governance.** Synthetic + plan-derived, no customer PII; a fork's corpus stays in the
   customer's environment; every training/eval run writes a dated report to
-  [`../reports/`](../reports/README.md).
+  [`../reports/`](../../../reports/README.md).
 
 ## See also
 
-[model-card-auto-suggest.md](model-card-auto-suggest.md) · [data-card-base-agent.md](data-card-base-agent.md).
+[model-card-auto-suggest.md](../models/auto-suggest.md) · [data-card-base-agent.md](base-agent.md).

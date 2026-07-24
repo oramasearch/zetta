@@ -72,7 +72,7 @@ required}, reference, negative_controls}`, plus the derived reference `action` (
   all admitted** — churn + search (hand-built rich graphs), the supervised solutions S-2…S-12,
   **every method M-10…M-21** (the 11 that had zero coverage in the offline corpus), the remaining
   use cases UC-13…24, the data supply chain (DSC), autonomy (AC), and ABSTAIN. See
-  [`training-coverage-checklist.md`](training-coverage-checklist.md).
+  [`training-coverage-checklist.md`](../../training-coverage-checklist.md).
 - **Fact vocabulary.** Step facts (`connect`/`clean`/`model`/`index`/`serve`/`act`) + methodology
   facts (`leakage_free`, `point_in_time`, `model_kind`, `temporal_validation`, `calibrated`,
   `explain`, `retrieval`, `ranked`, `grounded_in_data`, `approval_gated`, `abstain`, …).
@@ -110,14 +110,14 @@ required}, reference, negative_controls}`, plus the derived reference `action` (
 
 ## Maintenance & future
 
-Tracked in the [coverage checklist](training-coverage-checklist.md) + #878/#873: even per-subject
+Tracked in the [coverage checklist](../../training-coverage-checklist.md) + #878/#873: even per-subject
 variants; a held-out canary; richer reference graphs/messages; the LLM-assist mode for diverse
 natural-language intents (needs LLM-client creds, #877); the per-customer fork (#853). Every
-training/eval run writes a dated validation report to [`../reports/`](../reports/README.md) (root
+training/eval run writes a dated validation report to [`../reports/`](../../../reports/README.md) (root
 `CLAUDE.md` rule).
 
 ## See also
 
-[model-card-base-agent.md](model-card-base-agent.md) · [data-card-auto-suggest.md](data-card-auto-suggest.md) ·
-[training-runbook.md](training-runbook.md) · [inference-runbook.md](inference-runbook.md) ·
-[build-and-run-runbook.md](build-and-run-runbook.md).
+[model-card-base-agent.md](../models/base-agent.md) · [data-card-auto-suggest.md](auto-suggest.md) ·
+[training-runbook.md](../../training-runbook.md) · [inference-runbook.md](../../inference-runbook.md) ·
+[build-and-run-runbook.md](../../build-and-run-runbook.md).

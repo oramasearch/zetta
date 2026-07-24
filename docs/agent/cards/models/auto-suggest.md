@@ -19,7 +19,7 @@ built (#879); training pending. **Related:** #554 · #879 · #873 · #853.
 - **A regular LLM, not the RLVR game-player.** Unlike the base agent, Auto-Suggest is a
   supervised suggestion model — only the intent agent plays the verifiable-reward game. Base
   weights + size are a training-path choice (small, on the customer's hardware, model-agnostic).
-- **Training data.** [data-card-auto-suggest.md](data-card-auto-suggest.md) — gated data-state →
+- **Training data.** [data-card-auto-suggest.md](../datasets/auto-suggest.md) — gated data-state →
   (suggest-present, withhold-absent) cases; discrimination is the product.
 - **Objective.** SFT on `data state → the correct suggestion set`, gated so suggestions and
   distractors are disjoint (≥ 1 distractor per sample). Forked + specialized per customer (#853)
@@ -31,7 +31,7 @@ built (#879); training pending. **Related:** #554 · #879 · #873 · #853.
   (absent-data use case) is suggested; the zero case suggests nothing. Reference passes + controls
   fail via the same admission gate as the base-agent corpus.
 - **Report.** Every training/eval run writes a dated validation report to
-  [`../reports/`](../reports/README.md) (root `CLAUDE.md` rule).
+  [`../reports/`](../../../reports/README.md) (root `CLAUDE.md` rule).
 
 ## Limitations & governance
 
@@ -42,4 +42,4 @@ built (#879); training pending. **Related:** #554 · #879 · #873 · #853.
 
 ## See also
 
-[data-card-auto-suggest.md](data-card-auto-suggest.md) · [model-card-base-agent.md](model-card-base-agent.md).
+[data-card-auto-suggest.md](../datasets/auto-suggest.md) · [model-card-base-agent.md](base-agent.md).
