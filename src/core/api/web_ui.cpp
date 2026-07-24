@@ -184,6 +184,20 @@ html[data-rail=open] .rail{display:flex;}
 /* Topbar page title + Connected pill (July 24). */
 .pagetitle{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--ink-primary);
   border-left:2px solid var(--accent);padding-left:12px;}
+
+/* Search + filter segments (Projects, July 24) and segmented page tabs
+   (Governance). */
+.filterrow{display:flex;gap:12px;align-items:center;margin-bottom:14px;}
+.filterrow input[type=search]{flex:1;max-width:340px;}
+.filterseg{display:inline-flex;background:var(--wash-hover);border-radius:9px;padding:3px;gap:2px;}
+.filterseg a{padding:6px 12px;border-radius:7px;font-size:12px;color:var(--ink-muted);white-space:nowrap;}
+.filterseg a:hover{color:var(--ink-primary);}
+.filterseg a.on{background:var(--accent-solid);color:#fff;}
+.fcount{margin-left:auto;font-size:11.5px;color:var(--ink-quiet);}
+.segtabs{display:flex;gap:4px;border-bottom:1px solid var(--rule-hair);margin-bottom:16px;}
+.segtabs a{padding:9px 14px;font-size:13px;color:var(--ink-muted);border-bottom:2px solid transparent;margin-bottom:-1px;}
+.segtabs a:hover{color:var(--ink-primary);}
+.segtabs a.on{color:var(--ink-primary);font-weight:600;border-bottom-color:var(--accent);}
 .side .group{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   padding:16px 10px 7px;}
 .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:9px;color:var(--ink-secondary);

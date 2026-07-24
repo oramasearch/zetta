@@ -4,6 +4,7 @@
 // happens exactly once, here, at the wire boundary.
 #include "zetta/api/server.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <map>
@@ -1541,28 +1542,140 @@ struct ApiServer::Impl {
         const std::string sel = query_param(route, "p", "");
 
         if (sel.empty()) {
+            // The Projects index (July 24): search, filter segments, and the
+            // rich table — every column derived from live engine state.
+            const std::string q = query_param(route, "q", "");
+            const std::string filter = query_param(route, "f", "all");
             ApiResult r =
                 capability_registry.call("list_projects", nlohmann::json::object(), context);
-            std::string list;
+            // user id -> name, so the Owner column reads as a person.
+            std::map<std::string, std::string> user_names;
+            if (ApiResult users = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", "SELECT user_id, name FROM system.users"}},
+                    context);
+                users.ok && users.value.contains("rows") && users.value["rows"].is_array())
+                for (const auto& row : users.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    const auto id = row.find("user_id");
+                    const auto name = row.find("name");
+                    if (id != row.end() && id->is_string() && name != row.end() &&
+                        name->is_string())
+                        user_names[id->get<std::string>()] = name->get<std::string>();
+                }
+            // Latest run per project id, one governed read.
+            struct RunInfo { std::string status; std::string updated; };
+            std::map<std::string, RunInfo> latest;
+            if (ApiResult runs = capability_registry.call(
+                    "sql",
+                    nlohmann::json{{"statement",
+                                    "SELECT project, status, updated FROM system.runs"}},
+                    context);
+                runs.ok && runs.value.contains("rows") && runs.value["rows"].is_array())
+                for (const auto& row : runs.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    auto text = [&](const char* key) -> std::string {
+                        const auto found = row.find(key);
+                        return found != row.end() && found->is_string()
+                                   ? found->get<std::string>()
+                                   : std::string();
+                    };
+                    const std::string project = text("project");
+                    if (project.empty()) continue;
+                    RunInfo& slot = latest[project];
+                    const std::string updated = text("updated");
+                    if (updated >= slot.updated) slot = {text("status"), updated};
+                }
+            std::string rows_html;
+            std::size_t total = 0;
             const nlohmann::json names =
                 r.ok ? r.value.value("projects", nlohmann::json::array()) : nlohmann::json::array();
             for (const auto& n : names) {
                 if (!n.is_string()) continue;
                 const std::string name = n.get<std::string>();
-                list += "<a class=\"exprow\" href=\"/?view=projects&p=" + web_ui_escape(name) +
-                        "\"><span>" + web_ui_escape(name) + "</span></a>";
+                if (!q.empty()) {
+                    std::string hay = name;
+                    std::string needle = q;
+                    std::transform(hay.begin(), hay.end(), hay.begin(), ::tolower);
+                    std::transform(needle.begin(), needle.end(), needle.begin(), ::tolower);
+                    if (hay.find(needle) == std::string::npos) continue;
+                }
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", name}}, context);
+                if (!detail.ok) continue;
+                const std::string uuid = detail.value.value("id", "");
+                std::string owner = detail.value.value("owner", "");
+                if (const auto resolved = user_names.find(owner); resolved != user_names.end())
+                    owner = resolved->second;
+                else if (owner.size() > 12)
+                    owner = owner.substr(0, 8);
+                const std::size_t graphs =
+                    detail.value.value("graphs", nlohmann::json::array()).size();
+                const auto run_found = latest.find(uuid);
+                const bool has_run = run_found != latest.end();
+                const std::string run_status = has_run ? run_found->second.status : "";
+                // Status / health / next action, all from engine state.
+                std::string status = "Draft", stone, health = "Not evaluated", htone,
+                            next = "Capture an intent", next_href = "/?view=projects&p=" + name;
+                if (run_status == "Running") {
+                    status = "Running"; stone = "warn"; health = "Waiting"; htone = "warn";
+                    next = "Review run"; next_href = "/?view=pipeline";
+                } else if (run_status == "Failed") {
+                    status = "Needs attention"; stone = "err"; health = "Needs attention";
+                    htone = "err"; next = "Review failure"; next_href = "/?view=pipeline";
+                } else if (!run_status.empty()) {
+                    status = "Ready"; stone = "ok"; health = "Healthy"; htone = "ok";
+                    next = "Review results"; next_href = "/?view=pipeline";
+                } else if (graphs > 0) {
+                    status = "Ready"; stone = "ok"; health = "Not evaluated";
+                    next = "Verify and deploy";
+                }
+                if (filter == "running" && status != "Running") continue;
+                if (filter == "attention" && health != "Needs attention") continue;
+                ++total;
+                std::string updated =
+                    has_run ? run_found->second.updated : detail.value.value("updated", "");
+                rows_html += "<tr><td><a href=\"/?view=projects&p=" + web_ui_escape(name) +
+                             "\"><b>" + web_ui_escape(name) +
+                             "</b></a></td><td><span class=\"pill " + stone + "\">" + status +
+                             "</span></td><td>" + web_ui_escape(owner.empty() ? "\xC2\xB7" : owner) +
+                             "</td><td class=\"mono\">" +
+                             (graphs > 0 ? "Compiled" : "Sandbox") +
+                             "</td><td><span class=\"pill " + htone + "\">" + health +
+                             "</span></td><td class=\"mono\">" +
+                             web_ui_escape(updated.substr(0, 10)) + "</td><td><a href=\"" +
+                             next_href + "\">" + next + " \xE2\x86\x92</a></td></tr>";
             }
-            if (list.empty())
-                list = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
-                       "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
-                       "project below, then capture an intent, compile it to a Pipeline, verify, "
-                       "deploy, and run.</span></div>";
+            auto seg = [&](const char* id, const char* label) {
+                return std::string("<a class=\"") + (filter == id ? "on" : "") +
+                       "\" href=\"/?view=projects&f=" + id +
+                       (q.empty() ? "" : "&q=" + q) + "\">" + label + "</a>";
+            };
+            std::string list =
+                "<form class=\"filterrow\" method=\"get\" action=\"/\">"
+                "<input type=\"hidden\" name=\"view\" value=\"projects\">"
+                "<input type=\"search\" name=\"q\" placeholder=\"Search Projects\" value=\"" +
+                web_ui_escape(q) +
+                "\"><span class=\"filterseg\">" + seg("all", "All") +
+                seg("running", "Running") + seg("attention", "Needs attention") +
+                "</span><span class=\"fcount mono\">" + std::to_string(total) +
+                " Projects</span></form>";
+            if (rows_html.empty())
+                list += "<div class=\"emptybox\"><span class=\"eico\">" +
+                        web_ui_icon("projects") +
+                        "</span><span class=\"et\">No projects match</span></div>";
+            else
+                list += "<div class=\"twrap\"><table><thead><tr><th>Project</th><th>Status</th>"
+                        "<th>Owner</th><th>Environment</th><th>Health</th><th>Updated</th>"
+                        "<th>Next action</th></tr></thead><tbody>" +
+                        rows_html + "</tbody></table></div>";
+            std::string ignored_list;
+            (void)ignored_list;
             std::string out = render_action_bar(context, "projects", {"create_project"});
             out += web_ui_panel(
                 "Projects",
                 "an AI project: intent \xE2\x86\x92 Pipeline \xE2\x86\x92 Verification \xE2\x86\x92 "
                 "deploy \xE2\x86\x92 run",
-                "<div class=\"prjlist\">" + list + "</div>");
+                list);
             return out;
         }
 
@@ -1702,7 +1815,9 @@ struct ApiServer::Impl {
                 if (auto found = latest_by_project.find(uuid);
                     found != latest_by_project.end()) {
                     const std::string status = found->second.status;
-                    age = found->second.started.substr(0, 10);
+                    age = found->second.started.empty()
+                              ? detail.value.value("updated", "").substr(0, 10)
+                              : found->second.started.substr(0, 10);
                     if (status == "Running") { pill = "Running"; tone = "warn"; next = "Review run"; }
                     else if (status == "Failed") { pill = "Failed"; tone = "err"; next = "Review failure"; }
                     else { pill = "Succeeded"; tone = "ok"; next = "Review results"; }
@@ -2298,19 +2413,47 @@ struct ApiServer::Impl {
                 "decision is recorded.",
                 "<span>Roles <b>3 built-in</b></span><span>Access model "
                 "<b>Default-deny</b></span><span>Audit <b>Append-only</b></span>");
+            // Segmented tabs (July 24): Users and roles / Tokens / Consent / Audit.
+            const std::string tab = query_param(route, "tab", "users");
+            auto gtab = [&](const char* id, const char* label) {
+                return std::string("<a class=\"") + (tab == id ? "on" : "") +
+                       "\" href=\"/?view=governance&tab=" + id + "\">" + label + "</a>";
+            };
+            out += "<div class=\"segtabs\">" + gtab("users", "Users and roles") +
+                   gtab("tokens", "Tokens") + gtab("consent", "Consent requests") +
+                   gtab("audit", "Audit") + "</div>";
             out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
-            out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
-                                ptable("SELECT * FROM system.users", "u"));
-            out += web_ui_panel("Roles", "named capability bundles assigned to users",
-                                ptable("SELECT * FROM system.roles", "r"));
-            out += web_ui_panel("Policies", "row / column access rules",
-                                ptable("SELECT * FROM system.policies", "pol"));
-            out += web_ui_panel("Tokens", "issued bearer access tokens + their scope",
-                                ptable("SELECT * FROM system.tokens", "tok"));
-            out += web_ui_panel("Consent requests", "pending cloud-action approvals (deny-by-default)",
-                                ptable("SELECT * FROM system.consent_requests", "cons"));
-            out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
-                                ptable("SELECT * FROM system.audit", "aud"));
+            if (tab == "users") {
+                out += web_ui_panel(
+                    "Users",
+                    "each user holds built-in roles \xC2\xB7 roles are seeded at node "
+                    "bootstrap and replicated across the cluster",
+                    ptable("SELECT * FROM system.users", "u"));
+                out += web_ui_panel("Roles", "named permission bundles assigned to users",
+                                    ptable("SELECT * FROM system.roles", "r"));
+                out += web_ui_panel("Policies", "row / column access rules",
+                                    ptable("SELECT * FROM system.policies", "pol"));
+                out += "<div class=\"bannerrow warnb\"><span class=\"bico\">" +
+                       web_ui_icon("governance") +
+                       "</span><span class=\"bbody\"><b>Scoping is structural but "
+                       "unused</b><span>Roles carry scope fields, but all built-ins are "
+                       "unrestricted today. There are no per-Project or per-Workspace roles "
+                       "yet.</span></span></div>";
+            } else if (tab == "tokens") {
+                out += web_ui_panel(
+                    "Tokens",
+                    "issued bearer tokens \xC2\xB7 secrets are shown once and stored only "
+                    "as hashes; this view carries no secret material",
+                    ptable("SELECT * FROM system.tokens", "tok"));
+            } else if (tab == "consent") {
+                out += web_ui_panel("Consent requests",
+                                    "pending cloud-action approvals (deny-by-default)",
+                                    ptable("SELECT * FROM system.consent_requests", "cons"));
+            } else {
+                out += web_ui_panel(
+                    "Audit", "the immutable, append-only record of every governed action",
+                    ptable("SELECT * FROM system.audit", "aud"));
+            }
         } else if (view == "shell") {
             out += web_ui_page_hero("Developer", "Shell",
                 "SQL or Python against this node, governed: every statement is capability-scoped and audited.", "");
