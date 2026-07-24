@@ -116,7 +116,8 @@ form.inline{display:inline;margin:0;}
 .sideuser .who{flex:1;min-width:0;}
 .sideuser .who b{display:block;font-size:12.5px;font-weight:600;color:var(--ink-primary);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.sideuser .who span{font:10.5px/1.4 var(--font-mono);color:var(--ink-quiet);}
+.sideuser .who span{display:block;font:10.5px/1.4 var(--font-mono);color:var(--ink-quiet);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .sideuser .btn.small{padding:5px 9px;font-size:11px;flex:none;}
 
 /* The Ask Orama rail (#874): the design's collaborator column — blue header,
@@ -146,8 +147,43 @@ form.inline{display:inline;margin:0;}
 .railask .btn-primary{padding:10px 12px;}
 .railempty{color:var(--ink-quiet);font-size:12.5px;line-height:1.6;}
 .railempty a{color:var(--accent);}
-@media (max-width:1279px){.rail{display:none;}.layout.withrail{grid-template-columns:224px 1fr;}}
-@media (min-width:1280px){.layout.withrail{grid-template-columns:224px 1fr 340px;}}
+/* The rail is a toggleable drawer (July 24): closed by default, opened from
+   the topbar toggle; the choice persists locally (pre-paint pin on <html>). */
+.rail{display:none;}
+html[data-rail=open] .rail{display:flex;}
+@media (min-width:1280px){html[data-rail=open] .layout.withrail{grid-template-columns:224px 1fr 340px;}}
+@media (max-width:1279px){html[data-rail=open] .rail{display:none;}}
+.util.active{background:var(--accent-wash);color:var(--accent);}
+
+/* Status banners (July 24): live execution, needs-approval, unreachable. */
+.bannerrow{display:flex;align-items:center;gap:14px;border-radius:11px;padding:13px 16px;margin-bottom:16px;font-size:13px;}
+.bannerrow .bico{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex:none;}
+.bannerrow .bico svg{width:16px;height:16px;}
+.bannerrow .bbody{flex:1;min-width:0;}
+.bannerrow .bbody b{display:block;font-size:13.5px;color:var(--ink-primary);}
+.bannerrow .bbody span{font-size:12px;color:var(--ink-muted);}
+.bannerrow.live{background:var(--surface);border:1px solid var(--rule-card);}
+.bannerrow.live .bico{background:var(--accent-solid);color:#fff;}
+.bannerrow.warnb{background:var(--warn-bg);border:1px solid rgba(0,0,0,.05);}
+.bannerrow.warnb .bico{background:transparent;color:var(--warn-fg);}
+.bannerrow.errb{background:var(--err-bg);border:1px solid rgba(0,0,0,.05);}
+.bannerrow.errb .bico{background:transparent;color:var(--err-fg);}
+.bannerrow .bact{flex:none;}
+
+/* The stat-card row (Infrastructure / Data): big mono number, corner icon,
+   footer line + status pill. */
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px;}
+.statcard{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:16px 18px;}
+.statcard .schd{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.statcard .schd span{font-size:12px;color:var(--ink-muted);}
+.statcard .scico{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-solid);color:#fff;}
+.statcard .scico svg{width:16px;height:16px;}
+.statcard .num{font:30px/1.1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;}
+.statcard .scft{display:flex;align-items:center;justify-content:space-between;margin-top:8px;font-size:11.5px;color:var(--ink-quiet);}
+
+/* Topbar page title + Connected pill (July 24). */
+.pagetitle{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--ink-primary);
+  border-left:2px solid var(--accent);padding-left:12px;}
 .side .group{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   padding:16px 10px 7px;}
 .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:9px;color:var(--ink-secondary);
@@ -213,16 +249,19 @@ form.inline{display:inline;margin:0;}
   table{font-size:12px;} th,td{padding:8px 10px;}
   .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
-/* Studio home (#874 second pass): the design's create-first welcome — eyebrow,
-   hero headline, two entry-path cards, and the Continue-your-work list. */
-.hero{margin:18px 2px 26px;}
-.hero .heyebrow{display:flex;align-items:center;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin-bottom:14px;}
-.hero .hico{width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-solid);color:#fff;}
-.hero .hico svg{width:18px;height:18px;}
+/* The Studio page hero (every view, July 24 design): mono eyebrow, huge
+   title, one-line sub, and the mono meta strip with hairline separators.
+   Optional actions cluster floats top-right. */
+.hero{margin:26px 2px 30px;display:flex;gap:24px;align-items:flex-start;}
+.hero .hbody{flex:1;min-width:0;}
+.hero .heyebrow{font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.12em;color:var(--ink-quiet);margin-bottom:14px;}
 .hero h1{margin:0 0 10px;font-size:34px;line-height:1.15;font-weight:600;letter-spacing:-.02em;color:var(--ink-primary);}
-.hero .hsub{font-size:15px;color:var(--ink-muted);margin-bottom:14px;}
-.hero .hmeta{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px;color:var(--ink-quiet);border-top:1px solid var(--rule-hair);padding-top:12px;}
-.hero .hmeta b{font:12px var(--font-mono);color:var(--ink-secondary);font-weight:500;}
+.hero .hsub{font-size:14px;color:var(--ink-muted);margin-bottom:16px;max-width:640px;line-height:1.6;}
+.hero .hmeta{display:flex;flex-wrap:wrap;gap:8px 0;font-size:12px;color:var(--ink-quiet);align-items:center;}
+.hero .hmeta span{display:inline-flex;align-items:center;gap:7px;}
+.hero .hmeta span+span::before{content:'';width:1px;height:14px;background:var(--rule-emph);margin:0 16px;}
+.hero .hmeta b{font:12px var(--font-mono);color:var(--ink-primary);font-weight:500;}
+.hero .hactions{display:flex;gap:9px;flex:none;padding-top:34px;}
 .paths{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
 @media (max-width:900px){.paths{grid-template-columns:1fr;} .hero h1{font-size:26px;}}
 .path{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;}
@@ -250,11 +289,12 @@ form.inline{display:inline;margin:0;}
 .workrow .warr{color:var(--accent);flex:none;display:inline-flex;}
 .workrow .warr svg{width:16px;height:16px;}
 .panel{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
-.phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
-.phead .ico{width:27px;height:27px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--accent-wash);color:var(--accent);flex:none;}
-.phead .ico svg{width:15px;height:15px;}
-.phead h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.015em;color:var(--ink-primary);}
+/* Section header, July 24 design: the small accent square + bold title + quiet
+   sub. The icon tile is retired (kept in markup, hidden here). */
+.phead{display:flex;align-items:center;gap:10px;margin-bottom:15px;flex-wrap:wrap;}
+.phead::before{content:'';width:8px;height:8px;background:var(--accent);border-radius:2px;flex:none;}
+.phead .ico{display:none;}
+.phead h2{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--ink-primary);}
 .phead .psub{font-size:11.5px;color:var(--ink-muted);}
 .phead .hcount{margin-left:auto;font:11px/1 var(--font-mono);color:var(--ink-quiet);background:var(--wash-hover);
   padding:5px 10px;border-radius:20px;}
@@ -296,7 +336,7 @@ form.inline{display:inline;margin:0;}
 
 .twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--rule-hair);border-radius:11px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
-thead th{position:sticky;top:0;background:var(--canvas);z-index:1;}
+thead th{position:sticky;top:0;background:var(--info-bg);z-index:1;}
 th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule-hair);vertical-align:top;white-space:nowrap;}
 th{font:10.5px/1 var(--font-sans);font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 td{color:var(--ink-secondary);}
@@ -506,7 +546,9 @@ std::string head(std::string_view title) {
         // pinned theme never flashes the other one. System preference needs no
         // attribute (the media query handles it).
         "<script>try{var t=localStorage.getItem('zetta-theme');"
-        "if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>"
+        "if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;"
+        "if(localStorage.getItem('zetta-rail')==='open')document.documentElement.dataset.rail='open';"
+        "}catch(e){}</script>"
         "<link rel=\"icon\" href=\"/favicon.svg?v=" + version + "\" type=\"image/svg+xml\">"
         "<link rel=\"stylesheet\" href=\"/style.css?v=" + version + "\">"
         "<title>";
@@ -748,6 +790,10 @@ std::string web_ui_icon(std::string_view name) {
                    "<path d='M10 19.5a2.2 2.2 0 0 0 4 0'/>");
     if (name == "moon")
         return svg("<path d='M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z'/>");
+    if (name == "chatbot")
+        return svg("<rect x='4' y='7' width='16' height='11' rx='2.5'/><path d='M12 7V4M9 4h6'/>"
+                   "<path d='M9 11.5v1.6M15 11.5v1.6'/><path d='M2 11v4M22 11v4'/>");
+    if (name == "connections") return web_ui_icon("api");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
@@ -847,6 +893,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
         if (key == "datagen") return "Generate + gate training datasets natively (grounded in the solutions plan)";
+        if (key == "connections") return "Choose a connection path \xE2\x80\x94 API, MCP, or CLI \xE2\x80\x94 and the saved source connections";
         if (key == "pipeline") return "Runs and activity \xE2\x80\x94 Pipelines, deployments, runs, and jobs";
         if (key == "observability") return "Traces, spans, and crashes";
         if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
@@ -889,12 +936,30 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         anchor += "</span></a>";
         return anchor;
     };
+    // The topbar page title, per view (July 24): the lockup, then the current
+    // page name with the Connected pill.
+    auto page_title = [](std::string_view key) -> std::string_view {
+        if (key == "overview") return "Studio home";
+        if (key == "projects") return "Projects";
+        if (key == "data") return "Data";
+        if (key == "models") return "Models";
+        if (key == "pipeline") return "Operate";
+        if (key == "observability") return "Observability";
+        if (key == "governance") return "Governance";
+        if (key == "cluster") return "Infrastructure";
+        if (key == "connections") return "Connections";
+        if (key == "shell") return "Shell";
+        if (key == "notebooks") return "Notebooks";
+        if (key == "agents") return "Agents";
+        if (key == "chat") return "Chat";
+        if (key == "datagen") return "Data generators";
+        if (key == "console") return "Console";
+        return "Orama Studio";
+    };
     std::string out = head("Orama Studio");
-    // The topbar: the lockup, then the design's utility cluster — every icon a
-    // real destination (Search → the Data library's search, Get help → the
-    // documentation index, the activity bell → Runs and activity).
     out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Studio</div>";
-    out += "<span class=\"connpill ok\">connected</span><span class=\"spacer\"></span>";
+    out += "<span class=\"pagetitle\">" + std::string(page_title(active)) +
+           "<span class=\"connpill ok\">connected</span></span><span class=\"spacer\"></span>";
     out += "<a class=\"util\" title=\"Search\" href=\"/?view=data\">" + web_ui_icon("search") + "</a>";
     out += "<a class=\"util\" title=\"Get help\" href=\"/llms.txt\">" + web_ui_icon("docs") + "</a>";
     out += "<a class=\"util\" title=\"Runs and activity\" href=\"/?view=pipeline\">" +
@@ -903,32 +968,35 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     // presentation, stored locally; the pre-paint pin in head() applies it.
     out += "<button class=\"util\" id=\"themetoggle\" title=\"Theme\" type=\"button\">" +
            web_ui_icon("moon") + "</button>";
-    out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span></div>";
-    out += "<div class=\"layout";
-    out += " withrail";
-    out += "\"><nav class=\"side\">";
+    // The Ask Orama rail toggle (the drawer is closed by default, July 24).
+    out += "<button class=\"util\" id=\"railtoggle\" title=\"Ask Orama\" type=\"button\">" +
+           web_ui_icon("chatbot") + "</button></div>";
+    out += "<div class=\"layout withrail\"><nav class=\"side\">";
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
            link("projects", "Projects",
                 project_count >= 0 ? std::to_string(project_count) : std::string()) +
-           link("data", "Data library") + link("models", "Models");
+           link("data", "Data library");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
-           link("observability", "Observability") + link("governance", "Governance");
-    out += "<div class=\"group\">Developer</div>" + link("shell", "Shell") +
-           link("notebooks", "Notebooks") + link("agents", "Agents") + link("chat", "Chat") +
-           link("datagen", "Data generators");
+           link("observability", "Observability");
+    out += "<div class=\"group\">Developer</div>" + link("connections", "Connections") +
+           link("models", "Models") + link("shell", "Shell") + link("notebooks", "Notebooks") +
+           link("agents", "Agents") + link("chat", "Chat") + link("datagen", "Data generators");
     out += "<div class=\"group\">Documentation</div>" +
            doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
            doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
-    out += "<div class=\"group\">Advanced</div>" + link("cluster", "Infrastructure");
+    out += "<div class=\"group\">Advanced</div>" + link("governance", "Governance") +
+           link("cluster", "Infrastructure");
     // The signed-in identity card pins to the sidebar's bottom (the design's
-    // profile row); sign-out lives here, not in the topbar.
+    // profile row); sign-out lives here, not in the topbar. The second line
+    // carries the node meta the topbar gave up.
     if (!user.empty()) {
         const char initial = std::toupper(static_cast<unsigned char>(user.front()));
         out += "<div class=\"sideuser\"><span class=\"avatar\">";
         out += initial;
-        out += "</span><span class=\"who\"><b>" + web_ui_escape(user) +
-               "</b><span>signed in</span></span>"
+        out += "</span><span class=\"who\"><b>" + web_ui_escape(user) + "</b><span>" +
+               web_ui_escape(meta) +
+               "</span></span>"
                "<form class=\"inline\" method=\"post\" action=\"/logout\">"
                "<button class=\"btn small\">Sign out</button></form></div>";
     }
@@ -976,12 +1044,20 @@ q.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.prev
 })();</script>)JS";
     }
     out += "</aside>";
-    // The theme toggle cycle: system → light → dark → system.
-    out += R"JS(<script>(function(){var b=document.getElementById('themetoggle');if(!b)return;
+    // The theme toggle cycle (system → light → dark → system) and the rail
+    // drawer toggle; both persist locally.
+    out += R"JS(<script>(function(){var b=document.getElementById('themetoggle');if(b)
 b.onclick=function(){var cur;try{cur=localStorage.getItem('zetta-theme');}catch(e){}
   var next=cur==='light'?'dark':(cur==='dark'?null:'light');
   try{if(next)localStorage.setItem('zetta-theme',next);else localStorage.removeItem('zetta-theme');}catch(e){}
   if(next)document.documentElement.dataset.theme=next;else delete document.documentElement.dataset.theme;};
+var r=document.getElementById('railtoggle');
+function railSync(){var open=document.documentElement.dataset.rail==='open';if(r)r.classList.toggle('active',open);}
+if(r)r.onclick=function(){var open=document.documentElement.dataset.rail==='open';
+  if(open){delete document.documentElement.dataset.rail;try{localStorage.removeItem('zetta-rail');}catch(e){}}
+  else{document.documentElement.dataset.rail='open';try{localStorage.setItem('zetta-rail','open');}catch(e){}}
+  railSync();};
+railSync();
 })();</script>)JS";
     out += "</div></body></html>";
     return out;
@@ -1009,6 +1085,20 @@ std::string panel_icon_for(std::string_view title) {
     if (has("consent")) return web_ui_icon("consent");
     if (has("audit") || has("govern")) return web_ui_icon("audit");
     return web_ui_icon("grid");
+}
+
+std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
+                             std::string_view sub, std::string_view meta_html,
+                             std::string_view actions_html) {
+    std::string out = "<div class=\"hero\"><div class=\"hbody\">";
+    out += "<div class=\"heyebrow\">" + web_ui_escape(eyebrow) + "</div>";
+    out += "<h1>" + web_ui_escape(title) + "</h1>";
+    if (!sub.empty()) out += "<div class=\"hsub\">" + web_ui_escape(sub) + "</div>";
+    if (!meta_html.empty()) out += "<div class=\"hmeta\">" + std::string(meta_html) + "</div>";
+    out += "</div>";
+    if (!actions_html.empty()) out += "<div class=\"hactions\">" + std::string(actions_html) + "</div>";
+    out += "</div>";
+    return out;
 }
 
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body) {

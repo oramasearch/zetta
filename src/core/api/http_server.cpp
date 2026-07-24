@@ -1624,18 +1624,15 @@ struct ApiServer::Impl {
                 ? static_cast<long long>(info.value["cluster_members"].size())
                 : 0;
 
-        std::string out = "<div class=\"hero\">";
-        out += "<div class=\"heyebrow\"><span class=\"hico\">" + web_ui_icon("home") +
-               "</span>Studio home</div>";
-        out += "<h1>What would you like to create?</h1>";
-        out += "<div class=\"hsub\">Start with a goal, or let Studio study the data you "
-               "already have.</div>";
-        out += "<div class=\"hmeta\"><span>Workspace <b>" +
-               web_ui_escape(info.ok ? info.value.value("node_id", "").substr(0, 8) : "") +
-               "</b></span><span>Nodes <b>" + std::to_string(nodes) +
-               "</b></span><span>Version <b>v" +
-               web_ui_escape(info.ok ? info.value.value("version", "") : "") +
-               "</b></span></div></div>";
+        std::string out = web_ui_page_hero(
+            "Studio home", "What would you like to create?",
+            "Start with a goal, or let Studio study the data you already have.",
+            "<span>Workspace <b>" +
+                web_ui_escape(info.ok ? info.value.value("node_id", "").substr(0, 8) : "") +
+                "</b></span><span>Nodes <b>" + std::to_string(nodes) +
+                "</b></span><span>Version <b>v" +
+                web_ui_escape(info.ok ? info.value.value("version", "") : "") +
+                "</b></span>");
 
         // The two entry paths. Create a Solution is fully backed (create_project
         // → capture_intent → compile). Discover Opportunities renders honestly:
@@ -1666,17 +1663,24 @@ struct ApiServer::Impl {
         struct LatestRun { std::string status; std::string started; };
         std::map<std::string, LatestRun> latest_by_project;
         ApiResult runs = capability_registry.call(
-            "sql", nlohmann::json{{"sql", "SELECT project, status, started FROM system.runs"}},
+            "sql", nlohmann::json{{"statement", "SELECT project, status, started FROM system.runs"}},
             context);
         if (runs.ok && runs.value.contains("rows") && runs.value["rows"].is_array())
             for (const auto& row : runs.value["rows"]) {
                 if (!row.is_object()) continue;
-                const std::string project = row.value("project", "");
-                const std::string started = row.value("started", "");
+                // .value() throws on an explicit null — system rows carry
+                // nulls, so read defensively (the no-exceptions boundary).
+                auto text = [&](const char* key) -> std::string {
+                    const auto found = row.find(key);
+                    return found != row.end() && found->is_string()
+                               ? found->get<std::string>()
+                               : std::string();
+                };
+                const std::string project = text("project");
+                const std::string started = text("started");
                 if (project.empty()) continue;
                 LatestRun& latest = latest_by_project[project];
-                if (started >= latest.started)
-                    latest = {row.value("status", ""), started};
+                if (started >= latest.started) latest = {text("status"), started};
             }
 
         std::string rows;
@@ -1967,16 +1971,75 @@ struct ApiServer::Impl {
             // Infrastructure.
             out += render_studio_home(context);
         } else if (view == "cluster") {
+            // Infrastructure (July 24): the page hero, the stat cards, an
+            // unreachable-node banner when one exists, then the node tables.
+            long long node_count = 0, live_count = 0;
+            std::string unreachable_node;
+            if (ApiResult nodes_read = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", "SELECT node_id, reachability FROM system.nodes"}},
+                    context);
+                nodes_read.ok && nodes_read.value.contains("rows"))
+                for (const auto& row : nodes_read.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    ++node_count;
+                    auto text = [&](const char* key) -> std::string {
+                        const auto found = row.find(key);
+                        return found != row.end() && found->is_string()
+                                   ? found->get<std::string>()
+                                   : std::string();
+                    };
+                    if (text("reachability").find("unreachable") != std::string::npos)
+                        unreachable_node = text("node_id");
+                    else
+                        ++live_count;
+                }
+            out += web_ui_page_hero(
+                "Infrastructure", "Cluster",
+                "Advanced capacity and node controls stay available without leading the "
+                "main creation experience.",
+                "<span>Scope <b>Advanced</b></span><span>Cluster health <b>" +
+                    std::to_string(live_count) + " of " + std::to_string(node_count) +
+                    " live</b></span>");
+            if (!unreachable_node.empty())
+                out += "<div class=\"bannerrow errb\"><span class=\"bico\">" +
+                       web_ui_icon("crash") + "</span><span class=\"bbody\"><b>One node is "
+                       "unreachable</b><span>Work remains available on the other nodes. Open "
+                       "the node to review reachability and recovery detail.</span></span>"
+                       "<span class=\"bact mono\">" +
+                       web_ui_escape(unreachable_node.substr(0, 12)) + "</span></div>";
+            out += "<div class=\"statgrid\"><div class=\"statcard\"><div class=\"schd\">"
+                   "<span>Nodes</span><span class=\"scico\">" + web_ui_icon("nodes") +
+                   "</span></div><div class=\"num\">" + std::to_string(node_count) +
+                   "</div><div class=\"scft\"><span>" + std::to_string(live_count) +
+                   " live</span><span class=\"pill " +
+                   (unreachable_node.empty() ? "ok\">Healthy" : "warn\">Degraded") +
+                   "</span></div></div>";
+            out += "<div class=\"statcard\"><div class=\"schd\"><span>Projects</span>"
+                   "<span class=\"scico\">" + web_ui_icon("projects") +
+                   "</span></div><div class=\"num\">" +
+                   std::to_string(context.node.project_names().size()) +
+                   "</div><div class=\"scft\"><span>All Project data available</span>"
+                   "<span class=\"pill ok\">Protected</span></div></div></div>";
             out += render_action_panel(
                 context, view, "cluster", "Nodes",
-                "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync",
+                "membership, location, synchronization, reachability, and version",
                 {"add_nodes", "detect_provisioners", "cloud_inspect"},
                 ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
-            out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
+            out += web_ui_panel("Deployments", "Pipelines placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
         } else if (view == "projects") {
+            out += web_ui_page_hero(
+                "Projects", "Projects",
+                "Intent, data, execution, outcomes, and history stay together.",
+                "<span>Projects <b>" + std::to_string(context.node.project_names().size()) +
+                    "</b></span><span>Workspace <b>this node</b></span>");
             out += render_projects(context, route);
         } else if (view == "data") {
+            out += web_ui_page_hero(
+                "Data library", "Data",
+                "Find reusable sources and understand readiness, location, access, and "
+                "Project relationships.",
+                "<span>Scope <b>Workspace library</b></span>");
             out += render_search_panel(context, route);
             out += render_action_panel(
                 context, view, "dataset", "Datasets",
@@ -1996,13 +2059,64 @@ struct ApiServer::Impl {
                 ptable("SELECT * FROM system.indexes", "idx"));
             out += render_data_explorer(context, route);
         } else if (view == "models") {
+            out += web_ui_page_hero(
+                "Developer", "Models",
+                "Every Model is produced by a Project Run. Exposing a Model serves it to "
+                "your Workspace so applications and Solutions can call it.",
+                "<span>Context <b>Workspace</b></span>");
             out += render_action_panel(
-                context, view, "models", "Models",
-                "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
-                "one to serve predictions",
+                context, view, "models", "Trained Models",
+                "select a Model to see the Run and evidence behind it \xC2\xB7 exposing and "
+                "un-exposing are governed actions",
                 {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
+        } else if (view == "connections") {
+            // Connections (July 24): the three connection paths — every card a
+            // real, live destination — plus the saved source connections and
+            // the safety contract.
+            out += web_ui_page_hero(
+                "Developer", "Connections",
+                "Choose a connection path, understand its scope, and verify it without "
+                "exposing credentials.",
+                "<span>Workspace <b>this node</b></span><span>Credential health "
+                "<b>Connected</b></span>");
+            out += web_ui_panel(
+                "Connection paths", "API, MCP, and CLI \xC2\xB7 workspace-scoped access",
+                "<div class=\"worklist\">"
+                "<a class=\"workrow\" href=\"/v1/openapi.json\"><span class=\"wstat\">"
+                "<span class=\"pill ok\">Connected</span></span><span class=\"wname\">API"
+                "<span class=\"actionsub\"> \xC2\xB7 workspace-scoped access for applications "
+                "and services</span></span><span class=\"wnext\">View API setup</span>"
+                "<span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "<a class=\"workrow\" href=\"/mcp.md\"><span class=\"wstat\">"
+                "<span class=\"pill ok\">Available</span></span><span class=\"wname\">MCP"
+                "<span class=\"actionsub\"> \xC2\xB7 give approved coding agents access to "
+                "this workspace</span></span><span class=\"wnext\">Configure MCP</span>"
+                "<span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "<a class=\"workrow\" href=\"/?view=shell\"><span class=\"wstat\">"
+                "<span class=\"pill\">Console</span></span><span class=\"wname\">Shell"
+                "<span class=\"actionsub\"> \xC2\xB7 inspect Projects, data, runs, and "
+                "status from the governed console</span></span><span class=\"wnext\">Open "
+                "Shell</span><span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "</div>");
+            out += render_action_panel(
+                context, view, "token", "Source connections",
+                "saved warehouse credentials, held on every node \xC2\xB7 the read surface "
+                "never carries a token",
+                {"create_connection", "delete_connection"},
+                ptable("SELECT * FROM system.connections", "conn"));
+            out += web_ui_panel(
+                "Connection safety", "applies to API, MCP, CLI, desktop, and external agents",
+                "<div class=\"legenddefs\">"
+                "<div><b>Scoped access</b> every credential resolves to a user and a role; "
+                "capability checks are default-deny.</div>"
+                "<div><b>Visible activity</b> every action records its origin, actor, "
+                "affected object, and result in the audit trail.</div>"
+                "<div><b>Rotation and revocation</b> tokens can be revoked at any time; "
+                "secrets are shown once and stored only as hashes.</div></div>");
         } else if (view == "agents") {
+            out += web_ui_page_hero("Developer", "Agents",
+                "Served agents: a model, a system prompt, and tools you can chat with. Creating, updating, and deleting are governed actions.", "");
             // The served agents (#849). No system.agents view yet, so the list is rendered
             // straight from the replicated records; create/update/delete are the capabilities.
             // Each row carries an inline, PRE-FILLED update_agent form (the system prompt +
@@ -2066,6 +2180,8 @@ struct ApiServer::Impl {
                 "Edit a row to change its system prompt",
                 {"create_agent", "update_agent", "delete_agent"}, table);
         } else if (view == "chat") {
+            out += web_ui_page_hero("Developer", "Chat",
+                "Talk to a served agent, or have it build and run a real Pipeline from your ask.", "");
             // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
             // form, two submit buttons: the clicked button's name=cap picks the capability —
             // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
@@ -2087,6 +2203,8 @@ struct ApiServer::Impl {
                    "run</button></div>"
                    "</form></section>";
         } else if (view == "datagen") {
+            out += web_ui_page_hero("Developer", "Data generators",
+                "Generate and gate training datasets natively, grounded in the solutions plan.", "");
             // Native dataset generators (#873): the factory's generators + a Generate action.
             std::string rows;
             for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
@@ -2105,6 +2223,34 @@ struct ApiServer::Impl {
                 "solutions plan, inside Zetta (ADR-17) \xC2\xB7 Generate writes gated JSONL",
                 {"generate_dataset"}, table);
         } else if (view == "pipeline") {
+            out += web_ui_page_hero(
+                "Operate", "Runs and activity",
+                "Monitor work by Project first, then open infrastructure detail only when "
+                "it explains an issue.",
+                "<span>Scope <b>All Projects</b></span><span>Last refresh <b>just now</b></span>");
+            // The live-execution banner (July 24): the newest running run, when
+            // one exists — straight from system.runs.
+            if (ApiResult running = capability_registry.call(
+                    "sql",
+                    nlohmann::json{{"statement",
+                                    "SELECT run_id, status FROM system.runs WHERE status = "
+                                    "'Running'"}},
+                    context);
+                running.ok && running.value.contains("rows") &&
+                !running.value["rows"].empty()) {
+                const auto& last_row = running.value["rows"].back();
+                const std::string run_id =
+                    last_row.is_object() && last_row.contains("run_id") &&
+                            last_row["run_id"].is_string()
+                        ? last_row["run_id"].get<std::string>()
+                        : std::string();
+                out += "<div class=\"bannerrow live\"><span class=\"bico\">" +
+                       web_ui_icon("runs") +
+                       "</span><span class=\"bbody\"><b>A run is executing now</b><span "
+                       "class=\"mono\">run " +
+                       web_ui_escape(run_id.substr(0, 8)) +
+                       " \xC2\xB7 live in the Runs table below</span></span></div>";
+            }
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",
                                                      "gate", "deploy", "run"});
@@ -2133,6 +2279,11 @@ struct ApiServer::Impl {
                 "score) \xC2\xB7 many jobs per run",
                 ptable("SELECT * FROM system.jobs", "jobs"));
         } else if (view == "observability") {
+            out += web_ui_page_hero(
+                "Operate", "Observability",
+                "Every operation records its intent, plan, timing, and result \xE2\x80\x94 "
+                "traces, spans, and crashes, threaded across surfaces and nodes.",
+                "<span>Scope <b>this node</b></span>");
             out += web_ui_panel(
                 "Traces", "one row per operation (an MCP/REST call, a run) \xC2\xB7 its intent, timing + result",
                 ptable("SELECT * FROM system.traces", "tr"));
@@ -2141,6 +2292,12 @@ struct ApiServer::Impl {
             out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
                                 ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
+            out += web_ui_page_hero(
+                "Advanced", "Governance and audit",
+                "Access is default-deny: every request resolves to a role, and every "
+                "decision is recorded.",
+                "<span>Roles <b>3 built-in</b></span><span>Access model "
+                "<b>Default-deny</b></span><span>Audit <b>Append-only</b></span>");
             out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
             out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
                                 ptable("SELECT * FROM system.users", "u"));
@@ -2155,8 +2312,12 @@ struct ApiServer::Impl {
             out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
                                 ptable("SELECT * FROM system.audit", "aud"));
         } else if (view == "shell") {
+            out += web_ui_page_hero("Developer", "Shell",
+                "SQL or Python against this node, governed: every statement is capability-scoped and audited.", "");
             out += web_ui_shell_repl();
         } else if (view == "notebooks") {
+            out += web_ui_page_hero("Developer", "Notebooks",
+                "SQL and Python cells, executed through the same governed console, saved in this browser.", "");
             out += web_ui_notebooks();
         } else {
             out += "<div class=\"empty\">Unknown view.</div>";

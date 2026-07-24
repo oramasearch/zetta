@@ -47,6 +47,13 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);
 
+// The Studio page hero (every view): mono eyebrow, title, one-line sub, the
+// mono meta strip (pre-built HTML, e.g. "<span>Nodes <b>3</b></span>…"), and
+// an optional top-right actions cluster (pre-built HTML).
+std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
+                             std::string_view sub, std::string_view meta_html,
+                             std::string_view actions_html = {});
+
 // Render a SQL/read result (an ordered `columns` array + a `rows` array of column-keyed objects) as
 // an on-brand, horizontally-scrollable HTML table. Column-name heuristics format status/bytes/bools.
 std::string web_ui_table(const nlohmann::json& columns, const nlohmann::json& rows);

@@ -137,6 +137,26 @@ Verify and deploy; else Capture an intent). The cluster-health strip, recent
 runs, and recent activity dropped off Home — their owning panels are one
 click away in Operate. `docs/gui/home-dashboard.md` rewrote to match.
 
+**Fifth pass — the July 24 design sync (walked live against the prototype).**
+Synced against the live "Orama Studio, July 24th" prototype with a page-by-page
+browser walk. The canonical page anatomy now applies to **every** web view:
+mono eyebrow -> huge title -> one-line sub -> mono meta strip with hairline
+separators (`web_ui_page_hero`), accent-square section headers, tinted table
+header rows, and status banners (live execution on Runs and activity, the
+red unreachable-node banner + stat cards on Infrastructure). The sidebar
+follows the July 24 IA (Connections + Models under Developer; Governance +
+Infrastructure under Advanced), the topbar carries the current page title with
+the Connected pill, and the Ask Orama rail is a **toggleable drawer, closed by
+default** (the July 24 behavior) behind the topbar agent button. New
+**Connections** view: the three connection paths (API / MCP / Shell — every
+card a live destination), the saved source connections, and the safety
+contract. The desktop registry mirrors the same IA. Fixed along the way: the
+`sql` capability calls used the wrong input key (`sql` vs `statement`) so the
+home worklist fell back to authoring states, and `nlohmann::value()` throwing
+on explicit nulls in system rows could kill the node from a render path — all
+row reads are now null-safe (the no-exceptions boundary applies to renderers
+too).
+
 **Deliberately skipped (and why):**
 
 - **IBM Plex faces**: the GUI embeds Geist/Geist Mono TTFs; swapping requires
