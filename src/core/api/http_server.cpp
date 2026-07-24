@@ -3314,7 +3314,12 @@ bool ApiServer::start() {
     // registered BEFORE this middleware, so they stay reachable without a token;
     // and the in-process headed GUI authorizes locally, not through this gate.)
     router.use([&impl](http::route_params& route) -> http::route_task {
-        const std::string bearer = bearer_of(route);
+        // Authorization: Bearer wins; else the HttpOnly zetta_session cookie
+        // (its value IS a bearer token, validated identically) — so the Studio
+        // web app authenticates its /v1 calls with the session cookie set by
+        // POST /session, the token never touching the page's JavaScript.
+        std::string bearer = bearer_of(route);
+        if (bearer.empty()) bearer = cookie_value(route, "zetta_session");
         RequestIdentity identity;
         bool authorized = false;
 
