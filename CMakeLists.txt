@@ -729,7 +729,8 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(zetta-api STATIC
   src/core/api/http_server.cpp
-  src/core/api/native_http_transport.cpp)
+  src/core/api/native_http_transport.cpp
+  src/core/api/clerk_auth.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)
 target_link_libraries(zetta-api PRIVATE

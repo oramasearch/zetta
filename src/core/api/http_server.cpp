@@ -31,6 +31,7 @@
 #include "zetta_web_font_sans_600.hpp"
 
 #include "zetta/api/background.hpp"
+#include "zetta/api/clerk_auth.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
@@ -3324,13 +3325,30 @@ bool ApiServer::start() {
         bool authorized = false;
 
         std::string resolved_user_id;
-        // authenticate_token touches the Node (token store) — main-thread only,
-        // so marshal it onto the owning loop, like every handler.
+        // Native token store first (cheap, local): authenticate_token touches the
+        // Node — main-thread only, so marshal it onto the owning loop.
         co_await impl.bridge.run_on_owner([&] {
             if (auto user = impl.node.authenticate_token(bearer)) {
                 resolved_user_id = user->id();
             }
         });
+
+        // Clerk fallback (#889): if the native token missed AND a Clerk issuer is
+        // configured AND the bearer is JWT-shaped, verify it against the issuer's
+        // JWKS and map the subject to a principal named clerk:<sub> (provisioned
+        // on first sight). No issuer configured → this never runs (bearer-only).
+        if (resolved_user_id.empty() && !impl.options.clerk_issuer.empty() &&
+            looks_like_jwt(bearer)) {
+            if (auto claims = verify_clerk_jwt(impl.options.clerk_issuer, bearer)) {
+                const std::string principal_name = "clerk:" + claims->subject;
+                co_await impl.bridge.run_on_owner([&] {
+                    auto user = impl.node.find_user(principal_name);
+                    if (!user) user = impl.node.create_user(principal_name);
+                    if (user) resolved_user_id = user->id();
+                });
+            }
+        }
+
         if (!resolved_user_id.empty()) {
             authorized = true;
             identity.acting_key = std::move(resolved_user_id);
