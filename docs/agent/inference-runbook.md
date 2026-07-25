@@ -139,6 +139,34 @@ driving `Sandbox` → `ir::ExecutionGraph` graded by `grpo_step` — is
 **enhancement** (a more autonomous agent), not a prerequisite: the base agent builds + runs
 graphs today via `agent_run`.
 
+## Serving performance — Metal decode, off-tick, BF16 cold load
+
+Chat/`agent_run` decode on Apple Silicon serves on the **Metal GPU** via
+`MlxQwenInference` (the fused Qwen decode, #555), installed at startup behind the
+`QwenInferenceRunner` injection point (`agent/inference_runner.hpp`) so `zetta-core`
+links no MLX; the CPU `autograd::QwenInference` is the fallback when the runner is
+absent or a checkpoint fails to load on the MLX path. Two properties matter for
+interactive serving:
+
+- **Off the tick loop.** The `chat` capability is marked `offloadable` — it runs on a
+  pool worker via `runtime::offload`, not marshaled onto the owning tick thread, so a
+  long decode never pins the 10 Hz loop (#731). Node stays responsive (single-digit ms)
+  during a multi-second generation. Only the tokenizer + the thread-safe `AgentStore`
+  read touch shared state; the decode is pure compute.
+- **Single load, not double.** `respond()` loads only the tokenizer eagerly (cheap); the
+  multi-GB model is loaded **lazily** and only on the path that serves — the MLX runner
+  keeps a per-path `MlxQwenInference` cache, and the autograd `ModelCache` is touched only
+  on fallback. No more loading both a CPU and a Metal copy on the first turn.
+- **BF16 checkpoint halves the cold load.** Weights are read F32 by default. Converting a
+  checkpoint to BF16 (`scripts/convert_checkpoint_to_bf16.py`) halves the file (0.6B:
+  2.38 GB → 1.19 GB) and the weight-read part of the cold load (~7.9 s → ~5.2 s);
+  point an agent at it with `update_agent(id, model=<dir>-bf16)`. Warm **tokens/sec is
+  unchanged** (~77 tok/s marginal, 0.6B greedy on Metal): decode runs on F32 weights
+  in memory, so BF16 only shrinks the file and the load, not generation. BF16 here is a
+  high-16-bit truncation, exactly what both `safetensors.cpp` readers reconstruct, so
+  greedy decode quality is unaffected. The `data/checkpoints/` dir is gitignored — the
+  converter script is the reproducible part.
+
 ## Related
 
 - [training-runbook.md](training-runbook.md) — produce the checkpoint this runbook loads.
