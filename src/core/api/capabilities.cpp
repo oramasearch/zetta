@@ -283,7 +283,7 @@ const nlohmann::json& get_project_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
-         {"id", "name", "created", "updated", "owner", "inputs", "graphs"}},
+         {"id", "name", "created", "updated", "owner", "description", "inputs", "graphs"}},
         {"additionalProperties", false},
         {"properties",
          {{"id", {{"type", "string"}}},
@@ -291,6 +291,7 @@ const nlohmann::json& get_project_output_schema() {
           {"created", {{"type", "string"}}},
           {"updated", {{"type", "string"}}},
           {"owner", {{"type", "string"}}},
+          {"description", {{"type", "string"}}},
           {"inputs",
            {{"type", "array"},
             {"items",
@@ -789,10 +790,16 @@ const nlohmann::json& create_project_schema() {
         {"required", {"name"}},
         {"additionalProperties", false},
         {"properties",
-         {{"name", {{"type", "string"}, {"minLength", 1}}},
-          {"owner",
-           {{"type", "string"},
-            {"description", "owner key id recorded on the project (optional)"}}}}}};
+         {
+             {"name", {{"type", "string"}, {"minLength", 1}}},
+             {"owner",
+              {{"type", "string"},
+               {"description", "owner key id recorded on the project (optional)"}}},
+             {"description",
+              {{"type", "string"},
+               {"description",
+                "a one-line human description of the project's intent (optional)"}}},
+         }}};
     return schema;
 }
 
@@ -812,7 +819,8 @@ ApiResult handle_create_project(const nlohmann::json& input, ApiContext& context
     const std::string owner =
         input.value("owner", context.acting_key.empty() ? std::string("local")
                                                         : context.acting_key);
-    auto project = context.node.create_project(name, owner);
+    const std::string description = input.value("description", std::string{});
+    auto project = context.node.create_project(name, owner, description);
     if (!project) {
         return ApiResult::failure(
             "engine_error",

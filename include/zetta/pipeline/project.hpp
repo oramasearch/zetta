@@ -40,20 +40,27 @@ public:
     Project(std::string id, std::string name, std::string created,
             std::string updated, std::string owner, std::filesystem::path dir,
             zetta::cluster::ReplicationManager* replication = nullptr,
-            zetta::governance::AuditSink* audit = nullptr);
+            zetta::governance::AuditSink* audit = nullptr,
+            std::string description = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
     const std::string& created() const { return created_; }
     const std::string& updated() const { return updated_; }
     const std::string& owner() const { return owner_; }
+    // A one-line human description of the project's intent (#885). Optional; a
+    // project created before this field, or with none, reads empty.
+    const std::string& description() const { return description_; }
+    // Set the description and persist (also replicated via metadata()).
+    void set_description(std::string description);
     const std::filesystem::path& dir() const { return dir_; }
 
     // Replace the mutable metadata to match a (replicated) value, then rewrite
     // project.json. The folder/id is unchanged. `created` is logically
     // immutable but accepted so the projection matches the document exactly.
     void set_metadata(std::string name, std::string created,
-                      std::string updated, std::string owner);
+                      std::string updated, std::string owner,
+                      std::string description = {});
 
     // Write this project's metadata (id + fields) to dir/project.json.
     void persist_meta() const;
@@ -179,6 +186,7 @@ private:
     std::string created_;
     std::string updated_;
     std::string owner_;
+    std::string description_;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
