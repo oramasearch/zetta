@@ -867,6 +867,12 @@ struct ApiServer::Impl {
                     context.acting_is_user = identity.is_user;
                     return capability_registry.call(capability->name, input, context);
                 });
+                // offload resumes us on a pool worker; hop back onto the owning
+                // loop before touching the connection. route.send below is a
+                // Corosio op bound to that loop's executor — resuming it on a pool
+                // thread never completes and the response hangs (the decode itself
+                // already ran off-thread, so the tick loop stayed free).
+                co_await bridge.run_on_owner([] {});
             } else {
                 co_await bridge.run_on_owner([&] {
                     ApiContext context{node, cluster, identity.acting_key, trace,

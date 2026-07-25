@@ -4247,8 +4247,13 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_chat};
     // Model decode is CPU/GPU-bound and touches only the thread-safe replication
-    // store, so run it off the owner/tick thread — a chat never pins the loop.
-    chat_capability.offloadable = true;
+    // store, so in principle it can run off the owner/tick thread. But the current
+    // runtime::offload path does not resume the REST request coroutine back on the
+    // connection's executor, so route.send() after it never completes and the HTTP
+    // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
+    // offload/executor resumption is fixed, serve chat on the owner loop — correct,
+    // at the cost of briefly occupying the tick during a decode. See #731.
+    chat_capability.offloadable = false;
     registry.add(std::move(chat_capability));
     registry.add(Capability{
         "agent_run",
