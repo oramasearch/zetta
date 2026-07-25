@@ -10,6 +10,7 @@
 #include "zetta/api/native_http_transport.hpp"
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/compute/mlx_serving.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
@@ -338,6 +339,14 @@ int main(int argc, char** argv) {
     // only when the libpqxx submodule is present; without it, a Postgres query
     // fails cleanly ("the Postgres connector is not built into this binary").
     zetta::connect::install_postgres_protocol();
+#endif
+#ifdef ZETTA_WITH_MLX
+    // The fast Metal-GPU Qwen decode (#555) — register MlxQwenInference as the agent's
+    // serving-inference runner, so chat()/respond() decode on the Apple-Silicon GPU
+    // (one fused MLX graph per token, KV cache on-GPU) instead of the per-op-synced
+    // autograd CPU path. Built only in the MLX build; without it the agent falls back
+    // to the native CPU inference cleanly.
+    zetta::compute::model::install_mlx_qwen_inference();
 #endif
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster

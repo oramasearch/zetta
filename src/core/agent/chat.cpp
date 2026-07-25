@@ -11,6 +11,7 @@
 
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/model_cache.hpp"
+#include "zetta/agent/inference_runner.hpp"
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 
@@ -160,12 +161,22 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
         }
     }
 
-    // A fresh KV-cached inference per generation (independent decode), returning new text.
-    const auto generate = [&tokenizer, &model, max_new_tokens, eos_id](
+    // Decode: prefer the installed fast Metal-GPU runner (MlxQwenInference, #555) when
+    // the MLX build wired one in; fall back to the native autograd CPU inference. The
+    // fast path is gated to the same logits, so it returns the same greedy tokens —
+    // just ~6x faster on Apple Silicon (no per-op host<->device sync).
+    const std::string model_path = agent.model;
+    const auto generate = [&tokenizer, &model, model_path, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
+        const std::vector<int> prompt_tokens = tokenizer.encode(prompt);
+        if (has_qwen_inference_runner()) {
+            if (auto tokens = qwen_inference_runner()(model_path, prompt_tokens,
+                                                      max_new_tokens, eos_id)) {
+                return tokenizer.decode(*tokens);
+            }
+        }
         zetta::autograd::QwenInference inference(model);
-        return tokenizer.decode(
-            inference.generate_greedy(tokenizer.encode(prompt), max_new_tokens, eos_id));
+        return tokenizer.decode(inference.generate_greedy(prompt_tokens, max_new_tokens, eos_id));
     };
 
     std::string conversation;

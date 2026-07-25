@@ -384,6 +384,7 @@ if(ZETTA_ENABLE_MLX)
     src/core/compute/mlx_device.cpp
     src/core/compute/mlx_transformer.cpp
     src/core/compute/mlx_qwen.cpp
+    src/core/compute/mlx_qwen_inference_install.cpp
     src/core/compute/safetensors.cpp)
   message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
 else()
@@ -628,6 +629,7 @@ add_library(zetta-core STATIC
   src/core/dataset/plan_templates.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
+  src/core/agent/inference_runner.cpp
   src/core/agent/grader.cpp
   src/core/agent/sandbox.cpp
   src/core/agent/rollout.cpp
