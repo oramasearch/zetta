@@ -58,6 +58,7 @@
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/ml/playbook.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/observability/feedback.hpp"
@@ -89,6 +90,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::pipeline::n8n_workflow_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
+        {"workspace_profile", "workspace_profile.schema.json",
+         &zetta::workspace::workspace_profile_value_schema},
         {"calibration", "calibration.schema.json", &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
         {"gbdt_params", "gbdt_params.schema.json", &zetta::ml::gbdt_params_schema},

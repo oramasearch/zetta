@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "created": {
+      "type": "string"
+    },
+    "daily_work": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "updated": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "owner"
+  ],
+  "title": "zetta.WorkspaceProfile",
+  "type": "object"
+}

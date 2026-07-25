@@ -32,6 +32,7 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
@@ -318,6 +319,23 @@ public:
     bool drop_model(const std::string& id);
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
+
+    // CRUD for Workspace Profiles (the "Discover Opportunities" input — see
+    // workspace_profile.hpp / docs/workspace/; #886). A top-level replicated
+    // entity keyed by id (like models); the registry is workspace_profiles() +
+    // the system.workspace_profiles SQL table. create stamps `created` and
+    // requires a non-empty `owner` (empty handle otherwise); edits go through the
+    // returned handle's set_content. Stable order (created, then id).
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> create_workspace_profile(
+        zetta::workspace::WorkspaceProfileValue value);
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> find_workspace_profile(
+        const std::string& id) const;
+    bool drop_workspace_profile(const std::string& id);
+    std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
+    workspace_profiles() const { return workspace_profiles_; }
+    std::size_t workspace_profile_count() const {
+        return workspace_profiles_.size();
+    }
 
     // The node's CRDT document manager (null when standalone/unreplicated). Exposed
     // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
@@ -913,6 +931,9 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
+    void load_workspace_profiles();
+
     // Rebuild indexes_ by scanning config_.data_dir. Called from start().
     void load_indexes();
 
@@ -968,6 +989,7 @@ private:
     void reconcile_deployments(const nlohmann::json& snapshot);
     void reconcile_runs(const nlohmann::json& snapshot);
     void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_workspace_profiles(const nlohmann::json& snapshot);
     void reconcile_indexes(const nlohmann::json& snapshot);
     void reconcile_jobs(const nlohmann::json& snapshot);
     void reconcile_partitions(const nlohmann::json& snapshot);
@@ -999,6 +1021,9 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
+        std::string id, zetta::workspace::WorkspaceProfileValue value);
+    bool materialize_drop_workspace_profile(const std::string& id);
     std::shared_ptr<zetta::index::Index> materialize_index(std::string id, zetta::index::IndexValue value);
     bool materialize_drop_index(const std::string& id);
     std::shared_ptr<zetta::compute::ComputeJob> materialize_job(std::string id,
@@ -1048,6 +1073,8 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
+        workspace_profiles_;                                          // sorted (created, id)
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>

@@ -2378,6 +2378,140 @@
         ]
       }
     },
+    "/v1/create_workspace_profile": {
+      "post": {
+        "description": "Create the calling user's Workspace Profile — the input to the Discover Opportunities pathway (#886). Owner is the caller; replicates to every node. Role, daily work, and approved source refs are the editable body. Requires orchestration:create_workspace_profile.",
+        "operationId": "create_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "description": "plain-language daily-work description",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "the user's workspace role",
+                    "type": "string"
+                  },
+                  "sources": {
+                    "description": "approved source refs, each {id,name,kind}",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a workspace profile",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/delete_agent": {
       "post": {
         "description": "Remove an agent by id (a CRDT tombstone; replicates). Idempotent. Requires orchestration:delete_agent.",
@@ -4982,6 +5116,130 @@
           }
         },
         "summary": "Get one trace",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_workspace_profile": {
+      "get": {
+        "description": "Read one Workspace Profile's full validated record (owner, role, daily work, approved source refs) by its uuid. No side effects. (#886) Requires api:query.",
+        "operationId": "get_workspace_profile",
+        "parameters": [
+          {
+            "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+            "in": "query",
+            "name": "workspace_profile_id",
+            "required": true,
+            "schema": {
+              "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one workspace profile",
         "tags": [
           "read"
         ]
@@ -8698,6 +8956,145 @@
           }
         },
         "summary": "Update an agent",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_workspace_profile": {
+      "post": {
+        "description": "Update a Workspace Profile's role, daily work, or approved source refs by its uuid (#886); the owner and created stamp stay fixed. Replicates. Requires orchestration:update_workspace_profile.",
+        "operationId": "update_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "workspace_profile_id": {
+                    "description": "the profile's uuid to update",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "workspace_profile_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a workspace profile",
         "tags": [
           "action"
         ]

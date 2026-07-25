@@ -29,8 +29,8 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   that entry to route the delete to a table.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
-  `graph:` `deployment:` `run:` `model:` `job:` `index:` `principal:` `key:`
-  `audit:` `part:`. New shared state = a new key/shape, replicated by the
+  `graph:` `deployment:` `run:` `model:` `profile:` `job:` `index:`
+  `principal:` `key:` `audit:` `part:`. New shared state = a new key/shape, replicated by the
   existing gossip — never a parallel hand-synced copy. Bodies (large objects,
   model weights, input payloads) stay **off** the CRDT: on disk, transferred
   peer-to-peer, verified against size + sha256.

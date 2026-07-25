@@ -3290,6 +3290,106 @@ ApiResult handle_delete_agent(const nlohmann::json& input, ApiContext& context) 
     return ApiResult::success(std::move(output));
 }
 
+// --- workspace profiles (#886, the create-a-data-profile pathway) ------------
+
+const nlohmann::json& get_workspace_profile_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "workspace_profile_id",
+        "the profile's uuid (system.workspace_profiles.workspace_profile_id)");
+    return schema;
+}
+
+const nlohmann::json& workspace_profile_output_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::workspace::workspace_profile_value_schema());
+    return schema;
+}
+
+const nlohmann::json& create_workspace_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"role",
+           {{"type", "string"}, {"description", "the user's workspace role"}}},
+          {"daily_work",
+           {{"type", "string"},
+            {"description", "plain-language daily-work description"}}},
+          {"sources",
+           {{"type", "array"}, {"items", {{"type", "object"}}},
+            {"description", "approved source refs, each {id,name,kind}"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_workspace_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"workspace_profile_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"workspace_profile_id",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the profile's uuid to update"}}},
+          {"role", {{"type", "string"}}},
+          {"daily_work", {{"type", "string"}}},
+          {"sources", {{"type", "array"}, {"items", {{"type", "object"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_workspace_profile(const nlohmann::json& input,
+                                       ApiContext& context) {
+    const std::string id = input.at("workspace_profile_id").get<std::string>();
+    const auto profile = context.node.find_workspace_profile(id);
+    if (!profile) {
+        return ApiResult::failure("not_found",
+                                  "no workspace profile with id '" + id + "'");
+    }
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_create_workspace_profile(const nlohmann::json& input,
+                                          ApiContext& context) {
+    // The profile belongs to the calling principal (server-set, not client-set).
+    zetta::workspace::WorkspaceProfileValue value;
+    value.owner = actor_of(context);
+    value.role = input.value("role", std::string{});
+    value.daily_work = input.value("daily_work", std::string{});
+    if (const auto it = input.find("sources"); it != input.end()) {
+        value.sources = *it;
+    }
+    const auto profile = context.node.create_workspace_profile(std::move(value));
+    if (!profile) {
+        return ApiResult::failure("engine_error",
+                                  "could not create the workspace profile");
+    }
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_update_workspace_profile(const nlohmann::json& input,
+                                          ApiContext& context) {
+    const std::string id = input.at("workspace_profile_id").get<std::string>();
+    const auto profile = context.node.find_workspace_profile(id);
+    if (!profile) {
+        return ApiResult::failure("not_found",
+                                  "no workspace profile with id '" + id + "'");
+    }
+    // Apply present fields, defaulting to the profile's current values; the owner
+    // and created stamp stay fixed.
+    const std::string role = input.value("role", profile->role());
+    const std::string daily_work = input.value("daily_work", profile->daily_work());
+    nlohmann::json sources = profile->sources();
+    if (const auto it = input.find("sources"); it != input.end()) sources = *it;
+    profile->set_content(role, daily_work, std::move(sources),
+                         zetta::util::now_iso8601());
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
 // --- chat: talk to an agent, with tool-calling (#849) -------------------------
 
 const nlohmann::json& chat_schema() {
@@ -3768,6 +3868,46 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_model});
+
+    registry.add(Capability{
+        "get_workspace_profile",
+        "Get one workspace profile",
+        "Read one Workspace Profile's full validated record (owner, role, daily "
+        "work, approved source refs) by its uuid. No side effects. (#886)",
+        get_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_workspace_profile});
+
+    registry.add(Capability{
+        "create_workspace_profile",
+        "Create a workspace profile",
+        "Create the calling user's Workspace Profile — the input to the Discover "
+        "Opportunities pathway (#886). Owner is the caller; replicates to every "
+        "node. Role, daily work, and approved source refs are the editable body.",
+        create_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_workspace_profile"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_workspace_profile});
+
+    registry.add(Capability{
+        "update_workspace_profile",
+        "Update a workspace profile",
+        "Update a Workspace Profile's role, daily work, or approved source refs "
+        "by its uuid (#886); the owner and created stamp stay fixed. Replicates.",
+        update_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_workspace_profile"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_workspace_profile});
 
     registry.add(Capability{
         "get_job",

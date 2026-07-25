@@ -59,7 +59,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 60u);  // +approve_plan (#885)
+    EXPECT_EQ(registry.size(), 63u);  // +approve_plan (#885), +3 workspace_profile (#886)
     EXPECT_TRUE(registry.find("server_info"));
     // The #849 agent CRUD surface (create/list/get/update/delete).
     for (const char* name :
@@ -94,7 +94,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
          {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
           "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
-          "expose_index", "unexpose_index"}) {
+          "expose_index", "unexpose_index", "create_workspace_profile",
+          "update_workspace_profile"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,

@@ -237,6 +237,7 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_workspace_profiles();
     load_indexes();
     load_jobs();
     load_dataset_partitions();
@@ -1324,6 +1325,100 @@ bool Node::materialize_drop_model(const std::string& id) {
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     models_.erase(it);
+    return true;
+}
+
+// ----- workspace profiles (#886) --------------------------------------------
+// A top-level replicated entity, identical in shape to models: a `profile:<uuid>`
+// CRDT key + a `<uuid>/workspace_profile.json` projection, boundary-validated on
+// load and reconcile.
+
+void Node::load_workspace_profiles() {
+    workspace_profiles_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "workspace_profile.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::workspace::WorkspaceProfileValue> value =
+            meta.is_discarded()
+                ? std::nullopt
+                : zetta::workspace::parse_workspace_profile_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid workspace profile %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        workspace_profiles_.push_back(
+            std::make_shared<zetta::workspace::WorkspaceProfile>(
+                entry.path().filename().string(), *value, entry.path(),
+                replication_));
+    }
+    std::sort(workspace_profiles_.begin(), workspace_profiles_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created()) return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::create_workspace_profile(zetta::workspace::WorkspaceProfileValue value) {
+    if (value.owner.empty()) return nullptr;  // owner is required
+    const std::string id = zetta::util::new_uuid();
+    value.created = zetta::util::now_iso8601();
+    if (value.updated.empty()) value.updated = value.created;
+    if (replication_) {
+        replication_->set(catalog::workspace_profile_key(id), to_json(value));
+    }
+    return materialize_workspace_profile(id, std::move(value));
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::materialize_workspace_profile(std::string id,
+                                    zetta::workspace::WorkspaceProfileValue value) {
+    if (auto existing = find_workspace_profile(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto profile = std::make_shared<zetta::workspace::WorkspaceProfile>(
+        std::move(id), std::move(value), dir, replication_);
+    profile->persist_meta();
+    workspace_profiles_.push_back(profile);
+    return profile;
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::find_workspace_profile(const std::string& id) const {
+    for (const auto& profile : workspace_profiles_) {
+        if (profile->id() == id) return profile;
+    }
+    return nullptr;
+}
+
+bool Node::drop_workspace_profile(const std::string& id) {
+    if (!find_workspace_profile(id)) return false;
+    if (replication_) replication_->remove(catalog::workspace_profile_key(id));
+    return materialize_drop_workspace_profile(id);
+}
+
+bool Node::materialize_drop_workspace_profile(const std::string& id) {
+    const auto it = std::find_if(
+        workspace_profiles_.begin(), workspace_profiles_.end(),
+        [&](const std::shared_ptr<zetta::workspace::WorkspaceProfile>& p) {
+            return p->id() == id;
+        });
+    if (it == workspace_profiles_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    workspace_profiles_.erase(it);
     return true;
 }
 
@@ -3150,6 +3245,12 @@ void Node::migrate_to_replication() {
                               model->metadata());
         }
     }
+    for (const auto& profile : workspace_profiles_) {
+        if (!already_replicated(catalog::workspace_profile_key(profile->id()))) {
+            replication_->set(catalog::workspace_profile_key(profile->id()),
+                              profile->metadata());
+        }
+    }
     for (const auto& index : indexes_) {
         if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
@@ -3201,6 +3302,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
     reconcile_models(snapshot);
+    reconcile_workspace_profiles(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
@@ -3671,6 +3773,35 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
             materialize_model(id, std::move(value));
         } else if (model->metadata() != to_json(value)) {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
+    // Workspace profiles (top-level, no parent): profile:<id> -> the value.
+    // Decode + validate the desired set at the boundary (a malformed CRDT value
+    // is ignored, not trusted), then drop / add / update the local projection to
+    // match — with no re-capture (apply_value rewrites the file only).
+    std::map<std::string, zetta::workspace::WorkspaceProfileValue> profiles;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kWorkspaceProfilePrefix);
+        if (id.empty()) continue;
+        if (std::optional<zetta::workspace::WorkspaceProfileValue> parsed =
+                zetta::workspace::parse_workspace_profile_value(value)) {
+            profiles.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& profile : workspace_profiles_) local_ids.push_back(profile->id());
+    for (const std::string& id : local_ids) {
+        if (!profiles.contains(id)) materialize_drop_workspace_profile(id);
+    }
+    for (auto& [id, value] : profiles) {
+        auto profile = find_workspace_profile(id);
+        if (!profile) {
+            materialize_workspace_profile(id, std::move(value));
+        } else if (profile->metadata() != to_json(value)) {
+            profile->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
 }
