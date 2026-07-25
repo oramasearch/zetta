@@ -310,7 +310,12 @@ const nlohmann::json& get_project_output_schema() {
               {"additionalProperties", false},
               {"properties",
                {{"id", {{"type", "string"}}},
-                {"name", {{"type", "string"}}}}}}}}}}}};
+                {"name", {{"type", "string"}}},
+                {"approval",
+                 {{"type", "string"}, {"enum", {"proposed", "approved"}},
+                  {"description", "plan-approval state (#885)"}}},
+                {"approved_by", {{"type", "string"}}},
+                {"approved_at", {{"type", "string"}}}}}}}}}}}};
     return schema;
 }
 
@@ -343,7 +348,11 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     output["inputs"] = std::move(inputs);
     nlohmann::json graphs = nlohmann::json::array();
     for (const auto& graph : project->graphs()) {
-        graphs.push_back({{"id", graph->id()}, {"name", graph->name()}});
+        graphs.push_back({{"id", graph->id()},
+                          {"name", graph->name()},
+                          {"approval", graph->approval_status()},
+                          {"approved_by", graph->approved_by()},
+                          {"approved_at", graph->approved_at()}});
     }
     output["graphs"] = std::move(graphs);
     return ApiResult::success(std::move(output));
@@ -1363,7 +1372,8 @@ nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
     return nlohmann::json{{"graph_id", graph.id()},
                           {"name", graph.name()},
                           {"steps", graph.graph().node_count()},
-                          {"edges", graph.graph().edge_count()}};
+                          {"edges", graph.graph().edge_count()},
+                          {"approval", graph.approval_status()}};
 }
 
 // --- get_graph / save_graph: the visual graph workspace's read + write path ---
@@ -1392,6 +1402,11 @@ const nlohmann::json& graph_structure_output_schema() {
          {{"graph_id", {{"type", "string"}}},
           {"name", {{"type", "string"}}},
           {"project", {{"type", "string"}}},
+          {"approval",
+           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+            {"description", "plan-approval state (#885)"}}},
+          {"approved_by", {{"type", "string"}}},
+          {"approved_at", {{"type", "string"}}},
           {"nodes",
            {{"type", "array"},
             {"items",
@@ -1423,6 +1438,11 @@ ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
     output["graph_id"] = graph->id();
     output["name"] = graph->name();
     output["project"] = project->name();
+    // Plan-approval state (#885) so the Graph Workspace / Proposed Solution
+    // screen shows proposed vs approved and enables the approve action.
+    output["approval"] = graph->approval_status();
+    output["approved_by"] = graph->approved_by();
+    output["approved_at"] = graph->approved_at();
     return ApiResult::success(std::move(output));
 }
 
@@ -1485,6 +1505,67 @@ ApiResult handle_save_graph(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- approve_plan (#885, review-before-build) -----------------------------------
+
+const nlohmann::json& approve_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the stored plan's name or uuid to approve"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& approve_plan_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph", "approval", "approved_by", "approved_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project", {{"type", "string"}}},
+          {"graph", {{"type", "string"}}},
+          {"approval", {{"type", "string"}, {"enum", {"proposed", "approved"}}}},
+          {"approved_by", {{"type", "string"}}},
+          {"approved_at", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_approve_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const auto existing = resolve_graph(*project, graph_name);
+    if (!existing) {
+        return ApiResult::failure("not_found",
+                                  "no graph named '" + graph_name +
+                                      "' on project '" + project->name() + "'");
+    }
+    // Governed + audited inside the engine (Project::approve_graph): captures the
+    // approval into the CRDT (peers reconcile it) and records the audit event.
+    const auto approved = project->approve_graph(
+        existing->name(), actor_of(context), zetta::util::now_iso8601());
+    if (!approved) {
+        return ApiResult::failure("engine_error", "could not approve the plan");
+    }
+    nlohmann::json output;
+    output["project"] = project->name();
+    output["graph"] = approved->name();
+    output["approval"] = approved->approval_status();
+    output["approved_by"] = approved->approved_by();
+    output["approved_at"] = approved->approved_at();
+    return ApiResult::success(std::move(output));
+}
+
 // The schema of input_json + the owning project — the output of the two
 // input-producing actions (capture_intent, import_n8n).
 const nlohmann::json& project_input_output_schema() {
@@ -1515,6 +1596,9 @@ const nlohmann::json& project_graph_output_schema() {
           {"name", {{"type", "string"}}},
           {"steps", {{"type", "integer"}}},
           {"edges", {{"type", "integer"}}},
+          {"approval",
+           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+            {"description", "plan-approval state (#885); a fresh plan is proposed"}}},
           {"project", {{"type", "string"}}}}}};
     return schema;
 }
@@ -1843,6 +1927,15 @@ ApiResult handle_gate(const nlohmann::json& input, ApiContext& context) {
                                                    "' on project '" +
                                                    project->name() + "'");
     }
+    // Review-before-build (#885): a proposed plan must be approved before it can
+    // be verified. Approval is the human "yes, build this" the design's Proposed
+    // Solution screen collects; approve_plan flips it.
+    if (!graph->approved()) {
+        return ApiResult::failure(
+            "not_approved",
+            "the plan '" + graph->name() +
+                "' is proposed — approve it (approve_plan) before verification");
+    }
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     // A blocked graph is a successful gate *evaluation* — the report carries
@@ -1904,6 +1997,15 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::failure("not_found", "no graph named '" + graph_name +
                                                    "' on project '" +
                                                    project->name() + "'");
+    }
+    // Review-before-build (#885): no deploy of a plan the human hasn't approved.
+    // (This is orthogonal to the correctness gate below — approval is the human
+    // sign-off; the gate is the machine verification. Both must pass.)
+    if (!graph->approved()) {
+        return ApiResult::failure(
+            "not_approved",
+            "the plan '" + graph->name() +
+                "' is proposed — approve it (approve_plan) before deploy");
     }
     const auto kind = zetta::pipeline::deployment_kind_from_name(
         input.value("target", "local"));
@@ -3625,6 +3727,21 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_save_graph});
+
+    registry.add(Capability{
+        "approve_plan",
+        "Approve a proposed plan",
+        "Approve a stored, proposed Pipeline for build (#885, the design's "
+        "review-before-build flow): records the approving principal + time, "
+        "replicates, and audits it (graph_approved). gate and deploy require an "
+        "approved plan; editing a plan re-proposes it.",
+        approve_plan_schema(),
+        approve_plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "approve_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_approve_plan});
 
     registry.add(Capability{
         "get_run",

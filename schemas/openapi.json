@@ -642,6 +642,133 @@
         ]
       }
     },
+    "/v1/approve_plan": {
+      "post": {
+        "description": "Approve a stored, proposed Pipeline for build (#885, the design's review-before-build flow): records the approving principal + time, replicates, and audits it (graph_approved). gate and deploy require an approved plan; editing a plan re-proposes it. Requires orchestration:approve_plan.",
+        "operationId": "approve_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the stored plan's name or uuid to approve",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "the owning project's name or uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
+                        "graph": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "project",
+                        "graph",
+                        "approval",
+                        "approved_by",
+                        "approved_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve a proposed plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/capture_intent": {
       "post": {
         "description": "Capture a natural-language intent as a replicated project input with provenance; compile it into a graph with compile_intent. Requires orchestration:capture_intent.",
@@ -1097,6 +1224,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1224,6 +1359,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1351,6 +1494,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -2125,6 +2276,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "description": {
+                    "description": "a one-line human description of the project's intent (optional)",
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -3687,6 +3842,20 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885)",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
                         "edges": {
                           "items": {
                             "description": "a connection: { from, to, kind }",
@@ -4242,10 +4411,27 @@
                         "created": {
                           "type": "string"
                         },
+                        "description": {
+                          "type": "string"
+                        },
                         "graphs": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "approval": {
+                                "description": "plan-approval state (#885)",
+                                "enum": [
+                                  "proposed",
+                                  "approved"
+                                ],
+                                "type": "string"
+                              },
+                              "approved_at": {
+                                "type": "string"
+                              },
+                              "approved_by": {
+                                "type": "string"
+                              },
                               "id": {
                                 "type": "string"
                               },
@@ -4299,6 +4485,7 @@
                         "created",
                         "updated",
                         "owner",
+                        "description",
                         "inputs",
                         "graphs"
                       ],
@@ -7225,6 +7412,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },

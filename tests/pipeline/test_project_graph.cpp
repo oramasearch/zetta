@@ -315,3 +315,130 @@ TEST(ProjectGraph, ReplicatesToPeer) {
     a.stop();
     b.stop();
 }
+
+// #885 — plan approval (the design's review-before-build flow). A compiled plan
+// starts proposed; approve_graph marks it approved (with approver + time); an
+// edit re-proposes it.
+TEST(ProjectGraph, ApprovalLifecycleReproposesOnEdit) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    auto project = node.create_project("churn");
+    ASSERT_TRUE(project);
+
+    // A freshly created/compiled plan starts proposed.
+    auto stored = project->create_graph("pipeline", sample_graph());
+    ASSERT_TRUE(stored);
+    EXPECT_FALSE(stored->approved());
+    EXPECT_EQ(stored->approval_status(), "proposed");
+    EXPECT_TRUE(stored->approved_by().empty());
+    EXPECT_TRUE(stored->approved_at().empty());
+
+    // approve_graph flips it and stamps the approver + instant, and record()
+    // (the replicated / on-disk value) carries the approval.
+    auto approved =
+        project->approve_graph("pipeline", "alice", "2026-07-24T00:00:00Z");
+    ASSERT_TRUE(approved);
+    EXPECT_TRUE(approved->approved());
+    EXPECT_EQ(approved->approval_status(), "approved");
+    EXPECT_EQ(approved->approved_by(), "alice");
+    EXPECT_EQ(approved->approved_at(), "2026-07-24T00:00:00Z");
+    EXPECT_EQ(approved->record().value("approval", std::string{}), "approved");
+    EXPECT_EQ(approved->record().value("approved_by", std::string{}), "alice");
+
+    // Editing the plan re-proposes it — a changed Pipeline needs re-approval.
+    ExecutionGraph edited = approved->graph();
+    edited.add_node(StepKind::Serve, "predictions_api");
+    auto reproposed = project->update_graph("pipeline", edited);
+    ASSERT_TRUE(reproposed);
+    EXPECT_FALSE(reproposed->approved());
+    EXPECT_EQ(reproposed->approval_status(), "proposed");
+    EXPECT_TRUE(reproposed->approved_by().empty());
+    EXPECT_TRUE(reproposed->approved_at().empty());
+
+    // Approving an unknown plan yields an empty handle.
+    EXPECT_FALSE(project->approve_graph("nope", "alice", "2026-07-24T00:00:00Z"));
+
+    node.stop();
+}
+
+TEST(ProjectGraph, ApprovalPersistsAcrossRestartViaDisk) {
+    TempDir tmp;
+    {
+        Node node{config_for(tmp)};
+        node.start();
+        auto project = node.create_project("churn");
+        ASSERT_TRUE(project);
+        ASSERT_TRUE(project->create_graph("pipeline", sample_graph()));
+        ASSERT_TRUE(
+            project->approve_graph("pipeline", "bob", "2026-07-24T12:00:00Z"));
+        node.stop();
+    }
+    // A fresh standalone node rebuilds the approval purely from disk.
+    Node reloaded{config_for(tmp)};
+    reloaded.start();
+    auto project = reloaded.find_project("churn");
+    ASSERT_TRUE(project);
+    auto stored = project->find_graph("pipeline");
+    ASSERT_TRUE(stored);
+    EXPECT_TRUE(stored->approved());
+    EXPECT_EQ(stored->approved_by(), "bob");
+    EXPECT_EQ(stored->approved_at(), "2026-07-24T12:00:00Z");
+    reloaded.stop();
+}
+
+TEST(ProjectGraph, ApprovalReplicatesToPeer) {
+    TempDir dir_a;
+    TempDir dir_b;
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    Node a{config_for(dir_a), &repl_a};
+    Node b{config_for(dir_b), &repl_b};
+    a.start();
+    b.start();
+
+    ClusterConfig cfg_a;
+    cfg_a.listen_host = "127.0.0.1";
+    cfg_a.listen_port = 43322;
+    cfg_a.port_range = 1;
+    Cluster cluster_a{id_a, cfg_a, &repl_a};
+    cluster_a.start();
+
+    ClusterConfig cfg_b;
+    cfg_b.listen_host = "127.0.0.1";
+    cfg_b.listen_port = 43323;
+    cfg_b.port_range = 1;
+    cfg_b.seeds = {"127.0.0.1:43322"};
+    Cluster cluster_b{id_b, cfg_b, &repl_b};
+    cluster_b.start();
+
+    // Create + approve the plan on node A only.
+    auto project_a = a.create_project("churn");
+    ASSERT_TRUE(project_a);
+    ASSERT_TRUE(project_a->create_graph("pipeline", sample_graph()));
+    ASSERT_TRUE(
+        project_a->approve_graph("pipeline", "alice", "2026-07-24T00:00:00Z"));
+
+    // Node B converges to the same plan AND its approval state (reconcile_graphs
+    // materializes the replicated approval fields).
+    const bool converged = converge(a, b, [&] {
+        auto project_b = b.find_project("churn");
+        if (!project_b) return false;
+        auto stored_b = project_b->find_graph("pipeline");
+        return stored_b && stored_b->approved() &&
+               stored_b->approved_by() == "alice";
+    });
+    ASSERT_TRUE(converged);
+
+    auto stored_b = b.find_project("churn")->find_graph("pipeline");
+    ASSERT_TRUE(stored_b);
+    EXPECT_EQ(stored_b->approved_at(), "2026-07-24T00:00:00Z");
+
+    cluster_b.stop();
+    cluster_a.stop();
+    a.stop();
+    b.stop();
+}

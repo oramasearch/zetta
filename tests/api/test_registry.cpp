@@ -59,7 +59,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 59u);
+    EXPECT_EQ(registry.size(), 60u);  // +approve_plan (#885)
     EXPECT_TRUE(registry.find("server_info"));
     // The #849 agent CRUD surface (create/list/get/update/delete).
     for (const char* name :
@@ -92,9 +92,9 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // orchestration:<name> action like every other mutation.
     for (const char* name :
          {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
-          "compile_python", "gate", "deploy", "run", "add_dataset",
-          "testsuite_run", "expose_model", "unexpose_model", "expose_index",
-          "unexpose_index"}) {
+          "compile_python", "approve_plan", "gate", "deploy", "run",
+          "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
+          "expose_index", "unexpose_index"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,

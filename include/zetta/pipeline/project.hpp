@@ -158,11 +158,22 @@ public:
     std::shared_ptr<ProjectGraph> compile_intent_to_graph(
         const std::string& input_id, std::string name = {});
 
+    // Approve a proposed plan (#885, review-before-build): mark the graph
+    // (found by `name`) approved by `approver` at `at` (ISO-8601), capture the
+    // new value into the CRDT (`graph:<id>`), and audit it (GraphApproved).
+    // Idempotent — approving an already-approved plan restamps the approver.
+    // Returns the (same-id) handle, or an empty handle if no graph by `name`.
+    std::shared_ptr<ProjectGraph> approve_graph(const std::string& name,
+                                                std::string approver,
+                                                std::string at);
+
     // Apply a replicated graph (a peer's, or one rebuilt from the document) with
-    // a given id, without capturing. Returns the existing handle if present.
-    std::shared_ptr<ProjectGraph> materialize_graph(std::string id,
-                                                    std::string name,
-                                                    ir::ExecutionGraph graph);
+    // a given id and approval state, without capturing. Returns the existing
+    // handle if present.
+    std::shared_ptr<ProjectGraph> materialize_graph(
+        std::string id, std::string name, ir::ExecutionGraph graph,
+        bool approved = false, std::string approved_by = {},
+        std::string approved_at = {});
     // Drop a graph by id without capturing (reconciliation applying a peer's
     // drop). Returns whether one was removed.
     bool materialize_drop_graph(const std::string& id);

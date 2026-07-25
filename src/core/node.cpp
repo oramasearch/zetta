@@ -3512,6 +3512,9 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         std::string project_id;
         std::string name;
         ir::ExecutionGraph graph;
+        bool approved = false;  // #885: the replicated plan-approval state
+        std::string approved_by;
+        std::string approved_at;
     };
     std::map<std::string, GraphEntry> desired_graphs;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -3526,7 +3529,10 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         desired_graphs.emplace(
             std::move(id),
             GraphEntry{value.value("project", std::string{}),
-                       value.value("name", std::string{}), std::move(*graph)});
+                       value.value("name", std::string{}), std::move(*graph),
+                       value.value("approval", std::string{}) == "approved",
+                       value.value("approved_by", std::string{}),
+                       value.value("approved_at", std::string{})});
     }
     for (const auto& project : projects_) {
         std::vector<std::string> local_graph_ids;
@@ -3546,11 +3552,17 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         if (!project) continue;  // dangling graph (project gone) — ignore
         auto existing = project->find_graph_by_id(id);
         if (!existing) {
-            project->materialize_graph(id, entry.name, std::move(entry.graph));
+            project->materialize_graph(id, entry.name, std::move(entry.graph),
+                                       entry.approved, entry.approved_by,
+                                       entry.approved_at);
         } else if (existing->name() != entry.name ||
+                   existing->approved() != entry.approved ||
                    ir::to_json(existing->graph()) != ir::to_json(entry.graph)) {
-            existing->set_contents(entry.name,
-                                   std::move(entry.graph));  // a peer changed it
+            // A peer changed the plan and/or its approval — mirror both, then
+            // persist once (set_approval is pure; set_contents writes the file).
+            existing->set_approval(entry.approved, entry.approved_by,
+                                   entry.approved_at);
+            existing->set_contents(entry.name, std::move(entry.graph));
         }
     }
 }

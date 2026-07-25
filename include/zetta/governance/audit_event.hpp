@@ -16,6 +16,7 @@ enum class AuditAction {
     GraphCreated,   // a graph was added under a project   (graph change)
     GraphDropped,   // a graph was removed from a project  (graph change)
     GraphDeployed,  // a graph was placed onto a target    (deploy)
+    GraphApproved,  // a proposed plan was approved for build (#885, review-before-build)
     DataAccess,     // a request was authorized against a key's scope (data access)
     JobCreated,     // a compute job was queued            (compute, ARC-11)
     JobFinished,    // a compute job reached a terminal state (Succeeded / Failed)

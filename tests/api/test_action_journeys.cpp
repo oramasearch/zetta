@@ -127,8 +127,9 @@ TEST_F(Uc1Journey, JourneyUc1EndToEndWithActingKey) {
     ASSERT_TRUE(principal);
     zetta::governance::CapabilitySet grants;
     grants.grant(zetta::governance::CapabilityDomain::Api, "query");
-    for (const char* action : {"create_project", "capture_intent",
-                               "compile_intent", "gate", "deploy", "run"}) {
+    for (const char* action :
+         {"create_project", "capture_intent", "compile_intent", "approve_plan",
+          "gate", "deploy", "run"}) {
         grants.grant(zetta::governance::CapabilityDomain::Orchestration, action);
     }
     auto key = principal->create_key(zetta::governance::unrestricted_scope(),
@@ -205,6 +206,9 @@ TEST_F(ActionJourneys, JourneyImportAndCompileN8nWorkflow) {
          {{"project", "flows"}, {"input_id", "$input_id"}},
          {.checks = {journey::at_least("/steps", 1)}},
          {{"graph", "/name"}}},
+        {"approve the proposed plan (#885)", "approve_plan",
+         {{"project", "flows"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
         {"the compiled graph passes the gate", "gate",
          {{"project", "flows"}, {"graph", "$graph"}},
          {.checks = {journey::equals("/block_deploy", false)}}},
@@ -236,6 +240,9 @@ TEST_F(ActionJourneys, JourneyCompilePythonSource) {
           {"name", "churn from python"}},
          {.checks = {journey::equals("/name", "churn from python"),
                      journey::at_least("/steps", 3)}}},
+        {"approve the proposed plan (#885)", "approve_plan",
+         {{"project", "py"}, {"graph", "churn from python"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
         {"the lowered graph passes the gate", "gate",
          {{"project", "py"}, {"graph", "churn from python"}},
          {.checks = {journey::equals("/block_deploy", false)}}},
