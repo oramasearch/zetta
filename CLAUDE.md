@@ -556,8 +556,11 @@ the load-bearing rules:
   `docs/domain-restructure`, `feat/provisioner-detection-from-cli`). Commit and
   push the branch after any major, verified unit of work — don't leave finished
   work unpushed.
-- Reference issues by number (`#NNN`) within this repo, full URLs across repos;
-  don't auto-close (`fixes #N`) — issues stay open through validation.
+- Reference issues by number (`#NNN`) within this repo, full URLs across repos.
+  Never auto-close via keywords (`fixes #N` / `closes #N`). But **once you ship an
+  issue's code (landed/pushed to its PR), manually close that issue** with a
+  closing comment on what changed, and **leave the PR open for review** — solved
+  work must not clutter the tracker (umbrella `CLAUDE.md` → "Close shipped tickets").
 
 ### Documentation — update it with EVERY change (not optional)
 
