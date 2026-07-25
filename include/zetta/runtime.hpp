@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -116,6 +117,42 @@ Value block_on(task<Value> coroutine) {
 // the coroutine frame) over a capturing lambda — a capturing-lambda coroutine
 // dangles once the temporary lambda is destroyed (same caveat as parallel_for).
 void spawn(task<> coroutine, std::function<void()> on_complete);
+
+// --- Offload blocking work onto the pool, awaited as a coroutine ---------------
+//
+// Run a **blocking** callable on a runtime pool worker and resume the awaiting
+// coroutine with its result — `co_await runtime::offload([...]{ return blocking(); })`.
+// This is the bridge for a backend adapter that can ONLY block (a vendored C
+// driver like libpq): the blocking call runs on a pool thread, so the caller's
+// coroutine — and every zetta network/main thread — is never pinned. It is the
+// seam's answer to "wrap a blocking library in coroutines without touching a raw
+// std::thread". Confine such a callable to the one adapter TU that names the
+// backend library (the module-split rule).
+//
+// The by-value coroutine body offload() schedules — the blocking call runs here,
+// on a pool worker. A coroutine FUNCTION (never a capturing-lambda coroutine —
+// that dangles): its frame owns the callable + the slot until it completes.
+template <class Callable, class Result>
+task<> detail_run_blocking(Callable callable,
+                           std::shared_ptr<std::optional<Result>> slot) {
+    slot->emplace(callable());
+    co_return;
+}
+
+// The callable is taken by value (it lives in a shared frame with the result +
+// completion event, so nothing dangles). `Callable` must be copyable/movable and
+// return a value; it runs on a pool worker, so it may only touch thread-safe
+// state, exactly like spawn's on_complete.
+template <class Callable>
+task<std::invoke_result_t<Callable>> offload(Callable callable) {
+    using Result = std::invoke_result_t<Callable>;
+    auto slot = std::make_shared<std::optional<Result>>();
+    auto done = std::make_shared<async_event>();
+    spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot),
+          [done] { done->set(); });
+    [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
+    co_return std::move(**slot);
+}
 
 // --- Data parallelism: parallel_for over the shared runtime thread pool -------
 //
