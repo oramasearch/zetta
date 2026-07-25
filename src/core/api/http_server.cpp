@@ -856,13 +856,26 @@ struct ApiServer::Impl {
                 zetta::observability::parse_traceparent(traceparent)
                     .value_or(zetta::observability::make_root_trace());
             ApiResult call_result;
-            co_await bridge.run_on_owner([&] {
-                ApiContext context{node, cluster, identity.acting_key, trace,
-                                   &node.span_recorder(), &background};
-                context.acting_is_user = identity.is_user;
-                call_result =
-                    capability_registry.call(capability->name, input, context);
-            });
+            // An offloadable capability (chat: a CPU/GPU model decode touching only
+            // the thread-safe replication store) runs on a pool worker so a long
+            // generation never pins the owner/tick loop. Everything else is marshaled
+            // onto the owning loop, where a handler may touch the Node freely.
+            if (capability->offloadable) {
+                call_result = co_await zetta::runtime::offload([&]() -> ApiResult {
+                    ApiContext context{node, cluster, identity.acting_key, trace,
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = identity.is_user;
+                    return capability_registry.call(capability->name, input, context);
+                });
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, identity.acting_key, trace,
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = identity.is_user;
+                    call_result =
+                        capability_registry.call(capability->name, input, context);
+                });
+            }
             status = http_status_of(rest_status(call_result));
             response_body = rest_envelope(call_result).dump();
         }

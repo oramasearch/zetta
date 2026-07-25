@@ -4232,7 +4232,7 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_agent});
-    registry.add(Capability{
+    Capability chat_capability{
         "chat",
         "Chat with an agent",
         "Send a message to an agent and get its reply, with tool-calling: the agent's model "
@@ -4245,7 +4245,11 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_chat});
+        handle_chat};
+    // Model decode is CPU/GPU-bound and touches only the thread-safe replication
+    // store, so run it off the owner/tick thread — a chat never pins the loop.
+    chat_capability.offloadable = true;
+    registry.add(std::move(chat_capability));
     registry.add(Capability{
         "agent_run",
         "Agent builds + runs a graph",

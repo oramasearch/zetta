@@ -1,6 +1,9 @@
 #include "zetta/agent/chat.hpp"
 
 #include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -20,6 +23,27 @@ namespace {
 
 constexpr std::string_view kOpen = "<tool_call>";
 constexpr std::string_view kClose = "</tool_call>";
+
+// A small process-wide tokenizer cache. Encode/decode need the tokenizer every
+// turn, but it is cheap next to the model — loading it separately lets the fast MLX
+// serving path skip loading the CPU autograd model entirely, avoiding a wasted second
+// full-checkpoint load on the first turn.
+std::shared_ptr<const zetta::tokenizer::BpeTokenizer> cached_tokenizer(
+    const std::string& path, std::string* error) {
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<const zetta::tokenizer::BpeTokenizer>> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found = cache.find(path);
+    if (found == cache.end()) {
+        std::optional<zetta::tokenizer::BpeTokenizer> loaded =
+            zetta::tokenizer::BpeTokenizer::from_directory(path, error);
+        if (!loaded) return nullptr;
+        found = cache.emplace(path, std::make_shared<const zetta::tokenizer::BpeTokenizer>(
+                                        std::move(*loaded)))
+                    .first;
+    }
+    return found->second;
+}
 
 std::optional<ToolCall> tool_call_from_json(const nlohmann::json& value) {
     if (!value.is_object()) return std::nullopt;
@@ -125,16 +149,18 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds) {
     ChatResponse response;
     std::string error;
-    // The model is served from the process-wide cache, so a warm agent doesn't reload the
-    // multi-GB checkpoint on every turn (the #849 latency fix). First turn pays the load.
-    const std::shared_ptr<const LoadedModel> loaded =
-        ModelCache::instance().get(agent.model, &error);
-    if (!loaded) {
+    // The tokenizer is cheap and always needed (encode/decode); load it from a small
+    // process-wide cache. The multi-GB autograd model is NOT loaded here: when the fast
+    // MLX serving runner is installed it decodes without the CPU model, so we load that
+    // model lazily in `generate` below only as the fallback — avoiding a wasted second
+    // full-checkpoint load on the first turn.
+    const std::shared_ptr<const zetta::tokenizer::BpeTokenizer> tokenizer_handle =
+        cached_tokenizer(agent.model, &error);
+    if (!tokenizer_handle) {
         response.error = error;
         return response;
     }
-    const zetta::tokenizer::BpeTokenizer& tokenizer = loaded->tokenizer;
-    const zetta::autograd::QwenModel& model = loaded->model;
+    const zetta::tokenizer::BpeTokenizer& tokenizer = *tokenizer_handle;
 
     // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
     // each records that it ran so the tool-calling loop closes end to end.
@@ -166,7 +192,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // fast path is gated to the same logits, so it returns the same greedy tokens —
     // just ~6x faster on Apple Silicon (no per-op host<->device sync).
     const std::string model_path = agent.model;
-    const auto generate = [&tokenizer, &model, model_path, max_new_tokens, eos_id](
+    const auto generate = [&tokenizer, model_path, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
         const std::vector<int> prompt_tokens = tokenizer.encode(prompt);
         if (has_qwen_inference_runner()) {
@@ -175,8 +201,13 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
                 return tokenizer.decode(*tokens);
             }
         }
-        zetta::autograd::QwenInference inference(model);
-        return tokenizer.decode(inference.generate_greedy(prompt_tokens, max_new_tokens, eos_id));
+        // Fallback: load the CPU autograd model lazily (only when MLX didn't serve).
+        std::string load_error;
+        const std::shared_ptr<const LoadedModel> loaded =
+            ModelCache::instance().get(model_path, &load_error);
+        if (!loaded) return std::string();
+        return tokenizer.decode(zetta::autograd::QwenInference(loaded->model)
+                                    .generate_greedy(prompt_tokens, max_new_tokens, eos_id));
     };
 
     std::string conversation;

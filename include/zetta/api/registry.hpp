@@ -174,6 +174,12 @@ struct Capability {
     // read/run (the challenge body). Missing describer = a generic challenge
     // built from `description`. See ConsentDescriber above.
     ConsentDescriber describe_consent;
+    // Run this capability off the owner/tick thread, on a pool worker
+    // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
+    // for a handler that touches no main-thread-only Node state — just the
+    // thread-safe ReplicationManager + pure compute (e.g. chat: model inference).
+    // Keeps a long CPU/GPU decode from pinning the tick loop (#731).
+    bool offloadable = false;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh
