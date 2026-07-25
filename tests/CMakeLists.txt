@@ -148,6 +148,7 @@ add_executable(zetta-tests
   data/test_import.cpp
   data/test_add_dataset.cpp
   connect/test_connector.cpp
+  connect/test_postgres_connector.cpp
   connect/test_connection_store.cpp
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp

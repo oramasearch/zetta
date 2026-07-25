@@ -304,6 +304,43 @@ else()
                  "`git submodule update --init modules/oramacore-cpp` to enable)")
 endif()
 
+# libpqxx — the Postgres source connector (#892). A public-upstream submodule
+# (modules/libpqxx, jtv/libpqxx) on **libpq**. Guarded on presence so a checkout
+# without it still configures + builds + runs green (ZETTA_WITH_POSTGRES) — the
+# same discipline as oramacore-cpp above. The blocking libpq calls are wrapped in
+# runtime::offload so zetta's threading is never disturbed; the adapter
+# (src/core/api/postgres_protocol.cpp) is the one TU that names libpqxx and links
+# into zetta-api, so **zetta-core links no libpq** (the outbound-transport
+# boundary). ADR-17 exception (vendor driver) — a deliberate, documented decision.
+set(ZETTA_LIBPQXX_DIR "${CMAKE_SOURCE_DIR}/modules/libpqxx")
+if(EXISTS "${ZETTA_LIBPQXX_DIR}/CMakeLists.txt")
+  # libpqxx's src/CMakeLists.txt does find_package(PostgreSQL REQUIRED). On macOS
+  # Homebrew keeps libpq keg-only, so add the hint prefixes; on Ubuntu/the build
+  # box libpq-dev is found without help.
+  if(APPLE)
+    foreach(pg_prefix /opt/homebrew/opt/libpq /usr/local/opt/libpq
+                      /opt/homebrew/opt/postgresql@17)
+      if(EXISTS "${pg_prefix}")
+        list(APPEND CMAKE_PREFIX_PATH "${pg_prefix}")
+      endif()
+    endforeach()
+  endif()
+  set(SKIP_BUILD_TEST ON CACHE BOOL "" FORCE)  # don't build libpqxx's own tests
+  add_subdirectory("${ZETTA_LIBPQXX_DIR}" EXCLUDE_FROM_ALL)
+  # Match zetta-core's libc++ ABI (std containers cross the link boundary), same
+  # as the oramacore + json-schema-validator guards above.
+  if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+    target_compile_options(pqxx PRIVATE -fexperimental-library)
+  endif()
+  set(ZETTA_WITH_POSTGRES ON)
+  message(STATUS "Postgres source connector (libpqxx): ENABLED")
+else()
+  set(ZETTA_WITH_POSTGRES OFF)
+  message(STATUS "Postgres source connector: disabled "
+                 "(modules/libpqxx not initialized — "
+                 "`git submodule update --init modules/libpqxx` to enable)")
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
@@ -536,6 +573,7 @@ add_library(zetta-core STATIC
   src/core/data/add_dataset.cpp
   src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
+  src/core/connect/postgres_runner.cpp
   src/core/connect/distributed_fetch.cpp
   src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
@@ -741,6 +779,16 @@ target_link_libraries(zetta-api PRIVATE
   Boost::json
   Boost::corosio
   Boost::corosio_openssl)
+
+# The Postgres connector adapter (#892) — the one TU that names libpqxx, compiled
+# into zetta-api only when the submodule is present, so zetta-core links no libpq.
+if(ZETTA_WITH_POSTGRES)
+  target_sources(zetta-api PRIVATE src/core/api/postgres_protocol.cpp)
+  target_link_libraries(zetta-api PRIVATE pqxx)
+  # PUBLIC so consumers (the executable's main.cpp, tests) can guard the install
+  # call the same way — the CUDA/MLX pattern.
+  target_compile_definitions(zetta-api PUBLIC ZETTA_WITH_POSTGRES=1)
+endif()
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

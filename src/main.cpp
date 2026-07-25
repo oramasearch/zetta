@@ -8,6 +8,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
+#include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/connect/model_fetch.hpp"
@@ -331,6 +332,13 @@ int main(int argc, char** argv) {
     // fails with "no outbound HTTP transport is installed", which is exactly
     // what a build that deliberately has no egress should do.
     zetta::api::install_native_http_transport();
+#ifdef ZETTA_WITH_POSTGRES
+    // The libpqxx Postgres connector (#892) — registers into the connector runner
+    // seam so a "postgres" source connection can run its read-only query. Built
+    // only when the libpqxx submodule is present; without it, a Postgres query
+    // fails cleanly ("the Postgres connector is not built into this binary").
+    zetta::connect::install_postgres_protocol();
+#endif
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster
     // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,

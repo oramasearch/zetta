@@ -1718,16 +1718,15 @@
                 "properties": {
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1735,7 +1734,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1743,30 +1750,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"
@@ -1890,16 +1903,15 @@
                   },
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1907,7 +1919,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1915,30 +1935,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"

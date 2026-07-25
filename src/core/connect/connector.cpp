@@ -1,6 +1,7 @@
 #include "zetta/connect/connector.hpp"
 
 #include "snowflake_protocol.hpp"
+#include "zetta/connect/postgres_runner.hpp"
 #include "zetta/connect/distributed_fetch.hpp"
 
 #include <algorithm>
@@ -127,6 +128,10 @@ nlohmann::json ConnectorConfig::to_json() const {
     if (!schema.empty()) value["schema"] = schema;
     if (!warehouse.empty()) value["warehouse"] = warehouse;
     if (!role.empty()) value["role"] = role;
+    if (!host.empty()) value["host"] = host;
+    if (!port.empty()) value["port"] = port;
+    if (!user.empty()) value["user"] = user;
+    if (!sslmode.empty()) value["sslmode"] = sslmode;
     return value;
 }
 
@@ -144,7 +149,8 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
     if (!value.is_object()) return std::nullopt;
 
     static const std::vector<std::string> known = {
-        "type", "account", "token", "auth", "database", "schema", "warehouse", "role"};
+        "type", "account", "token", "auth", "database", "schema", "warehouse",
+        "role", "host", "port", "user", "sslmode"};
     for (auto field = value.begin(); field != value.end(); ++field) {
         if (std::find(known.begin(), known.end(), field.key()) == known.end()) {
             return std::nullopt;  // unknown key
@@ -167,12 +173,24 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
     }
     config.type = *type;
 
-    const std::optional<std::string> account = string_at("account");
-    if (!account || account->empty()) return std::nullopt;
-    config.account = *account;
+    // Read every optional string field first; then enforce the per-type required
+    // set below (a non-throwing, type-aware boundary — the JSON schema stays
+    // permissive so both connector shapes validate against it).
+    for (const auto& [key, target] :
+         {std::pair{"account", &config.account}, std::pair{"database", &config.database},
+          std::pair{"schema", &config.schema}, std::pair{"warehouse", &config.warehouse},
+          std::pair{"role", &config.role}, std::pair{"host", &config.host},
+          std::pair{"port", &config.port}, std::pair{"user", &config.user},
+          std::pair{"sslmode", &config.sslmode}}) {
+        const std::optional<std::string> field = string_at(key);
+        if (!field) return std::nullopt;
+        *target = *field;
+    }
 
+    // The secret (Snowflake bearer / Postgres password). Optional for Postgres
+    // trust/peer auth; required for Snowflake.
     const std::optional<std::string> token = string_at("token");
-    if (!token || token->empty()) return std::nullopt;
+    if (!token) return std::nullopt;
     config.token = *token;
 
     const auto auth_field = value.find("auth");
@@ -183,12 +201,13 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
         config.auth = auth;
     }
 
-    for (const auto& [key, target] :
-         {std::pair{"database", &config.database}, std::pair{"schema", &config.schema},
-          std::pair{"warehouse", &config.warehouse}, std::pair{"role", &config.role}}) {
-        const std::optional<std::string> field = string_at(key);
-        if (!field) return std::nullopt;
-        *target = *field;
+    // Per-type required fields.
+    if (config.type == "snowflake") {
+        if (config.account.empty() || config.token.empty()) return std::nullopt;
+    } else if (config.type == "postgres") {
+        if (config.host.empty() || config.user.empty() || config.database.empty()) {
+            return std::nullopt;
+        }
     }
 
     return config;
@@ -197,7 +216,7 @@ std::optional<ConnectorConfig> ConnectorConfig::from_json(
 // --- The registry + the guard -------------------------------------------------
 
 const std::vector<std::string>& connector_types() {
-    static const std::vector<std::string> types = {"snowflake"};
+    static const std::vector<std::string> types = {"snowflake", "postgres"};
     return types;
 }
 
@@ -206,19 +225,23 @@ const nlohmann::json& connector_config_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/connector_config.schema.json",
   "title": "ConnectorConfig",
-  "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
   "type": "object",
-  "required": ["type", "account", "token"],
+  "required": ["type"],
   "additionalProperties": false,
   "properties": {
-    "type": {"type": "string", "enum": ["snowflake"], "description": "Which connector implementation to use."},
-    "account": {"type": "string", "minLength": 1, "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1)."},
-    "token": {"type": "string", "minLength": 1, "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token."},
-    "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "How to present the bearer token."},
-    "database": {"type": "string", "description": "Session database."},
-    "schema": {"type": "string", "description": "Session schema."},
-    "warehouse": {"type": "string", "description": "Compute warehouse (required for token auth on Snowflake)."},
-    "role": {"type": "string", "description": "Optional session role."}
+    "type": {"type": "string", "enum": ["snowflake", "postgres"], "description": "Which connector implementation to use."},
+    "account": {"type": "string", "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1)."},
+    "token": {"type": "string", "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out."},
+    "auth": {"type": "string", "enum": ["pat", "oauth"], "default": "pat", "description": "Snowflake: how to present the bearer token."},
+    "database": {"type": "string", "description": "Session database (both connectors)."},
+    "schema": {"type": "string", "description": "Session schema (both connectors)."},
+    "warehouse": {"type": "string", "description": "Snowflake compute warehouse (required for token auth)."},
+    "role": {"type": "string", "description": "Optional session role."},
+    "host": {"type": "string", "description": "Postgres host, e.g. 127.0.0.1."},
+    "port": {"type": "string", "description": "Postgres port (default 5432)."},
+    "user": {"type": "string", "description": "Postgres role/user."},
+    "sslmode": {"type": "string", "description": "Postgres sslmode (disable / require / verify-full / …)."}
   }
 })JSON",
                                                               nullptr,
@@ -276,6 +299,19 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
     if (max_rows == 0) {
         result.error = "max_rows must be at least 1";
         return result;
+    }
+
+    // Postgres speaks its own wire protocol (libpqxx), not HTTP — dispatch it
+    // before the HTTP-transport check. The libpqxx-linking runner is injected by
+    // zetta-api (postgres_runner.hpp), so zetta-core links no libpq.
+    if (config.type == "postgres") {
+        if (!has_postgres_query_runner()) {
+            result.error =
+                "the Postgres connector is not built into this binary "
+                "(ZETTA_WITH_POSTGRES off, or no zetta-api layer installed it)";
+            return result;
+        }
+        return postgres_query_runner()(config, sql, max_rows);
     }
 
     const HttpTransport& exchange = transport ? transport : default_http_transport();
