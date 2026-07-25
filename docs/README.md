@@ -41,6 +41,7 @@ run / test.
 | [cloud/](cloud/README.md) | The `Provisioner` seam, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
+| [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |
 | [gui/](gui/README.md) | The headed app: the Orama design system (read before GUI work), every panel, and the load-bearing rendering notes. |
 | [use-cases/](use-cases/README.md) | The use-case catalog framing + UC-1 churn end to end: dataset, entity resolution, the real step executor, the playbook, the at-scale tests. |
 | [testing/](testing/README.md) | The in-app test suite, the sim-Python example-script harness, and per-test runbooks. |

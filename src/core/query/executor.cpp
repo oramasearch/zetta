@@ -142,6 +142,8 @@ constexpr std::string_view kNodesTable = "nodes";
 constexpr std::string_view kDeploymentsTable = "deployments";
 constexpr std::string_view kModelsTable = "models";
 constexpr std::string_view kWorkspaceProfilesTable = "workspace_profiles";
+constexpr std::string_view kUsageTable = "usage";
+constexpr std::string_view kPlansTable = "plans";
 constexpr std::string_view kIndexesTable = "indexes";
 constexpr std::string_view kJobsTable = "jobs";
 constexpr std::string_view kCloudProvidersTable = "cloud_providers";
@@ -231,6 +233,13 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kWorkspaceProfilesTable,
                     "the workspace/environment profile registry: owner, role, "
                     "daily work, and approved source refs (#886)"},
+    SystemTableInfo{kUsageTable,
+                    "metered usage: a single-row snapshot of live consumption "
+                    "(projects/runs/jobs/models/datasets+bytes/nodes) for "
+                    "Billing/Usage"},
+    SystemTableInfo{kPlansTable,
+                    "the plan registry: name, tier, and quota limits the metered "
+                    "usage is measured against (Conflict D)"},
     SystemTableInfo{kNodeMetricsTable,
                     "this node's live host resource utilization, sampled at "
                     "query time"},
@@ -515,6 +524,25 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
 // (every profile replicates, so each node reports the same set). `sources` rides
 // as a JSON array (like model_rows' feature_schema), with `source_count` for a
 // quick scalar.
+// One JSON row per registered Plan (Conflict D — the quota/tier config the
+// metered usage in system.usage is measured against). Sourced from Node::plans()
+// (every plan replicates). `quotas` rides as a JSON object.
+std::vector<nlohmann::json> plan_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& plan : node.plans()) {
+        nlohmann::json row;
+        row["plan_id"] = plan->id();
+        row["name"] = plan->name();
+        row["tier"] = plan->tier();
+        row["quotas"] = plan->quotas();
+        row["period_start"] = plan->period_start();
+        row["created"] = plan->created();
+        row["updated"] = plan->updated();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 std::vector<nlohmann::json> workspace_profile_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& profile : node.workspace_profiles()) {
@@ -531,6 +559,31 @@ std::vector<nlohmann::json> workspace_profile_rows(const Node& node) {
         row["updated"] = profile->updated();
         rows.push_back(std::move(row));
     }
+    return rows;
+}
+
+// A single-row **metered usage** snapshot for the Billing/Usage surface
+// (Conflict D — metered usage + plan). Every field is computed at query time
+// from live engine state (RULE-7): no stored counters, no billing subsystem —
+// the real consumption a plan's quotas are measured against.
+std::vector<nlohmann::json> usage_rows(const Node& node) {
+    const auto datasets = node.datasets();
+    std::uint64_t dataset_bytes = 0;
+    for (const auto& dataset : datasets) dataset_bytes += dataset.size_bytes;
+    nlohmann::json row;
+    row["projects"] = static_cast<std::int64_t>(node.project_names().size());
+    row["runs"] = static_cast<std::int64_t>(node.runs().size());
+    row["jobs"] = static_cast<std::int64_t>(node.job_count());
+    row["models"] = static_cast<std::int64_t>(node.models().size());
+    row["datasets"] = static_cast<std::int64_t>(datasets.size());
+    row["dataset_bytes"] = dataset_bytes;
+    row["indexes"] = static_cast<std::int64_t>(node.index_count());
+    row["deployments"] = static_cast<std::int64_t>(node.deployment_count());
+    row["workspace_profiles"] =
+        static_cast<std::int64_t>(node.workspace_profile_count());
+    row["nodes"] = static_cast<std::int64_t>(node.cluster_members().size());
+    std::vector<nlohmann::json> rows;
+    rows.push_back(std::move(row));
     return rows;
 }
 
@@ -2419,6 +2472,12 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kWorkspaceProfilesTable) {
                         return select_over_rows(s, workspace_profile_rows(node_));
+                    }
+                    if (sys == kUsageTable) {
+                        return select_over_rows(s, usage_rows(node_));
+                    }
+                    if (sys == kPlansTable) {
+                        return select_over_rows(s, plan_rows(node_));
                     }
                     if (sys == kIndexesTable) {
                         return select_over_rows(s, index_rows(node_));

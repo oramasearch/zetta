@@ -476,6 +476,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/run.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp
+  src/core/billing/plan.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp

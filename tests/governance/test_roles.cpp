@@ -100,8 +100,8 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // pipelines:manage expands to the full authoring/deploy/run flow
     // (create_index joined it, #825; promote_dataset, #833; the agent
     // authoring trio create/update/delete_agent, #849; approve_plan, #885;
-    // create/update_workspace_profile, #886).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 25u);
+    // create/update_workspace_profile, #886; create/update_plan, Conflict D).
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 27u);
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 

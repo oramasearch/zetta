@@ -33,6 +33,7 @@
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
+#include "zetta/billing/plan.hpp"
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
@@ -336,6 +337,16 @@ public:
     std::size_t workspace_profile_count() const {
         return workspace_profiles_.size();
     }
+
+    // CRUD for Plans (the Billing/Usage quota config — see plan.hpp /
+    // docs/billing/; Conflict D). A top-level replicated entity keyed by id; the
+    // registry is plans() + the system.plans SQL table (usage is metered live in
+    // system.usage). create stamps `created` and requires a non-empty `name`.
+    std::shared_ptr<zetta::billing::Plan> create_plan(zetta::billing::PlanValue value);
+    std::shared_ptr<zetta::billing::Plan> find_plan(const std::string& id) const;
+    bool drop_plan(const std::string& id);
+    std::vector<std::shared_ptr<zetta::billing::Plan>> plans() const { return plans_; }
+    std::size_t plan_count() const { return plans_.size(); }
 
     // The node's CRDT document manager (null when standalone/unreplicated). Exposed
     // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
@@ -934,6 +945,9 @@ private:
     // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
     void load_workspace_profiles();
 
+    // Rebuild plans_ by scanning config_.data_dir. Called from start().
+    void load_plans();
+
     // Rebuild indexes_ by scanning config_.data_dir. Called from start().
     void load_indexes();
 
@@ -990,6 +1004,7 @@ private:
     void reconcile_runs(const nlohmann::json& snapshot);
     void reconcile_models(const nlohmann::json& snapshot);
     void reconcile_workspace_profiles(const nlohmann::json& snapshot);
+    void reconcile_plans(const nlohmann::json& snapshot);
     void reconcile_indexes(const nlohmann::json& snapshot);
     void reconcile_jobs(const nlohmann::json& snapshot);
     void reconcile_partitions(const nlohmann::json& snapshot);
@@ -1024,6 +1039,9 @@ private:
     std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
         std::string id, zetta::workspace::WorkspaceProfileValue value);
     bool materialize_drop_workspace_profile(const std::string& id);
+    std::shared_ptr<zetta::billing::Plan> materialize_plan(
+        std::string id, zetta::billing::PlanValue value);
+    bool materialize_drop_plan(const std::string& id);
     std::shared_ptr<zetta::index::Index> materialize_index(std::string id, zetta::index::IndexValue value);
     bool materialize_drop_index(const std::string& id);
     std::shared_ptr<zetta::compute::ComputeJob> materialize_job(std::string id,
@@ -1075,6 +1093,7 @@ private:
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
         workspace_profiles_;                                          // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>

@@ -3390,6 +3390,97 @@ ApiResult handle_update_workspace_profile(const nlohmann::json& input,
     return ApiResult::success(std::move(output));
 }
 
+// --- plans (Conflict D: metered usage + plan) --------------------------------
+
+const nlohmann::json& get_plan_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("plan_id", "the plan's uuid (system.plans.plan_id)");
+    return schema;
+}
+
+const nlohmann::json& plan_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::billing::plan_value_schema());
+    return schema;
+}
+
+const nlohmann::json& create_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1},
+                    {"description", "the plan's display name"}}},
+          {"tier", {{"type", "string"},
+                    {"description", "display tier (free / pro / enterprise)"}}},
+          {"quotas", {{"type", "object"},
+                      {"additionalProperties", {{"type", "number"}}},
+                      {"description", "numeric limits, e.g. {max_runs, max_storage_bytes}"}}},
+          {"period_start", {{"type", "string"},
+                            {"description", "ISO-8601 start of the current period"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"plan_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"plan_id", {{"type", "string"}, {"minLength", 1},
+                       {"description", "the plan's uuid to update"}}},
+          {"name", {{"type", "string"}, {"minLength", 1}}},
+          {"tier", {{"type", "string"}}},
+          {"quotas", {{"type", "object"}, {"additionalProperties", {{"type", "number"}}}}},
+          {"period_start", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("plan_id").get<std::string>();
+    const auto plan = context.node.find_plan(id);
+    if (!plan) {
+        return ApiResult::failure("not_found", "no plan with id '" + id + "'");
+    }
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_create_plan(const nlohmann::json& input, ApiContext& context) {
+    zetta::billing::PlanValue value;
+    value.name = input.at("name").get<std::string>();
+    value.tier = input.value("tier", std::string{});
+    if (const auto it = input.find("quotas"); it != input.end()) value.quotas = *it;
+    value.period_start = input.value("period_start", std::string{});
+    const auto plan = context.node.create_plan(std::move(value));
+    if (!plan) {
+        return ApiResult::failure("engine_error", "could not create the plan");
+    }
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_update_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("plan_id").get<std::string>();
+    const auto plan = context.node.find_plan(id);
+    if (!plan) {
+        return ApiResult::failure("not_found", "no plan with id '" + id + "'");
+    }
+    const std::string name = input.value("name", plan->name());
+    const std::string tier = input.value("tier", plan->tier());
+    nlohmann::json quotas = plan->quotas();
+    if (const auto it = input.find("quotas"); it != input.end()) quotas = *it;
+    const std::string period_start = input.value("period_start", plan->period_start());
+    plan->set_content(name, tier, std::move(quotas), period_start,
+                      zetta::util::now_iso8601());
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
 // --- chat: talk to an agent, with tool-calling (#849) -------------------------
 
 const nlohmann::json& chat_schema() {
@@ -3908,6 +3999,45 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_update_workspace_profile});
+
+    registry.add(Capability{
+        "get_plan",
+        "Get one plan",
+        "Read one Plan's full validated record (name, tier, quota limits) by its "
+        "uuid. Metered usage is read live from system.usage. (Conflict D)",
+        get_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_plan});
+
+    registry.add(Capability{
+        "create_plan",
+        "Create a plan",
+        "Create a Plan — the quota/tier config the Billing/Usage surface measures "
+        "live consumption against (Conflict D). Replicates to every node.",
+        create_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_plan});
+
+    registry.add(Capability{
+        "update_plan",
+        "Update a plan",
+        "Update a Plan's name, tier, quotas, or period by its uuid (Conflict D); "
+        "the created stamp stays fixed. Replicates.",
+        update_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_plan});
 
     registry.add(Capability{
         "get_job",

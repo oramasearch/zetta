@@ -76,6 +76,7 @@ add_executable(zetta-tests
   pipeline/test_run.cpp
   ml/test_model.cpp
   workspace/test_workspace_profile.cpp
+  billing/test_plan.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
