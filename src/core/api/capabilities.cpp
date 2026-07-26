@@ -1,4 +1,6 @@
 #include "zetta/api/capabilities.hpp"
+#include <sstream>
+#include <iomanip>
 #include <algorithm>
 
 #include <chrono>
@@ -3492,6 +3494,13 @@ const nlohmann::json& chat_schema() {
         {"properties",
          {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
           {"message", {{"type", "string"}, {"minLength", 1}}},
+          {"project",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "scope the answer to this project (name or uuid): its trained model's "
+             "measure and ranked drivers are given to the agent, so it answers from "
+             "what the pipeline actually produced instead of from priors (#914)"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
     return schema;
@@ -3500,10 +3509,20 @@ const nlohmann::json& chat_schema() {
 const nlohmann::json& chat_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"reply", "tool_calls", "rounds"}},
+        {"required", {"reply", "tool_calls", "rounds", "grounded"}},
         {"properties",
          {{"reply", {{"type", "string"}}},
           {"rounds", {{"type", "integer"}}},
+          {"grounded",
+           {{"type", "boolean"},
+            {"description",
+             "true only when a project was named AND it has a trained model whose real "
+             "measure + ranked drivers were given to the agent. False means the reply "
+             "rests on the model's priors — present it as such, never as a measured "
+             "result (#914)"}}},
+          {"grounding_warning",
+           {{"type", "string"},
+            {"description", "why the reply is ungrounded, when it is"}}},
           {"tool_calls",
            {{"type", "array"},
             {"items",
@@ -3513,6 +3532,74 @@ const nlohmann::json& chat_output_schema() {
                 {"status", {{"type", "string"}}},
                 {"detail", {{"type", "string"}}}}}}}}}}}};
     return schema;
+}
+
+// Render a trained model's real numbers as the plain lines the agent reads before
+// answering (#914): the measure it scored and its drivers, ranked, strongest first.
+// Drivers with zero importance are dropped — the model did not use them, and listing
+// them invites the agent to talk about features that contributed nothing.
+std::string model_grounding_text(const nlohmann::json& metadata, const std::string& model_name,
+                                 const std::string& project_name) {
+    std::string text = "Project: " + project_name + "\nTrained model: " + model_name;
+    if (const auto kind = metadata.find("kind");
+        kind != metadata.end() && kind->is_string()) {
+        text += " (" + kind->get<std::string>() + ")";
+    }
+    text += "\n";
+
+    if (const auto metrics = metadata.find("metrics");
+        metrics != metadata.end() && metrics->is_object()) {
+        const auto number = [&](const char* key) -> std::string {
+            const auto found = metrics->find(key);
+            if (found == metrics->end() || !found->is_number()) return {};
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(3) << found->get<double>();
+            return out.str();
+        };
+        const std::string auc = number("auc");
+        const std::string accuracy = number("accuracy");
+        if (!auc.empty()) text += "Measure: AUC " + auc;
+        if (!accuracy.empty()) text += (auc.empty() ? "Measure: " : ", ") + std::string("accuracy ") + accuracy;
+        if (!auc.empty() || !accuracy.empty()) text += "\n";
+    }
+
+    const auto schema = metadata.find("feature_schema");
+    if (schema != metadata.end() && schema->is_object()) {
+        const auto drivers = schema->find("drivers");
+        if (drivers != schema->end() && drivers->is_array()) {
+            std::vector<std::pair<std::string, double>> ranked;
+            for (const nlohmann::json& driver : *drivers) {
+                if (!driver.is_object()) continue;
+                const auto feature = driver.find("feature");
+                const auto importance = driver.find("importance");
+                if (feature == driver.end() || !feature->is_string()) continue;
+                const double weight =
+                    (importance != driver.end() && importance->is_number())
+                        ? importance->get<double>() : 0.0;
+                if (weight <= 0.0) continue;  // the model did not use it
+                ranked.emplace_back(feature->get<std::string>(), weight);
+            }
+            std::sort(ranked.begin(), ranked.end(),
+                      [](const auto& left, const auto& right) { return left.second > right.second; });
+            if (ranked.empty()) {
+                text += "Drivers: the model reported no feature with non-zero importance.\n";
+            } else {
+                // Importance is a RELATIVE weight, not a percentage or a share of churn.
+                // Saying so stops the agent reporting "26.4% of churn", which it did.
+                text +=
+                    "Drivers, strongest first (relative importance scores — NOT percentages, "
+                    "and not a share of churn; only their ORDER and relative size is "
+                    "meaningful):\n";
+                for (const auto& [feature, weight] : ranked) {
+                    std::ostringstream line;
+                    line << "- " << feature << ": " << std::fixed << std::setprecision(1)
+                         << weight << "\n";
+                    text += line.str();
+                }
+            }
+        }
+    }
+    return text;
 }
 
 ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
@@ -3578,11 +3665,47 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
     // chat panel also uses, so both behave identically. agent.model must be a local
     // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    // Ground the answer in what this Project's pipeline actually produced (#914).
+    // The two questions a churn buyer asks — "what's driving churn" and "which are
+    // most at risk" — are answerable from the trained model's ranked drivers and its
+    // measure, which the run already wrote. Without this the agent answers from
+    // training priors and cites nothing real.
+    std::string grounding;
+    bool grounded = false;
+    std::string grounding_warning;
+    if (input.contains("project")) {
+        const std::string project_name = input.at("project").get<std::string>();
+        if (auto project = resolve_project(context, project_name)) {
+            std::shared_ptr<zetta::ml::Model> newest;
+            for (const auto& candidate : context.node.models()) {
+                if (candidate->project() != project->id()) continue;
+                if (!newest || candidate->created() > newest->created()) newest = candidate;
+            }
+            if (newest) {
+                grounding = model_grounding_text(newest->metadata(), newest->name(),
+                                                 project->name());
+                grounded = true;
+            } else {
+                // Deliberately NOT a prompt instruction. Measured behavior: told plainly
+                // that a Project has no model and not to estimate, the base agent ignored
+                // it and invented a churn rate ("dropped from 42% to 38%"). It pattern-
+                // matches a churn answer rather than following an instruction it was never
+                // trained on. So the refusal cannot live in the prompt — the caller is told
+                // the reply is ungrounded and must present it as such (#914 / #910).
+                grounding_warning =
+                    "Project \"" + project->name() +
+                    "\" has no trained model — its pipeline has not been run, so this reply "
+                    "is not grounded in any measured result. Any figure in it is invented.";
+            }
+        }
+    }
+
     const zetta::agent::ChatResponse chat =
         enabled_tools.empty()
-            ? zetta::agent::respond(*agent, message, max_new_tokens, max_rounds)
+            ? zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, {}, {},
+                                    grounding)
             : zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, agent_tools,
-                                    enabled_tools);
+                                    enabled_tools, grounding);
     if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
 
     nlohmann::json tool_calls = nlohmann::json::array();
@@ -3600,6 +3723,11 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     output["reply"] = chat.result.reply;
     output["tool_calls"] = std::move(tool_calls);
     output["rounds"] = chat.result.rounds;
+    // Whether the reply stands on measured results, so a caller never presents a
+    // generated number as a fact (#914). `grounded` is true only when a Project was
+    // named AND it has a trained model whose real measure + drivers were supplied.
+    output["grounded"] = grounded;
+    if (!grounding_warning.empty()) output["grounding_warning"] = grounding_warning;
     return ApiResult::success(std::move(output));
 }
 

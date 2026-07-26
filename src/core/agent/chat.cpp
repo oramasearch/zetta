@@ -151,7 +151,8 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds,
                      const AgentToolRunner& tools,
-                     const std::vector<AgentToolSpec>& tool_specs) {
+                     const std::vector<AgentToolSpec>& tool_specs,
+                     const std::string& grounding) {
     ChatResponse response;
     std::string error;
     // The tokenizer is cheap and always needed (encode/decode); load it from a small
@@ -243,6 +244,17 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
         conversation +=
             "To call one, emit <tool_call>{\"tool\": \"<name>\", \"arguments\": {…}}</tool_call> "
             "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
+    }
+    // Facts the embedding read off the node for this Project — the trained model's
+    // measure and ranked drivers. Placed ahead of the question so the answer is
+    // about what the pipeline produced, not what the model remembers (#914). The
+    // instruction is explicit that these numbers are the source of truth, because
+    // the failure mode to design against is inventing accounts and scores.
+    if (!grounding.empty()) {
+        conversation +=
+            "Here is what this Project's pipeline actually produced on this node. "
+            "Answer using ONLY these numbers, and name them. Do not invent accounts, "
+            "scores, or measures.\n" + grounding + "\n";
     }
     conversation += "User: " + message + "\nAssistant:";
 

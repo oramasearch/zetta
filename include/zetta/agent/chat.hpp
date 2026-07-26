@@ -76,9 +76,14 @@ struct AgentToolSpec {
 // what it can call and each <tool_call> it emits runs through the runner, with the
 // result fed back as <tool_result> for the next round. Omit them and behavior is
 // exactly as before — the agent's recorded tools, which only mark that they ran.
+// `grounding` is facts the embedding already read from the node — a trained model's
+// measure and ranked drivers, say — placed in the conversation ahead of the user's
+// message so the agent answers from what the pipeline actually produced instead of
+// from its training priors (#914). Empty = answer from the model alone.
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens = 256, int max_rounds = 3,
                      const AgentToolRunner& tools = {},
-                     const std::vector<AgentToolSpec>& tool_specs = {});
+                     const std::vector<AgentToolSpec>& tool_specs = {},
+                     const std::string& grounding = {});
 
 }  // namespace zetta::agent

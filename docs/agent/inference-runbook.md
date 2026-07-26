@@ -196,6 +196,37 @@ are pipeline-setup steps), while the chat loop parses **conversational `<tool_ca
 blocks** with `<tool_result>` feedback — two different formats. Closing that gap needs a
 tool-use task family in the generator plus a grader for it; tracked separately.
 
+## Grounding an answer in what the pipeline produced (#914)
+
+`chat` takes an optional **`project`**. When given, the capability reads that Project's
+newest trained model and puts its **real measure and ranked drivers** into the
+conversation ahead of the question, so the answer is about what the pipeline computed
+rather than what the checkpoint remembers. Zero-importance features are dropped (the
+model did not use them), and the block states that importances are relative weights,
+not percentages.
+
+The response carries **`grounded`** — true only when a Project was named *and* it has a
+trained model — plus a **`grounding_warning`** when it is false. Callers must not
+present an ungrounded reply as a measured result.
+
+**Measured limits of the current checkpoint** (base agent 0.6B, #555) — these are why
+`grounded` exists rather than a prompt instruction:
+
+- Given real drivers it **does** use them: it reported `failed_payments` and
+  `total_events` with the model's actual importances.
+- It **mislabels** them anyway — "failed_payments (26.4%)" — despite the block stating
+  explicitly that importances are not percentages. It pattern-matches; it does not
+  follow prompt instructions it was never trained on.
+- Told plainly that a Project has **no** model and not to estimate, it **fabricated**
+  a result: *"the churn rate dropped from 42% to 38% over 30 days"*. A prompt-level
+  refusal does not hold.
+- Its output format is unstable: the same grounded question sometimes returns prose,
+  sometimes bare training-format JSON.
+
+So grounding raises the ceiling on a good answer but cannot enforce a floor. The floor
+needs the retrain in #910 (a tool-use/refusal task family), and until then the caller —
+not the model — is responsible for how an ungrounded reply is shown.
+
 ## Related
 
 - [training-runbook.md](training-runbook.md) — produce the checkpoint this runbook loads.
