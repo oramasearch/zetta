@@ -412,7 +412,15 @@ if(ZETTA_ENABLE_CUDA)
   set_target_properties(zetta-compute PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON)
-  if(NOT CMAKE_CUDA_HOST_COMPILER)
+  # Only nvcc has a separate host compiler. It also enforces a version whitelist that
+  # our toolchain outruns: CUDA 12.8's nvcc rejects host Clang >= 20 outright
+  # ("unsupported clang version! clang version must be less than 20"), so pairing it
+  # with the Clang 22 the rest of the build uses is not possible. Two ways out, and
+  # CMAKE_CUDA_COMPILER decides which:
+  #   * nvcc  -> pin an older host Clang (-DCMAKE_CUDA_HOST_COMPILER=clang++-19), or
+  #   * Clang -> let Clang compile the .cu itself (-DCMAKE_CUDA_COMPILER=clang++-22),
+  #     which needs no host compiler at all and keeps ONE compiler across the build.
+  if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND NOT CMAKE_CUDA_HOST_COMPILER)
     set_target_properties(zetta-compute PROPERTIES
       CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
   endif()
@@ -422,11 +430,20 @@ if(ZETTA_ENABLE_CUDA)
   # library PRIVATE dependency propagates to consumers as link-only).
   target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_CUDA=1)
   target_link_libraries(zetta-compute PRIVATE CUDA::cudart)
-  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation when
-  # the host compiler is Clang (the toolchain zetta selects).
+  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation. How the
+  # flag is spelled depends on which compiler owns the .cu: nvcc forwards to its host
+  # compiler via -Xcompiler, whereas Clang IS the host compiler and takes the flag
+  # directly. Getting this wrong is not a subtle failure -- an unguarded -Xcompiler
+  # reaches nvcc's DEFAULT host compiler (gcc), which rejects the clang-only flag with
+  # "unrecognized command-line option '-fexperimental-library'".
   if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
-    target_compile_options(zetta-compute PRIVATE
-      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    elseif(CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-fexperimental-library>)
+    endif()
   endif()
 endif()
 
