@@ -561,6 +561,73 @@ TEST(CudaAllocationPool, DifferentSizesDoNotAliasEachOther) {
     EXPECT_GE(large.element_count(), 8192U);
 }
 
+
+// The packed multi-head layout: a projection is [seq, n_heads * head_dim], which reshapes
+// contiguously to [seq * n_heads, head_dim]. Every head of a token must rotate by THAT TOKEN's
+// angle — getting this wrong rotates head h of token s by the angle of token s*n_heads+h, which
+// still "looks like RoPE" and quietly destroys positional information.
+TEST(CudaTransformer, RopeSharesOneAnglePerTokenAcrossHeads) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 4;
+    const int n_heads = 3;
+    const int head_dim = 8;
+    const int rows = seq * n_heads;
+    // Give every head of a token identical content, so after RoPE they must STILL be identical:
+    // any per-head angle difference shows up immediately as a divergence between them.
+    std::vector<float> x(static_cast<std::size_t>(rows) * head_dim, 0.0F);
+    const std::vector<float> pattern = random_values(static_cast<std::size_t>(head_dim), 1234U);
+    for (int token = 0; token < seq; ++token) {
+        for (int head = 0; head < n_heads; ++head) {
+            const std::size_t base =
+                (static_cast<std::size_t>(token) * n_heads + head) * head_dim;
+            for (int d = 0; d < head_dim; ++d) x[base + d] = pattern[static_cast<std::size_t>(d)];
+        }
+    }
+
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer out = device.allocate(DataType::Float32, x.size());
+    ASSERT_TRUE(zetta::compute::cuda_rope(device_x, out, rows, head_dim, 10000.0F, 0, n_heads).ok());
+    std::vector<float> rotated(x.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(out, std::span<float>(rotated)).ok());
+
+    for (int token = 0; token < seq; ++token) {
+        const std::size_t first = static_cast<std::size_t>(token) * n_heads * head_dim;
+        for (int head = 1; head < n_heads; ++head) {
+            const std::size_t other =
+                (static_cast<std::size_t>(token) * n_heads + head) * head_dim;
+            for (int d = 0; d < head_dim; ++d) {
+                EXPECT_NEAR(rotated[other + d], rotated[first + d], 1e-6F)
+                    << "token " << token << " head " << head << " dim " << d
+                    << " rotated by a different angle than head 0";
+            }
+        }
+    }
+    // Token 0 is position 0: still the identity.
+    for (int d = 0; d < head_dim; ++d) {
+        EXPECT_NEAR(rotated[static_cast<std::size_t>(d)], pattern[static_cast<std::size_t>(d)],
+                    1e-6F);
+    }
+    // A later token must actually differ, or the grouping silently pinned everything to position 0.
+    bool differs = false;
+    for (int d = 0; d < head_dim; ++d) {
+        const std::size_t late = static_cast<std::size_t>(seq - 1) * n_heads * head_dim + d;
+        if (std::abs(rotated[late] - pattern[static_cast<std::size_t>(d)]) > 1e-4F) differs = true;
+    }
+    EXPECT_TRUE(differs) << "the last token must be rotated away from the identity";
+}
+
+TEST(CudaTransformer, RopeRejectsARaggedHeadGrouping) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    const std::vector<float> x(7 * 8, 0.5F);
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer out = device.allocate(DataType::Float32, x.size());
+    // 7 rows cannot be grouped 3-per-token; some heads would take another token's angle.
+    EXPECT_FALSE(zetta::compute::cuda_rope(device_x, out, 7, 8, 10000.0F, 0, 3).ok());
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

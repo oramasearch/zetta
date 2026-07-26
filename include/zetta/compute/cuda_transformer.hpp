@@ -68,14 +68,20 @@ ComputeStatus cuda_rms_norm_backward(const DeviceBuffer& x, const DeviceBuffer& 
 // tensor is passed one head at a time, or with rows = seq and head_dim per head). Being a
 // rotation, it preserves each row's norm and is the identity at position 0 — two properties the
 // tests assert directly, because they catch a swapped sin/cos that a formula comparison can miss.
+// `rows_per_position` handles the packed multi-head layout. A projection is [seq, n_heads *
+// head_dim], which reshapes CONTIGUOUSLY to [seq * n_heads, head_dim] — but then the row index is
+// `s * n_heads + h`, not the position `s`. Passing rows_per_position = n_heads recovers it as
+// `row / rows_per_position`, so every head of a token rotates by that token's angle. Passing 1
+// (the default) is the plain [seq, head_dim] case where row IS the position.
 ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                        float base, int position_offset);
+                        float base, int position_offset, int rows_per_position = 1);
 
 // The inverse rotation, which is what the transpose of an orthogonal matrix gives:
 //   grad_x[p, i]        =  grad_out[p, i] * cos + grad_out[p, i + half] * sin
 //   grad_x[p, i + half] = -grad_out[p, i] * sin + grad_out[p, i + half] * cos
 ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
-                                 int head_dim, float base, int position_offset);
+                                 int head_dim, float base, int position_offset,
+                                 int rows_per_position = 1);
 
 // --- SwiGLU ----------------------------------------------------------------------------------
 // out = silu(gate) * up, elementwise, with silu(v) = v * sigmoid(v) — the Qwen MLP activation.

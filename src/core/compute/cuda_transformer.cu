@@ -151,7 +151,8 @@ __global__ void rms_norm_row_scale_kernel(const float* __restrict__ x, float* __
 // single read-modify-write of both halves with no synchronization. Writing per-element instead
 // would make each thread recompute the same sin/cos its partner needs.
 __global__ void rope_kernel(const float* __restrict__ x, float* __restrict__ out, int rows,
-                            int head_dim, float base, int position_offset, bool inverse) {
+                            int head_dim, float base, int position_offset, bool inverse,
+                            int rows_per_position) {
     const int half = head_dim / 2;
     const int pair = static_cast<int>(blockIdx.x) * kThreadsPerBlock + static_cast<int>(threadIdx.x);
     const int total = rows * half;
@@ -161,8 +162,10 @@ __global__ void rope_kernel(const float* __restrict__ x, float* __restrict__ out
 
     const float exponent = -2.0F * static_cast<float>(index) / static_cast<float>(head_dim);
     const float inverse_frequency = powf(base, exponent);
-    const float angle =
-        static_cast<float>(row + position_offset) * inverse_frequency;
+    // Every head of a token shares that token's angle: with the packed [seq * n_heads, head_dim]
+    // layout the row is `s * n_heads + h`, so the position is row / rows_per_position.
+    const int position = row / rows_per_position + position_offset;
+    const float angle = static_cast<float>(position) * inverse_frequency;
     const float cosine = cosf(angle);
     const float sine = sinf(angle);
 
@@ -515,12 +518,18 @@ ComputeStatus validate_rope(const DeviceBuffer& in, const DeviceBuffer& out, int
 }
 
 ComputeStatus launch_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                          float base, int position_offset, bool inverse, const char* context) {
+                          float base, int position_offset, bool inverse, int rows_per_position,
+                          const char* context) {
     if (const ComputeStatus valid = validate_rope(x, out, rows, head_dim); !valid.ok()) return valid;
+    if (rows_per_position <= 0 || rows % rows_per_position != 0) {
+        // A ragged grouping would silently assign some heads to the wrong token's angle.
+        return ComputeStatus::invalid_argument(
+            "rope: rows must be a positive multiple of rows_per_position");
+    }
     const int pairs = rows * (head_dim / 2);
     const int blocks = (pairs + kThreadsPerBlock - 1) / kThreadsPerBlock;
     rope_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(x), as_float(out), rows, head_dim,
-                                              base, position_offset, inverse);
+                                              base, position_offset, inverse, rows_per_position);
     return check_launch(context);
 }
 
@@ -538,14 +547,16 @@ ComputeStatus validate_elementwise(const DeviceBuffer& a, const DeviceBuffer& b,
 }  // namespace
 
 ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                        float base, int position_offset) {
-    return launch_rope(x, out, rows, head_dim, base, position_offset, /*inverse=*/false, "rope");
+                        float base, int position_offset, int rows_per_position) {
+    return launch_rope(x, out, rows, head_dim, base, position_offset, /*inverse=*/false,
+                       rows_per_position, "rope");
 }
 
 ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
-                                 int head_dim, float base, int position_offset) {
+                                 int head_dim, float base, int position_offset,
+                                 int rows_per_position) {
     return launch_rope(grad_out, grad_x, rows, head_dim, base, position_offset, /*inverse=*/true,
-                       "rope_backward");
+                       rows_per_position, "rope_backward");
 }
 
 ComputeStatus cuda_swiglu(const DeviceBuffer& gate, const DeviceBuffer& up, DeviceBuffer& out,
