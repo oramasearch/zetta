@@ -17,6 +17,11 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 - **Out of scope.** Not a general chatbot; not a code assistant; not for anything Orama Zetta
   doesn't build — it **abstains** (declines, builds nothing) on out-of-scope asks. The optional
   narrator/playbook LLM is a separate, non-load-bearing layer (never produces a number).
+  **Prose Q&A about a Project's data and results is NOT this model** — that is the grounded
+  answerer (#917), a separate model playing a different RLVR game (its reward is a groundedness
+  grader over answer × supplied context; this model's reward is the gate over a run pipeline).
+  Routing between them is a product-surface fact, not a model decision: "Create a Solution"
+  reaches this model, the Ask Orama drawer reaches the answerer.
 
 ## Architecture & training
 
@@ -49,8 +54,24 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 
 ## Limitations
 
-- 0.6B is the demo/immediate path (#863); it must emit valid nested-JSON pipelines — harder than
-  flat facts, so parse rate is a first-class metric. 8B paths are #864/#865.
+- **0.6B is the demo/immediate path (#863).** It must emit valid nested-JSON pipelines — harder
+  than flat facts, so **parse rate is a first-class metric**, and it is the metric that decides
+  whether to scale.
+- **Scale path — 0.6B → Qwen 3.5 9B, on evidence, and only for this model.** The ladder is
+  #863 (full fine-tune 0.6B) → #864 (LoRA/adapters, constrained hardware) → #865 (full
+  fine-tune on dedicated Linux/CUDA). *Retarget: those issues name Qwen3-8B; the current target
+  is **Qwen 3.5 9B** (Steve, 2026-07-25).* Two rules govern the jump:
+  - **Trigger on a measured plateau, not a hunch** — parse rate + grader pass-rate on the
+    held-out set, *after* RLVR has had its shot. A number with no dated report is not evidence.
+  - **Scale selectively.** Emitting a valid nested-JSON pipeline is the hard task and is what
+    earns a 9B. The grounded answerer (#917) answers from context the engine already supplies —
+    an easier task that likely stays small. Splitting the models is what makes per-model scaling
+    possible at all; before it, "scale up" meant scaling everything.
+  - **Constraint to plan around:** 9B does not full-fine-tune on one box — ~18 GB of BF16
+    weights, and full AdamW adds fp32 master weights, gradients, and two moments (>130 GB). So
+    it is LoRA (#864) or sharded across the cluster. The latter is on-thesis: it is where the
+    distributed-native training claim becomes load-bearing rather than aspirational, and it is
+    the same story the customer buys — train on your data, in your environment, across your nodes.
 - The base agent recognizes + specs the pipeline; **it doesn't yet emit tool-call trajectories
   step-by-step** as the fully autonomous #859 policy will — today the engine compiles the
   recognized intent (see [inference-runbook.md](../../inference-runbook.md) §scope).
