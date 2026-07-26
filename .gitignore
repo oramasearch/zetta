@@ -64,3 +64,5 @@ __pycache__/
 # Trained checkpoints — large (~GBs); kept local and pushed to a private HF model repo,
 # never committed. The training-metrics log lives alongside (data/checkpoints/*/train.log).
 /data/checkpoints/
+# Generated training corpora — reproducible from the native generator (#918)
+data/corpora/

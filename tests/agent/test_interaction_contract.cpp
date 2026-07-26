@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 #include <string>
@@ -9,6 +11,7 @@
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/base_prompt.hpp"
 #include "zetta/agent/chat.hpp"
+#include "zetta/agent/corpus_io.hpp"
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/solution_graph.hpp"
 #include "zetta/dataset/base_agent_generator.hpp"
@@ -179,6 +182,60 @@ TEST(InteractionContract, CorpusIsLargeEnoughAndEveryCaseAdmits) {
                   ": " + failure.detail + "\n";
     }
     EXPECT_TRUE(result.admitted) << "corpus failed admission:\n" << detail;
+}
+
+TEST(InteractionContract, GroundingSurvivesTheCorpusRoundTrip) {
+    // Half of a grounded-QA example is its retrieved context. A round trip that dropped it
+    // would present the model with "answer from these facts" and no facts — training it to
+    // answer from priors, which is the exact fabrication the corpus exists to remove. This
+    // silently produced a degraded corpus before `grounding` was added to the serialization.
+    const zetta::dataset::BaseAgentDatasetGenerator generator;
+    const zetta::dataset::GeneratedDataset dataset = generator.generate({});
+
+    const std::string encoded = zetta::agent::dump_corpus_jsonl(dataset.cases);
+    std::string error;
+    const std::optional<std::vector<zetta::agent::AdmissionCase>> reloaded =
+        zetta::agent::load_corpus_jsonl(encoded, &error);
+    ASSERT_TRUE(reloaded.has_value()) << error;
+    ASSERT_EQ(reloaded->size(), dataset.cases.size());
+
+    std::size_t grounded_cases = 0;
+    for (std::size_t index = 0; index < dataset.cases.size(); ++index) {
+        EXPECT_EQ((*reloaded)[index].grounding, dataset.cases[index].grounding)
+            << "grounding lost on " << dataset.cases[index].task.id();
+        if (!dataset.cases[index].grounding.empty()) ++grounded_cases;
+        // And the rendered training example must be identical after the round trip.
+        EXPECT_EQ(zetta::agent::render_action_example((*reloaded)[index]).first,
+                  zetta::agent::render_action_example(dataset.cases[index]).first);
+    }
+    EXPECT_GT(grounded_cases, 0u) << "no case carries context: nothing is being grounded";
+}
+
+// Env-gated corpus export (the repo's ZETTA_WRITE_* pattern): writes the gated corpus as JSONL
+// for the SFT driver to consume. Never a build/CI dependency — skipped unless asked for.
+TEST(InteractionContract, WriteCorpusJsonl) {
+    const char* out = std::getenv("ZETTA_CORPUS_OUT");
+    if (out == nullptr) GTEST_SKIP() << "set ZETTA_CORPUS_OUT to write the corpus";
+
+    const zetta::dataset::BaseAgentDatasetGenerator generator;
+    zetta::dataset::DatasetGenSpec spec;
+    spec.held_out_fraction = 0.1;
+    const zetta::dataset::GeneratedDataset dataset = generator.generate(spec);
+    ASSERT_TRUE(zetta::agent::admit_corpus(dataset.cases).admitted);
+
+    // Training reads cases[0 .. size-held_out); the canary is the remainder (the convention on
+    // GeneratedDataset). Write the training split — the canary is for measuring, not fitting.
+    const std::size_t train_count = dataset.cases.size() - dataset.held_out;
+    const std::vector<zetta::agent::AdmissionCase> train(
+        dataset.cases.begin(),
+        dataset.cases.begin() + static_cast<std::ptrdiff_t>(train_count));
+    const std::vector<zetta::agent::AdmissionCase> canary(
+        dataset.cases.begin() + static_cast<std::ptrdiff_t>(train_count), dataset.cases.end());
+
+    std::ofstream(std::string(out)) << zetta::agent::dump_corpus_jsonl(train);
+    std::ofstream(std::string(out) + ".canary") << zetta::agent::dump_corpus_jsonl(canary);
+    std::cout << "\n  wrote " << train.size() << " training cases to " << out << "\n"
+              << "  wrote " << canary.size() << " canary cases to " << out << ".canary\n";
 }
 
 }  // namespace

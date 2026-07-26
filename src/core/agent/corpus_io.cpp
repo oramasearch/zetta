@@ -45,6 +45,13 @@ nlohmann::json to_json(const AdmissionCase& admission_case) {
     if (admission_case.reference_action) {
         output["action"] = to_json(*admission_case.reference_action);
     }
+    // The context the harness retrieved before this ask (#918). This MUST survive the round
+    // trip: it is half of a grounded-QA example. Training on a corpus that dropped it would
+    // present every "answer from these facts" case with no facts at all — teaching the model to
+    // answer from its priors, which is precisely the fabrication the corpus exists to remove.
+    if (!admission_case.grounding.empty()) {
+        output["grounding"] = admission_case.grounding;
+    }
     return output;
 }
 
@@ -152,6 +159,15 @@ std::optional<AdmissionCase> admission_case_from_json(const nlohmann::json& valu
         std::optional<StudioAction> action = action_from_json(value["action"], error);
         if (!action) return std::nullopt;
         admission_case.reference_action = *std::move(action);
+    }
+    // The retrieved context (#918) — optional, but when present it must be a string, because a
+    // silently-dropped context is a silently-degraded training example.
+    if (value.contains("grounding")) {
+        if (!value["grounding"].is_string()) {
+            set_error(error, "admission case.grounding: must be a string");
+            return std::nullopt;
+        }
+        admission_case.grounding = value["grounding"].get<std::string>();
     }
     return admission_case;
 }
