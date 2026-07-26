@@ -339,31 +339,6 @@ __global__ void scatter_apply_kernel(const Element* input,
 
 }  // namespace
 
-CudaDevice::CudaDevice(int device_index) noexcept
-    : device_index_(device_index), pool_(std::make_shared<Pool>()) {}
-
-// Hand the reserve back to CUDA. Without this the pooled blocks would live until process exit,
-// which on a box that also serves a node is a leak, not a cache.
-CudaDevice::~CudaDevice() {
-    if (pool_) pool_->drain();
-}
-
-DeviceInfo CudaDevice::info() const {
-    DeviceInfo information;
-    information.kind = DeviceKind::Cuda;
-    cudaDeviceProp properties{};
-    if (cudaGetDeviceProperties(&properties, device_index_) == cudaSuccess) {
-        information.name = properties.name;
-        information.compute_units =
-            static_cast<std::size_t>(properties.multiProcessorCount);
-        information.memory_bytes = properties.totalGlobalMem;
-        information.unified_memory = properties.unifiedAddressing != 0;
-    } else {
-        information.name = "cuda";
-    }
-    return information;
-}
-
 // The allocation pool. cudaMalloc/cudaFree synchronize the device, and an iterative workload
 // allocates constantly — one autograd training step issues ~1,700 allocate/free pairs, which
 // serializes the GPU against the host and showed up as ~11% GPU utilization while training (#928).
@@ -425,6 +400,31 @@ struct CudaDevice::Pool {
         for (void* storage : to_free) cudaFree(storage);  // outside the lock: cudaFree synchronizes
     }
 };
+
+CudaDevice::CudaDevice(int device_index) noexcept
+    : device_index_(device_index), pool_(std::make_shared<Pool>()) {}
+
+// Hand the reserve back to CUDA. Without this the pooled blocks would live until process exit,
+// which on a box that also serves a node is a leak, not a cache.
+CudaDevice::~CudaDevice() {
+    if (pool_) pool_->drain();
+}
+
+DeviceInfo CudaDevice::info() const {
+    DeviceInfo information;
+    information.kind = DeviceKind::Cuda;
+    cudaDeviceProp properties{};
+    if (cudaGetDeviceProperties(&properties, device_index_) == cudaSuccess) {
+        information.name = properties.name;
+        information.compute_units =
+            static_cast<std::size_t>(properties.multiProcessorCount);
+        information.memory_bytes = properties.totalGlobalMem;
+        information.unified_memory = properties.unifiedAddressing != 0;
+    } else {
+        information.name = "cuda";
+    }
+    return information;
+}
 
 DeviceBuffer CudaDevice::allocate(DataType dtype, std::size_t element_count) {
     if (cudaSetDevice(device_index_) != cudaSuccess) return DeviceBuffer{};
