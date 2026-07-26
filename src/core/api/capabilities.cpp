@@ -3584,20 +3584,82 @@ std::string model_grounding_text(const nlohmann::json& metadata, const std::stri
             if (ranked.empty()) {
                 text += "Drivers: the model reported no feature with non-zero importance.\n";
             } else {
-                // Importance is a RELATIVE weight, not a percentage or a share of churn.
-                // Saying so stops the agent reporting "26.4% of churn", which it did.
+                // Present importances as a SHARE OF TOTAL importance, which is both a
+                // standard way to report feature importance and — crucially — a number
+                // the agent's instinct to write "%" is correct about. Telling it "these
+                // are not percentages" did not work: it wrote "failed_payments (26.4%)"
+                // anyway, turning a raw weight into a false claim. Giving it real
+                // percentages makes the sentence it wants to write a true one.
+                double total = 0.0;
+                for (const auto& [feature, weight] : ranked) total += weight;
                 text +=
-                    "Drivers, strongest first (relative importance scores — NOT percentages, "
-                    "and not a share of churn; only their ORDER and relative size is "
-                    "meaningful):\n";
+                    "Drivers, strongest first — each shown as its share of the model's "
+                    "total feature importance (they sum to 100%):\n";
                 for (const auto& [feature, weight] : ranked) {
                     std::ostringstream line;
                     line << "- " << feature << ": " << std::fixed << std::setprecision(1)
-                         << weight << "\n";
+                         << (total > 0.0 ? (weight / total) * 100.0 : 0.0)
+                         << "% of the model's importance\n";
                     text += line.str();
                 }
             }
         }
+    }
+    return text;
+}
+
+// The ranked at-risk list this Project's pipeline published (#915), as lines the
+// agent reads before answering "which accounts are most at risk". Matched to the
+// Project's OWN pipelines by table name — never a "newest table on the node" guess,
+// which would hand one Project another's accounts. Capped: the question is about the
+// top of the list, and a long tail only crowds the context out.
+std::string at_risk_grounding_text(Node& node,
+                                   const std::vector<std::shared_ptr<zetta::pipeline::ProjectGraph>>& graphs) {
+    constexpr std::size_t kMaxRows = 10;
+    const std::shared_ptr<zetta::data::Database> database = node.find_database("churn_results");
+    if (!database) return {};
+
+    std::shared_ptr<zetta::data::Table> table;
+    for (const auto& graph : graphs) {
+        if (!graph || graph->id().size() < 8) continue;
+        if (auto found = database->find_table("at_risk_" + graph->id().substr(0, 8))) {
+            table = std::move(found);  // last writer wins: the newest run of this Project
+        }
+    }
+    if (!table) return {};
+
+    std::vector<nlohmann::json> rows;
+    const zetta::storage::StorageEngine& store = table->store();
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        const auto row = store.at(index);
+        if (!row) continue;  // row.error() says why; a hole is not an answer
+        rows.push_back(*row);
+    }
+    if (rows.empty()) return {};
+    std::sort(rows.begin(), rows.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+        return left.value("rank", 0.0) < right.value("rank", 0.0);
+    });
+
+    std::string text =
+        "\nThe accounts this pipeline ranked most at risk. These are the ONLY accounts "
+        "you may name — do not invent others — and risk is the model's calibrated "
+        "probability of churn:\n";
+    std::size_t shown = 0;
+    for (const nlohmann::json& row : rows) {
+        if (shown++ >= kMaxRows) break;
+        std::ostringstream line;
+        line << "- account " << row.value("account", 0) << ": risk " << std::fixed
+             << std::setprecision(3) << row.value("risk", 0.0);
+        if (const std::string driver = row.value("dominant_driver", std::string{});
+            !driver.empty()) {
+            line << ", driven by " << driver;
+        }
+        line << "\n";
+        text += line.str();
+    }
+    if (rows.size() > kMaxRows) {
+        text += "(and " + std::to_string(rows.size() - kMaxRows) + " more below the top " +
+                std::to_string(kMaxRows) + ")\n";
     }
     return text;
 }
@@ -3684,6 +3746,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
             if (newest) {
                 grounding = model_grounding_text(newest->metadata(), newest->name(),
                                                  project->name());
+                // …and the accounts it actually ranked, so "which are most at risk"
+                // is answered with real accounts rather than invented ones (#915).
+                grounding += at_risk_grounding_text(context.node, project->graphs());
                 grounded = true;
             } else {
                 // Deliberately NOT a prompt instruction. Measured behavior: told plainly

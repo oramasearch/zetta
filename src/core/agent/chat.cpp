@@ -271,14 +271,25 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // A pre-EOS checkpoint (no trained stop token) repeats the "Correct solution (facts): {...}"
     // block; keep only the first. (An EOS-trained checkpoint stops on its own — this is a
     // no-op there.)
+    // The "Correct solution (facts): {…}" block is the TRAINING target format, not an
+    // answer — nothing at serving time parses it, and it leaked verbatim through every
+    // surface (MCP, agent_run, and any client that did not know to trim it). Strip it
+    // here, once, so no caller has to know about it.
     constexpr std::string_view marker = "Correct solution (facts):";
-    const std::size_t first = reply.find(marker);
-    if (first != std::string::npos) {
-        const std::size_t second = reply.find(marker, first + marker.size());
-        if (second != std::string::npos) reply.erase(second);
+    if (const std::size_t first = reply.find(marker); first != std::string::npos) {
+        reply.erase(first);
     }
     const std::size_t last = reply.find_last_not_of(" \t\r\n");
     reply.erase(last == std::string::npos ? 0 : last + 1);
+    // A generation that was ONLY the facts block leaves nothing behind. Say that
+    // plainly rather than returning a blank the caller has to guess at — an empty
+    // reply reads as a broken endpoint, which is the wrong diagnosis.
+    if (reply.empty()) {
+        reply =
+            "The agent produced no readable answer to that — it emitted only its "
+            "training-format block. Try rephrasing, or ask about the Project's data, "
+            "pipeline, or model.";
+    }
 
     response.ok = true;
     return response;
