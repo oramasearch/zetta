@@ -430,7 +430,9 @@ if(ZETTA_ENABLE_CUDA)
   # binary without leaking the CUDA include directories into zetta-core (a static-
   # library PRIVATE dependency propagates to consumers as link-only).
   target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_CUDA=1)
-  target_link_libraries(zetta-compute PRIVATE CUDA::cudart)
+  # cuBLAS provides the tuned GEMM (#929). The hand-written kernel stays as the fallback for
+  # dtypes cuBLAS does not cover and as the conformance reference.
+  target_link_libraries(zetta-compute PRIVATE CUDA::cudart CUDA::cublas)
   # Match zetta-core's libc++ experimental ABI on the .cu's host compilation. How the
   # flag is spelled depends on which compiler owns the .cu: nvcc forwards to its host
   # compiler via -Xcompiler, whereas Clang IS the host compiler and takes the flag

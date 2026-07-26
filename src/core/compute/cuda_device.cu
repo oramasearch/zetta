@@ -11,6 +11,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
@@ -345,6 +346,11 @@ __global__ void scatter_apply_kernel(const Element* input,
 // Reusing exact-size blocks removes that churn without changing any interface.
 struct CudaDevice::Pool {
     mutable std::mutex mutex;                                  // the sanctioned adapter-level lock
+    // One cuBLAS handle per device, created lazily and reused. Creating a handle per gemm call
+    // costs milliseconds and would reintroduce the per-call setup this pool exists to remove.
+    cublasHandle_t blas = nullptr;
+    bool blas_ready = false;
+    bool allow_tf32 = true;
     std::unordered_map<std::size_t, std::vector<void*>> free_blocks;  // keyed by exact byte size
     std::unordered_map<void*, std::size_t> live_sizes;         // release_buffer only gets a handle
     std::size_t limit_bytes = 2ULL * 1024 * 1024 * 1024;       // 2 GiB reserve by default
@@ -386,6 +392,39 @@ struct CudaDevice::Pool {
         return true;
     }
 
+    // The cuBLAS handle, created on first use. TF32 is enabled by default: A100 tensor cores run
+    // TF32 matmuls ~8x faster than fp32 CUDA cores, and TF32 keeps fp32's exponent range while
+    // reducing the mantissa to 10 bits — a precision change that must be a deliberate, reported
+    // choice rather than a silent one, which is why it is switchable.
+    cublasHandle_t blas_handle() {
+        std::lock_guard<std::mutex> guard(mutex);
+        if (!blas_ready) {
+            if (cublasCreate(&blas) != CUBLAS_STATUS_SUCCESS) {
+                blas = nullptr;
+            } else {
+                cublasSetMathMode(blas, allow_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH
+                                                   : CUBLAS_DEFAULT_MATH);
+            }
+            blas_ready = true;
+        }
+        return blas;
+    }
+
+    void set_tf32(bool enabled) {
+        std::lock_guard<std::mutex> guard(mutex);
+        allow_tf32 = enabled;
+        if (blas != nullptr) {
+            cublasSetMathMode(blas, enabled ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH);
+        }
+    }
+
+    void destroy_blas() {
+        std::lock_guard<std::mutex> guard(mutex);
+        if (blas != nullptr) cublasDestroy(blas);
+        blas = nullptr;
+        blas_ready = false;
+    }
+
     void drain() {
         std::vector<void*> to_free;
         {
@@ -407,7 +446,10 @@ CudaDevice::CudaDevice(int device_index) noexcept
 // Hand the reserve back to CUDA. Without this the pooled blocks would live until process exit,
 // which on a box that also serves a node is a leak, not a cache.
 CudaDevice::~CudaDevice() {
-    if (pool_) pool_->drain();
+    if (pool_) {
+        pool_->destroy_blas();
+        pool_->drain();
+    }
 }
 
 DeviceInfo CudaDevice::info() const {
@@ -731,6 +773,44 @@ ComputeStatus CudaDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
         return ComputeStatus::backend_error("gemm: cudaSetDevice failed");
     }
     if (params.rows == 0 || params.cols == 0) return ComputeStatus::success();
+
+    // --- cuBLAS fast path (#929) ----------------------------------------------------------
+    // The hand-written kernel below is a naive global-memory loop with an fp64 accumulator: no
+    // tiling, no data reuse, no tensor cores. On an A100 it sustains ~0.3-0.5 TFLOPS against the
+    // 110-130 TFLOPS cuBLAS reaches with TF32 — a 200-400x gap on the hottest op in training.
+    // Keep it only as the fallback for dtypes cuBLAS does not cover, and as the reference the
+    // conformance tests compare against.
+    //
+    // cuBLAS is COLUMN-major; our buffers are row-major. Rather than transpose anything, compute
+    // the transpose of the result: a row-major C[m,n] occupies the same bytes as a column-major
+    // C^T[n,m], and C^T = op_b(B)^T * op_a(A)^T. So the operands are passed in the opposite order
+    // and each "no transpose" case is already transposed by the layout reinterpretation itself.
+    if (a.dtype() == DataType::Float32 && pool_) {
+        if (cublasHandle_t blas = pool_->blas_handle(); blas != nullptr) {
+            const int m = static_cast<int>(params.rows);
+            const int n = static_cast<int>(params.cols);
+            const int k = static_cast<int>(params.inner);
+            const float alpha = static_cast<float>(params.alpha);
+            const float beta = static_cast<float>(params.beta);
+            // Reading row-major memory as column-major already yields the transpose, so a caller
+            // asking for NO transpose needs OP_N here, and one asking FOR a transpose needs OP_T.
+            const cublasOperation_t op_a = params.transpose_a ? CUBLAS_OP_T : CUBLAS_OP_N;
+            const cublasOperation_t op_b = params.transpose_b ? CUBLAS_OP_T : CUBLAS_OP_N;
+            const int lda = params.transpose_a ? m : k;
+            const int ldb = params.transpose_b ? k : n;
+            const cublasStatus_t blas_status = cublasSgemm(
+                blas, op_b, op_a, n, m, k, &alpha,
+                static_cast<const float*>(b.handle()), ldb,
+                static_cast<const float*>(a.handle()), lda, &beta,
+                static_cast<float*>(c.handle()), n);
+            if (blas_status == CUBLAS_STATUS_SUCCESS) {
+                return check_kernel_launch("gemm");
+            }
+            // Fall through to the reference kernel rather than failing: a cuBLAS refusal (an
+            // unsupported shape, say) should degrade to slow-but-correct, not to an error.
+        }
+    }
+
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned>((params.cols + 15) / 16),
                     static_cast<unsigned>((params.rows + 15) / 16));
