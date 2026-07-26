@@ -23,6 +23,8 @@
 #include "zetta/agent/base_prompt.hpp"     // base_agent_system_prompt, agent_prompt_format
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
+#include "zetta/agent/interaction.hpp"
+#include "zetta/agent/response_facts.hpp"
 #include "zetta/agent/solution_graph.hpp"  // render_action_example, graph_solution_facts (#873)
 #include "zetta/autograd/transformer.hpp"  // autograd::Adam
 #include "zetta/compute/mlx_device.hpp"
@@ -737,24 +739,54 @@ TEST(QwenRealCheckpoint, EvalGraderPassRate) {
     double score_sum = 0.0;                   // mean fraction of required facts satisfied
     int abstain_tasks = 0, abstain_hit = 0;  // required declares abstain
     int scope_tasks = 0, false_abstain = 0;  // in-scope task the model wrongly abstained on
+    int mode_tasks = 0, mode_correct = 0;    // did it declare the right response mode (#918)
+    int grounded_tasks = 0, grounded_hit = 0;  // answered using only retrieved numbers
     for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
         const zetta::agent::Task& task = admission_case.task;
         model->reset();
-        // #873: prompt with the Studio system prompt; the model emits the ACTION, and we score
-        // its PIPELINE through the same grader (graph_solution_facts) — the RLVR reward.
-        const std::string prompt =
-            zetta::agent::agent_prompt_format(zetta::agent::base_agent_system_prompt(),
-                                              task.description());
+        // #918: frame the turn with the SHARED renderer, including the context the harness
+        // would have retrieved. Evaluating with a different frame than serving (or than
+        // training) measures a model nobody ships — the eval previously omitted `grounding`
+        // entirely, so every grounded-QA case was scored on a prompt with no facts in it.
+        const std::string prompt = zetta::agent::render_interaction_prompt(
+            zetta::agent::base_agent_system_prompt(), admission_case.grounding,
+            task.description());
         const std::vector<int> generated = model->generate_greedy(
             tokenizer->encode(prompt), /*max_new_tokens=*/256, /*eos_id=*/151645);
         const std::string decoded = tokenizer->decode(generated);
         ++total;
 
         zetta::agent::EndState observed;
+        std::optional<zetta::agent::InteractionKind> observed_kind;
         if (const std::optional<zetta::agent::StudioAction> action =
                 zetta::agent::parse_studio_action(decoded)) {
-            observed = zetta::agent::graph_solution_facts(action->execution_graph);
+            // Grade the whole RESPONSE, not the pipeline alone: answer/clarify/abstain turns
+            // carry no pipeline, so scoring them on graph facts would score every one of them
+            // zero regardless of what the model actually said.
+            observed = zetta::agent::response_solution_facts(*action, admission_case.grounding);
+            observed_kind = action->kind;
             ++parsed;
+        }
+        // Mode accuracy: did the model declare the mode the task requires? A wrong mode is a
+        // hard failure -- building a Pipeline for an ambiguous ask, or answering where the
+        // facts do not support one, is the behavior the corpus exists to discriminate.
+        if (const auto required_kind = task.required().facts().find("kind");
+            required_kind != task.required().facts().end()) {
+            ++mode_tasks;
+            if (observed_kind && *required_kind->second.get_ptr<const std::string*>() ==
+                                     zetta::agent::to_string(*observed_kind)) {
+                ++mode_correct;
+            }
+        }
+        // Groundedness, reported separately: of the cases that supplied context, how many
+        // answers cited ONLY numbers that were actually retrieved.
+        if (!admission_case.grounding.empty()) {
+            ++grounded_tasks;
+            const auto& facts = observed.facts();
+            if (facts.count("numbers_from_context") != 0 &&
+                facts.at("numbers_from_context") == true) {
+                ++grounded_hit;
+            }
         }
         // Exact-match pass is strict (each fresh task has its own key vocabulary); the mean
         // fraction of required facts satisfied is the softer, more comparable signal.
@@ -785,7 +817,10 @@ TEST(QwenRealCheckpoint, EvalGraderPassRate) {
               << "  mean required-fact score: " << mean_score << "\n"
               << "  parsed valid JSON:        " << parsed << "/" << total << "\n"
               << "  abstain recall:           " << abstain_hit << "/" << abstain_tasks << "\n"
-              << "  false-abstain (in-scope): " << false_abstain << "/" << scope_tasks << "\n";
+              << "  false-abstain (in-scope): " << false_abstain << "/" << scope_tasks << "\n"
+              << "  mode accuracy:            " << mode_correct << "/" << mode_tasks << "\n"
+              << "  grounded (no invented #):  " << grounded_hit << "/" << grounded_tasks
+              << "\n";
 }
 
 #endif  // ZETTA_WITH_MLX
