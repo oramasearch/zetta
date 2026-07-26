@@ -22,11 +22,20 @@
 #include "zetta/ml/gbdt_explain_job.hpp"
 #include "zetta/ml/gbdt_score_job.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/storage/engine.hpp"
 
 namespace zetta::usecases::churn {
+namespace {
+// Where a churn run publishes its at-risk list so SQL, Studio, and the agent can
+// read it (#915). One database for every churn pipeline's results; the per-pipeline
+// table inside it is replaced on each run.
+constexpr const char* kChurnResultsDatabase = "churn_results";
+}  // namespace
+
 namespace {
 
 // A short, human-readable label for a step: its name, else its (UUID) id — the
@@ -414,9 +423,41 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         state.playbook.push_back(std::move(action));
     }
 
+    // Materialize the at-risk list as a REAL queryable table (#915). The pipeline
+    // computed the thing the whole use case exists for — who is most likely to churn
+    // and why — and it used to live only in this executor's memory, so SQL, the
+    // Studio Results tab, and the agent could not read it back. It is now a table in
+    // `churn_results`, named per pipeline and replaced on each run (a run supersedes
+    // its predecessor; keeping every run's copy would just accumulate stale lists).
+    std::string at_risk_table;
+    node_.run_on_owner([&] {
+        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
+        if (!database) database = node_.create_database(kChurnResultsDatabase);
+        if (!database) return;
+        const std::string name =
+            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
+                                                : config_.graph.substr(0, 8));
+        database->drop_table(name);  // replace the previous run's list
+        std::shared_ptr<data::Table> table = database->create_table(name);
+        if (!table) return;
+        std::size_t position = 0;
+        for (const RetentionAction& action : state.playbook) {
+            ++position;
+            table->add_row({{"rank", position},
+                            {"account", action.entity},
+                            {"risk", action.risk},
+                            {"dominant_driver", action.dominant_driver},
+                            {"driver_effect", action.dominant_value}});
+        }
+        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+    });
+
     zetta::pipeline::StepOutcome outcome;
+    // Point the run's output at the table when we managed to write one, so `get_run`
+    // names something a caller can actually SELECT from.
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
-        "dataset", step_label(step), "playbook:" + step.id});
+        "dataset", step_label(step),
+        at_risk_table.empty() ? ("playbook:" + step.id) : at_risk_table});
     return outcome;
 }
 
