@@ -8,6 +8,9 @@
 #include <string>
 #include <type_traits>
 
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
@@ -336,7 +339,14 @@ __global__ void scatter_apply_kernel(const Element* input,
 
 }  // namespace
 
-CudaDevice::CudaDevice(int device_index) noexcept : device_index_(device_index) {}
+CudaDevice::CudaDevice(int device_index) noexcept
+    : device_index_(device_index), pool_(std::make_shared<Pool>()) {}
+
+// Hand the reserve back to CUDA. Without this the pooled blocks would live until process exit,
+// which on a box that also serves a node is a leak, not a cache.
+CudaDevice::~CudaDevice() {
+    if (pool_) pool_->drain();
+}
 
 DeviceInfo CudaDevice::info() const {
     DeviceInfo information;
@@ -354,13 +364,94 @@ DeviceInfo CudaDevice::info() const {
     return information;
 }
 
+// The allocation pool. cudaMalloc/cudaFree synchronize the device, and an iterative workload
+// allocates constantly — one autograd training step issues ~1,700 allocate/free pairs, which
+// serializes the GPU against the host and showed up as ~11% GPU utilization while training (#928).
+// Reusing exact-size blocks removes that churn without changing any interface.
+struct CudaDevice::Pool {
+    mutable std::mutex mutex;                                  // the sanctioned adapter-level lock
+    std::unordered_map<std::size_t, std::vector<void*>> free_blocks;  // keyed by exact byte size
+    std::unordered_map<void*, std::size_t> live_sizes;         // release_buffer only gets a handle
+    std::size_t limit_bytes = 2ULL * 1024 * 1024 * 1024;       // 2 GiB reserve by default
+    std::size_t held_bytes = 0;
+    std::size_t hits = 0;
+
+    // A block of exactly `bytes`, from the reserve when one is waiting. Exact-size matching, not
+    // best-fit: a training step reuses the same shapes every iteration, so exact hits are the
+    // common case, and best-fit would fragment the reserve into unusable odd sizes.
+    void* take(std::size_t bytes) {
+        std::lock_guard<std::mutex> guard(mutex);
+        const auto found = free_blocks.find(bytes);
+        if (found == free_blocks.end() || found->second.empty()) return nullptr;
+        void* storage = found->second.back();
+        found->second.pop_back();
+        held_bytes -= bytes;
+        ++hits;
+        live_sizes[storage] = bytes;
+        return storage;
+    }
+
+    void record_live(void* storage, std::size_t bytes) {
+        std::lock_guard<std::mutex> guard(mutex);
+        live_sizes[storage] = bytes;
+    }
+
+    // Keep the block for reuse, unless that would push the reserve past its limit — in which case
+    // hand it back to CUDA. Without the cap the reserve would grow to the high-water mark of every
+    // shape ever seen and quietly consume the memory ceiling #924 sets.
+    bool keep(void* storage) {
+        std::lock_guard<std::mutex> guard(mutex);
+        const auto found = live_sizes.find(storage);
+        if (found == live_sizes.end()) return false;  // not ours: caller frees it
+        const std::size_t bytes = found->second;
+        live_sizes.erase(found);
+        if (limit_bytes == 0 || held_bytes + bytes > limit_bytes) return false;
+        free_blocks[bytes].push_back(storage);
+        held_bytes += bytes;
+        return true;
+    }
+
+    void drain() {
+        std::vector<void*> to_free;
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            for (auto& [bytes, blocks] : free_blocks) {
+                for (void* storage : blocks) to_free.push_back(storage);
+                blocks.clear();
+            }
+            free_blocks.clear();
+            held_bytes = 0;
+        }
+        for (void* storage : to_free) cudaFree(storage);  // outside the lock: cudaFree synchronizes
+    }
+};
+
 DeviceBuffer CudaDevice::allocate(DataType dtype, std::size_t element_count) {
     if (cudaSetDevice(device_index_) != cudaSuccess) return DeviceBuffer{};
     const std::size_t byte_count = element_count * byte_size(dtype);
+    if (byte_count == 0) return DeviceBuffer{};
+
+    // Reuse a pooled block when one of exactly this size is waiting, so the common case of an
+    // iterative workload re-allocating the same shapes costs no cudaMalloc at all.
+    if (pool_) {
+        if (void* reused = pool_->take(byte_count); reused != nullptr) {
+            return make_buffer(reused, dtype, element_count);
+        }
+    }
     void* storage = nullptr;
     if (cudaMalloc(&storage, byte_count) != cudaSuccess || storage == nullptr) {
-        return DeviceBuffer{};
+        // Out of memory with a reserve still held is recoverable: hand the reserve back and retry
+        // once. Failing here while pooling megabytes would be an own goal.
+        if (pool_ != nullptr && pool_->held_bytes > 0) {
+            pool_->drain();
+            if (cudaMalloc(&storage, byte_count) != cudaSuccess || storage == nullptr) {
+                return DeviceBuffer{};
+            }
+        } else {
+            return DeviceBuffer{};
+        }
     }
+    if (pool_) pool_->record_live(storage, byte_count);
     return make_buffer(storage, dtype, element_count);
 }
 
@@ -893,7 +984,37 @@ ComputeStatus CudaDevice::scatter(const DeviceBuffer& input,
     return status;
 }
 
-void CudaDevice::release_buffer(void* handle) noexcept { cudaFree(handle); }
+void CudaDevice::release_buffer(void* handle) noexcept {
+    // Keep the block for reuse when the pool will take it; only fall through to cudaFree (which
+    // synchronizes the device) when it will not.
+    if (pool_ && pool_->keep(handle)) return;
+    cudaFree(handle);
+}
+
+void CudaDevice::set_pool_limit(std::size_t bytes) {
+    if (!pool_) return;
+    {
+        std::lock_guard<std::mutex> guard(pool_->mutex);
+        pool_->limit_bytes = bytes;
+    }
+    if (bytes == 0) pool_->drain();  // disabling the pool must release what it already holds
+}
+
+std::size_t CudaDevice::pooled_bytes() const {
+    if (!pool_) return 0;
+    std::lock_guard<std::mutex> guard(pool_->mutex);
+    return pool_->held_bytes;
+}
+
+std::size_t CudaDevice::pool_hits() const {
+    if (!pool_) return 0;
+    std::lock_guard<std::mutex> guard(pool_->mutex);
+    return pool_->hits;
+}
+
+void CudaDevice::drain_pool() {
+    if (pool_) pool_->drain();
+}
 
 #endif  // ZETTA_WITH_CUDA
 

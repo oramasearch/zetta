@@ -500,6 +500,67 @@ TEST(CudaTransformer, CausalAttentionBackwardMatchesNumericalGradients) {
     check("grad_v", grad_v, v, [&](const std::vector<float>& x) { return loss_for(q, k, x); });
 }
 
+
+// --- allocation pool (#928) ------------------------------------------------------------------
+// cudaMalloc/cudaFree synchronize the device, and one autograd training step issues ~1,700
+// allocate/free pairs — measured as ~11% GPU utilization while training. These tests assert the
+// pool actually serves reuse rather than merely existing: a hit count that stays zero is a pool
+// that is silently doing nothing, which is indistinguishable from the bug it was added to fix.
+TEST(CudaAllocationPool, ReusesFreedBlocksOfTheSameSize) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const std::size_t elements = 4096;
+    void* first_handle = nullptr;
+    {
+        DeviceBuffer buffer = device.allocate(DataType::Float32, elements);
+        ASSERT_FALSE(buffer.empty());
+        first_handle = buffer.handle();
+    }  // released here -- should land in the pool, not go back to CUDA
+    EXPECT_GT(device.pooled_bytes(), 0U) << "a freed block should be held for reuse";
+
+    const std::size_t hits_before = device.pool_hits();
+    {
+        DeviceBuffer reused = device.allocate(DataType::Float32, elements);
+        ASSERT_FALSE(reused.empty());
+        // Same address back: proof it was reused rather than freshly allocated.
+        EXPECT_EQ(reused.handle(), first_handle);
+    }
+    EXPECT_EQ(device.pool_hits(), hits_before + 1);
+}
+
+TEST(CudaAllocationPool, RespectsItsLimitAndDrains) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    // A zero limit disables pooling: without a cap the reserve would grow to the high-water mark
+    // of every shape ever seen and quietly consume the memory ceiling #924 sets.
+    device.set_pool_limit(0);
+    { DeviceBuffer buffer = device.allocate(DataType::Float32, 1024); }
+    EXPECT_EQ(device.pooled_bytes(), 0U) << "pooling disabled must not retain anything";
+
+    device.set_pool_limit(64ULL * 1024 * 1024);
+    { DeviceBuffer buffer = device.allocate(DataType::Float32, 1024); }
+    EXPECT_GT(device.pooled_bytes(), 0U);
+    device.drain_pool();
+    EXPECT_EQ(device.pooled_bytes(), 0U) << "drain must return everything to CUDA";
+}
+
+TEST(CudaAllocationPool, DifferentSizesDoNotAliasEachOther) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    device.drain_pool();
+
+    void* small_handle = nullptr;
+    { DeviceBuffer small = device.allocate(DataType::Float32, 256); small_handle = small.handle(); }
+    // A different size must NOT be served the pooled block: matching is by exact size, so handing
+    // back a smaller block would silently under-allocate and corrupt memory downstream.
+    DeviceBuffer large = device.allocate(DataType::Float32, 8192);
+    ASSERT_FALSE(large.empty());
+    EXPECT_NE(large.handle(), small_handle);
+    EXPECT_GE(large.element_count(), 8192U);
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace
