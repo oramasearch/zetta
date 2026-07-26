@@ -5,6 +5,7 @@
 
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/autograd/tensor.hpp"
+#include "zetta/compute/cuda_device.hpp"
 #include "zetta/compute/cuda_transformer.hpp"
 
 namespace zetta::compute {
@@ -252,8 +253,17 @@ ComputeStatus CudaQwenModel::forward_layer_cached(ComputeDevice& device, Residen
         !s.ok()) {
         return s;
     }
-    if (const auto s = cuda_causal_attention(q_final, k_final, v, context, lse, seq,
-                                             config_.n_heads, config_.n_kv_heads, head_dim);
+    DeviceBuffer scores;
+    if (const auto s = need(scores, static_cast<std::size_t>(config_.n_heads) * tokens * tokens,
+                            "scores");
+        !s.ok()) {
+        return s;
+    }
+    auto* cuda = dynamic_cast<CudaDevice*>(&device);
+    if (cuda == nullptr) return ComputeStatus::unsupported("forward_layer_cached: needs CUDA");
+    if (const auto s = cuda_causal_attention_batched(*cuda, q_final, k_final, v, scores, context,
+                                                     lse, seq, config_.n_heads, config_.n_kv_heads,
+                                                     head_dim);
         !s.ok()) {
         return s;
     }
@@ -396,8 +406,15 @@ ComputeStatus CudaQwenModel::forward_layer(ComputeDevice& device, const Resident
     if (context.empty() || lse.empty()) {
         return ComputeStatus::out_of_memory("forward_layer: attention");
     }
-    if (const auto s = cuda_causal_attention(q, k, v, context, lse, seq, config_.n_heads,
-                                             config_.n_kv_heads, head_dim);
+    // Batched GEMM on the tensor cores rather than the streaming kernel: at real sequence lengths
+    // the serial key walk dominates, and QK^T / PV are matmuls that belong on tensor cores. Costs a
+    // [n_heads, seq, seq] scratch, freed with the layer.
+    DeviceBuffer scores = scratch(device, static_cast<std::size_t>(config_.n_heads) * tokens * tokens);
+    if (scores.empty()) return ComputeStatus::out_of_memory("forward_layer: scores");
+    auto* cuda = dynamic_cast<CudaDevice*>(&device);
+    if (cuda == nullptr) return ComputeStatus::unsupported("forward_layer: needs a CUDA device");
+    if (const auto s = cuda_causal_attention_batched(*cuda, q, k, v, scores, context, lse, seq,
+                                                     config_.n_heads, config_.n_kv_heads, head_dim);
         !s.ok()) {
         return s;
     }
