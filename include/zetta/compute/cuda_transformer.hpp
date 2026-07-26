@@ -92,6 +92,47 @@ ComputeStatus cuda_swiglu_backward(const DeviceBuffer& gate, const DeviceBuffer&
                                    const DeviceBuffer& grad_out, DeviceBuffer& grad_gate,
                                    DeviceBuffer& grad_up, std::size_t elements);
 
+// --- Causal self-attention -------------------------------------------------------------------
+// softmax(mask(Q K^T / sqrt(head_dim))) V, where position t attends only to positions <= t.
+//
+// This is the op that matters most. A composed implementation materializes the score matrix —
+// [n_heads, seq, seq], which at seq=1000 and 16 heads is 16M floats *per layer* — then reads it
+// twice more for the softmax and once more for the PV product. Here the scores are never written
+// to memory at all: each block streams the keys for one query in tiles, keeping a running max and
+// sum (the online-softmax recurrence), so memory traffic is O(seq * head_dim) instead of O(seq^2).
+//
+// GQA is supported: `n_kv_heads` may be smaller than `n_heads`, in which case query head h reads
+// key/value head h / (n_heads / n_kv_heads), which is what Qwen3 does.
+//
+// Layouts, all row-major and contiguous:
+//   q                [seq, n_heads * head_dim]
+//   k, v             [seq, n_kv_heads * head_dim]
+//   out              [seq, n_heads * head_dim]
+//   softmax_lse      [n_heads, seq]  — log-sum-exp per (head, query)
+//
+// `softmax_lse` is an OUTPUT of the forward and an INPUT to the backward. Saving it is what lets
+// the backward recompute the softmax without a second max pass and without ever materializing the
+// scores; it is the one piece of state the two passes must share.
+ComputeStatus cuda_causal_attention(const DeviceBuffer& q, const DeviceBuffer& k,
+                                    const DeviceBuffer& v, DeviceBuffer& out,
+                                    DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                    int n_kv_heads, int head_dim);
+
+// The gradient. Split into two kernels by which index each one owns, so neither needs an atomic:
+// grad_q is one block per (head, QUERY) accumulating over keys, while grad_k and grad_v are one
+// block per (kv head, KEY) accumulating over queries. Atomics would be simpler and would make the
+// gradients nondeterministic, which #926's exact-equality assertions cannot tolerate.
+//
+// `row_dot` is grad_out . out summed per (head, query) — the standard flash-attention backward
+// term. Like `softmax_lse` it is computed once and shared, rather than recomputed per key block.
+ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const DeviceBuffer& k,
+                                             const DeviceBuffer& v, const DeviceBuffer& out,
+                                             const DeviceBuffer& grad_out,
+                                             const DeviceBuffer& softmax_lse, DeviceBuffer& row_dot,
+                                             DeviceBuffer& grad_q, DeviceBuffer& grad_k,
+                                             DeviceBuffer& grad_v, int seq, int n_heads,
+                                             int n_kv_heads, int head_dim);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute

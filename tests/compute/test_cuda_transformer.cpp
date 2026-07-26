@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <random>
 #include <span>
 #include <vector>
@@ -327,6 +329,175 @@ TEST(CudaTransformer, SwigluMatchesTheHostReferenceAndItsGradients) {
             << "grad_gate at " << index;
         EXPECT_NEAR(grad_up[index], grad_out[index] * silu, 1e-5) << "grad_up at " << index;
     }
+}
+
+
+// --- Causal attention ------------------------------------------------------------------------
+// Reference: the composed, seq^2 formulation the fused kernel must reproduce exactly.
+std::vector<float> host_causal_attention(const std::vector<float>& q, const std::vector<float>& k,
+                                        const std::vector<float>& v, int seq, int n_heads,
+                                        int n_kv_heads, int head_dim) {
+    std::vector<float> out(q.size(), 0.0F);
+    const int group = n_heads / n_kv_heads;
+    const double scale = 1.0 / std::sqrt(static_cast<double>(head_dim));
+    for (int head = 0; head < n_heads; ++head) {
+        const int kv_head = head / group;
+        for (int query = 0; query < seq; ++query) {
+            std::vector<double> scores(static_cast<std::size_t>(query) + 1, 0.0);
+            double maximum = -1e30;
+            for (int key = 0; key <= query; ++key) {
+                double dot = 0.0;
+                for (int d = 0; d < head_dim; ++d) {
+                    dot += static_cast<double>(q[(static_cast<std::size_t>(query) * n_heads + head) *
+                                                     head_dim + d]) *
+                           k[(static_cast<std::size_t>(key) * n_kv_heads + kv_head) * head_dim + d];
+                }
+                scores[static_cast<std::size_t>(key)] = dot * scale;
+                maximum = std::max(maximum, dot * scale);
+            }
+            double sum = 0.0;
+            for (double& score : scores) {
+                score = std::exp(score - maximum);
+                sum += score;
+            }
+            for (int d = 0; d < head_dim; ++d) {
+                double total = 0.0;
+                for (int key = 0; key <= query; ++key) {
+                    total += scores[static_cast<std::size_t>(key)] /
+                             sum *
+                             v[(static_cast<std::size_t>(key) * n_kv_heads + kv_head) * head_dim + d];
+                }
+                out[(static_cast<std::size_t>(query) * n_heads + head) * head_dim + d] =
+                    static_cast<float>(total);
+            }
+        }
+    }
+    return out;
+}
+
+TEST(CudaTransformer, CausalAttentionMatchesTheComposedReferenceWithGqa) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    // GQA on purpose: 4 query heads over 2 kv heads, which is where an off-by-one in the head
+    // mapping shows up. head_dim 8 keeps the reference cheap; seq 12 exercises the causal bound.
+    const int seq = 12;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 8;
+    const std::size_t q_elements = static_cast<std::size_t>(seq) * n_heads * head_dim;
+    const std::size_t kv_elements = static_cast<std::size_t>(seq) * n_kv_heads * head_dim;
+
+    const std::vector<float> q = random_values(q_elements, 606U);
+    const std::vector<float> k = random_values(kv_elements, 707U);
+    const std::vector<float> v = random_values(kv_elements, 808U);
+
+    DeviceBuffer device_q = device.upload<float>(std::span<const float>(q));
+    DeviceBuffer device_k = device.upload<float>(std::span<const float>(k));
+    DeviceBuffer device_v = device.upload<float>(std::span<const float>(v));
+    DeviceBuffer device_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer device_lse =
+        device.allocate(DataType::Float32, static_cast<std::size_t>(n_heads) * seq);
+
+    const auto status = zetta::compute::cuda_causal_attention(
+        device_q, device_k, device_v, device_out, device_lse, seq, n_heads, n_kv_heads, head_dim);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<float> actual(q_elements, 0.0F);
+    ASSERT_TRUE(device.download<float>(device_out, std::span<float>(actual)).ok());
+    const std::vector<float> expected =
+        host_causal_attention(q, k, v, seq, n_heads, n_kv_heads, head_dim);
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        EXPECT_NEAR(actual[index], expected[index], 1e-4F) << "at " << index;
+    }
+}
+
+TEST(CudaTransformer, CausalAttentionRejectsAnIncompatibleHeadGrouping) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    const std::vector<float> small(64, 0.1F);
+    DeviceBuffer buffer = device.upload<float>(std::span<const float>(small));
+    DeviceBuffer out = device.allocate(DataType::Float32, small.size());
+    DeviceBuffer lse = device.allocate(DataType::Float32, 16);
+    // 3 query heads cannot be grouped over 2 kv heads; rounding would pair heads with wrong keys.
+    EXPECT_FALSE(zetta::compute::cuda_causal_attention(buffer, buffer, buffer, out, lse, 4, 3, 2, 4)
+                     .ok());
+}
+
+// Gradient check for all three of grad_q, grad_k, grad_v against numerical differences. The
+// backward recomputes the softmax from the saved log-sum-exp, so an error in that reconstruction
+// shows up here and nowhere else.
+TEST(CudaTransformer, CausalAttentionBackwardMatchesNumericalGradients) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 5;
+    const int n_heads = 2;
+    const int n_kv_heads = 1;  // GQA sharing, so grad_k/grad_v accumulate over two query heads
+    const int head_dim = 4;
+    const std::size_t q_elements = static_cast<std::size_t>(seq) * n_heads * head_dim;
+    const std::size_t kv_elements = static_cast<std::size_t>(seq) * n_kv_heads * head_dim;
+
+    const std::vector<float> q = random_values(q_elements, 909U);
+    const std::vector<float> k = random_values(kv_elements, 111U);
+    const std::vector<float> v = random_values(kv_elements, 222U);
+    const std::vector<float> grad_out = random_values(q_elements, 333U);
+
+    const auto loss_for = [&](const std::vector<float>& qq, const std::vector<float>& kk,
+                              const std::vector<float>& vv) {
+        const std::vector<float> out =
+            host_causal_attention(qq, kk, vv, seq, n_heads, n_kv_heads, head_dim);
+        double total = 0.0;
+        for (std::size_t index = 0; index < out.size(); ++index) {
+            total += static_cast<double>(out[index]) * grad_out[index];
+        }
+        return total;
+    };
+
+    DeviceBuffer device_q = device.upload<float>(std::span<const float>(q));
+    DeviceBuffer device_k = device.upload<float>(std::span<const float>(k));
+    DeviceBuffer device_v = device.upload<float>(std::span<const float>(v));
+    DeviceBuffer device_grad_out = device.upload<float>(std::span<const float>(grad_out));
+    DeviceBuffer device_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer device_lse =
+        device.allocate(DataType::Float32, static_cast<std::size_t>(n_heads) * seq);
+    ASSERT_TRUE(zetta::compute::cuda_causal_attention(device_q, device_k, device_v, device_out,
+                                                      device_lse, seq, n_heads, n_kv_heads, head_dim)
+                    .ok());
+
+    DeviceBuffer device_row_dot =
+        device.allocate(DataType::Float32, static_cast<std::size_t>(n_heads) * seq);
+    DeviceBuffer device_grad_q = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer device_grad_k = device.allocate(DataType::Float32, kv_elements);
+    DeviceBuffer device_grad_v = device.allocate(DataType::Float32, kv_elements);
+    const auto status = zetta::compute::cuda_causal_attention_backward(
+        device_q, device_k, device_v, device_out, device_grad_out, device_lse, device_row_dot,
+        device_grad_q, device_grad_k, device_grad_v, seq, n_heads, n_kv_heads, head_dim);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<float> grad_q(q_elements, 0.0F);
+    std::vector<float> grad_k(kv_elements, 0.0F);
+    std::vector<float> grad_v(kv_elements, 0.0F);
+    ASSERT_TRUE(device.download<float>(device_grad_q, std::span<float>(grad_q)).ok());
+    ASSERT_TRUE(device.download<float>(device_grad_k, std::span<float>(grad_k)).ok());
+    ASSERT_TRUE(device.download<float>(device_grad_v, std::span<float>(grad_v)).ok());
+
+    const double step = 1e-3;
+    const auto check = [&](const char* name, const std::vector<float>& analytic,
+                           const std::vector<float>& base,
+                           const std::function<double(const std::vector<float>&)>& evaluate) {
+        for (std::size_t index = 0; index < analytic.size(); ++index) {
+            std::vector<float> plus = base;
+            std::vector<float> minus = base;
+            plus[index] = static_cast<float>(plus[index] + step);
+            minus[index] = static_cast<float>(minus[index] - step);
+            const double numerical = (evaluate(plus) - evaluate(minus)) / (2.0 * step);
+            EXPECT_NEAR(analytic[index], numerical, 2e-2) << name << " at " << index;
+        }
+    };
+    check("grad_q", grad_q, q, [&](const std::vector<float>& x) { return loss_for(x, k, v); });
+    check("grad_k", grad_k, k, [&](const std::vector<float>& x) { return loss_for(q, x, v); });
+    check("grad_v", grad_v, v, [&](const std::vector<float>& x) { return loss_for(q, k, x); });
 }
 
 #endif  // ZETTA_WITH_CUDA

@@ -210,6 +210,213 @@ __global__ void swiglu_backward_kernel(const float* __restrict__ gate,
     grad_up[index] = upstream * silu;
 }
 
+
+// --- Causal self-attention -------------------------------------------------------------------
+// One block per (head, query). Threads split the head dimension, so a dot product is a block
+// reduction and the accumulator lives in registers/shared memory. Keys are streamed one at a time
+// with the online-softmax recurrence, so the score row is never stored:
+//
+//   new_max = max(old_max, score)
+//   sum    *= exp(old_max - new_max);  acc *= exp(old_max - new_max)
+//   sum    += exp(score - new_max);    acc += exp(score - new_max) * v
+//
+// The rescaling by exp(old_max - new_max) is what keeps this numerically identical to a two-pass
+// softmax rather than merely close to it.
+__global__ void causal_attention_kernel(const float* __restrict__ q, const float* __restrict__ k,
+                                        const float* __restrict__ v, float* __restrict__ out,
+                                        float* __restrict__ softmax_lse, int seq, int n_heads,
+                                        int n_kv_heads, int head_dim) {
+    extern __shared__ float shared[];
+    float* reduce = shared;                  // [kThreadsPerBlock] for dot-product reductions
+    float* accumulator = shared + kThreadsPerBlock;  // [head_dim] the running weighted sum of V
+
+    const int head = static_cast<int>(blockIdx.y);
+    const int query = static_cast<int>(blockIdx.x);
+    if (head >= n_heads || query >= seq) return;
+    const int group = n_heads / n_kv_heads;  // GQA: how many query heads share one kv head
+    const int kv_head = head / group;
+    const int lane = static_cast<int>(threadIdx.x);
+
+    const float* q_row = q + static_cast<long long>(query) * n_heads * head_dim +
+                         static_cast<long long>(head) * head_dim;
+    const float scale = rsqrtf(static_cast<float>(head_dim));
+
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) accumulator[d] = 0.0F;
+    __syncthreads();
+
+    float running_max = -INFINITY;
+    float running_sum = 0.0F;
+
+    // Causal: only keys 0..query are visible, so the mask is a loop bound rather than a
+    // materialized -inf matrix that then has to be read back.
+    for (int key = 0; key <= query; ++key) {
+        const float* k_row = k + static_cast<long long>(key) * n_kv_heads * head_dim +
+                             static_cast<long long>(kv_head) * head_dim;
+        float partial = 0.0F;
+        for (int d = lane; d < head_dim; d += kThreadsPerBlock) partial += q_row[d] * k_row[d];
+        const float score = block_sum(partial, reduce) * scale;
+
+        const float new_max = fmaxf(running_max, score);
+        const float rescale = (running_max == -INFINITY) ? 0.0F : __expf(running_max - new_max);
+        const float weight = __expf(score - new_max);
+
+        const float* v_row = v + static_cast<long long>(key) * n_kv_heads * head_dim +
+                             static_cast<long long>(kv_head) * head_dim;
+        __syncthreads();  // every thread needs the reduced score before touching the accumulator
+        for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+            accumulator[d] = accumulator[d] * rescale + weight * v_row[d];
+        }
+        running_sum = running_sum * rescale + weight;
+        running_max = new_max;
+        __syncthreads();
+    }
+
+    const float inverse_sum = 1.0F / running_sum;
+    float* out_row = out + static_cast<long long>(query) * n_heads * head_dim +
+                     static_cast<long long>(head) * head_dim;
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) out_row[d] = accumulator[d] * inverse_sum;
+    if (lane == 0) {
+        // log-sum-exp, so the backward can rebuild p = exp(score - lse) with no max pass.
+        softmax_lse[static_cast<long long>(head) * seq + query] = running_max + __logf(running_sum);
+    }
+}
+
+// row_dot[head, query] = sum_d grad_out[query, head, d] * out[query, head, d]
+// Needed by every key block in the backward, so it is computed once here rather than repeatedly.
+__global__ void attention_row_dot_kernel(const float* __restrict__ grad_out,
+                                         const float* __restrict__ out, float* __restrict__ row_dot,
+                                         int seq, int n_heads, int head_dim) {
+    __shared__ float reduce[kThreadsPerBlock];
+    const int head = static_cast<int>(blockIdx.y);
+    const int query = static_cast<int>(blockIdx.x);
+    if (head >= n_heads || query >= seq) return;
+    const long long offset = static_cast<long long>(query) * n_heads * head_dim +
+                             static_cast<long long>(head) * head_dim;
+    float partial = 0.0F;
+    for (int d = static_cast<int>(threadIdx.x); d < head_dim; d += kThreadsPerBlock) {
+        partial += grad_out[offset + d] * out[offset + d];
+    }
+    const float total = block_sum(partial, reduce);
+    if (threadIdx.x == 0) row_dot[static_cast<long long>(head) * seq + query] = total;
+}
+
+// grad_q: one block per (head, QUERY), accumulating over that query's visible keys. Owning the
+// query index means no other block writes this row, so no atomic is needed.
+__global__ void attention_grad_q_kernel(const float* __restrict__ q, const float* __restrict__ k,
+                                        const float* __restrict__ v,
+                                        const float* __restrict__ grad_out,
+                                        const float* __restrict__ softmax_lse,
+                                        const float* __restrict__ row_dot,
+                                        float* __restrict__ grad_q, int seq, int n_heads,
+                                        int n_kv_heads, int head_dim) {
+    extern __shared__ float shared[];
+    float* reduce = shared;
+    float* accumulator = shared + kThreadsPerBlock;
+
+    const int head = static_cast<int>(blockIdx.y);
+    const int query = static_cast<int>(blockIdx.x);
+    if (head >= n_heads || query >= seq) return;
+    const int kv_head = head / (n_heads / n_kv_heads);
+    const int lane = static_cast<int>(threadIdx.x);
+    const float scale = rsqrtf(static_cast<float>(head_dim));
+
+    const long long q_offset = static_cast<long long>(query) * n_heads * head_dim +
+                               static_cast<long long>(head) * head_dim;
+    const float lse = softmax_lse[static_cast<long long>(head) * seq + query];
+    const float dot = row_dot[static_cast<long long>(head) * seq + query];
+
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) accumulator[d] = 0.0F;
+    __syncthreads();
+
+    for (int key = 0; key <= query; ++key) {
+        const long long kv_offset = static_cast<long long>(key) * n_kv_heads * head_dim +
+                                    static_cast<long long>(kv_head) * head_dim;
+        float score_partial = 0.0F;
+        float dv_partial = 0.0F;
+        for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+            score_partial += q[q_offset + d] * k[kv_offset + d];
+            dv_partial += grad_out[q_offset + d] * v[kv_offset + d];
+        }
+        const float score = block_sum(score_partial, reduce) * scale;
+        __syncthreads();
+        const float grad_v_dot = block_sum(dv_partial, reduce);
+        __syncthreads();
+
+        // p = exp(score - lse) is the softmax probability; ds is the gradient wrt the score.
+        const float probability = __expf(score - lse);
+        const float grad_score = probability * (grad_v_dot - dot) * scale;
+        for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+            accumulator[d] += grad_score * k[kv_offset + d];
+        }
+        __syncthreads();
+    }
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) grad_q[q_offset + d] = accumulator[d];
+}
+
+// grad_k and grad_v: one block per (kv head, KEY), accumulating over the queries that can see this
+// key (query >= key, by causality). Owning the key index is what makes this deterministic — the
+// alternative is an atomicAdd from the per-query kernel, whose accumulation order varies per run.
+// Under GQA a kv head serves several query heads, so this loops over the group too.
+__global__ void attention_grad_kv_kernel(const float* __restrict__ q, const float* __restrict__ k,
+                                         const float* __restrict__ v,
+                                         const float* __restrict__ grad_out,
+                                         const float* __restrict__ softmax_lse,
+                                         const float* __restrict__ row_dot,
+                                         float* __restrict__ grad_k, float* __restrict__ grad_v,
+                                         int seq, int n_heads, int n_kv_heads, int head_dim) {
+    extern __shared__ float shared[];
+    float* reduce = shared;
+    float* grad_k_acc = shared + kThreadsPerBlock;
+    float* grad_v_acc = shared + kThreadsPerBlock + head_dim;
+
+    const int kv_head = static_cast<int>(blockIdx.y);
+    const int key = static_cast<int>(blockIdx.x);
+    if (kv_head >= n_kv_heads || key >= seq) return;
+    const int group = n_heads / n_kv_heads;
+    const int lane = static_cast<int>(threadIdx.x);
+    const float scale = rsqrtf(static_cast<float>(head_dim));
+
+    const long long kv_offset = static_cast<long long>(key) * n_kv_heads * head_dim +
+                                static_cast<long long>(kv_head) * head_dim;
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+        grad_k_acc[d] = 0.0F;
+        grad_v_acc[d] = 0.0F;
+    }
+    __syncthreads();
+
+    for (int offset_in_group = 0; offset_in_group < group; ++offset_in_group) {
+        const int head = kv_head * group + offset_in_group;
+        for (int query = key; query < seq; ++query) {  // causal: only queries at or after the key
+            const long long q_offset = static_cast<long long>(query) * n_heads * head_dim +
+                                       static_cast<long long>(head) * head_dim;
+            float score_partial = 0.0F;
+            float dv_partial = 0.0F;
+            for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+                score_partial += q[q_offset + d] * k[kv_offset + d];
+                dv_partial += grad_out[q_offset + d] * v[kv_offset + d];
+            }
+            const float score = block_sum(score_partial, reduce) * scale;
+            __syncthreads();
+            const float grad_v_dot = block_sum(dv_partial, reduce);
+            __syncthreads();
+
+            const float lse = softmax_lse[static_cast<long long>(head) * seq + query];
+            const float dot = row_dot[static_cast<long long>(head) * seq + query];
+            const float probability = __expf(score - lse);
+            const float grad_score = probability * (grad_v_dot - dot) * scale;
+            for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+                grad_k_acc[d] += grad_score * q[q_offset + d];
+                grad_v_acc[d] += probability * grad_out[q_offset + d];
+            }
+            __syncthreads();
+        }
+    }
+    for (int d = lane; d < head_dim; d += kThreadsPerBlock) {
+        grad_k[kv_offset + d] = grad_k_acc[d];
+        grad_v[kv_offset + d] = grad_v_acc[d];
+    }
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -374,6 +581,89 @@ ComputeStatus cuda_swiglu_backward(const DeviceBuffer& gate, const DeviceBuffer&
         as_const_float(gate), as_const_float(up), as_const_float(grad_out), as_float(grad_gate),
         as_float(grad_up), count);
     return check_launch("swiglu_backward");
+}
+
+namespace {
+
+ComputeStatus validate_attention(int seq, int n_heads, int n_kv_heads, int head_dim) {
+    if (seq <= 0 || n_heads <= 0 || n_kv_heads <= 0 || head_dim <= 0) {
+        return ComputeStatus::invalid_argument("attention: all extents must be positive");
+    }
+    if (n_heads % n_kv_heads != 0) {
+        // GQA maps query head h to kv head h / (n_heads / n_kv_heads); a non-integer group size
+        // has no such mapping, and rounding it would silently pair heads with the wrong keys.
+        return ComputeStatus::invalid_argument("attention: n_heads must be a multiple of n_kv_heads");
+    }
+    return ComputeStatus::success();
+}
+
+}  // namespace
+
+ComputeStatus cuda_causal_attention(const DeviceBuffer& q, const DeviceBuffer& k,
+                                    const DeviceBuffer& v, DeviceBuffer& out,
+                                    DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                    int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    const std::size_t q_elements =
+        static_cast<std::size_t>(seq) * n_heads * static_cast<std::size_t>(head_dim);
+    const std::size_t kv_elements =
+        static_cast<std::size_t>(seq) * n_kv_heads * static_cast<std::size_t>(head_dim);
+    if (q.element_count() < q_elements || out.element_count() < q_elements ||
+        k.element_count() < kv_elements || v.element_count() < kv_elements ||
+        softmax_lse.element_count() <
+            static_cast<std::size_t>(n_heads) * static_cast<std::size_t>(seq)) {
+        return ComputeStatus::invalid_argument("attention: buffers do not match the given extents");
+    }
+    const dim3 grid(static_cast<unsigned>(seq), static_cast<unsigned>(n_heads));
+    const std::size_t shared = (kThreadsPerBlock + head_dim) * sizeof(float);
+    causal_attention_kernel<<<grid, kThreadsPerBlock, shared>>>(
+        as_const_float(q), as_const_float(k), as_const_float(v), as_float(out),
+        as_float(softmax_lse), seq, n_heads, n_kv_heads, head_dim);
+    return check_launch("causal_attention");
+}
+
+ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const DeviceBuffer& k,
+                                             const DeviceBuffer& v, const DeviceBuffer& out,
+                                             const DeviceBuffer& grad_out,
+                                             const DeviceBuffer& softmax_lse, DeviceBuffer& row_dot,
+                                             DeviceBuffer& grad_q, DeviceBuffer& grad_k,
+                                             DeviceBuffer& grad_v, int seq, int n_heads,
+                                             int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    if (row_dot.element_count() <
+        static_cast<std::size_t>(n_heads) * static_cast<std::size_t>(seq)) {
+        return ComputeStatus::invalid_argument("attention_backward: row_dot must hold n_heads * seq");
+    }
+
+    const dim3 query_grid(static_cast<unsigned>(seq), static_cast<unsigned>(n_heads));
+    attention_row_dot_kernel<<<query_grid, kThreadsPerBlock>>>(
+        as_const_float(grad_out), as_const_float(out), as_float(row_dot), seq, n_heads, head_dim);
+    if (const ComputeStatus launched = check_launch("attention_backward.row_dot"); !launched.ok()) {
+        return launched;
+    }
+
+    const std::size_t query_shared = (kThreadsPerBlock + head_dim) * sizeof(float);
+    attention_grad_q_kernel<<<query_grid, kThreadsPerBlock, query_shared>>>(
+        as_const_float(q), as_const_float(k), as_const_float(v), as_const_float(grad_out),
+        as_const_float(softmax_lse), as_const_float(row_dot), as_float(grad_q), seq, n_heads,
+        n_kv_heads, head_dim);
+    if (const ComputeStatus launched = check_launch("attention_backward.grad_q"); !launched.ok()) {
+        return launched;
+    }
+
+    const dim3 key_grid(static_cast<unsigned>(seq), static_cast<unsigned>(n_kv_heads));
+    const std::size_t key_shared = (kThreadsPerBlock + 2 * head_dim) * sizeof(float);
+    attention_grad_kv_kernel<<<key_grid, kThreadsPerBlock, key_shared>>>(
+        as_const_float(q), as_const_float(k), as_const_float(v), as_const_float(grad_out),
+        as_const_float(softmax_lse), as_const_float(row_dot), as_float(grad_k), as_float(grad_v),
+        seq, n_heads, n_kv_heads, head_dim);
+    return check_launch("attention_backward.grad_kv");
 }
 
 }  // namespace zetta::compute
