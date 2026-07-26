@@ -74,55 +74,88 @@ not a spinning disk.
 The tradeoff to be deliberate about: the local disk is **ephemeral**. Anything worth keeping — a
 checkpoint, a validation report — gets copied off before the instance is destroyed.
 
-### Toolchain
+### Toolchain — the stock image cannot build zetta
 
-The stock image **cannot build zetta**: it ships only `g++-13`, and GCC 13 does not do C++26.
-`scripts/install-deps.sh` installs the distro `clang`, which is also too old. Install a matching
-Clang explicitly:
+Four gaps, all of which the first real Linux+CUDA build hit in order. Do these before configuring:
 
 ```sh
-sudo apt-get update && sudo apt-get install -y ninja-build ccache lld zlib1g-dev libssl-dev pkg-config
+# 1. Build tools + the libraries libpqxx and SDL need.
+sudo apt-get update && sudo apt-get install -y \
+  ninja-build ccache lld zlib1g-dev libssl-dev pkg-config \
+  libpq-dev libstdc++-14-dev gcc-14 g++-14
+
+# 2. A C++26 Clang. The image ships only g++-13, which cannot do C++26, and
+#    scripts/install-deps.sh installs the distro clang, which is also too old.
 wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh
-sudo /tmp/llvm.sh 22          # 20, 21, 22 available for noble; 22 matches the Mac's Homebrew clang
+sudo /tmp/llvm.sh 22          # 20, 21, 22 are available for noble
+
+# 3. A CMake that KNOWS Clang 22. Ubuntu 24.04 ships 3.28, whose compiler-feature
+#    table predates Clang 20, so it rejects cxx_std_26 as "not known to CXX
+#    compiler Clang 22.1.8" -- a CMake limitation, not a compiler one.
+sudo snap install cmake --classic          # 4.4.0; the Mac runs 4.3.4
 ```
 
-**Match the Mac's compiler version.** Local development builds with Homebrew clang 22.1.8, and
-`clang-22` on noble is also 22.1.8 — the same C++26 support level, so a build that is green locally
-does not fail here for library-feature reasons.
-
-### Get the source there
-
-Two options, and the choice is about credentials:
-
-```sh
-# Preferred once a box-specific deploy key exists: real git history, can commit and push.
-git clone --recurse-submodules -j8 git@github.com:oramasearch/orama-bridge.git ~/orama-work
-
-# Or, with no credential on the rented box at all - nothing to revoke when it is destroyed:
-rsync -a --delete --exclude build/ --exclude .git/ --exclude data/checkpoints/ \
-  ./ ubuntu@<ip>:~/zetta/
-```
-
-Generate any key **on the box** rather than copying a personal one, and remove it from GitHub when
-the instance dies - a deploy key outliving its machine is the thing that gets forgotten.
-
-The submodule recursion matters (`automerge-cpp` nests its own, and provides nlohmann/json).
-`oramacore-cpp` is private - a checkout without it still builds green via `ZETTA_WITH_ORAMACORE`.
+**Match the Mac's compiler.** Local development uses Homebrew clang 22.1.8 and `clang-22` on noble is
+also 22.1.8 — same C++26 support level, so a build green locally does not fail here over library
+features. `libstdc++-14-dev` matters because clang-22 targets GCC 14's install dir; without it the
+very first link fails with `cannot find -lstdc++`.
 
 ### Build
 
 ```sh
-cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON -DCMAKE_CXX_COMPILER=clang++-22
-cmake --build build -j
-
-# Confirm the GPU is visible to the toolkit, not merely present in lspci.
-nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
-./build/tests/zetta-tests --gtest_filter='*Cuda*'
+/snap/bin/cmake -S . -B build -G Ninja \
+  -DZETTA_ENABLE_CUDA=ON \
+  -DCMAKE_CXX_COMPILER=clang++-22 -DCMAKE_C_COMPILER=clang-22 \
+  -DCMAKE_CUDA_COMPILER=clang++-22 \
+  -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DSDL_UNIX_CONSOLE_BUILD=ON
+/snap/bin/cmake --build build -j 30
 ```
 
-Known wrinkle: `clang++-22` warns it would select GCC 13's libstdc++ headers over GCC 14's. If a
-C++26 library feature turns up missing, install `libstdc++-14-dev` and pass `--gcc-install-dir`, or
-switch to `-stdlib=libc++` with `libc++-22-dev`.
+Two of those flags are not obvious:
+
+- **`-DCMAKE_CUDA_COMPILER=clang++-22` — let Clang compile the `.cu` itself.** nvcc enforces a host
+  compiler whitelist that our toolchain outruns: CUDA 12.8 rejects host Clang >= 20 outright
+  (*"unsupported clang version! clang version must be less than 20"*). Measured on this box:
+
+  | Combination | Result |
+  |---|---|
+  | nvcc + clang-22 host | **fails** the version check |
+  | nvcc + clang-19 host | works |
+  | **clang-22 compiling CUDA directly** | **works** |
+
+  Clang-as-CUDA-compiler keeps one compiler across the whole build and needs no host compiler at
+  all. `-DCMAKE_CUDA_HOST_COMPILER=clang++-19` under nvcc is the alternative.
+- **`-DSDL_UNIX_CONSOLE_BUILD=ON`** — SDL3 aborts configure without X11/Wayland headers. A headless
+  box wants neither, and the tests link `zetta-core` only, never the GUI. This is SDL's documented
+  escape rather than installing a desktop stack.
+
+`-DCMAKE_CUDA_ARCHITECTURES` must match the card: **80** for A100, **86** for A10 / RTX 3080. Both are
+Ampere with native BF16, but they are different `-arch` targets — build for the card you are on.
+
+### Verify
+
+```sh
+nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
+./build/tests/zetta-tests --gtest_filter='*Cuda*:*ComputeDevice*'
+```
+
+**Check the timings, not just the greens.** `CudaDevice.RoundTripAndOperatorsWhenPresent` skips at
+runtime when no GPU is visible, and a skip still reports as a pass. On the A100 it takes ~300 ms; a
+0 ms result means it skipped and nothing touched the GPU.
+
+### Two latent bugs the first CUDA build exposed
+
+Both had been invisible because no Mac and no CI job enables CUDA:
+
+- `tests/compute/test_compute_device.cpp` included `cuda_device.hpp` **inside** the file's anonymous
+  namespace, nesting the header's own `namespace zetta::compute` a level deeper so its unqualified
+  references stopped resolving. Fixed by hoisting the include to file scope.
+- `tests/autograd/test_autograd.cpp` used `std::log` with no `<cmath>` — libc++ provides it
+  transitively, libstdc++ does not.
+
+Worth expecting more of this class as CUDA coverage grows: a second standard library and a second
+backend are both good at finding assumptions the first one hid.
 
 **Expect the CUDA tests to be sparse.** `cuda_device.cu` implements the data-engine primitives
 (`gemm`, `reduce`, `scan`, `sort`, `histogram`, `gather`/`scatter`), which is what exists today.
