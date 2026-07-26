@@ -368,7 +368,8 @@ if(ZETTA_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   enable_language(CUDA)
   list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu
-                                    src/core/compute/cuda_transformer.cu)
+                                    src/core/compute/cuda_transformer.cu
+                                    src/core/compute/cuda_resident.cpp)
   message(STATUS "CUDA compute backend: ENABLED (CUDAToolkit ${CUDAToolkit_VERSION})")
 else()
   message(STATUS "CUDA compute backend: disabled (CPU-only build). "
