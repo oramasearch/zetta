@@ -11,29 +11,39 @@ trained entirely on-device, composing the fused kernels from
 
 | metric | before | after | note |
 |---|---|---|---|
-| **per step, REAL corpus** (variable length, 641-1229 tokens) | **15.4 s** | **1.87 s** | **8.2x faster** |
-| per step, fixed synthetic seq 512 | — | 0.742 s | microbenchmark only, see the correction below |
+| **per step, REAL corpus** (variable length, 641-1229 tokens) | **15.4 s** | **0.563 s** | **27x faster** |
+| vs MLX on a Mac (1.45 s/step, same corpus) | 10.6x slower | **2.6x faster** | |
 | GPU utilization | 11% | **98%** | sampled during the timed loop |
 | VRAM in use | 425 MiB | **11,593 MiB** | of 40,960 |
 | resident weights | ~0 | **2.22 GB** across 310 parameters | uploaded once |
 
-## Correction — this does NOT yet beat MLX
+## How it got to 0.563, and a correction worth keeping in the record
 
-The first version of this report claimed 0.742 s/step and "roughly 2x faster than MLX". That number
-came from a **throughput microbenchmark** that trains one fixed synthetic sequence at seq 512. It is
-not representative, in two ways that both flatter it:
+An earlier version of this report claimed **0.742 s/step** from a throughput microbenchmark that
+trained one fixed synthetic sequence at seq 512. That number was not representative — real examples
+run 641-1229 tokens and attention is O(seq^2), and one fixed shape keeps allocation-pool reuse at
+100% where real data churns shapes. Measured properly on the corpus, that same build was **1.87
+s/step: 29% SLOWER than MLX**, not faster.
 
-- **Sequence length.** Real corpus examples run 641-1229 tokens against the benchmark's 512.
-  Attention compute is O(seq^2), so that is roughly 3x the attention work per step.
-- **Fixed shape.** One shape keeps exact-size allocation-pool reuse at 100%; real data churns
-  shapes every step.
+The acceptance criterion now measures the real corpus, and the microbenchmark's assertion against
+the MLX bar was removed so a favourable synthetic case can never certify a slower engine again.
 
-**Measured on the real gated corpus, like-for-like with the MLX baseline: 1.87 s/step against MLX's
-1.45 s/step — 29% SLOWER, not faster.**
+Closing the gap took two changes, and the second was the one that mattered:
 
-The engine is 8.2x faster than the autograd path it replaces, which is real. It is not yet faster
-than a laptop running MLX, and the acceptance criterion has been corrected to measure the corpus
-rather than a synthetic sequence.
+| build | s/step | |
+|---|---|---|
+| CudaQwenModel, streaming attention | 1.87 | serial key walk in both directions |
+| + batched forward attention | 1.619 | 13% — forward only |
+| **+ batched backward attention** | **0.563** | **65%** |
+
+The backward is roughly twice the forward's cost, so leaving it on the serial kernel capped the
+whole change. Caching the softmax probabilities (~96 MB per layer) turns its four products into
+batched GEMMs on the tensor cores with nothing recomputed. grad_K and grad_V are summed across each
+GQA group in a fixed-order pass, keeping the determinism the streaming kernel got from owning the
+key index rather than trading it for an atomic.
+
+The streaming kernel is retained: it is O(seq * head_dim) in memory where the batched path
+materializes [n_heads, seq, seq], so it remains the right choice at long context.
 
 ## How it got here, in order
 
