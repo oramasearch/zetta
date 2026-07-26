@@ -435,6 +435,92 @@ __global__ void embedding_kernel(const float* __restrict__ table, const int* __r
                      : table[static_cast<long long>(id) * d_model + dim];
 }
 
+// One block per row: max, then sum of exp, both block reductions, so the [seq, vocab] softmax is
+// never written to memory.
+__global__ void cross_entropy_row_kernel(const float* __restrict__ logits,
+                                         const int* __restrict__ targets,
+                                         float* __restrict__ row_loss, int seq, int vocab_size) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    if (row >= seq) return;
+    const float* x = logits + static_cast<long long>(row) * vocab_size;
+
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, x[c]);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_sum += __expf(x[c] - max_value);
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    if (threadIdx.x == 0) {
+        const int target = targets[row];
+        const float target_logit = (target >= 0 && target < vocab_size) ? x[target] : 0.0F;
+        row_loss[row] = __logf(sum_exp) + max_value - target_logit;
+    }
+}
+
+// Mean over rows in ONE block, in a fixed tree order. Deterministic by construction — an atomic
+// accumulation would vary in its last bits between runs, and the loss is the number every training
+// comparison is judged on.
+__global__ void mean_kernel(const float* __restrict__ values, float* __restrict__ out, int count) {
+    __shared__ float scratch[kThreadsPerBlock];
+    float local = 0.0F;
+    for (int i = static_cast<int>(threadIdx.x); i < count; i += kThreadsPerBlock) local += values[i];
+    const float total = block_sum(local, scratch);
+    if (threadIdx.x == 0) out[0] = total / static_cast<float>(count);
+}
+
+// grad = (softmax - onehot) / seq, recomputing the softmax from the logits.
+__global__ void cross_entropy_backward_kernel(const float* __restrict__ logits,
+                                              const int* __restrict__ targets,
+                                              float* __restrict__ grad, int seq, int vocab_size) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    if (row >= seq) return;
+    const float* x = logits + static_cast<long long>(row) * vocab_size;
+    float* g = grad + static_cast<long long>(row) * vocab_size;
+
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, x[c]);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_sum += __expf(x[c] - max_value);
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    const float inverse_rows = 1.0F / static_cast<float>(seq);
+    const int target = targets[row];
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        const float probability = __expf(x[c] - max_value) / sum_exp;
+        g[c] = (probability - (c == target ? 1.0F : 0.0F)) * inverse_rows;
+    }
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -709,6 +795,43 @@ ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids,
         as_const_float(table), static_cast<const int*>(ids.handle()), as_float(out), seq, d_model,
         vocab_size);
     return check_launch("embedding");
+}
+
+ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                 DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
+                                 int vocab_size) {
+    if (seq <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("cross_entropy: extents must be positive");
+    }
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
+    if (logits.element_count() < elements ||
+        targets.element_count() < static_cast<std::size_t>(seq) ||
+        row_loss.element_count() < static_cast<std::size_t>(seq) || total.element_count() < 1) {
+        return ComputeStatus::invalid_argument("cross_entropy: buffers do not match the extents");
+    }
+    cross_entropy_row_kernel<<<seq, kThreadsPerBlock>>>(
+        as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(row_loss), seq,
+        vocab_size);
+    if (const auto status = check_launch("cross_entropy.rows"); !status.ok()) return status;
+    mean_kernel<<<1, kThreadsPerBlock>>>(as_const_float(row_loss), as_float(total), seq);
+    return check_launch("cross_entropy.mean");
+}
+
+ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size) {
+    if (seq <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("cross_entropy_backward: extents must be positive");
+    }
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
+    if (logits.element_count() < elements || grad_logits.element_count() < elements) {
+        return ComputeStatus::invalid_argument("cross_entropy_backward: buffers are too small");
+    }
+    cross_entropy_backward_kernel<<<seq, kThreadsPerBlock>>>(
+        as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(grad_logits),
+        seq, vocab_size);
+    return check_launch("cross_entropy_backward");
 }
 
 }  // namespace zetta::compute

@@ -148,6 +148,24 @@ ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const Device
 ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids, DeviceBuffer& out,
                              int seq, int d_model, int vocab_size);
 
+// --- Cross-entropy (the language-model loss) ---------------------------------------------------
+// loss = mean_t( logsumexp(logits[t]) - logits[t, target[t]] ), matching autograd::cross_entropy.
+//
+// Fused: the softmax is never materialized. A [seq, vocab] softmax at a 151k vocabulary is ~600 MB
+// per forward, written once and read twice, for a scalar. Here each row's logsumexp is a block
+// reduction and only `row_loss[seq]` is kept — which the backward needs anyway.
+//
+// `row_loss` is an output of the forward and an input to the backward, the same
+// compute-once-share-it pattern `softmax_lse` uses in attention.
+ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                 DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
+                                 int vocab_size);
+
+// grad_logits = (softmax(logits) - onehot(target)) / seq, recomputed from the logits rather than
+// from a saved softmax — recomputing an exp is far cheaper than storing and re-reading 600 MB.
+ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute

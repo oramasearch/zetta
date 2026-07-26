@@ -628,6 +628,72 @@ TEST(CudaTransformer, RopeRejectsARaggedHeadGrouping) {
     EXPECT_FALSE(zetta::compute::cuda_rope(device_x, out, 7, 8, 10000.0F, 0, 3).ok());
 }
 
+
+// --- Cross-entropy ---------------------------------------------------------------------------
+TEST(CudaTransformer, CrossEntropyMatchesTheHostAndItsGradient) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 5;
+    const int vocab = 300;  // not a multiple of the block, so ragged rows are exercised
+    const std::vector<float> logits =
+        random_values(static_cast<std::size_t>(seq) * vocab, 4242U);
+    const std::vector<int> targets = {7, 299, 0, 128, 41};  // includes both boundary indices
+
+    DeviceBuffer device_logits = device.upload<float>(std::span<const float>(logits));
+    DeviceBuffer device_targets = device.upload<int>(std::span<const int>(targets));
+    DeviceBuffer row_loss = device.allocate(DataType::Float32, seq);
+    DeviceBuffer total = device.allocate(DataType::Float32, 1);
+    ASSERT_TRUE(zetta::compute::cuda_cross_entropy(device_logits, device_targets, row_loss, total,
+                                                   seq, vocab)
+                    .ok());
+
+    // Host reference, in double, exactly as autograd::cross_entropy computes it.
+    double expected = 0.0;
+    for (int row = 0; row < seq; ++row) {
+        const float* x = logits.data() + static_cast<std::size_t>(row) * vocab;
+        double max_value = x[0];
+        for (int c = 1; c < vocab; ++c) max_value = std::max(max_value, static_cast<double>(x[c]));
+        double sum_exp = 0.0;
+        for (int c = 0; c < vocab; ++c) sum_exp += std::exp(x[c] - max_value);
+        expected += std::log(sum_exp) + max_value - x[targets[static_cast<std::size_t>(row)]];
+    }
+    expected /= seq;
+
+    std::vector<float> actual(1, 0.0F);
+    ASSERT_TRUE(device.download<float>(total, std::span<float>(actual)).ok());
+    EXPECT_NEAR(actual[0], static_cast<float>(expected), 1e-3F);
+
+    // Gradient: (softmax - onehot) / seq.
+    DeviceBuffer grad = device.allocate(DataType::Float32,
+                                        static_cast<std::size_t>(seq) * vocab);
+    ASSERT_TRUE(zetta::compute::cuda_cross_entropy_backward(device_logits, device_targets, grad,
+                                                            seq, vocab)
+                    .ok());
+    std::vector<float> grad_host(static_cast<std::size_t>(seq) * vocab, 0.0F);
+    ASSERT_TRUE(device.download<float>(grad, std::span<float>(grad_host)).ok());
+
+    for (int row = 0; row < seq; ++row) {
+        const float* x = logits.data() + static_cast<std::size_t>(row) * vocab;
+        double max_value = x[0];
+        for (int c = 1; c < vocab; ++c) max_value = std::max(max_value, static_cast<double>(x[c]));
+        double sum_exp = 0.0;
+        for (int c = 0; c < vocab; ++c) sum_exp += std::exp(x[c] - max_value);
+        double row_sum = 0.0;
+        for (int c = 0; c < vocab; ++c) {
+            const double probability = std::exp(x[c] - max_value) / sum_exp;
+            const double want =
+                (probability - (c == targets[static_cast<std::size_t>(row)] ? 1.0 : 0.0)) / seq;
+            EXPECT_NEAR(grad_host[static_cast<std::size_t>(row) * vocab + c], want, 1e-6)
+                << "row " << row << " col " << c;
+            row_sum += grad_host[static_cast<std::size_t>(row) * vocab + c];
+        }
+        // A softmax gradient sums to zero per row; a broken onehot subtraction breaks this even
+        // when individual entries look plausible.
+        EXPECT_NEAR(row_sum, 0.0, 1e-4) << "row " << row << " gradient must sum to zero";
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace
