@@ -988,7 +988,7 @@ ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradi
     return check_launch("adamw");
 }
 
-ComputeStatus cuda_causal_attention_batched(ComputeDevice& device, const DeviceBuffer& q,
+ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuffer& q,
                                             const DeviceBuffer& k, const DeviceBuffer& v,
                                             DeviceBuffer& scores, DeviceBuffer& out,
                                             DeviceBuffer& softmax_lse, int seq, int n_heads,

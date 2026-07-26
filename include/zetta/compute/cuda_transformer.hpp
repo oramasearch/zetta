@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include "zetta/compute/compute_device.hpp"
+#include "zetta/compute/cuda_device.hpp"
 
 // Fused transformer kernels for the CUDA backend (#922, part of #920).
 //
@@ -199,7 +200,7 @@ ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradi
 // at long context, where the streaming kernel remains the correct choice.
 //
 // `scores` is caller-provided scratch of n_heads * seq * seq floats, reused as the probabilities.
-ComputeStatus cuda_causal_attention_batched(ComputeDevice& device, const DeviceBuffer& q,
+ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuffer& q,
                                             const DeviceBuffer& k, const DeviceBuffer& v,
                                             DeviceBuffer& scores, DeviceBuffer& out,
                                             DeviceBuffer& softmax_lse, int seq, int n_heads,
