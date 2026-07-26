@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -348,6 +349,76 @@ TEST(CudaQwenModel, LayerBackwardMatchesNumericalGradients) {
         const double numerical = (loss_for(plus) - loss_for(minus)) / (2.0 * step);
         EXPECT_NEAR(analytic[index], numerical, 5e-2) << "grad_hidden at " << index;
     }
+}
+
+
+// Rungs 6c + 7 + 8: a whole training step on-device, and the checkpoint it produces.
+TEST(CudaQwenModel, TrainStepReducesLossAndUpdatesWeights) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const QwenConfig config = tiny_config();
+    QwenModel host(config, /*seed=*/41);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    ASSERT_TRUE(resident.valid());
+
+    auto gradients = resident.make_gradients(device);
+    auto moment1 = resident.make_gradients(device);
+    auto moment2 = resident.make_gradients(device);
+
+    const std::vector<int> ids = {4, 12, 7, 21, 3, 18};
+    const std::vector<int> targets(ids.begin() + 1, ids.end());
+
+    // A weight before training, to prove the step actually moved something.
+    std::vector<float> before(resident.parameter(1).element_count(), 0.0F);
+    ASSERT_TRUE(resident.parameter(1).download(std::span<float>(before)).ok());
+
+    float first_loss = 0.0F;
+    float last_loss = 0.0F;
+    for (int step = 1; step <= 40; ++step) {
+        float loss = 0.0F;
+        const auto status = resident.train_step(device, ids, targets, gradients, moment1, moment2,
+                                                step, /*learning_rate=*/1e-2F, loss);
+        ASSERT_TRUE(status.ok()) << "step " << step << ": " << status.message;
+        ASSERT_TRUE(std::isfinite(loss)) << "step " << step << " produced a non-finite loss";
+        if (step == 1) first_loss = loss;
+        last_loss = loss;
+    }
+    // Overfitting one short sequence is the standard smoke test that forward, backward and the
+    // optimizer agree: if any of the three is wrong, the loss does not fall.
+    EXPECT_LT(last_loss, first_loss) << "training must reduce the loss on a fixed batch";
+
+    std::vector<float> after(before.size(), 0.0F);
+    ASSERT_TRUE(resident.parameter(1).download(std::span<float>(after)).ok());
+    EXPECT_NE(before, after) << "AdamW must actually update the weights";
+}
+
+TEST(CudaQwenModel, TrainedWeightsRoundTripBackToTheHostModel) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    QwenModel host(tiny_config(), /*seed=*/43);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    auto gradients = resident.make_gradients(device);
+    auto moment1 = resident.make_gradients(device);
+    auto moment2 = resident.make_gradients(device);
+    const std::vector<int> ids = {1, 5, 9, 2};
+    const std::vector<int> targets(ids.begin() + 1, ids.end());
+    float loss = 0.0F;
+    ASSERT_TRUE(
+        resident.train_step(device, ids, targets, gradients, moment1, moment2, 1, 1e-2F, loss).ok());
+
+    // A checkpoint only its own backend can read is a trap: the whole point is training in one
+    // place and serving in another. Copy back into the host model and check it took.
+    ASSERT_TRUE(resident.download_into(host).ok());
+    for (std::size_t index = 0; index < resident.parameter_count(); ++index) {
+        std::vector<float> device_values(resident.parameter(index).element_count(), 0.0F);
+        ASSERT_TRUE(resident.parameter(index).download(std::span<float>(device_values)).ok());
+        EXPECT_EQ(host.parameters()[index].data(), device_values) << "parameter " << index;
+    }
+    // And the host model still runs — a corrupted round trip would surface here.
+    const zetta::autograd::Tensor logits = host.forward(ids);
+    for (const float value : logits.data()) ASSERT_TRUE(std::isfinite(value));
 }
 
 #endif  // ZETTA_WITH_CUDA
