@@ -804,7 +804,7 @@ ComputeStatus CudaDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
                 static_cast<const float*>(a.handle()), lda, &beta,
                 static_cast<float*>(c.handle()), n);
             if (blas_status == CUBLAS_STATUS_SUCCESS) {
-                return check_kernel_launch("gemm");
+                return after_kernel("gemm");
             }
             // Fall through to the reference kernel rather than failing: a cuBLAS refusal (an
             // unsupported shape, say) should degrade to slow-but-correct, not to an error.
