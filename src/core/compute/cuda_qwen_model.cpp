@@ -38,6 +38,38 @@ ComputeStatus project(ComputeDevice& device, const DeviceBuffer& in, const Devic
 
 }  // namespace
 
+
+// grad_W = grad_Y^T * X, for a projection Y = X * W^T with W in Hugging Face [out, in] layout.
+// Accumulates (beta = 1), because a weight used twice in a step must sum both contributions.
+ComputeStatus accumulate_weight_grad(ComputeDevice& device, const DeviceBuffer& grad_y,
+                                     const DeviceBuffer& x, DeviceBuffer& grad_w, int rows,
+                                     int out_features, int in_features) {
+    GemmParams params;
+    params.rows = static_cast<std::size_t>(out_features);
+    params.inner = static_cast<std::size_t>(rows);
+    params.cols = static_cast<std::size_t>(in_features);
+    params.alpha = 1.0;
+    params.beta = 1.0;  // accumulate
+    params.transpose_a = true;
+    params.transpose_b = false;
+    return device.gemm(params, grad_y, x, grad_w);
+}
+
+// grad_X = grad_Y * W, the input-side gradient of the same projection.
+ComputeStatus input_grad(ComputeDevice& device, const DeviceBuffer& grad_y,
+                         const DeviceBuffer& weight, DeviceBuffer& grad_x, int rows,
+                         int out_features, int in_features) {
+    GemmParams params;
+    params.rows = static_cast<std::size_t>(rows);
+    params.inner = static_cast<std::size_t>(out_features);
+    params.cols = static_cast<std::size_t>(in_features);
+    params.alpha = 1.0;
+    params.beta = 0.0;
+    params.transpose_a = false;
+    params.transpose_b = false;
+    return device.gemm(params, grad_y, weight, grad_x);
+}
+
 CudaQwenModel CudaQwenModel::from_host(ComputeDevice& device,
                                        const zetta::autograd::QwenModel& host) {
     CudaQwenModel model;
@@ -270,7 +302,11 @@ ComputeStatus CudaQwenModel::forward_layer_cached(ComputeDevice& device, Residen
     cache.normed = ResidentTensor::adopt(std::move(normed), {seq, d});
     cache.query = ResidentTensor::adopt(std::move(q_final), {seq, q_dim});
     cache.key = ResidentTensor::adopt(std::move(k_final), {seq, kv_dim});
-    cache.value = ResidentTensor::adopt(std::move(v), {seq, kv_dim});
+    cache.query_pre = ResidentTensor::adopt(std::move(q), {seq, q_dim});
+    cache.key_pre = ResidentTensor::adopt(std::move(k), {seq, kv_dim});
+    cache.query_normed = ResidentTensor::adopt(std::move(q_rope), {seq, q_dim});
+    cache.key_normed = ResidentTensor::adopt(std::move(k_rope), {seq, kv_dim});
+    cache.value = ResidentTensor::adopt(std::move(v), {seq, kv_dim});  // no norm/rope on V
     cache.softmax_lse = ResidentTensor::adopt(std::move(lse), {config_.n_heads, seq});
     cache.context = ResidentTensor::adopt(std::move(context), {seq, q_dim});
     cache.mlp_normed = ResidentTensor::adopt(std::move(mlp_normed), {seq, d});
@@ -417,6 +453,260 @@ std::size_t CudaQwenModel::resident_bytes() const noexcept {
     std::size_t total = 0;
     for (const ResidentTensor& parameter : parameters_) total += parameter.size_bytes();
     return total;
+}
+
+
+CudaQwenModel::Gradients CudaQwenModel::make_gradients(ComputeDevice& device) const {
+    Gradients gradients;
+    gradients.reserve(parameters_.size());
+    for (const ResidentTensor& parameter : parameters_) {
+        const std::vector<float> zeros(parameter.element_count(), 0.0F);
+        gradients.push_back(ResidentTensor::upload(device, zeros, parameter.shape()));
+    }
+    return gradients;
+}
+
+ComputeStatus CudaQwenModel::zero_gradients(ComputeDevice& device, Gradients& gradients) const {
+    if (gradients.size() != parameters_.size()) {
+        return ComputeStatus::invalid_argument("zero_gradients: size mismatch");
+    }
+    for (std::size_t index = 0; index < gradients.size(); ++index) {
+        // scale by 0 rather than reuploading zeros: a 2.4 GB memset from the host per step would
+        // reintroduce exactly the PCIe traffic this whole design removes.
+        if (const auto status = device.axpy(-1.0, gradients[index].buffer(),
+                                            gradients[index].buffer());
+            !status.ok()) {
+            return status;
+        }
+    }
+    return ComputeStatus::success();
+}
+
+ComputeStatus CudaQwenModel::backward_layer(ComputeDevice& device, const LayerCache& cache,
+                                            const ResidentTensor& grad_out, int layer, int seq,
+                                            Gradients& gradients,
+                                            ResidentTensor& grad_hidden) const {
+    if (!valid()) return ComputeStatus::invalid_argument("backward_layer: not resident");
+    const int d = config_.d_model;
+    const int head_dim = config_.head_dim;
+    const int q_dim = config_.n_heads * head_dim;
+    const int kv_dim = config_.n_kv_heads * head_dim;
+    const std::size_t tokens = static_cast<std::size_t>(seq);
+    const std::size_t hidden_elements = tokens * static_cast<std::size_t>(d);
+    const std::size_t ff = tokens * static_cast<std::size_t>(config_.d_ff);
+
+    const std::size_t base = layer_base(layer);
+    const auto& w_q = parameters_[base + 1];
+    const auto& w_k = parameters_[base + 2];
+    const auto& w_v = parameters_[base + 3];
+    const auto& w_o = parameters_[base + 4];
+    const auto& w_gate = parameters_[base + 8];
+    const auto& w_up = parameters_[base + 9];
+    const auto& w_down = parameters_[base + 10];
+
+    const auto need = [&](DeviceBuffer& buffer, std::size_t elements, const char* what) {
+        buffer = device.allocate(DataType::Float32, elements);
+        return buffer.empty() ? ComputeStatus::out_of_memory(std::string("backward: ") + what)
+                              : ComputeStatus::success();
+    };
+
+    // --- MLP block, in reverse -----------------------------------------------------------
+    // down_proj
+    DeviceBuffer grad_activated;
+    if (const auto s = need(grad_activated, ff, "grad_activated"); !s.ok()) return s;
+    if (const auto s = input_grad(device, grad_out.buffer(), w_down.buffer(), grad_activated, seq,
+                                  d, config_.d_ff);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_out.buffer(), cache.activated.buffer(),
+                                              gradients[base + 10].buffer(), seq, d, config_.d_ff);
+        !s.ok()) {
+        return s;
+    }
+
+    // swiglu
+    DeviceBuffer grad_gate, grad_up;
+    if (const auto s = need(grad_gate, ff, "grad_gate"); !s.ok()) return s;
+    if (const auto s = need(grad_up, ff, "grad_up"); !s.ok()) return s;
+    if (const auto s = cuda_swiglu_backward(cache.gate.buffer(), cache.up.buffer(), grad_activated,
+                                            grad_gate, grad_up, ff);
+        !s.ok()) {
+        return s;
+    }
+
+    // gate_proj and up_proj both read mlp_normed, so their input gradients SUM.
+    DeviceBuffer grad_mlp_normed, grad_from_up;
+    if (const auto s = need(grad_mlp_normed, hidden_elements, "grad_mlp_normed"); !s.ok()) return s;
+    if (const auto s = need(grad_from_up, hidden_elements, "grad_from_up"); !s.ok()) return s;
+    if (const auto s = input_grad(device, grad_gate, w_gate.buffer(), grad_mlp_normed, seq,
+                                  config_.d_ff, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = input_grad(device, grad_up, w_up.buffer(), grad_from_up, seq, config_.d_ff,
+                                  d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = device.axpy(1.0, grad_from_up, grad_mlp_normed); !s.ok()) return s;
+    if (const auto s = accumulate_weight_grad(device, grad_gate, cache.mlp_normed.buffer(),
+                                              gradients[base + 8].buffer(), seq, config_.d_ff, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_up, cache.mlp_normed.buffer(),
+                                              gradients[base + 9].buffer(), seq, config_.d_ff, d);
+        !s.ok()) {
+        return s;
+    }
+
+    // post_attention_layernorm
+    DeviceBuffer grad_after_attention;
+    if (const auto s = need(grad_after_attention, hidden_elements, "grad_after_attention");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rms_norm_backward(
+            cache.after_attention.buffer(), parameters_[base + 7].buffer(), grad_mlp_normed,
+            grad_after_attention, gradients[base + 7].buffer(), seq, d, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    // The MLP residual: h_out = after_attention + mlp_out, so grad flows both ways.
+    if (const auto s = device.axpy(1.0, grad_out.buffer(), grad_after_attention); !s.ok()) return s;
+
+    // --- attention block, in reverse -----------------------------------------------------
+    DeviceBuffer grad_context;
+    if (const auto s = need(grad_context, tokens * static_cast<std::size_t>(q_dim), "grad_context");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = input_grad(device, grad_after_attention, w_o.buffer(), grad_context, seq, d,
+                                  q_dim);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_after_attention, cache.context.buffer(),
+                                              gradients[base + 4].buffer(), seq, d, q_dim);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer grad_q, grad_k, grad_v, row_dot;
+    if (const auto s = need(grad_q, tokens * static_cast<std::size_t>(q_dim), "grad_q"); !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(grad_k, tokens * static_cast<std::size_t>(kv_dim), "grad_k"); !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(grad_v, tokens * static_cast<std::size_t>(kv_dim), "grad_v"); !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(row_dot, static_cast<std::size_t>(config_.n_heads) * tokens, "row_dot");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_causal_attention_backward(
+            cache.query.buffer(), cache.key.buffer(), cache.value.buffer(), cache.context.buffer(),
+            grad_context, cache.softmax_lse.buffer(), row_dot, grad_q, grad_k, grad_v, seq,
+            config_.n_heads, config_.n_kv_heads, head_dim);
+        !s.ok()) {
+        return s;
+    }
+
+    // RoPE is a rotation, so its backward is the inverse rotation — the same kernel, inverted.
+    DeviceBuffer grad_q_normed, grad_k_normed;
+    if (const auto s = need(grad_q_normed, tokens * static_cast<std::size_t>(q_dim), "grad_q_rope");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(grad_k_normed, tokens * static_cast<std::size_t>(kv_dim), "grad_k_rope");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rope_backward(grad_q, grad_q_normed, seq * config_.n_heads, head_dim,
+                                          config_.rope_base, 0, config_.n_heads);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rope_backward(grad_k, grad_k_normed, seq * config_.n_kv_heads, head_dim,
+                                          config_.rope_base, 0, config_.n_kv_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    // QK-norm backward, over the packed [seq * heads, head_dim] view.
+    DeviceBuffer grad_q_pre, grad_k_pre;
+    if (const auto s = need(grad_q_pre, tokens * static_cast<std::size_t>(q_dim), "grad_q_pre");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(grad_k_pre, tokens * static_cast<std::size_t>(kv_dim), "grad_k_pre");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rms_norm_backward(
+            cache.query_pre.buffer(), parameters_[base + 5].buffer(), grad_q_normed, grad_q_pre,
+            gradients[base + 5].buffer(), seq * config_.n_heads, head_dim, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rms_norm_backward(
+            cache.key_pre.buffer(), parameters_[base + 6].buffer(), grad_k_normed, grad_k_pre,
+            gradients[base + 6].buffer(), seq * config_.n_kv_heads, head_dim, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+
+    // q/k/v projections all read `normed`, so their input gradients sum.
+    DeviceBuffer grad_normed, grad_scratch;
+    if (const auto s = need(grad_normed, hidden_elements, "grad_normed"); !s.ok()) return s;
+    if (const auto s = need(grad_scratch, hidden_elements, "grad_scratch"); !s.ok()) return s;
+    if (const auto s = input_grad(device, grad_q_pre, w_q.buffer(), grad_normed, seq, q_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = input_grad(device, grad_k_pre, w_k.buffer(), grad_scratch, seq, kv_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = device.axpy(1.0, grad_scratch, grad_normed); !s.ok()) return s;
+    if (const auto s = input_grad(device, grad_v, w_v.buffer(), grad_scratch, seq, kv_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = device.axpy(1.0, grad_scratch, grad_normed); !s.ok()) return s;
+
+    if (const auto s = accumulate_weight_grad(device, grad_q_pre, cache.normed.buffer(),
+                                              gradients[base + 1].buffer(), seq, q_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_k_pre, cache.normed.buffer(),
+                                              gradients[base + 2].buffer(), seq, kv_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_v, cache.normed.buffer(),
+                                              gradients[base + 3].buffer(), seq, kv_dim, d);
+        !s.ok()) {
+        return s;
+    }
+
+    // input_layernorm, then the attention residual.
+    DeviceBuffer grad_in;
+    if (const auto s = need(grad_in, hidden_elements, "grad_in"); !s.ok()) return s;
+    if (const auto s = cuda_rms_norm_backward(cache.input.buffer(), parameters_[base + 0].buffer(),
+                                              grad_normed, grad_in, gradients[base + 0].buffer(),
+                                              seq, d, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = device.axpy(1.0, grad_after_attention, grad_in); !s.ok()) return s;
+
+    grad_hidden = ResidentTensor::adopt(std::move(grad_in), {seq, d});
+    return ComputeStatus::success();
 }
 
 #endif  // ZETTA_WITH_CUDA

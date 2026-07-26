@@ -66,6 +66,13 @@ public:
         ResidentTensor normed;       // after input_layernorm
         ResidentTensor query;        // post QK-norm + RoPE
         ResidentTensor key;          // post QK-norm + RoPE
+        // The RAW projections, before QK-norm. RMSNorm's backward needs the input it normalized,
+        // not its output — caching only the post-norm tensor would make the QK-norm gradient
+        // unrecoverable without recomputing the projection.
+        ResidentTensor query_pre;
+        ResidentTensor key_pre;
+        ResidentTensor query_normed;  // post QK-norm, pre-RoPE (RoPE's backward undoes into this)
+        ResidentTensor key_normed;
         ResidentTensor value;
         ResidentTensor softmax_lse;  // per (head, query), so the backward needs no max pass
         ResidentTensor context;      // attention output before o_proj
@@ -86,6 +93,18 @@ public:
     // rather than always-caching so inference pays nothing for training's bookkeeping.
     ComputeStatus forward_layer_cached(ComputeDevice& device, ResidentTensor hidden, int layer,
                                        int seq, LayerCache& cache, ResidentTensor& out) const;
+
+    // Gradients, one per parameter, in the same order. Allocated resident and ACCUMULATED into, so
+    // a step never ships a gradient across PCIe.
+    using Gradients = std::vector<ResidentTensor>;
+    Gradients make_gradients(ComputeDevice& device) const;
+    ComputeStatus zero_gradients(ComputeDevice& device, Gradients& gradients) const;
+
+    // One layer's backward (#923 rung 6b): consumes the cache, accumulates into `gradients`, and
+    // returns the gradient with respect to the layer's input so it can chain to the layer below.
+    ComputeStatus backward_layer(ComputeDevice& device, const LayerCache& cache,
+                                 const ResidentTensor& grad_out, int layer, int seq,
+                                 Gradients& gradients, ResidentTensor& grad_hidden) const;
 
 private:
     // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per
