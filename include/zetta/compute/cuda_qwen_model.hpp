@@ -18,6 +18,8 @@
 // that model already owns config parsing, safetensors loading, BF16 widening and shape validation,
 // all of which are device-independent. Re-implementing them here would duplicate the one part of
 // the pipeline that is already correct on every backend.
+#include "zetta/autograd/qwen.hpp"  // QwenConfig (a value type; no device dependency)
+
 namespace zetta::autograd {
 class QwenModel;
 }
@@ -50,8 +52,25 @@ public:
     const ResidentTensor& parameter(std::size_t index) const { return parameters_[index]; }
     ResidentTensor& parameter(std::size_t index) { return parameters_[index]; }
 
+    // One decoder layer, entirely on-device (#923 rung 3): pre-norm residual attention, then
+    // pre-norm residual SwiGLU MLP, composing the fused #922 kernels with cuBLAS projections.
+    // `hidden` and `out` are [seq, d_model] resident tensors; nothing crosses PCIe in between.
+    ComputeStatus forward_layer(ComputeDevice& device, const ResidentTensor& hidden, int layer,
+                                int seq, ResidentTensor& out) const;
+
 private:
+    // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per
+    // layer, then model.norm (then lm_head when embeddings are untied). Indexing arithmetically
+    // rather than by name keeps the hot path free of string lookups; `kPerLayer` is asserted
+    // against the actual count at load, so a change to that order fails loudly at construction
+    // instead of silently reading the wrong weight.
+    static constexpr std::size_t kPerLayer = 11;
+    std::size_t layer_base(int layer) const {
+        return 1 + static_cast<std::size_t>(layer) * kPerLayer;
+    }
+
     std::vector<ResidentTensor> parameters_;
+    zetta::autograd::QwenConfig config_{};
 };
 
 #endif  // ZETTA_WITH_CUDA

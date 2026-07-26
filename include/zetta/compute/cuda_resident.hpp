@@ -35,6 +35,14 @@ public:
     static ResidentTensor upload(ComputeDevice& device, const std::vector<float>& values,
                                  std::vector<int> shape);
 
+    // Take ownership of a buffer that is already on the device — how an op returns its result
+    // without a round trip. The counterpart to `upload`, and the reason a layer's output can feed
+    // the next layer directly.
+    static ResidentTensor adopt(DeviceBuffer buffer, std::vector<int> shape) {
+        if (buffer.empty()) return ResidentTensor{};
+        return ResidentTensor{std::move(buffer), std::move(shape)};
+    }
+
     // Move-only. The model holds these in a vector that grows during load, so a move must transfer
     // ownership without a free-and-realloc; a copy would silently duplicate the whole model.
     ResidentTensor(ResidentTensor&&) noexcept = default;

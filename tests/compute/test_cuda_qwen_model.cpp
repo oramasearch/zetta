@@ -2,10 +2,14 @@
 
 #include <cstddef>
 #include <span>
+#include <string>
 #include <vector>
 
 #if defined(ZETTA_WITH_CUDA)
 #include "zetta/autograd/qwen.hpp"
+#include "zetta/autograd/tensor.hpp"
+#include "zetta/autograd/transformer.hpp"
+#include "zetta/compute/cuda_resident.hpp"
 #include "zetta/compute/cuda_device.hpp"
 #include "zetta/compute/cuda_qwen_model.hpp"
 #endif
@@ -97,6 +101,70 @@ TEST(CudaQwenModel, ParameterShapesSurviveTheUpload) {
     for (std::size_t index = 0; index < resident.parameter_count(); ++index) {
         EXPECT_EQ(resident.parameter(index).shape(), host.parameters()[index].shape())
             << "parameter " << index;
+    }
+}
+
+
+// Rung 3 of #923: one decoder layer, entirely on-device.
+//
+// This is where the #922 kernels stop being shelfware. The layer composes rms_norm -> QK-norm ->
+// RoPE -> causal attention -> SwiGLU with cuBLAS projections, all over resident storage: the only
+// host traffic is the input going in and the output coming out. Correctness is judged against the
+// autograd engine, which is the reference implementation every other backend is checked against.
+TEST(CudaQwenModel, OneDecoderLayerMatchesTheAutogradReference) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const QwenConfig config = tiny_config();
+    QwenModel host(config, /*seed=*/17);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    ASSERT_TRUE(resident.valid());
+
+    // A short token sequence; every position attends causally over the ones before it.
+    const std::vector<int> ids = {5, 9, 2, 14, 7};
+    const int seq = static_cast<int>(ids.size());
+
+    // Reference: run the host model's own embedding + first layer.
+    const zetta::autograd::Tensor host_hidden =
+        zetta::autograd::embedding(host.weight("model.embed_tokens.weight"), ids);
+    // Composed from the public autograd ops rather than a test-only hook on QwenModel, mirroring
+    // QwenModel::forward exactly: pre-norm residual attention, then pre-norm residual SwiGLU MLP.
+    const std::string prefix = "model.layers.0.";
+    const zetta::autograd::Tensor attn_in = zetta::autograd::rms_norm(
+        host_hidden, host.weight(prefix + "input_layernorm.weight"), config.rms_eps);
+    const zetta::autograd::Tensor attn = zetta::autograd::grouped_query_attention(
+        attn_in, host.weight(prefix + "self_attn.q_proj.weight"),
+        host.weight(prefix + "self_attn.k_proj.weight"),
+        host.weight(prefix + "self_attn.v_proj.weight"),
+        host.weight(prefix + "self_attn.o_proj.weight"),
+        host.weight(prefix + "self_attn.q_norm.weight"),
+        host.weight(prefix + "self_attn.k_norm.weight"), config.n_heads, config.n_kv_heads,
+        config.head_dim, config.rope_base);
+    const zetta::autograd::Tensor after_attention = zetta::autograd::add(host_hidden, attn);
+    const zetta::autograd::Tensor mlp_in = zetta::autograd::rms_norm(
+        after_attention, host.weight(prefix + "post_attention_layernorm.weight"), config.rms_eps);
+    const zetta::autograd::Tensor mlp = zetta::autograd::swiglu_feed_forward(
+        mlp_in, host.weight(prefix + "mlp.gate_proj.weight"),
+        host.weight(prefix + "mlp.up_proj.weight"), host.weight(prefix + "mlp.down_proj.weight"));
+    const zetta::autograd::Tensor host_out = zetta::autograd::add(after_attention, mlp);
+
+    // Device: upload the same hidden state once, run the layer, bring only the result back.
+    zetta::compute::ResidentTensor hidden = zetta::compute::ResidentTensor::upload(
+        device, host_hidden.data(), host_hidden.shape());
+    ASSERT_TRUE(hidden.valid());
+    zetta::compute::ResidentTensor device_out;
+    const auto status = resident.forward_layer(device, hidden, /*layer=*/0, seq, device_out);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_TRUE(device_out.valid());
+
+    std::vector<float> actual(host_out.data().size(), 0.0F);
+    ASSERT_TRUE(device_out.download(std::span<float>(actual)).ok());
+    ASSERT_EQ(actual.size(), host_out.data().size());
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        // fp32 tolerance, not bit-equality: cuBLAS reassociates and TF32 rounds the mantissa, so
+        // demanding exact agreement here would be demanding the two backends compute identically
+        // rather than correctly.
+        EXPECT_NEAR(actual[index], host_out.data()[index], 2e-3F) << "at " << index;
     }
 }
 
