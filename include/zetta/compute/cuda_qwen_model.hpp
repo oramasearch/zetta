@@ -58,6 +58,12 @@ public:
     ComputeStatus forward_layer(ComputeDevice& device, const ResidentTensor& hidden, int layer,
                                 int seq, ResidentTensor& out) const;
 
+    // The whole forward (#923 rung 4): embed -> every layer -> final norm -> output projection.
+    // `ids` is the ONLY thing that crosses PCIe on the way in, and the logits the only thing on the
+    // way out. Result is [seq, vocab_size].
+    ComputeStatus forward(ComputeDevice& device, const std::vector<int>& ids,
+                          ResidentTensor& logits) const;
+
 private:
     // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per
     // layer, then model.norm (then lm_head when embeddings are untied). Indexing arithmetically

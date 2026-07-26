@@ -1,5 +1,6 @@
 #include "zetta/compute/cuda_qwen_model.hpp"
 
+#include <span>
 #include <utility>
 
 #include "zetta/autograd/qwen.hpp"
@@ -9,29 +10,6 @@
 namespace zetta::compute {
 
 #if defined(ZETTA_WITH_CUDA)
-
-CudaQwenModel CudaQwenModel::from_host(ComputeDevice& device,
-                                       const zetta::autograd::QwenModel& host) {
-    CudaQwenModel model;
-    model.parameters_.reserve(host.parameters().size());
-    for (const zetta::autograd::Tensor& parameter : host.parameters()) {
-        ResidentTensor resident =
-            ResidentTensor::upload(device, parameter.data(), parameter.shape());
-        if (!resident.valid()) {
-            // All or nothing: a partially-resident model would run and produce plausible wrong
-            // numbers, which is far worse to diagnose than a refusal at load.
-            return CudaQwenModel{};
-        }
-        model.parameters_.push_back(std::move(resident));
-    }
-    model.config_ = host.config();
-    // Fail loudly if the registration order this class indexes arithmetically ever changes.
-    const std::size_t expected =
-        1 + static_cast<std::size_t>(model.config_.n_layers) * kPerLayer + 1 +
-        (model.config_.tie_word_embeddings ? 0u : 1u);
-    if (model.parameters_.size() != expected) return CudaQwenModel{};
-    return model;
-}
 
 namespace {
 
@@ -59,6 +37,89 @@ ComputeStatus project(ComputeDevice& device, const DeviceBuffer& in, const Devic
 }
 
 }  // namespace
+
+CudaQwenModel CudaQwenModel::from_host(ComputeDevice& device,
+                                       const zetta::autograd::QwenModel& host) {
+    CudaQwenModel model;
+    model.parameters_.reserve(host.parameters().size());
+    for (const zetta::autograd::Tensor& parameter : host.parameters()) {
+        ResidentTensor resident =
+            ResidentTensor::upload(device, parameter.data(), parameter.shape());
+        if (!resident.valid()) {
+            // All or nothing: a partially-resident model would run and produce plausible wrong
+            // numbers, which is far worse to diagnose than a refusal at load.
+            return CudaQwenModel{};
+        }
+        model.parameters_.push_back(std::move(resident));
+    }
+    model.config_ = host.config();
+    // Fail loudly if the registration order this class indexes arithmetically ever changes.
+    const std::size_t expected =
+        1 + static_cast<std::size_t>(model.config_.n_layers) * kPerLayer + 1 +
+        (model.config_.tie_word_embeddings ? 0u : 1u);
+    if (model.parameters_.size() != expected) return CudaQwenModel{};
+    return model;
+}
+
+
+ComputeStatus CudaQwenModel::forward(ComputeDevice& device, const std::vector<int>& ids,
+                                     ResidentTensor& logits) const {
+    if (!valid()) return ComputeStatus::invalid_argument("forward: model is not resident");
+    if (ids.empty()) return ComputeStatus::invalid_argument("forward: no tokens");
+    const int seq = static_cast<int>(ids.size());
+    const int d = config_.d_model;
+    const std::size_t hidden_elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(d);
+
+    // The token ids are the only host data the forward needs — a few hundred ints, against the
+    // megabytes of embedded rows a host-side lookup would have had to upload.
+    DeviceBuffer device_ids = device.upload<int>(std::span<const int>(ids));
+    if (device_ids.empty()) return ComputeStatus::out_of_memory("forward: ids");
+
+    DeviceBuffer embedded = device.allocate(DataType::Float32, hidden_elements);
+    if (embedded.empty()) return ComputeStatus::out_of_memory("forward: embedding");
+    if (const auto s = cuda_embedding(parameters_[0].buffer(), device_ids, embedded, seq, d,
+                                      config_.vocab_size);
+        !s.ok()) {
+        return s;
+    }
+
+    // Each layer's output feeds the next directly — the hidden state never leaves the device, which
+    // is the entire point of the rung-3 work.
+    ResidentTensor hidden = ResidentTensor::adopt(std::move(embedded), {seq, d});
+    for (int layer = 0; layer < config_.n_layers; ++layer) {
+        ResidentTensor next;
+        if (const auto s = forward_layer(device, hidden, layer, seq, next); !s.ok()) return s;
+        hidden = std::move(next);
+    }
+
+    const std::size_t final_norm_index =
+        1 + static_cast<std::size_t>(config_.n_layers) * kPerLayer;
+    DeviceBuffer normed = device.allocate(DataType::Float32, hidden_elements);
+    if (normed.empty()) return ComputeStatus::out_of_memory("forward: final norm");
+    if (const auto s = cuda_rms_norm(hidden.buffer(), parameters_[final_norm_index].buffer(),
+                                     normed, seq, d, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+
+    // Tied embeddings reuse the embedding table as the output projection, which is why the
+    // parameter list has no lm_head entry in that case.
+    const ResidentTensor& output_weight = config_.tie_word_embeddings
+                                              ? parameters_[0]
+                                              : parameters_[final_norm_index + 1];
+    DeviceBuffer out = device.allocate(
+        DataType::Float32,
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(config_.vocab_size));
+    if (out.empty()) return ComputeStatus::out_of_memory("forward: logits");
+    if (const auto s = project(device, normed, output_weight.buffer(), out, seq, d,
+                               config_.vocab_size);
+        !s.ok()) {
+        return s;
+    }
+    logits = ResidentTensor::adopt(std::move(out), {seq, config_.vocab_size});
+    return ComputeStatus::success();
+}
 
 ComputeStatus CudaQwenModel::forward_layer(ComputeDevice& device, const ResidentTensor& hidden,
                                            int layer, int seq, ResidentTensor& out) const {

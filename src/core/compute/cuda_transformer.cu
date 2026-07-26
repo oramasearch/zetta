@@ -420,6 +420,21 @@ __global__ void attention_grad_kv_kernel(const float* __restrict__ q, const floa
     }
 }
 
+// One thread per output element. An out-of-range id writes zeros rather than reading out of
+// bounds: a corrupt token id should not become a segfault or, worse, silently valid garbage.
+__global__ void embedding_kernel(const float* __restrict__ table, const int* __restrict__ ids,
+                                 float* __restrict__ out, int seq, int d_model, int vocab_size) {
+    const long long index = static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(seq) * d_model;
+    if (index >= total) return;
+    const int token = static_cast<int>(index / d_model);
+    const int dim = static_cast<int>(index % d_model);
+    const int id = ids[token];
+    out[index] = (id < 0 || id >= vocab_size)
+                     ? 0.0F
+                     : table[static_cast<long long>(id) * d_model + dim];
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -675,6 +690,25 @@ ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const Device
         as_const_float(softmax_lse), as_const_float(row_dot), as_float(grad_k), as_float(grad_v),
         seq, n_heads, n_kv_heads, head_dim);
     return check_launch("attention_backward.grad_kv");
+}
+
+ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids, DeviceBuffer& out,
+                             int seq, int d_model, int vocab_size) {
+    if (seq <= 0 || d_model <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("embedding: extents must be positive");
+    }
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(d_model);
+    if (table.element_count() <
+            static_cast<std::size_t>(vocab_size) * static_cast<std::size_t>(d_model) ||
+        ids.element_count() < static_cast<std::size_t>(seq) || out.element_count() < elements) {
+        return ComputeStatus::invalid_argument("embedding: buffers do not match the extents");
+    }
+    const int blocks = static_cast<int>((elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    embedding_kernel<<<blocks, kThreadsPerBlock>>>(
+        as_const_float(table), static_cast<const int*>(ids.handle()), as_float(out), seq, d_model,
+        vocab_size);
+    return check_launch("embedding");
 }
 
 }  // namespace zetta::compute

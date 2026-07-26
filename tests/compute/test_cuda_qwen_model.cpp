@@ -168,6 +168,60 @@ TEST(CudaQwenModel, OneDecoderLayerMatchesTheAutogradReference) {
     }
 }
 
+
+// Rung 4 of #923: the whole forward on-device — embed, every layer, the final norm, the output
+// projection. Only the logits come back. If this matches the autograd engine, the model runs on the
+// GPU; everything after this rung is training machinery on top of a proven forward.
+TEST(CudaQwenModel, FullForwardMatchesTheAutogradReference) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const QwenConfig config = tiny_config();
+    QwenModel host(config, /*seed=*/23);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    ASSERT_TRUE(resident.valid());
+
+    const std::vector<int> ids = {3, 11, 0, 27, 8, 19};
+    const zetta::autograd::Tensor expected = host.forward(ids);
+
+    zetta::compute::ResidentTensor logits;
+    const auto status = resident.forward(device, ids, logits);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_TRUE(logits.valid());
+    EXPECT_EQ(logits.shape(),
+              (std::vector<int>{static_cast<int>(ids.size()), config.vocab_size}));
+
+    std::vector<float> actual(expected.data().size(), 0.0F);
+    ASSERT_TRUE(logits.download(std::span<float>(actual)).ok());
+    ASSERT_EQ(actual.size(), expected.data().size());
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        // Tolerance grows through a multi-layer stack: cuBLAS reassociates and TF32 rounds the
+        // mantissa, and those differences compound layer over layer. The check that matters is
+        // that they stay bounded rather than diverging.
+        EXPECT_NEAR(actual[index], expected.data()[index], 5e-3F) << "logit " << index;
+    }
+}
+
+TEST(CudaQwenModel, ForwardIsDeterministicAcrossRuns) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    QwenModel host(tiny_config(), /*seed=*/29);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    const std::vector<int> ids = {1, 2, 3, 4};
+
+    const auto run = [&] {
+        zetta::compute::ResidentTensor logits;
+        EXPECT_TRUE(resident.forward(device, ids, logits).ok());
+        std::vector<float> values(static_cast<std::size_t>(ids.size()) * tiny_config().vocab_size,
+                                  0.0F);
+        EXPECT_TRUE(logits.download(std::span<float>(values)).ok());
+        return values;
+    };
+    // Bitwise, not approximate: same inputs on the same device must give the same bits, or the
+    // equivalence gate (#926) and every reproducibility claim built on it are meaningless.
+    EXPECT_EQ(run(), run());
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

@@ -139,6 +139,15 @@ ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const Device
                                              DeviceBuffer& grad_v, int seq, int n_heads,
                                              int n_kv_heads, int head_dim);
 
+// --- Embedding lookup ------------------------------------------------------------------------
+// out[t, :] = table[ids[t], :]. `ids` is an Int32 device buffer of `seq` token ids.
+//
+// A gather rather than a matmul: the one-hot formulation would multiply a [seq, vocab] matrix by
+// the table, which for a 151k vocabulary is absurd. Ids live on the device so the whole forward
+// takes only the token list across PCIe, not the embedded rows.
+ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids, DeviceBuffer& out,
+                             int seq, int d_model, int vocab_size);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute
