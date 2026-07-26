@@ -275,6 +275,81 @@ TEST(CudaQwenModel, CachedLayerMatchesTheUncachedLayerAndFillsTheCache) {
     EXPECT_EQ(cache.activated.shape(), (std::vector<int>{seq, config.d_ff}));
 }
 
+
+// Rung 6b: the layer's backward, gradient-checked.
+//
+// This is the only test that distinguishes a CORRECT backward from a merely self-consistent one. A
+// backward can agree with itself, chain cleanly, and still not be the derivative of the forward —
+// which in training shows up as "it learns, just worse", the hardest failure to attribute. Perturb
+// an input, measure the forward's response, compare.
+TEST(CudaQwenModel, LayerBackwardMatchesNumericalGradients) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const QwenConfig config = tiny_config();
+    QwenModel host(config, /*seed=*/37);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    ASSERT_TRUE(resident.valid());
+
+    const int seq = 3;
+    const int d = config.d_model;
+    const std::size_t elements = static_cast<std::size_t>(seq) * d;
+    std::vector<float> hidden(elements, 0.0F);
+    for (std::size_t i = 0; i < elements; ++i) {
+        hidden[i] = static_cast<float>((i * 37) % 19) / 19.0F - 0.5F;
+    }
+    // A non-uniform upstream gradient: an all-ones one can hide a term that is wrong only where
+    // the upstream gradient varies.
+    std::vector<float> upstream(elements, 0.0F);
+    for (std::size_t i = 0; i < elements; ++i) {
+        upstream[i] = static_cast<float>((i * 23) % 11) / 11.0F - 0.4F;
+    }
+
+    // Scalar objective L = sum(layer(hidden) * upstream), whose dL/dhidden the backward returns.
+    const auto loss_for = [&](const std::vector<float>& input) {
+        zetta::compute::ResidentTensor in =
+            zetta::compute::ResidentTensor::upload(device, input, {seq, d});
+        zetta::compute::ResidentTensor out;
+        EXPECT_TRUE(resident.forward_layer(device, in, 0, seq, out).ok());
+        std::vector<float> values(elements, 0.0F);
+        EXPECT_TRUE(out.download(std::span<float>(values)).ok());
+        double total = 0.0;
+        for (std::size_t i = 0; i < elements; ++i) total += static_cast<double>(values[i]) * upstream[i];
+        return total;
+    };
+
+    CudaQwenModel::LayerCache cache;
+    zetta::compute::ResidentTensor out;
+    ASSERT_TRUE(resident
+                    .forward_layer_cached(
+                        device, zetta::compute::ResidentTensor::upload(device, hidden, {seq, d}), 0,
+                        seq, cache, out)
+                    .ok());
+
+    CudaQwenModel::Gradients gradients = resident.make_gradients(device);
+    ASSERT_EQ(gradients.size(), resident.parameter_count());
+    zetta::compute::ResidentTensor grad_upstream =
+        zetta::compute::ResidentTensor::upload(device, upstream, {seq, d});
+    zetta::compute::ResidentTensor grad_hidden;
+    const auto status =
+        resident.backward_layer(device, cache, grad_upstream, 0, seq, gradients, grad_hidden);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_TRUE(grad_hidden.valid());
+
+    std::vector<float> analytic(elements, 0.0F);
+    ASSERT_TRUE(grad_hidden.download(std::span<float>(analytic)).ok());
+
+    const double step = 2e-3;
+    for (std::size_t index = 0; index < elements; ++index) {
+        std::vector<float> plus = hidden;
+        std::vector<float> minus = hidden;
+        plus[index] = static_cast<float>(plus[index] + step);
+        minus[index] = static_cast<float>(minus[index] - step);
+        const double numerical = (loss_for(plus) - loss_for(minus)) / (2.0 * step);
+        EXPECT_NEAR(analytic[index], numerical, 5e-2) << "grad_hidden at " << index;
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace
