@@ -27,6 +27,8 @@
 #include "zetta/agent/response_facts.hpp"
 #include "zetta/agent/solution_graph.hpp"  // render_action_example, graph_solution_facts (#873)
 #include "zetta/autograd/transformer.hpp"  // autograd::Adam
+#include <mlx/memory.h>  // set_memory_limit / get_active_memory (#919)
+
 #include "zetta/compute/mlx_device.hpp"
 #include "zetta/compute/mlx_qwen.hpp"
 #include "zetta/compute/mlx_transformer.hpp"  // AdamW
@@ -563,13 +565,37 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     std::error_code ec;
     std::filesystem::create_directories(out_dir, ec);
 
+    // Cap device memory BEFORE training (#919 / #924). MLX's default limit is 1.5x the device's
+    // maximum recommended working set, which on a 64 GB machine is ~72 GB — MORE than physical
+    // RAM. Past that it does not fail, it allocates into swap, which is exactly how a run drove
+    // the compressor to 100% of its segment limit with 73 swapfiles and panicked the kernel on a
+    // watchdog timeout. A run that dies with "out of memory at step N" is strictly better than a
+    // machine that reboots. The cache limit is bounded separately because it defaults to the
+    // memory limit, so an unbounded cache can consume the whole budget on its own.
+    const std::size_t memory_limit_gb =
+        std::getenv("ZETTA_SFT_MEMORY_GB")
+            ? std::strtoull(std::getenv("ZETTA_SFT_MEMORY_GB"), nullptr, 10)
+            : 24;
+    const std::size_t cache_limit_gb =
+        std::getenv("ZETTA_SFT_CACHE_GB")
+            ? std::strtoull(std::getenv("ZETTA_SFT_CACHE_GB"), nullptr, 10)
+            : 4;
+    const std::size_t previous_limit =
+        mx::set_memory_limit(memory_limit_gb * 1024ULL * 1024ULL * 1024ULL);
+    mx::set_cache_limit(cache_limit_gb * 1024ULL * 1024ULL * 1024ULL);
+    mx::reset_peak_memory();
+    std::cerr << "[SFT] memory ceiling " << memory_limit_gb << " GB (was "
+              << previous_limit / (1024ULL * 1024ULL * 1024ULL) << " GB), cache ceiling "
+              << cache_limit_gb << " GB\n";
+
     // Live training-metrics log (JSONL), flushed per step so it survives an interruption.
     const char* log_env = std::getenv("ZETTA_SFT_LOG");
     const std::string log_path = log_env != nullptr ? log_env : out_dir + "/train.log";
     std::ofstream metrics(log_path);
     metrics << R"({"event":"start","model":")" << dir << R"(","corpus":")" << corpus_path
             << R"(","examples":)" << examples.size() << R"(,"steps":)" << steps
-            << R"(,"lr":1e-5})" << "\n";
+            << R"(,"lr":1e-5,"memory_limit_gb":)" << memory_limit_gb
+            << R"(,"cache_limit_gb":)" << cache_limit_gb << "}" << "\n";
     metrics.flush();
 
     // How often to write a recoverable checkpoint (0 disables). Defaults to every 250 steps:
@@ -611,7 +637,14 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         if (step == 0) first_loss = value;
         last_loss = value;
         min_loss = std::min(min_loss, value);
-        metrics << R"({"step":)" << step << R"(,"loss":)" << value << "}\n";
+        // Per-step memory, so unbounded growth is VISIBLE in the log rather than reconstructed
+        // from a panic report afterwards (#919: instrument, do not guess).
+        constexpr double kToMib = 1024.0 * 1024.0;
+        metrics << R"({"step":)" << step << R"(,"loss":)" << value
+                << R"(,"active_mib":)" << static_cast<double>(mx::get_active_memory()) / kToMib
+                << R"(,"cache_mib":)" << static_cast<double>(mx::get_cache_memory()) / kToMib
+                << R"(,"peak_mib":)" << static_cast<double>(mx::get_peak_memory()) / kToMib
+                << "}\n";
         metrics.flush();  // durable per step
         if (step % 50 == 0) {
             std::cerr << "[SFT] step " << step << "/" << steps << " loss " << value << "\n";
