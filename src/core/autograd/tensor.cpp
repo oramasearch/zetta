@@ -76,6 +76,18 @@ std::size_t parallel_grain(std::size_t count, std::size_t work_per_item) {
 }
 }  // namespace
 
+// Run `body(index)` over [0, count) across workers, with the same grain heuristic the matmul paths
+// use so small tensors stay inline. Elementwise ops are per-index independent, so this is
+// bit-identical to the serial loop — there is no cross-element reduction to reorder, which is what
+// keeps the CUDA equivalence gate's exact-equality assertions valid.
+template <class Body>
+void parallel_elementwise(std::size_t count, Body body) {
+    runtime::parallel_for(count, parallel_grain(count, 4),
+                          [&](std::size_t, std::size_t begin, std::size_t end) {
+                              for (std::size_t i = begin; i < end; ++i) body(i);
+                          });
+}
+
 std::shared_ptr<Node> make_node(std::vector<float> data,
                                 std::vector<int> shape) {
     auto node = std::make_shared<Node>();
@@ -362,18 +374,22 @@ Tensor sum(const Tensor& a) {
 
 Tensor add(const Tensor& a, const Tensor& b) {
     std::vector<float> out(a.data().size(), 0.0F);
-    for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = a.data()[i] + b.data()[i];
+    {
+        const float* left = a.data().data();
+        const float* right = b.data().data();
+        float* destination = out.data();
+        parallel_elementwise(out.size(),
+                             [&](std::size_t i) { destination[i] = left[i] + right[i]; });
     }
     auto node = make_node(std::move(out), a.shape());
     node->parents = {a.node(), b.node()};
     const std::shared_ptr<Node> a_node = a.node();
     const std::shared_ptr<Node> b_node = b.node();
     node->backward = [a_node, b_node](const std::vector<float>& g) {
-        for (std::size_t i = 0; i < g.size(); ++i) {
+        parallel_elementwise(g.size(), [&](std::size_t i) {
             a_node->grad[i] += g[i];
             b_node->grad[i] += g[i];
-        }
+        });
     };
     return Tensor{node};
 }
@@ -398,16 +414,17 @@ Tensor mul(const Tensor& a, const Tensor& b) {
 
 Tensor scale(const Tensor& a, float factor) {
     std::vector<float> out(a.data().size(), 0.0F);
-    for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = a.data()[i] * factor;
+    {
+        const float* input = a.data().data();
+        float* destination = out.data();
+        parallel_elementwise(out.size(),
+                             [&](std::size_t i) { destination[i] = input[i] * factor; });
     }
     auto node = make_node(std::move(out), a.shape());
     node->parents = {a.node()};
     const std::shared_ptr<Node> a_node = a.node();
     node->backward = [a_node, factor](const std::vector<float>& g) {
-        for (std::size_t i = 0; i < g.size(); ++i) {
-            a_node->grad[i] += g[i] * factor;
-        }
+        parallel_elementwise(g.size(), [&](std::size_t i) { a_node->grad[i] += g[i] * factor; });
     };
     return Tensor{node};
 }
