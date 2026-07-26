@@ -167,6 +167,35 @@ interactive serving:
   greedy decode quality is unaffected. The `data/checkpoints/` dir is gitignored — the
   converter script is the reproducible part.
 
+## Live tools — letting the agent read the node (#904)
+
+`respond()` takes an optional **`AgentToolRunner`** + the tool specs it may call. The
+`chat` capability binds the runner to the capability registry through
+`ApiContext::registry`, so a tool the agent calls runs as a normal registry call **under
+the caller's identity** — the caller's permissions and the audit trail apply to the inner
+call exactly as to a direct one. The allowlist is **read-only introspection**
+(`list_projects`, `get_project`, `list_datasets`, `get_dataset`, `list_models`,
+`list_indexes`, `list_connections`, `server_info`); a mutating capability is never
+reachable this way, so a chat can describe the node but never change it.
+
+The loop is the existing one: the model emits `<tool_call>{"tool": …, "arguments": {…}}`,
+`Sandbox::apply` runs it, and the result is fed back as `<tool_result>` — now including
+the capability's **value** under `result`, because a read tool has to answer with data,
+not just "ok" (`ToolResult::success(json)` / `ApplyOutcome::data`).
+
+**Tools are opt-in per agent.** An agent only gets a live tool it names in its own
+`tools` list. This is deliberate: naming tools in the prompt changes what the model
+writes, and the churn-trained base agent (#555) answers **worse** when told about tools
+it was never trained to use — it starts folding tool vocabulary into its answers. So the
+default agent is untouched, and enabling introspection is a data change
+(`update_agent {tools: [...]}`), not a code change.
+
+**Teaching a model to actually use them is separate.** The corpus today trains a
+**single-shot JSON action** (`{message, tool_calls, execution_graph}`, where `tool_calls`
+are pipeline-setup steps), while the chat loop parses **conversational `<tool_call>`
+blocks** with `<tool_result>` feedback — two different formats. Closing that gap needs a
+tool-use task family in the generator plus a grader for it; tracked separately.
+
 ## Related
 
 - [training-runbook.md](training-runbook.md) — produce the checkpoint this runbook loads.

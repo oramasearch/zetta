@@ -22,9 +22,9 @@ ApplyOutcome Sandbox::apply(const ToolCall& call) {
     }
     ToolResult result = tool->second(world_, call.arguments);
     if (!result.ok) {
-        return ApplyOutcome{ApplyStatus::ToolFailed, std::move(result.reason)};
+        return ApplyOutcome{ApplyStatus::ToolFailed, std::move(result.reason), {}};
     }
-    return ApplyOutcome{ApplyStatus::Ok, {}};
+    return ApplyOutcome{ApplyStatus::Ok, {}, std::move(result.data)};
 }
 
 }  // namespace zetta::agent

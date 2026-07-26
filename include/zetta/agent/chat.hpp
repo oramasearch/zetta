@@ -51,12 +51,34 @@ struct ChatResponse {
     std::string error;   // the reason (model/tokenizer load failure) when !ok
 };
 
+// Runs one named tool on behalf of the agent and returns what it produced (#904).
+// The embedding supplies this — the API layer binds it to the capability registry
+// under the CALLER's identity, so the agent can never reach past what that caller
+// may do — keeping zetta-core free of any dependency on the registry. Empty
+// function = the agent has no live tools and only its recorded ones.
+using AgentToolRunner =
+    std::function<ToolResult(const std::string& tool, const nlohmann::json& arguments)>;
+
+// The tools an agent may call, and what each is for — rendered into the prompt so
+// the model knows what exists. Name + one line, in the caller's vocabulary.
+struct AgentToolSpec {
+    std::string name;
+    std::string description;
+};
+
 // Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
 // checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for
 // `message`. Non-throwing — a load failure is ok=false + a reason. BLOCKS for seconds while
 // the model loads + generates, so call it OFF the UI thread. Shared by the `chat` capability
 // (MCP/REST) and the GUI chat panel, so both behave identically.
+//
+// `tools` + `tool_specs` are the live tools (#904): when supplied, the agent is told
+// what it can call and each <tool_call> it emits runs through the runner, with the
+// result fed back as <tool_result> for the next round. Omit them and behavior is
+// exactly as before — the agent's recorded tools, which only mark that they ran.
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
-                     int max_new_tokens = 256, int max_rounds = 3);
+                     int max_new_tokens = 256, int max_rounds = 3,
+                     const AgentToolRunner& tools = {},
+                     const std::vector<AgentToolSpec>& tool_specs = {});
 
 }  // namespace zetta::agent

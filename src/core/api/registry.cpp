@@ -242,6 +242,10 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         // target) — it executes like any other call.
     }
 
+    // A handler that must run another capability for the caller (chat's read-only
+    // agent tools, #904) calls back through this — same context, so the caller's
+    // permissions and the audit trail apply to the inner call too.
+    context.registry = this;
     ApiResult result = capability->handler(effective_input, context);
 
     if (result.ok && capability->mutates && activity_) {

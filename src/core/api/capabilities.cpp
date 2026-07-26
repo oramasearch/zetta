@@ -1,4 +1,5 @@
 #include "zetta/api/capabilities.hpp"
+#include <algorithm>
 
 #include <chrono>
 #include <fstream>
@@ -3527,11 +3528,61 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
 
+    // The tools the agent may call while answering (#904): READ-ONLY introspection,
+    // an explicit allowlist — never a mutating capability, so a chat can describe
+    // the node but never change it. Each call goes back through
+    // `registry.call(...)` with the SAME ApiContext, so the caller's own
+    // permissions and the audit trail apply exactly as if they had made the call.
+    static const std::vector<zetta::agent::AgentToolSpec> kAgentTools = {
+        {"list_projects", "list the Projects on this node"},
+        {"get_project", "read one Project: {\"name\": \"<project>\"}"},
+        {"list_datasets", "list the datasets (tables) available, with row and column counts"},
+        {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
+        {"list_models", "list the trained models and their measures"},
+        {"list_indexes", "list the search indexes and the fields they cover"},
+        {"list_connections", "list the configured source connections"},
+        {"server_info", "read this node's version and cluster membership"},
+    };
+    // OPT-IN per agent: an agent only gets live tools it explicitly declares in its
+    // record. This matters — naming tools in the prompt changes what the model
+    // writes, and the churn-trained base agent (#555) answers WORSE when told about
+    // tools it was never trained to use. So the default agent is untouched, and
+    // enabling introspection is a data change (`update_agent` tools), not a code
+    // change. Teaching a model to actually use them is #904's training half.
+    std::vector<zetta::agent::AgentToolSpec> enabled_tools;
+    for (const zetta::agent::AgentToolSpec& spec : kAgentTools) {
+        if (std::find(agent->tools.begin(), agent->tools.end(), spec.name) !=
+            agent->tools.end()) {
+            enabled_tools.push_back(spec);
+        }
+    }
+    const zetta::agent::AgentToolRunner agent_tools =
+        [&context](const std::string& tool,
+                   const nlohmann::json& arguments) -> zetta::agent::ToolResult {
+        const bool allowed = std::any_of(
+            kAgentTools.begin(), kAgentTools.end(),
+            [&tool](const zetta::agent::AgentToolSpec& spec) { return spec.name == tool; });
+        if (!allowed) {
+            return zetta::agent::ToolResult::failure("'" + tool +
+                                                     "' is not a tool this agent may call");
+        }
+        if (context.registry == nullptr) {
+            return zetta::agent::ToolResult::failure("no capability registry for this call");
+        }
+        const ApiResult called = context.registry->call(
+            tool, arguments.is_object() ? arguments : nlohmann::json::object(), context);
+        if (!called.ok) return zetta::agent::ToolResult::failure(called.error.message);
+        return zetta::agent::ToolResult::success(called.value);
+    };
+
     // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
     // chat panel also uses, so both behave identically. agent.model must be a local
     // checkpoint dir; pull it first with `zetta pull` if it isn't present.
     const zetta::agent::ChatResponse chat =
-        zetta::agent::respond(*agent, message, max_new_tokens, max_rounds);
+        enabled_tools.empty()
+            ? zetta::agent::respond(*agent, message, max_new_tokens, max_rounds)
+            : zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, agent_tools,
+                                    enabled_tools);
     if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
 
     nlohmann::json tool_calls = nlohmann::json::array();

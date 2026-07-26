@@ -136,6 +136,9 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
             feedback["tool"] = call.tool;
             feedback["status"] = apply_status_word(outcome.status);
             if (!outcome.reason.empty()) feedback["detail"] = outcome.reason;
+            // A read tool answers with a value; give it back so the next round can
+            // reason over the node's real state instead of guessing (#904).
+            if (!outcome.data.is_null()) feedback["result"] = outcome.data;
             conversation += "<tool_result>" + feedback.dump() + "</tool_result>\n";
         }
     }
@@ -146,7 +149,9 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
 }
 
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
-                     int max_new_tokens, int max_rounds) {
+                     int max_new_tokens, int max_rounds,
+                     const AgentToolRunner& tools,
+                     const std::vector<AgentToolSpec>& tool_specs) {
     ChatResponse response;
     std::string error;
     // The tokenizer is cheap and always needed (encode/decode); load it from a small
@@ -170,6 +175,21 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
             world.set("ran_" + tool, true);
             return ToolResult::success();
         });
+    }
+    // Live tools (#904): each runs through the embedding's runner, which the API
+    // layer binds to the capability registry under the CALLER's identity. These
+    // are registered after the recorded tools, so a live tool of the same name
+    // wins — a real result beats a marker.
+    if (tools) {
+        for (const AgentToolSpec& spec : tool_specs) {
+            const std::string name = spec.name;
+            sandbox.register_tool(name, [name, &tools](EndState& world,
+                                                       const nlohmann::json& arguments) {
+                ToolResult result = tools(name, arguments);
+                world.set("ran_" + name, true);
+                return result;
+            });
+        }
     }
 
     // The model's EOS id, so generation STOPS when an EOS-trained model emits it (a model
@@ -212,6 +232,18 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
 
     std::string conversation;
     if (!agent.system_prompt.empty()) conversation += agent.system_prompt + "\n\n";
+    // Name the live tools and the call format, so the model can ask the node about
+    // its real state instead of guessing (#904). Omitted when none are wired, so a
+    // plain chat keeps the exact prompt it trained on.
+    if (tools && !tool_specs.empty()) {
+        conversation += "You can call these tools to read this node's real state:\n";
+        for (const AgentToolSpec& spec : tool_specs) {
+            conversation += "- " + spec.name + ": " + spec.description + "\n";
+        }
+        conversation +=
+            "To call one, emit <tool_call>{\"tool\": \"<name>\", \"arguments\": {…}}</tool_call> "
+            "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
+    }
     conversation += "User: " + message + "\nAssistant:";
 
     response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);

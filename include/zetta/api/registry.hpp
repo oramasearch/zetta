@@ -96,6 +96,8 @@ class BackgroundActions;
 using ProvisionerResolver =
     std::function<zetta::cloud::Provisioner*(const std::string& target_id)>;
 
+class Registry;
+
 // What a handler sees. `acting_key` is the acting identity the auth gate
 // resolved: under the default-deny gate (#745) it is a USER id (see
 // `acting_is_user`); otherwise it is the AccessKey id the bearer token mapped
@@ -139,6 +141,14 @@ struct ApiContext {
     // its executing state instead of recording the immediate return value.
     std::string consent_challenge_id;
     bool consent_outcome_deferred = false;
+
+    // The registry executing this call, set by Registry::call before it invokes
+    // the handler. A handler that must run ANOTHER capability on the caller's
+    // behalf — `chat`, which lets the agent read the node through an allowlist of
+    // read-only capabilities (#904) — calls back through this, so the caller's
+    // permissions and the audit trail apply to the inner call exactly as they
+    // would to a direct one. Null outside a registry call.
+    const Registry* registry = nullptr;
 };
 
 using CapabilityHandler =
