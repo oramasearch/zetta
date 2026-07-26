@@ -318,6 +318,7 @@ ComputeStatus CudaQwenModel::forward_layer_cached(ComputeDevice& device, Residen
     cache.key_normed = ResidentTensor::adopt(std::move(k_rope), {seq, kv_dim});
     cache.value = ResidentTensor::adopt(std::move(v), {seq, kv_dim});  // no norm/rope on V
     cache.softmax_lse = ResidentTensor::adopt(std::move(lse), {config_.n_heads, seq});
+    cache.probabilities = ResidentTensor::adopt(std::move(scores), {config_.n_heads * seq, seq});
     cache.context = ResidentTensor::adopt(std::move(context), {seq, q_dim});
     cache.mlp_normed = ResidentTensor::adopt(std::move(mlp_normed), {seq, d});
     cache.gate = ResidentTensor::adopt(std::move(gate), {seq, config_.d_ff});
@@ -610,7 +611,7 @@ ComputeStatus CudaQwenModel::backward_layer(ComputeDevice& device, const LayerCa
         return s;
     }
 
-    DeviceBuffer grad_q, grad_k, grad_v, row_dot;
+    DeviceBuffer grad_q, grad_k, grad_v;
     if (const auto s = need(grad_q, tokens * static_cast<std::size_t>(q_dim), "grad_q"); !s.ok()) {
         return s;
     }
@@ -620,13 +621,17 @@ ComputeStatus CudaQwenModel::backward_layer(ComputeDevice& device, const LayerCa
     if (const auto s = need(grad_v, tokens * static_cast<std::size_t>(kv_dim), "grad_v"); !s.ok()) {
         return s;
     }
-    if (const auto s = need(row_dot, static_cast<std::size_t>(config_.n_heads) * tokens, "row_dot");
+    DeviceBuffer grad_scores;
+    if (const auto s = need(grad_scores, static_cast<std::size_t>(config_.n_heads) * tokens * tokens,
+                            "grad_scores");
         !s.ok()) {
         return s;
     }
-    if (const auto s = cuda_causal_attention_backward(
-            cache.query.buffer(), cache.key.buffer(), cache.value.buffer(), cache.context.buffer(),
-            grad_context, cache.softmax_lse.buffer(), row_dot, grad_q, grad_k, grad_v, seq,
+    auto* cuda = dynamic_cast<CudaDevice*>(&device);
+    if (cuda == nullptr) return ComputeStatus::unsupported("backward_layer: needs a CUDA device");
+    if (const auto s = cuda_causal_attention_backward_batched(
+            *cuda, cache.query.buffer(), cache.key.buffer(), cache.value.buffer(),
+            cache.probabilities.buffer(), grad_context, grad_scores, grad_q, grad_k, grad_v, seq,
             config_.n_heads, config_.n_kv_heads, head_dim);
         !s.ok()) {
         return s;

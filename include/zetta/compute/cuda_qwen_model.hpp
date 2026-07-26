@@ -75,6 +75,10 @@ public:
         ResidentTensor key_normed;
         ResidentTensor value;
         ResidentTensor softmax_lse;  // per (head, query), so the backward needs no max pass
+        // The softmax PROBABILITIES, [n_heads, seq, seq]. Retained so the backward's four products
+        // are batched GEMMs with nothing recomputed. ~96 MB per layer at seq 1229 with 16 heads;
+        // the trade that buys tensor cores on the backward, which is ~2x the forward's cost.
+        ResidentTensor probabilities;
         ResidentTensor context;      // attention output before o_proj
         ResidentTensor after_attention;
         ResidentTensor mlp_normed;
