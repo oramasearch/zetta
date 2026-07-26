@@ -749,6 +749,62 @@ TEST(CudaTransformer, BatchedGemmMatchesPerBatchGemm) {
     }
 }
 
+
+// The batched attention must agree with the streaming one it replaces — that is the whole safety
+// argument for swapping strategies. Checked under GQA, where a broadcast error would show up.
+TEST(CudaTransformer, BatchedAttentionMatchesTheStreamingKernel) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 24;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 16;
+    const std::size_t q_elements = static_cast<std::size_t>(seq) * n_heads * head_dim;
+    const std::size_t kv_elements = static_cast<std::size_t>(seq) * n_kv_heads * head_dim;
+    const std::vector<float> q = random_values(q_elements, 6001U);
+    const std::vector<float> k = random_values(kv_elements, 6002U);
+    const std::vector<float> v = random_values(kv_elements, 6003U);
+
+    DeviceBuffer dq = device.upload<float>(std::span<const float>(q));
+    DeviceBuffer dk = device.upload<float>(std::span<const float>(k));
+    DeviceBuffer dv = device.upload<float>(std::span<const float>(v));
+
+    DeviceBuffer streaming_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer streaming_lse = device.allocate(DataType::Float32,
+                                                 static_cast<std::size_t>(n_heads) * seq);
+    ASSERT_TRUE(zetta::compute::cuda_causal_attention(dq, dk, dv, streaming_out, streaming_lse, seq,
+                                                      n_heads, n_kv_heads, head_dim)
+                    .ok());
+
+    DeviceBuffer scores = device.allocate(
+        DataType::Float32, static_cast<std::size_t>(n_heads) * seq * seq);
+    DeviceBuffer batched_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer batched_lse = device.allocate(DataType::Float32,
+                                               static_cast<std::size_t>(n_heads) * seq);
+    const auto status = zetta::compute::cuda_causal_attention_batched(
+        device, dq, dk, dv, scores, batched_out, batched_lse, seq, n_heads, n_kv_heads, head_dim);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<float> a(q_elements, 0.0F);
+    std::vector<float> b(q_elements, 0.0F);
+    ASSERT_TRUE(device.download<float>(streaming_out, std::span<float>(a)).ok());
+    ASSERT_TRUE(device.download<float>(batched_out, std::span<float>(b)).ok());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        EXPECT_NEAR(b[i], a[i], 3e-3F) << "output differs at " << i;  // TF32 precision
+    }
+
+    std::vector<float> lse_a(static_cast<std::size_t>(n_heads) * seq, 0.0F);
+    std::vector<float> lse_b(lse_a.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(streaming_lse, std::span<float>(lse_a)).ok());
+    ASSERT_TRUE(device.download<float>(batched_lse, std::span<float>(lse_b)).ok());
+    for (std::size_t i = 0; i < lse_a.size(); ++i) {
+        // The backward consumes the lse, so the two strategies must agree on it too, not just on
+        // the output they happen to produce.
+        EXPECT_NEAR(lse_b[i], lse_a[i], 3e-3F) << "lse differs at " << i;
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

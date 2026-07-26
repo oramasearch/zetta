@@ -1,5 +1,6 @@
 #include "zetta/compute/cuda_transformer.hpp"
 
+#include <cmath>
 #include <string_view>
 
 #include <cuda_runtime.h>
@@ -559,6 +560,83 @@ __global__ void adamw_kernel(float* __restrict__ parameter, const float* __restr
                                          weight_decay * parameter[index]);
 }
 
+// In-place causal mask + row softmax over [n_heads * seq, seq], one block per row. Fused so the
+// masked scores are never written before being exponentiated, and the log-sum-exp is emitted for
+// the backward in the same pass.
+__global__ void causal_softmax_kernel(float* __restrict__ scores, float* __restrict__ lse, int seq,
+                                      float scale) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    const int query = row % seq;
+    float* line = scores + static_cast<long long>(row) * seq;
+
+    // Causal: only keys <= query are visible. Masking by bounding the loop beats writing -inf and
+    // reading it back.
+    const int visible = query + 1;
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, line[c] * scale);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        const float e = __expf(line[c] * scale - max_value);
+        line[c] = e;
+        local_sum += e;
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    const float inverse = 1.0F / sum_exp;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        line[c] *= inverse;
+    }
+    // Masked-out positions must be ZERO, not stale: the PV matmul reads the whole row.
+    for (int c = visible + static_cast<int>(threadIdx.x); c < seq; c += kThreadsPerBlock) {
+        line[c] = 0.0F;
+    }
+    if (threadIdx.x == 0) lse[row] = max_value + __logf(sum_exp);
+}
+
+// [seq, source_heads * head_dim] -> [n_heads, seq, head_dim]. When source_heads < n_heads the head
+// is BROADCAST across its GQA group, so the batched GEMM sees a uniform batch and K/V need no
+// special casing downstream.
+__global__ void pack_heads_kernel(const float* __restrict__ in, float* __restrict__ out, int seq,
+                                  int n_heads, int source_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(n_heads) * seq * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int token = static_cast<int>((index / head_dim) % seq);
+    const int head = static_cast<int>(index / (static_cast<long long>(head_dim) * seq));
+    const int source_head = head / (n_heads / source_heads);
+    out[index] = in[static_cast<long long>(token) * source_heads * head_dim +
+                    static_cast<long long>(source_head) * head_dim + dim];
+}
+
+// The inverse, back to the interleaved [seq, n_heads * head_dim] the o_proj expects.
+__global__ void unpack_heads_kernel(const float* __restrict__ in, float* __restrict__ out, int seq,
+                                    int n_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(n_heads) * seq * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int token = static_cast<int>((index / head_dim) % seq);
+    const int head = static_cast<int>(index / (static_cast<long long>(head_dim) * seq));
+    out[static_cast<long long>(token) * n_heads * head_dim +
+        static_cast<long long>(head) * head_dim + dim] = in[index];
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -908,6 +986,88 @@ ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradi
                                                learning_rate, beta1, beta2, epsilon, weight_decay,
                                                bias_correction1, bias_correction2);
     return check_launch("adamw");
+}
+
+ComputeStatus cuda_causal_attention_batched(ComputeDevice& device, const DeviceBuffer& q,
+                                            const DeviceBuffer& k, const DeviceBuffer& v,
+                                            DeviceBuffer& scores, DeviceBuffer& out,
+                                            DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                            int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    const std::size_t per_head = static_cast<std::size_t>(seq) * static_cast<std::size_t>(head_dim);
+    const std::size_t packed_elements = per_head * static_cast<std::size_t>(n_heads);
+    const std::size_t score_elements =
+        static_cast<std::size_t>(n_heads) * static_cast<std::size_t>(seq) *
+        static_cast<std::size_t>(seq);
+    if (scores.element_count() < score_elements) {
+        return ComputeStatus::invalid_argument("attention_batched: scores scratch too small");
+    }
+
+    // A batched GEMM needs each head to be a contiguous [seq, head_dim] matrix, but the projections
+    // interleave heads: head h occupies columns [h*head_dim, (h+1)*head_dim) of a
+    // [seq, n_heads*head_dim] tensor. Permute once into [n_heads, seq, head_dim]. The permute is
+    // O(seq * d) against attention's O(seq^2 * head_dim), so it is noise — and it lets K and V be
+    // BROADCAST across their GQA group in the same pass, which makes the batch uniform and removes
+    // the per-head launch entirely.
+    DeviceBuffer q_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer k_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer v_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer context_packed = device.allocate(DataType::Float32, packed_elements);
+    if (q_packed.empty() || k_packed.empty() || v_packed.empty() || context_packed.empty()) {
+        return ComputeStatus::out_of_memory("attention_batched: packing buffers");
+    }
+    const int blocks = static_cast<int>((packed_elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(q), as_float(q_packed), seq,
+                                                    n_heads, n_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(k), as_float(k_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(v), as_float(v_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    if (const auto status = check_launch("attention_batched.pack"); !status.ok()) return status;
+
+    // scores = Q K^T, one matmul per head, batched.
+    GemmParams qk;
+    qk.rows = static_cast<std::size_t>(seq);
+    qk.inner = static_cast<std::size_t>(head_dim);
+    qk.cols = static_cast<std::size_t>(seq);
+    qk.alpha = 1.0;
+    qk.beta = 0.0;
+    qk.transpose_a = false;
+    qk.transpose_b = true;
+    if (const auto status = device.gemm_batched(qk, q_packed, per_head, k_packed, per_head, scores,
+                                                static_cast<std::size_t>(seq) * seq, n_heads);
+        !status.ok()) {
+        return status;
+    }
+
+    // Scale, causal-mask and softmax in place, emitting the log-sum-exp the backward needs.
+    const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+    causal_softmax_kernel<<<n_heads * seq, kThreadsPerBlock>>>(as_float(scores),
+                                                               as_float(softmax_lse), seq, scale);
+    if (const auto status = check_launch("attention_batched.softmax"); !status.ok()) return status;
+
+    // context = P V, batched again.
+    GemmParams pv;
+    pv.rows = static_cast<std::size_t>(seq);
+    pv.inner = static_cast<std::size_t>(seq);
+    pv.cols = static_cast<std::size_t>(head_dim);
+    pv.alpha = 1.0;
+    pv.beta = 0.0;
+    pv.transpose_a = false;
+    pv.transpose_b = false;
+    if (const auto status =
+            device.gemm_batched(pv, scores, static_cast<std::size_t>(seq) * seq, v_packed, per_head,
+                                context_packed, per_head, n_heads);
+        !status.ok()) {
+        return status;
+    }
+
+    unpack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(context_packed), as_float(out),
+                                                      seq, n_heads, head_dim);
+    return check_launch("attention_batched.unpack");
 }
 
 }  // namespace zetta::compute

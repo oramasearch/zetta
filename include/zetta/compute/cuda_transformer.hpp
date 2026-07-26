@@ -185,6 +185,26 @@ ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradi
                               float learning_rate, float beta1, float beta2, float epsilon,
                               float weight_decay, int step);
 
+// Causal attention via batched GEMM (#923). Same result as `cuda_causal_attention`, different
+// strategy — and on real sequence lengths, far faster.
+//
+// The streaming version walks the keys SERIALLY inside one block per (head, query): at seq 1229
+// that is 1,229 sequential block-wide reductions per query, with no tiling and no tensor cores. It
+// keeps memory at O(seq * head_dim), which is why it exists, but it leaves the hardware idle.
+//
+// Here QK^T and PV are what they actually are — matmuls — and run as batched GEMM on the tensor
+// cores, with a fused causal-mask + softmax kernel between them. The cost is materializing the
+// [n_heads, seq, seq] scores: ~96 MB per layer at seq 1229 with 16 heads, freed before the next
+// layer, against an A100's 40 GB. That is the right trade at these sizes; it is NOT the right trade
+// at long context, where the streaming kernel remains the correct choice.
+//
+// `scores` is caller-provided scratch of n_heads * seq * seq floats, reused as the probabilities.
+ComputeStatus cuda_causal_attention_batched(ComputeDevice& device, const DeviceBuffer& q,
+                                            const DeviceBuffer& k, const DeviceBuffer& v,
+                                            DeviceBuffer& scores, DeviceBuffer& out,
+                                            DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                            int n_kv_heads, int head_dim);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute
