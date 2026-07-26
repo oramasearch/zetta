@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <chrono>
 #include <cstddef>
+#include <cstdlib>
+#include <optional>
+#include <iostream>
 #include <span>
 #include <string>
 #include <vector>
@@ -419,6 +423,67 @@ TEST(CudaQwenModel, TrainedWeightsRoundTripBackToTheHostModel) {
     // And the host model still runs — a corrupted round trip would surface here.
     const zetta::autograd::Tensor logits = host.forward(ids);
     for (const float value : logits.data()) ASSERT_TRUE(std::isfinite(value));
+}
+
+
+// Rung 9 of #923: the acceptance measurement, on the REAL checkpoint.
+//
+// Env-gated, never a CI dependency:
+//   ZETTA_QWEN_DIR    the Qwen3-0.6B checkpoint
+//   ZETTA_BENCH_STEPS steps to time (default 12)
+//   ZETTA_BENCH_SEQ   sequence length (default 512)
+//
+// Reports per-step time and resident VRAM. The bar: MLX on a Mac does 1.45 s/step; the autograd
+// path on this same A100 does 15.4 s/step. A rented GPU slower than a laptop is not worth using.
+TEST(CudaQwenModel, AcceptanceBeatsTheMlxBaseline) {
+    const char* model_dir = std::getenv("ZETTA_QWEN_DIR");
+    if (model_dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run the acceptance benchmark";
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    std::string error;
+    std::optional<QwenModel> host = zetta::autograd::load_qwen_model(model_dir, &error);
+    ASSERT_TRUE(host.has_value()) << error;
+
+    CudaQwenModel resident = CudaQwenModel::from_host(device, *host);
+    ASSERT_TRUE(resident.valid());
+    const double resident_gb =
+        static_cast<double>(resident.resident_bytes()) / (1024.0 * 1024.0 * 1024.0);
+    std::cerr << "[bench] resident weights: " << resident_gb << " GB across "
+              << resident.parameter_count() << " parameters\n";
+
+    auto gradients = resident.make_gradients(device);
+    auto moment1 = resident.make_gradients(device);
+    auto moment2 = resident.make_gradients(device);
+
+    const int steps = std::getenv("ZETTA_BENCH_STEPS")
+                          ? std::atoi(std::getenv("ZETTA_BENCH_STEPS")) : 12;
+    const int seq = std::getenv("ZETTA_BENCH_SEQ") ? std::atoi(std::getenv("ZETTA_BENCH_SEQ")) : 512;
+    std::vector<int> ids(static_cast<std::size_t>(seq));
+    for (int i = 0; i < seq; ++i) ids[static_cast<std::size_t>(i)] = (i * 7919) % 30000;
+    const std::vector<int> targets(ids.begin() + 1, ids.end());
+
+    // One untimed step first: the pool is empty on the first pass, so including it would measure
+    // allocation rather than throughput.
+    float loss = 0.0F;
+    ASSERT_TRUE(
+        resident.train_step(device, ids, targets, gradients, moment1, moment2, 1, 1e-5F, loss).ok());
+
+    const auto started = std::chrono::steady_clock::now();
+    for (int step = 2; step <= steps + 1; ++step) {
+        const auto status = resident.train_step(device, ids, targets, gradients, moment1, moment2,
+                                                step, /*learning_rate=*/1e-5F, loss);
+        ASSERT_TRUE(status.ok()) << "step " << step << ": " << status.message;
+    }
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    const double per_step = seconds / steps;
+
+    std::cerr << "[bench] " << steps << " steps at seq " << seq << ": " << per_step
+              << " s/step  (MLX on a Mac: 1.45; autograd on this box: 15.4)\n";
+    std::cerr << "[bench] final loss " << loss << "\n";
+    EXPECT_TRUE(std::isfinite(loss));
+    EXPECT_LT(per_step, 1.45) << "a rented A100 must beat the laptop";
 }
 
 #endif  // ZETTA_WITH_CUDA
