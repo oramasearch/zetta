@@ -45,6 +45,10 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   [`inference-runbook.md`](inference-runbook.md); **build + run a real graph from a plain-language
   ask** (`agent_run`, the base agent working end to end — no #859 needed) →
   [`build-and-run-runbook.md`](build-and-run-runbook.md).
+- **GPU boxes** (#920) — [`gpu-box-runbook.md`](gpu-box-runbook.md): which box for which job,
+  the Lambda instance choice (Ampere + native BF16; **not** Volta), provisioning + the CUDA
+  build, and the governance line on rented hardware. **A rented GPU cannot train this model
+  until #923** — the SFT driver is MLX-only.
 - **The interaction contract** (#918) — [`interaction-contracts.md`](interaction-contracts.md):
   what a turn looks like, the one renderer training and serving share, the four response modes,
   and the rule that a required fact must be projectable. **Read it before changing the harness,
