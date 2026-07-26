@@ -222,6 +222,59 @@ TEST(CudaQwenModel, ForwardIsDeterministicAcrossRuns) {
     EXPECT_EQ(run(), run());
 }
 
+
+// Rung 6a: the cached forward must be the SAME forward. If the two diverge, every gradient built on
+// the cache is a gradient of a function nobody runs.
+TEST(CudaQwenModel, CachedLayerMatchesTheUncachedLayerAndFillsTheCache) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const QwenConfig config = tiny_config();
+    QwenModel host(config, /*seed=*/31);
+    CudaQwenModel resident = CudaQwenModel::from_host(device, host);
+    ASSERT_TRUE(resident.valid());
+
+    const std::vector<int> ids = {2, 6, 1, 9};
+    const int seq = static_cast<int>(ids.size());
+    const zetta::autograd::Tensor host_hidden =
+        zetta::autograd::embedding(host.weight("model.embed_tokens.weight"), ids);
+
+    const auto upload_hidden = [&] {
+        return zetta::compute::ResidentTensor::upload(device, host_hidden.data(),
+                                                      host_hidden.shape());
+    };
+
+    zetta::compute::ResidentTensor plain_out;
+    ASSERT_TRUE(resident.forward_layer(device, upload_hidden(), 0, seq, plain_out).ok());
+
+    CudaQwenModel::LayerCache cache;
+    zetta::compute::ResidentTensor cached_out;
+    ASSERT_TRUE(
+        resident.forward_layer_cached(device, upload_hidden(), 0, seq, cache, cached_out).ok());
+
+    std::vector<float> plain(host_hidden.data().size(), 0.0F);
+    std::vector<float> cached(host_hidden.data().size(), 0.0F);
+    ASSERT_TRUE(plain_out.download(std::span<float>(plain)).ok());
+    ASSERT_TRUE(cached_out.download(std::span<float>(cached)).ok());
+    EXPECT_EQ(plain, cached) << "caching must not change the computation";
+
+    // Every tensor the backward will consume is present and correctly shaped.
+    EXPECT_TRUE(cache.input.valid());
+    EXPECT_TRUE(cache.normed.valid());
+    EXPECT_TRUE(cache.query.valid());
+    EXPECT_TRUE(cache.key.valid());
+    EXPECT_TRUE(cache.value.valid());
+    EXPECT_TRUE(cache.softmax_lse.valid());
+    EXPECT_TRUE(cache.context.valid());
+    EXPECT_TRUE(cache.after_attention.valid());
+    EXPECT_TRUE(cache.mlp_normed.valid());
+    EXPECT_TRUE(cache.gate.valid());
+    EXPECT_TRUE(cache.up.valid());
+    EXPECT_TRUE(cache.activated.valid());
+    EXPECT_EQ(cache.softmax_lse.shape(), (std::vector<int>{config.n_heads, seq}));
+    EXPECT_EQ(cache.activated.shape(), (std::vector<int>{seq, config.d_ff}));
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

@@ -58,11 +58,34 @@ public:
     ComputeStatus forward_layer(ComputeDevice& device, const ResidentTensor& hidden, int layer,
                                 int seq, ResidentTensor& out) const;
 
+    // Everything a layer's backward needs from its forward (#923 rung 6a). Kept because
+    // recomputing a layer's intermediates during the backward would double the forward cost, and
+    // these are small next to the parameters that are already resident.
+    struct LayerCache {
+        ResidentTensor input;        // the layer's input hidden state
+        ResidentTensor normed;       // after input_layernorm
+        ResidentTensor query;        // post QK-norm + RoPE
+        ResidentTensor key;          // post QK-norm + RoPE
+        ResidentTensor value;
+        ResidentTensor softmax_lse;  // per (head, query), so the backward needs no max pass
+        ResidentTensor context;      // attention output before o_proj
+        ResidentTensor after_attention;
+        ResidentTensor mlp_normed;
+        ResidentTensor gate;
+        ResidentTensor up;
+        ResidentTensor activated;    // swiglu(gate, up)
+    };
+
     // The whole forward (#923 rung 4): embed -> every layer -> final norm -> output projection.
     // `ids` is the ONLY thing that crosses PCIe on the way in, and the logits the only thing on the
     // way out. Result is [seq, vocab_size].
     ComputeStatus forward(ComputeDevice& device, const std::vector<int>& ids,
                           ResidentTensor& logits) const;
+
+    // Same layer as `forward_layer`, additionally retaining what the backward consumes. Separate
+    // rather than always-caching so inference pays nothing for training's bookkeeping.
+    ComputeStatus forward_layer_cached(ComputeDevice& device, ResidentTensor hidden, int layer,
+                                       int seq, LayerCache& cache, ResidentTensor& out) const;
 
 private:
     // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per

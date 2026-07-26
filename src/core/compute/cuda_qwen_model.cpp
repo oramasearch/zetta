@@ -121,6 +121,166 @@ ComputeStatus CudaQwenModel::forward(ComputeDevice& device, const std::vector<in
     return ComputeStatus::success();
 }
 
+
+ComputeStatus CudaQwenModel::forward_layer_cached(ComputeDevice& device, ResidentTensor hidden,
+                                                  int layer, int seq, LayerCache& cache,
+                                                  ResidentTensor& out) const {
+    if (!valid()) return ComputeStatus::invalid_argument("forward_layer_cached: not resident");
+    if (layer < 0 || layer >= config_.n_layers) {
+        return ComputeStatus::invalid_argument("forward_layer_cached: layer out of range");
+    }
+    const int d = config_.d_model;
+    const int head_dim = config_.head_dim;
+    const int q_dim = config_.n_heads * head_dim;
+    const int kv_dim = config_.n_kv_heads * head_dim;
+    const std::size_t tokens = static_cast<std::size_t>(seq);
+    const std::size_t hidden_elements = tokens * static_cast<std::size_t>(d);
+
+    const std::size_t base = layer_base(layer);
+    const auto& input_norm = parameters_[base + 0];
+    const auto& w_q = parameters_[base + 1];
+    const auto& w_k = parameters_[base + 2];
+    const auto& w_v = parameters_[base + 3];
+    const auto& w_o = parameters_[base + 4];
+    const auto& q_norm = parameters_[base + 5];
+    const auto& k_norm = parameters_[base + 6];
+    const auto& post_norm = parameters_[base + 7];
+    const auto& w_gate = parameters_[base + 8];
+    const auto& w_up = parameters_[base + 9];
+    const auto& w_down = parameters_[base + 10];
+
+    const auto need = [&](DeviceBuffer& buffer, std::size_t elements, const char* what) {
+        buffer = device.allocate(DataType::Float32, elements);
+        return buffer.empty() ? ComputeStatus::out_of_memory(std::string("layer: ") + what)
+                              : ComputeStatus::success();
+    };
+
+    // --- attention ---------------------------------------------------------------------
+    DeviceBuffer normed;
+    if (const auto s = need(normed, hidden_elements, "normed"); !s.ok()) return s;
+    if (const auto s = cuda_rms_norm(hidden.buffer(), input_norm.buffer(), normed, seq, d,
+                                     config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer q, k, v, q_rope, k_rope;
+    if (const auto s = need(q, tokens * static_cast<std::size_t>(q_dim), "q"); !s.ok()) return s;
+    if (const auto s = need(k, tokens * static_cast<std::size_t>(kv_dim), "k"); !s.ok()) return s;
+    if (const auto s = need(v, tokens * static_cast<std::size_t>(kv_dim), "v"); !s.ok()) return s;
+    if (const auto s = need(q_rope, tokens * static_cast<std::size_t>(q_dim), "q_rope");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(k_rope, tokens * static_cast<std::size_t>(kv_dim), "k_rope");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = project(device, normed, w_q.buffer(), q, seq, d, q_dim); !s.ok()) return s;
+    if (const auto s = project(device, normed, w_k.buffer(), k, seq, d, kv_dim); !s.ok()) return s;
+    if (const auto s = project(device, normed, w_v.buffer(), v, seq, d, kv_dim); !s.ok()) return s;
+    // QK-norm into a separate buffer, then RoPE into another: the backward needs to run each
+    // inverse in turn, so overwriting in place would destroy what it has to undo.
+    if (const auto s = cuda_rms_norm(q, q_norm.buffer(), q_rope, seq * config_.n_heads, head_dim,
+                                     config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rms_norm(k, k_norm.buffer(), k_rope, seq * config_.n_kv_heads, head_dim,
+                                     config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    DeviceBuffer q_final, k_final;
+    if (const auto s = need(q_final, tokens * static_cast<std::size_t>(q_dim), "q_final");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(k_final, tokens * static_cast<std::size_t>(kv_dim), "k_final");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rope(q_rope, q_final, seq * config_.n_heads, head_dim,
+                                 config_.rope_base, 0, config_.n_heads);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_rope(k_rope, k_final, seq * config_.n_kv_heads, head_dim,
+                                 config_.rope_base, 0, config_.n_kv_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer context, lse;
+    if (const auto s = need(context, tokens * static_cast<std::size_t>(q_dim), "context");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = need(lse, static_cast<std::size_t>(config_.n_heads) * tokens, "lse");
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_causal_attention(q_final, k_final, v, context, lse, seq,
+                                             config_.n_heads, config_.n_kv_heads, head_dim);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer attention_out;
+    if (const auto s = need(attention_out, hidden_elements, "attention_out"); !s.ok()) return s;
+    if (const auto s = project(device, context, w_o.buffer(), attention_out, seq, q_dim, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = device.axpy(1.0, hidden.buffer(), attention_out); !s.ok()) return s;
+
+    // --- MLP ---------------------------------------------------------------------------
+    DeviceBuffer mlp_normed, gate, up, activated, mlp_out;
+    if (const auto s = need(mlp_normed, hidden_elements, "mlp_normed"); !s.ok()) return s;
+    if (const auto s = cuda_rms_norm(attention_out, post_norm.buffer(), mlp_normed, seq, d,
+                                     config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    const std::size_t ff = tokens * static_cast<std::size_t>(config_.d_ff);
+    if (const auto s = need(gate, ff, "gate"); !s.ok()) return s;
+    if (const auto s = need(up, ff, "up"); !s.ok()) return s;
+    if (const auto s = need(activated, ff, "activated"); !s.ok()) return s;
+    if (const auto s = need(mlp_out, hidden_elements, "mlp_out"); !s.ok()) return s;
+    if (const auto s = project(device, mlp_normed, w_gate.buffer(), gate, seq, d, config_.d_ff);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = project(device, mlp_normed, w_up.buffer(), up, seq, d, config_.d_ff);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = cuda_swiglu(gate, up, activated, ff); !s.ok()) return s;
+    if (const auto s = project(device, activated, w_down.buffer(), mlp_out, seq, config_.d_ff, d);
+        !s.ok()) {
+        return s;
+    }
+
+    // Retain the attention-block output BEFORE adding the MLP residual: the MLP's backward needs
+    // it as the input to post_attention_layernorm.
+    cache.after_attention = ResidentTensor::adopt(std::move(attention_out), {seq, d});
+    if (const auto s = device.axpy(1.0, cache.after_attention.buffer(), mlp_out); !s.ok()) return s;
+
+    cache.input = std::move(hidden);
+    cache.normed = ResidentTensor::adopt(std::move(normed), {seq, d});
+    cache.query = ResidentTensor::adopt(std::move(q_final), {seq, q_dim});
+    cache.key = ResidentTensor::adopt(std::move(k_final), {seq, kv_dim});
+    cache.value = ResidentTensor::adopt(std::move(v), {seq, kv_dim});
+    cache.softmax_lse = ResidentTensor::adopt(std::move(lse), {config_.n_heads, seq});
+    cache.context = ResidentTensor::adopt(std::move(context), {seq, q_dim});
+    cache.mlp_normed = ResidentTensor::adopt(std::move(mlp_normed), {seq, d});
+    cache.gate = ResidentTensor::adopt(std::move(gate), {seq, config_.d_ff});
+    cache.up = ResidentTensor::adopt(std::move(up), {seq, config_.d_ff});
+    cache.activated = ResidentTensor::adopt(std::move(activated), {seq, config_.d_ff});
+    out = ResidentTensor::adopt(std::move(mlp_out), {seq, d});
+    return ComputeStatus::success();
+}
+
 ComputeStatus CudaQwenModel::forward_layer(ComputeDevice& device, const ResidentTensor& hidden,
                                            int layer, int seq, ResidentTensor& out) const {
     if (!valid()) return ComputeStatus::invalid_argument("forward_layer: model is not resident");
