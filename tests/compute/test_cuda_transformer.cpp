@@ -694,6 +694,55 @@ TEST(CudaTransformer, CrossEntropyMatchesTheHostAndItsGradient) {
     }
 }
 
+
+// Batched GEMM: `batch` independent matmuls of one shape. Attention needs it — QK^T and PV are one
+// matmul per head, and batching keeps the tensor cores fed instead of paying a launch per head.
+TEST(CudaTransformer, BatchedGemmMatchesPerBatchGemm) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int batch = 3;
+    const int m = 5, k = 7, n = 4;
+    const std::size_t a_elements = static_cast<std::size_t>(m) * k;
+    const std::size_t b_elements = static_cast<std::size_t>(k) * n;
+    const std::size_t c_elements = static_cast<std::size_t>(m) * n;
+    const std::vector<float> a = random_values(a_elements * batch, 5150U);
+    const std::vector<float> b = random_values(b_elements * batch, 5151U);
+
+    DeviceBuffer device_a = device.upload<float>(std::span<const float>(a));
+    DeviceBuffer device_b = device.upload<float>(std::span<const float>(b));
+    DeviceBuffer device_c = device.allocate(DataType::Float32, c_elements * batch);
+
+    zetta::compute::GemmParams params;
+    params.rows = m; params.inner = k; params.cols = n;
+    params.alpha = 1.0; params.beta = 0.0;
+    params.transpose_a = false; params.transpose_b = false;
+    ASSERT_TRUE(device.gemm_batched(params, device_a, a_elements, device_b, b_elements, device_c,
+                                    c_elements, batch)
+                    .ok());
+    std::vector<float> batched(c_elements * batch, 0.0F);
+    ASSERT_TRUE(device.download<float>(device_c, std::span<float>(batched)).ok());
+
+    // Each slice must equal what the single-matrix gemm produces for that slice — the check that
+    // catches a wrong stride, which otherwise silently mixes one head's data into another's.
+    for (int item = 0; item < batch; ++item) {
+        const std::vector<float> slice_a(a.begin() + item * a_elements,
+                                         a.begin() + (item + 1) * a_elements);
+        const std::vector<float> slice_b(b.begin() + item * b_elements,
+                                         b.begin() + (item + 1) * b_elements);
+        DeviceBuffer one_a = device.upload<float>(std::span<const float>(slice_a));
+        DeviceBuffer one_b = device.upload<float>(std::span<const float>(slice_b));
+        DeviceBuffer one_c = device.allocate(DataType::Float32, c_elements);
+        ASSERT_TRUE(device.gemm(params, one_a, one_b, one_c).ok());
+        std::vector<float> expected(c_elements, 0.0F);
+        ASSERT_TRUE(device.download<float>(one_c, std::span<float>(expected)).ok());
+        for (std::size_t i = 0; i < c_elements; ++i) {
+            EXPECT_NEAR(batched[item * c_elements + i], expected[i], 1e-4F)
+                << "batch " << item << " element " << i;
+        }
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace
