@@ -45,6 +45,10 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   [`inference-runbook.md`](inference-runbook.md); **build + run a real graph from a plain-language
   ask** (`agent_run`, the base agent working end to end — no #859 needed) →
   [`build-and-run-runbook.md`](build-and-run-runbook.md).
+- **The interaction contract** (#918) — [`interaction-contracts.md`](interaction-contracts.md):
+  what a turn looks like, the one renderer training and serving share, the four response modes,
+  and the rule that a required fact must be projectable. **Read it before changing the harness,
+  the corpus, or the prompt** — the skew it prevents was diagnosed as four separate bugs.
 - **Cards** (#880) — honest datasheets + model cards under [`cards/`](cards/README.md): the base
   agent's [data card](cards/datasets/base-agent.md) + [model card](cards/models/base-agent.md),
   and Auto-Suggest's [data card](cards/datasets/auto-suggest.md) +

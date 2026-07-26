@@ -2,8 +2,10 @@
 
 **Model.** The Orama Studio auto-AI **base agent** (#555) — turns a plain-language ask into a
 production pipeline. **Base weights.** Qwen3-0.6B (permissively licensed open-weights start),
-pulled natively (`zetta pull`, ADR-17). **Status.** SFT driver + the #873 action reshape built;
-the action-corpus retrain + acceptance eval are pending full-plan-coverage sign-off. **Owner.**
+pulled natively (`zetta pull`, ADR-17). **Status.** SFT driver, the #873 action reshape, and
+the #918 interaction contract + corpus are built; the acceptance eval on the v2 corpus is the
+open item. **The checkpoint currently installed predates the action reshape** and emits the older
+facts format — aligning it with the shipped protocol is what the v2 retrain is for. **Owner.**
 agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per-customer fork) ·
 #873 (reshape) · #248 (eval).
 
@@ -14,36 +16,61 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
   **action** — the pipeline the engine builds + runs, verified by the correctness gate. It also
   drives `agent_run` (build + run in one call, #872) and is forked + specialized per customer
   (#853).
+- **In scope, as of the interaction contract (#918).** Beyond intent → pipeline, the agent now
+  covers the turns a user actually has with Studio: answering about a Project from **retrieved**
+  facts, changing a Pipeline, feature engineering, emitting Python/SQL for a node, governance and
+  lifecycle asks, capability discovery, declining, and asking one clarifying question. It
+  declares its mode (`action` / `answer` / `clarify` / `abstain`) in the response envelope, so
+  the harness switches rather than guesses. Contract:
+  [`../../interaction-contracts.md`](../../interaction-contracts.md).
 - **Out of scope.** Not a general chatbot; not a code assistant; not for anything Orama Zetta
-  doesn't build — it **abstains** (declines, builds nothing) on out-of-scope asks. The optional
-  narrator/playbook LLM is a separate, non-load-bearing layer (never produces a number).
-  **Prose Q&A about a Project's data and results is NOT this model** — that is the grounded
-  answerer (#917), a separate model playing a different RLVR game (its reward is a groundedness
-  grader over answer × supplied context; this model's reward is the gate over a run pipeline).
-  Routing between them is a product-surface fact, not a model decision: "Create a Solution"
-  reaches this model, the Ask Orama drawer reaches the answerer.
+  doesn't build — it **abstains** (declines, builds nothing) on out-of-scope asks. It answers
+  only from context the ENGINE retrieved and supplied; it does not choose its own reads (#859).
+  The optional narrator/playbook LLM is a separate, non-load-bearing layer (never produces a
+  number).
+- **One model or two?** Grounded prose answering was originally scoped as a SEPARATE model
+  (#917) on the grounds that it plays a different RLVR game — its reward is a groundedness grader
+  over answer × context, where this model's is the gate over a run pipeline. #918 takes the
+  cheaper first answer instead: **one model with an explicit mode discriminator**, so the modes
+  are declared rather than confounded. #917 remains the fallback, and the decision is
+  evidence-driven, not architectural taste: **split if the eval shows mode interference** —
+  specifically if adding the answer/clarify/abstain families measurably degrades parse rate or
+  grader pass-rate on the action families. Measure before splitting.
 
 ## Architecture & training
 
 - **Architecture.** Qwen3-0.6B, run on Zetta's native autograd + `ComputeDevice` (MLX GPU on
   Apple silicon; CPU fallback). No foreign runtime (ADR-17): native tokenizer, native decode.
 - **Training data.** [data-card-base-agent.md](../datasets/base-agent.md) — the admission-gated,
-  plan-grounded corpus in the action shape.
+  plan-grounded corpus. v2 is the **interaction corpus** (#918): 6,793 gated cases across 10
+  families, 763 canary, with the retrieved context carried on each case.
 - **Objective.** SFT (`next_token_loss` + AdamW) on `intent → action`, the Studio system prompt
   (`base_prompt.cpp`) baked into every example (train == inference framing) → then RLVR
   (`grpo_step`) where the reward is the deterministic gate over the *run* pipeline, active-weight
   renormalized per use case. EOS appended (trained stop token). Prompt/target rendered by
-  `render_action_example` — the single source of truth shared with inference.
+  `render_action_example`, which calls **`render_interaction_prompt`** — the single renderer
+  shared with inference (`build_chat_prompt`). That sharing is enforced by
+  `TrainingPromptIsByteIdenticalToServedPrompt`, not by convention: it was violated silently
+  before #918, and every downstream symptom (raw JSON replies, ignored instructions, invented
+  numbers) followed from prompting the model off-distribution.
 - **The RLVR game.** Each play builds a pipeline, runs it against the (customer's) real
   environment, and is scored by the gate — grounded in reality, like chess. It never stops
   learning (schema drift → it adapts).
 
 ## Evaluation
 
-- **Reward = the gate.** Grader pass-rate + mean required-fact score + **parse rate** (valid
-  action JSON) + abstain recall + false-abstain + **discrimination** (reference passes, controls
-  fail) on the held-out set (`base-agent-test-set.jsonl`), scored via `parse_studio_action` →
-  `graph_solution_facts` → the task grader (`EvalGraderPassRate`).
+- **Reward = the gate, extended to every mode.** `response_solution_facts` projects the whole
+  response envelope into gradeable facts, because an `answer`, a `clarify` and an `abstain` carry
+  no pipeline — their correctness lives in the message and in what the model did NOT do. The
+  load-bearing check is **`numbers_from_context`**: every numeric literal in the message must
+  appear in the retrieved context, compared as written (so rounding 0.880 to 0.88 fails — it
+  cites a figure that was never retrieved). Deterministic, no judge.
+  Metrics: grader pass-rate + mean required-fact score + **parse rate** (valid envelope JSON) +
+  **mode accuracy** (did it declare the right `kind`) + abstain recall + false-abstain +
+  **discrimination** (reference passes, controls fail), scored via `parse_studio_action` →
+  `response_solution_facts` → the task grader (`EvalGraderPassRate`). The canary is 763 cases
+  over Projects whose numbers the model never saw, so memorization is measured rather than
+  assumed.
 - **Acceptance (#555).** The checkpoint measurably beats the open-weights start on the #248
   enterprise eval, gate green. **Every training/eval run writes a dated validation report to
   [`../reports/`](../../../reports/README.md)** (root `CLAUDE.md` rule) — the checkpoint is not the
@@ -77,7 +104,9 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
   recognized intent (see [inference-runbook.md](../../inference-runbook.md) §scope).
 - Generated reference pipelines are structural skeletons (churn + search are the hand-built
   exemplars); richer graphs are a corpus follow-up.
-- Coverage is broad but shallow per subject (see the data card).
+- Coverage is broad and now deep on INTERACTIONS (6,793 cases, 10 families); the remaining
+  thinness is **paraphrase diversity** — asks come from fixed template banks, so natural-language
+  variety is the weakest axis. See the data card.
 
 ## Governance & ethics
 
