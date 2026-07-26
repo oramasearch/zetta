@@ -572,6 +572,12 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
             << R"(,"lr":1e-5})" << "\n";
     metrics.flush();
 
+    // How often to write a recoverable checkpoint (0 disables). Defaults to every 250 steps:
+    // at ~4 s/step that is ~17 minutes of work at risk, against a ~2 s save.
+    const int save_every = std::getenv("ZETTA_SFT_SAVE_EVERY")
+                               ? std::atoi(std::getenv("ZETTA_SFT_SAVE_EVERY"))
+                               : 250;
+
     zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
     std::vector<int> argnums(model->parameters().size());
     std::iota(argnums.begin(), argnums.end(), 0);
@@ -609,6 +615,21 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         metrics.flush();  // durable per step
         if (step % 50 == 0) {
             std::cerr << "[SFT] step " << step << "/" << steps << " loss " << value << "\n";
+        }
+        // Periodic checkpoint. A long run previously wrote weights ONLY after the final step, so
+        // a crash or an interruption threw away every step of training done so far — which is
+        // exactly what happened at ~90/3000. Saving on an interval bounds the loss to one
+        // interval, and the saved directory is a complete, reloadable checkpoint at every point.
+        if (save_every > 0 && step > 0 && step % save_every == 0) {
+            std::string save_error;
+            if (model->save(out_dir, dir, &save_error)) {
+                metrics << R"({"event":"checkpoint","step":)" << step << "}\n";
+                metrics.flush();
+                std::cerr << "[SFT] checkpoint saved at step " << step << "\n";
+            } else {
+                std::cerr << "[SFT] checkpoint save FAILED at step " << step << ": "
+                          << save_error << "\n";
+            }
         }
     }
     metrics << R"({"event":"done","first_loss":)" << first_loss << R"(,"last_loss":)"

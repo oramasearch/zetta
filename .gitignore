@@ -66,3 +66,4 @@ __pycache__/
 /data/checkpoints/
 # Generated training corpora — reproducible from the native generator (#918)
 data/corpora/
+data/sft-logs/
