@@ -3509,7 +3509,7 @@ const nlohmann::json& chat_schema() {
 const nlohmann::json& chat_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"reply", "tool_calls", "rounds", "grounded"}},
+        {"required", {"reply", "tool_calls", "rounds", "grounded", "kind"}},
         {"properties",
          {{"reply", {{"type", "string"}}},
           {"rounds", {{"type", "integer"}}},
@@ -3523,6 +3523,17 @@ const nlohmann::json& chat_output_schema() {
           {"grounding_warning",
            {{"type", "string"},
             {"description", "why the reply is ungrounded, when it is"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", nlohmann::json::array({"action", "answer", "clarify", "abstain",
+                                            "unparsed"})},
+            {"description",
+             "the mode the agent declared for this turn: answer renders as prose, clarify is a "
+             "question awaiting a reply, abstain is a refusal to present as such, action carries "
+             "a proposed Pipeline. `unparsed` means the generation was not a valid envelope"}}},
+          {"pipeline",
+           {{"type", "object"},
+            {"description", "the proposed Pipeline, when the turn built one"}}},
           {"tool_calls",
            {{"type", "array"},
             {"items",
@@ -3793,6 +3804,22 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     // named AND it has a trained model whose real measure + drivers were supplied.
     output["grounded"] = grounded;
     if (!grounding_warning.empty()) output["grounding_warning"] = grounding_warning;
+    // The mode the agent DECLARED for this turn (#918), so a caller switches on an explicit
+    // value instead of inferring intent from the payload's shape. `answer` renders as prose,
+    // `clarify` is a question awaiting a reply, `abstain` is a refusal the surface must present
+    // as such rather than dressing up, and `action` carries a proposed Pipeline to review.
+    if (chat.action) {
+        output["kind"] = std::string(zetta::agent::to_string(chat.action->kind));
+        // A proposed Pipeline is returned only when one was actually built — never an empty
+        // graph, which a caller could mistake for "the agent built nothing on purpose".
+        if (!chat.action->execution_graph.nodes().empty()) {
+            output["pipeline"] = zetta::ir::to_json(chat.action->execution_graph);
+        }
+    } else {
+        // The generation did not parse as a response envelope. Say so explicitly: an unparsed
+        // turn is an error state, not an `action` that happened to carry no pipeline.
+        output["kind"] = "unparsed";
+    }
     return ApiResult::success(std::move(output));
 }
 
