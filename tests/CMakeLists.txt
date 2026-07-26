@@ -143,6 +143,7 @@ add_executable(zetta-tests
   compute/test_compute_device.cpp
   compute/test_cpu_device.cpp
   compute/test_cuda_device.cpp
+  compute/test_cuda_transformer.cpp
   compute/test_device_registry.cpp
   data/test_large_object.cpp
   data/test_import.cpp
