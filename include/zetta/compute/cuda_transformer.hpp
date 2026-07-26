@@ -166,6 +166,25 @@ ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer&
 ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
                                           DeviceBuffer& grad_logits, int seq, int vocab_size);
 
+// grad_table[ids[t], :] += grad_out[t, :] — the embedding's backward, a scatter-add.
+//
+// Deterministic by construction: ONE THREAD PER DIMENSION, each looping the tokens in order. A
+// thread owns a whole column of the table, so repeated token ids accumulate serially inside that
+// thread and no two threads ever write the same cell. The obvious alternative — a thread per
+// (token, dim) with atomicAdd — is faster but accumulates in retire order, so a sequence with a
+// repeated token would give different last bits every run. #926 asserts exact reproducibility.
+ComputeStatus cuda_embedding_backward(const DeviceBuffer& grad_out, const DeviceBuffer& ids,
+                                      DeviceBuffer& grad_table, int seq, int d_model,
+                                      int vocab_size);
+
+// One AdamW step over a parameter, with its resident moments. Fused: read the gradient once, update
+// both moments and the weight, write once. Decoupled weight decay (the AdamW correction), so decay
+// is applied to the weight rather than folded into the gradient.
+ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradient,
+                              DeviceBuffer& moment1, DeviceBuffer& moment2, std::size_t elements,
+                              float learning_rate, float beta1, float beta2, float epsilon,
+                              float weight_decay, int step);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute

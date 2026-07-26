@@ -106,6 +106,18 @@ public:
                                  const ResidentTensor& grad_out, int layer, int seq,
                                  Gradients& gradients, ResidentTensor& grad_hidden) const;
 
+    // One full training step, entirely on-device (#923 rungs 6c + 7): forward with caches, loss,
+    // backward through every layer, AdamW update. Only the scalar loss returns to the host.
+    // `step` is 1-based (AdamW's bias correction requires it).
+    ComputeStatus train_step(ComputeDevice& device, const std::vector<int>& ids,
+                             const std::vector<int>& targets, Gradients& gradients,
+                             Gradients& moment1, Gradients& moment2, int step,
+                             float learning_rate, float& loss);
+
+    // Copy the resident weights back into a host model — how a trained checkpoint is saved, and
+    // how #926 compares backends. Not on any hot path.
+    ComputeStatus download_into(zetta::autograd::QwenModel& host) const;
+
 private:
     // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per
     // layer, then model.norm (then lm_head when embeddings are untied). Indexing arithmetically

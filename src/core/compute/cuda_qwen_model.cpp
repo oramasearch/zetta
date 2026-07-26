@@ -709,6 +709,161 @@ ComputeStatus CudaQwenModel::backward_layer(ComputeDevice& device, const LayerCa
     return ComputeStatus::success();
 }
 
+
+ComputeStatus CudaQwenModel::train_step(ComputeDevice& device, const std::vector<int>& ids,
+                                        const std::vector<int>& targets, Gradients& gradients,
+                                        Gradients& moment1, Gradients& moment2, int step,
+                                        float learning_rate, float& loss) {
+    if (!valid()) return ComputeStatus::invalid_argument("train_step: model is not resident");
+    if (ids.empty() || targets.size() + 1 != ids.size()) {
+        // Next-token prediction: position t predicts token t+1, so targets is exactly one shorter.
+        return ComputeStatus::invalid_argument("train_step: targets must be ids shifted by one");
+    }
+    const int seq = static_cast<int>(ids.size());
+    const int predicted = seq - 1;  // the last position has no next token to predict
+    const int d = config_.d_model;
+    const int vocab = config_.vocab_size;
+    const std::size_t hidden_elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(d);
+
+    if (const auto s = zero_gradients(device, gradients); !s.ok()) return s;
+
+    // --- forward, retaining every layer's cache -------------------------------------------
+    DeviceBuffer device_ids = device.upload<int>(std::span<const int>(ids));
+    DeviceBuffer device_targets = device.upload<int>(std::span<const int>(targets));
+    if (device_ids.empty() || device_targets.empty()) {
+        return ComputeStatus::out_of_memory("train_step: ids");
+    }
+    DeviceBuffer embedded = device.allocate(DataType::Float32, hidden_elements);
+    if (embedded.empty()) return ComputeStatus::out_of_memory("train_step: embedding");
+    if (const auto s = cuda_embedding(parameters_[0].buffer(), device_ids, embedded, seq, d, vocab);
+        !s.ok()) {
+        return s;
+    }
+
+    ResidentTensor hidden = ResidentTensor::adopt(std::move(embedded), {seq, d});
+    std::vector<LayerCache> caches(static_cast<std::size_t>(config_.n_layers));
+    for (int layer = 0; layer < config_.n_layers; ++layer) {
+        ResidentTensor next;
+        if (const auto s = forward_layer_cached(device, std::move(hidden), layer, seq,
+                                                caches[static_cast<std::size_t>(layer)], next);
+            !s.ok()) {
+            return s;
+        }
+        hidden = std::move(next);
+    }
+
+    const std::size_t final_norm_index =
+        1 + static_cast<std::size_t>(config_.n_layers) * kPerLayer;
+    DeviceBuffer normed = device.allocate(DataType::Float32, hidden_elements);
+    if (normed.empty()) return ComputeStatus::out_of_memory("train_step: final norm");
+    if (const auto s = cuda_rms_norm(hidden.buffer(), parameters_[final_norm_index].buffer(),
+                                     normed, seq, d, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+    const std::size_t output_index =
+        config_.tie_word_embeddings ? 0 : final_norm_index + 1;
+
+    DeviceBuffer logits = device.allocate(
+        DataType::Float32, static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab));
+    if (logits.empty()) return ComputeStatus::out_of_memory("train_step: logits");
+    if (const auto s = project(device, normed, parameters_[output_index].buffer(), logits, seq, d,
+                               vocab);
+        !s.ok()) {
+        return s;
+    }
+
+    // --- loss over the predicted positions -------------------------------------------------
+    DeviceBuffer row_loss = device.allocate(DataType::Float32, static_cast<std::size_t>(predicted));
+    DeviceBuffer total = device.allocate(DataType::Float32, 1);
+    if (row_loss.empty() || total.empty()) return ComputeStatus::out_of_memory("train_step: loss");
+    if (const auto s = cuda_cross_entropy(logits, device_targets, row_loss, total, predicted, vocab);
+        !s.ok()) {
+        return s;
+    }
+    // The ONLY value that crosses PCIe on the way out: one float.
+    std::vector<float> host_loss(1, 0.0F);
+    if (const auto s = device.download<float>(total, std::span<float>(host_loss)); !s.ok()) return s;
+    loss = host_loss[0];
+
+    // --- backward ---------------------------------------------------------------------------
+    DeviceBuffer grad_logits = device.allocate(
+        DataType::Float32, static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab));
+    if (grad_logits.empty()) return ComputeStatus::out_of_memory("train_step: grad_logits");
+    // Zero it: only the predicted rows receive a gradient, and the final position must contribute
+    // nothing rather than whatever the allocator last left there.
+    if (const auto s = device.axpy(-1.0, grad_logits, grad_logits); !s.ok()) return s;
+    if (const auto s = cuda_cross_entropy_backward(logits, device_targets, grad_logits, predicted,
+                                                   vocab);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer grad_normed = device.allocate(DataType::Float32, hidden_elements);
+    if (grad_normed.empty()) return ComputeStatus::out_of_memory("train_step: grad_normed");
+    if (const auto s = input_grad(device, grad_logits, parameters_[output_index].buffer(),
+                                  grad_normed, seq, vocab, d);
+        !s.ok()) {
+        return s;
+    }
+    if (const auto s = accumulate_weight_grad(device, grad_logits, normed,
+                                              gradients[output_index].buffer(), seq, vocab, d);
+        !s.ok()) {
+        return s;
+    }
+
+    DeviceBuffer grad_hidden_buffer = device.allocate(DataType::Float32, hidden_elements);
+    if (grad_hidden_buffer.empty()) return ComputeStatus::out_of_memory("train_step: grad_hidden");
+    if (const auto s = cuda_rms_norm_backward(
+            hidden.buffer(), parameters_[final_norm_index].buffer(), grad_normed,
+            grad_hidden_buffer, gradients[final_norm_index].buffer(), seq, d, config_.rms_eps);
+        !s.ok()) {
+        return s;
+    }
+
+    ResidentTensor grad_hidden = ResidentTensor::adopt(std::move(grad_hidden_buffer), {seq, d});
+    for (int layer = config_.n_layers - 1; layer >= 0; --layer) {
+        ResidentTensor next;
+        if (const auto s = backward_layer(device, caches[static_cast<std::size_t>(layer)],
+                                          grad_hidden, layer, seq, gradients, next);
+            !s.ok()) {
+            return s;
+        }
+        grad_hidden = std::move(next);
+    }
+    if (const auto s = cuda_embedding_backward(grad_hidden.buffer(), device_ids,
+                                               gradients[0].buffer(), seq, d, vocab);
+        !s.ok()) {
+        return s;
+    }
+
+    // --- AdamW ------------------------------------------------------------------------------
+    for (std::size_t index = 0; index < parameters_.size(); ++index) {
+        if (const auto s = cuda_adamw_step(parameters_[index].buffer(), gradients[index].buffer(),
+                                           moment1[index].buffer(), moment2[index].buffer(),
+                                           parameters_[index].element_count(), learning_rate, 0.9F,
+                                           0.999F, 1e-8F, 0.0F, step);
+            !s.ok()) {
+            return s;
+        }
+    }
+    return ComputeStatus::success();
+}
+
+ComputeStatus CudaQwenModel::download_into(zetta::autograd::QwenModel& host) const {
+    if (parameters_.size() != host.parameters().size()) {
+        return ComputeStatus::invalid_argument("download_into: parameter count mismatch");
+    }
+    for (std::size_t index = 0; index < parameters_.size(); ++index) {
+        std::vector<float> values(parameters_[index].element_count(), 0.0F);
+        if (const auto s = parameters_[index].download(std::span<float>(values)); !s.ok()) return s;
+        host.parameters()[index] = zetta::autograd::Tensor::leaf(
+            std::move(values), parameters_[index].shape(), /*requires_grad=*/true);
+    }
+    return ComputeStatus::success();
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute

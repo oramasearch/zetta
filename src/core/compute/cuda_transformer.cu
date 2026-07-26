@@ -521,6 +521,44 @@ __global__ void cross_entropy_backward_kernel(const float* __restrict__ logits,
     }
 }
 
+__global__ void embedding_backward_kernel(const float* __restrict__ grad_out,
+                                          const int* __restrict__ ids,
+                                          float* __restrict__ grad_table, int seq, int d_model,
+                                          int vocab_size) {
+    const int dim = static_cast<int>(blockIdx.x) * kThreadsPerBlock + static_cast<int>(threadIdx.x);
+    if (dim >= d_model) return;
+    // This thread owns column `dim` of the whole table, so every accumulation into it is serial
+    // and ordered — no atomics, no run-to-run variation even with repeated token ids.
+    for (int token = 0; token < seq; ++token) {
+        const int id = ids[token];
+        if (id < 0 || id >= vocab_size) continue;
+        grad_table[static_cast<long long>(id) * d_model + dim] +=
+            grad_out[static_cast<long long>(token) * d_model + dim];
+    }
+}
+
+__global__ void adamw_kernel(float* __restrict__ parameter, const float* __restrict__ gradient,
+                             float* __restrict__ moment1, float* __restrict__ moment2,
+                             long long elements, float learning_rate, float beta1, float beta2,
+                             float epsilon, float weight_decay, float bias_correction1,
+                             float bias_correction2) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    if (index >= elements) return;
+    const float g = gradient[index];
+    const float m = beta1 * moment1[index] + (1.0F - beta1) * g;
+    const float v = beta2 * moment2[index] + (1.0F - beta2) * g * g;
+    moment1[index] = m;
+    moment2[index] = v;
+    const float m_hat = m / bias_correction1;
+    const float v_hat = v / bias_correction2;
+    // Decoupled weight decay: applied to the weight, NOT folded into the gradient. That is the
+    // whole difference between AdamW and Adam-with-L2, and folding it in would change what the
+    // adaptive term normalizes.
+    parameter[index] -= learning_rate * (m_hat / (sqrtf(v_hat) + epsilon) +
+                                         weight_decay * parameter[index]);
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -832,6 +870,44 @@ ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const Devi
         as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(grad_logits),
         seq, vocab_size);
     return check_launch("cross_entropy_backward");
+}
+
+ComputeStatus cuda_embedding_backward(const DeviceBuffer& grad_out, const DeviceBuffer& ids,
+                                      DeviceBuffer& grad_table, int seq, int d_model,
+                                      int vocab_size) {
+    if (seq <= 0 || d_model <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("embedding_backward: extents must be positive");
+    }
+    if (grad_table.element_count() <
+        static_cast<std::size_t>(vocab_size) * static_cast<std::size_t>(d_model)) {
+        return ComputeStatus::invalid_argument("embedding_backward: grad_table too small");
+    }
+    const int blocks = (d_model + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    embedding_backward_kernel<<<blocks, kThreadsPerBlock>>>(
+        as_const_float(grad_out), static_cast<const int*>(ids.handle()), as_float(grad_table), seq,
+        d_model, vocab_size);
+    return check_launch("embedding_backward");
+}
+
+ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradient,
+                              DeviceBuffer& moment1, DeviceBuffer& moment2, std::size_t elements,
+                              float learning_rate, float beta1, float beta2, float epsilon,
+                              float weight_decay, int step) {
+    if (elements == 0) return ComputeStatus::success();
+    if (parameter.element_count() < elements || gradient.element_count() < elements ||
+        moment1.element_count() < elements || moment2.element_count() < elements) {
+        return ComputeStatus::invalid_argument("adamw: buffers are too small");
+    }
+    if (step < 1) return ComputeStatus::invalid_argument("adamw: step is 1-based");
+    const float bias_correction1 = 1.0F - powf(beta1, static_cast<float>(step));
+    const float bias_correction2 = 1.0F - powf(beta2, static_cast<float>(step));
+    const long long count = static_cast<long long>(elements);
+    const int blocks = static_cast<int>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    adamw_kernel<<<blocks, kThreadsPerBlock>>>(as_float(parameter), as_const_float(gradient),
+                                               as_float(moment1), as_float(moment2), count,
+                                               learning_rate, beta1, beta2, epsilon, weight_decay,
+                                               bias_correction1, bias_correction2);
+    return check_launch("adamw");
 }
 
 }  // namespace zetta::compute
