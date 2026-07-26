@@ -737,7 +737,13 @@ TEST(CudaTransformer, BatchedGemmMatchesPerBatchGemm) {
         std::vector<float> expected(c_elements, 0.0F);
         ASSERT_TRUE(device.download<float>(one_c, std::span<float>(expected)).ok());
         for (std::size_t i = 0; i < c_elements; ++i) {
-            EXPECT_NEAR(batched[item * c_elements + i], expected[i], 1e-4F)
+            // 2e-3, not 1e-4: TF32 tensor cores carry 10 mantissa bits, so ~1e-3 relative error is
+            // the arithmetic's actual precision, and cuBLAS picks a different kernel for the
+            // batched path than the single one — they round differently by design. Demanding
+            // tighter agreement would be demanding two tensor-core kernels round identically,
+            // which is not a correctness property. #926 must compare against the ACTIVE math mode
+            // for the same reason.
+            EXPECT_NEAR(batched[item * c_elements + i], expected[i], 2e-3F)
                 << "batch " << item << " element " << i;
         }
     }
