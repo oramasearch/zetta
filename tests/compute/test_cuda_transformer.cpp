@@ -87,7 +87,7 @@ TEST(CudaTransformer, RmsNormMatchesTheHostReference) {
 
     const auto status =
         zetta::compute::cuda_rms_norm(device_x, device_weight, device_out, rows, cols, kEpsilon);
-    ASSERT_TRUE(status.ok()) << status.reason();
+    ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<float> actual(x.size(), 0.0F);
     ASSERT_TRUE(device.download<float>(device_out, std::span<float>(actual)).ok());
@@ -152,7 +152,7 @@ TEST(CudaTransformer, RmsNormBackwardMatchesNumericalGradients) {
     const auto status = zetta::compute::cuda_rms_norm_backward(
         device_x, device_weight, device_grad_out, device_grad_x, device_grad_weight, rows, cols,
         kEpsilon);
-    ASSERT_TRUE(status.ok()) << status.reason();
+    ASSERT_TRUE(status.ok()) << status.message;
 
     std::vector<float> grad_x(elements, 0.0F);
     std::vector<float> grad_weight(static_cast<std::size_t>(cols), 0.0F);
