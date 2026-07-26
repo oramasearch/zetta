@@ -11,15 +11,29 @@ trained entirely on-device, composing the fused kernels from
 
 | metric | before | after | note |
 |---|---|---|---|
-| **per step** (Qwen3-0.6B, seq 512) | **15.4 s** | **0.742 s** | **20.8x faster** |
+| **per step, REAL corpus** (variable length, 641-1229 tokens) | **15.4 s** | **1.87 s** | **8.2x faster** |
+| per step, fixed synthetic seq 512 | — | 0.742 s | microbenchmark only, see the correction below |
 | GPU utilization | 11% | **98%** | sampled during the timed loop |
 | VRAM in use | 425 MiB | **11,593 MiB** | of 40,960 |
 | resident weights | ~0 | **2.22 GB** across 310 parameters | uploaded once |
 
-**Against the reference point that mattered: MLX on a Mac does 1.45 s/step. This is 0.742 —
-roughly 2x faster, on the hardware that was previously 10x slower than the laptop.**
+## Correction — this does NOT yet beat MLX
 
-Stable across run lengths: 0.7418 s/step over 12 steps, 0.7419 over 60, 0.7422 over 200.
+The first version of this report claimed 0.742 s/step and "roughly 2x faster than MLX". That number
+came from a **throughput microbenchmark** that trains one fixed synthetic sequence at seq 512. It is
+not representative, in two ways that both flatter it:
+
+- **Sequence length.** Real corpus examples run 641-1229 tokens against the benchmark's 512.
+  Attention compute is O(seq^2), so that is roughly 3x the attention work per step.
+- **Fixed shape.** One shape keeps exact-size allocation-pool reuse at 100%; real data churns
+  shapes every step.
+
+**Measured on the real gated corpus, like-for-like with the MLX baseline: 1.87 s/step against MLX's
+1.45 s/step — 29% SLOWER, not faster.**
+
+The engine is 8.2x faster than the autograd path it replaces, which is real. It is not yet faster
+than a laptop running MLX, and the acceptance criterion has been corrected to measure the corpus
+rather than a synthetic sequence.
 
 ## How it got here, in order
 

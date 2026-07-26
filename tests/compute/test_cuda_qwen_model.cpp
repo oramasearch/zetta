@@ -433,8 +433,13 @@ TEST(CudaQwenModel, TrainedWeightsRoundTripBackToTheHostModel) {
 //   ZETTA_BENCH_STEPS steps to time (default 12)
 //   ZETTA_BENCH_SEQ   sequence length (default 512)
 //
-// Reports per-step time and resident VRAM. The bar: MLX on a Mac does 1.45 s/step; the autograd
-// path on this same A100 does 15.4 s/step. A rented GPU slower than a laptop is not worth using.
+// Reports per-step time and resident VRAM at a FIXED sequence length.
+//
+// **This is a throughput microbenchmark, NOT the acceptance criterion.** A fixed synthetic sequence
+// keeps exact-size pool reuse at 100% and runs shorter than real data, so it flatters the result:
+// it measured 0.742 s/step where the real corpus measures 1.87. The honest bar is
+// SftCudaResident.TrainsTheInteractionCorpusOnTheGpu, on variable-length examples from the gated
+// corpus. Keep this one for isolating kernel changes, never for judging "are we fast enough".
 TEST(CudaQwenModel, AcceptanceBeatsTheMlxBaseline) {
     const char* model_dir = std::getenv("ZETTA_QWEN_DIR");
     if (model_dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run the acceptance benchmark";
@@ -483,7 +488,10 @@ TEST(CudaQwenModel, AcceptanceBeatsTheMlxBaseline) {
               << " s/step  (MLX on a Mac: 1.45; autograd on this box: 15.4)\n";
     std::cerr << "[bench] final loss " << loss << "\n";
     EXPECT_TRUE(std::isfinite(loss));
-    EXPECT_LT(per_step, 1.45) << "a rented A100 must beat the laptop";
+    // Deliberately NOT asserting against the 1.45 s/step MLX bar: this workload is not that
+    // workload, and asserting here would let a favorable synthetic case certify a slower engine.
+    // The real-corpus driver owns that judgement.
+    EXPECT_LT(per_step, 15.4) << "must at least beat the autograd path it replaces";
 }
 
 #endif  // ZETTA_WITH_CUDA
