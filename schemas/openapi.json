@@ -991,6 +991,21 @@
                           "description": "why the reply is ungrounded, when it is",
                           "type": "string"
                         },
+                        "kind": {
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope",
+                          "enum": [
+                            "action",
+                            "answer",
+                            "clarify",
+                            "abstain",
+                            "unparsed"
+                          ],
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "the proposed Pipeline, when the turn built one",
+                          "type": "object"
+                        },
                         "reply": {
                           "type": "string"
                         },
@@ -1019,7 +1034,8 @@
                         "reply",
                         "tool_calls",
                         "rounds",
-                        "grounded"
+                        "grounded",
+                        "kind"
                       ],
                       "type": "object"
                     }
