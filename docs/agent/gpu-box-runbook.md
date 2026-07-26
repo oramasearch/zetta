@@ -54,26 +54,75 @@ rented GPUs stop being an option.** That is not a preference; it is the product'
 
 ## Provision and build
 
+Measured on a Lambda `gpu_1x_a100_sxm4` (2026-07-26): A100-SXM4-40GB, `sm_80`, driver 580.105.08,
+CUDA 12.8, 30 vCPU, 216 GB RAM, Ubuntu 24.04.4, CMake 3.28.3.
+
+### Put the checkout on the LOCAL disk, never the network filesystem
+
+Lambda mounts a persistent filesystem at `/lambda/nfs/<name>` (virtiofs). It is not for building:
+
+| Mount | Device | Measured write |
+|---|---|---|
+| `/` and `$HOME` | `/dev/vda1` ext4 | **2.1 GB/s** |
+| `/lambda/nfs/<name>` | virtiofs | **49.5 MB/s** |
+
+**43x difference.** `$HOME` is already on the local disk, so the default location is correct — just
+never point a build or a checkout at `/lambda/nfs`. There is no separate `/dev/nvme*`: the local disk
+is virtio-blk, NVMe-backed on the host, and `lsblk` reporting `ROTA 1` for it is a virtio artefact,
+not a spinning disk.
+
+The tradeoff to be deliberate about: the local disk is **ephemeral**. Anything worth keeping — a
+checkpoint, a validation report — gets copied off before the instance is destroyed.
+
+### Toolchain
+
+The stock image **cannot build zetta**: it ships only `g++-13`, and GCC 13 does not do C++26.
+`scripts/install-deps.sh` installs the distro `clang`, which is also too old. Install a matching
+Clang explicitly:
+
 ```sh
-# 1. Provision in the Lambda console (A10 or A100), then:
-ssh ubuntu@<instance-ip>
+sudo apt-get update && sudo apt-get install -y ninja-build ccache lld zlib1g-dev libssl-dev pkg-config
+wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh
+sudo /tmp/llvm.sh 22          # 20, 21, 22 available for noble; 22 matches the Mac's Homebrew clang
+```
 
-# 2. Toolchain. Lambda images ship the CUDA toolkit; zetta needs CMake 3.28+ and a
-#    C++26 compiler (Clang 17+ / GCC 14) -- the repo script picks one.
-git clone --recurse-submodules git@github.com:oramasearch/zetta.git
-cd zetta && ./scripts/install-deps.sh
+**Match the Mac's compiler version.** Local development builds with Homebrew clang 22.1.8, and
+`clang-22` on noble is also 22.1.8 — the same C++26 support level, so a build that is green locally
+does not fail here for library-feature reasons.
 
-# 3. Build with the CUDA backend ON (it is OFF by default).
-cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON
+### Get the source there
+
+Two options, and the choice is about credentials:
+
+```sh
+# Preferred once a box-specific deploy key exists: real git history, can commit and push.
+git clone --recurse-submodules -j8 git@github.com:oramasearch/orama-bridge.git ~/orama-work
+
+# Or, with no credential on the rented box at all - nothing to revoke when it is destroyed:
+rsync -a --delete --exclude build/ --exclude .git/ --exclude data/checkpoints/ \
+  ./ ubuntu@<ip>:~/zetta/
+```
+
+Generate any key **on the box** rather than copying a personal one, and remove it from GitHub when
+the instance dies - a deploy key outliving its machine is the thing that gets forgotten.
+
+The submodule recursion matters (`automerge-cpp` nests its own, and provides nlohmann/json).
+`oramacore-cpp` is private - a checkout without it still builds green via `ZETTA_WITH_ORAMACORE`.
+
+### Build
+
+```sh
+cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON -DCMAKE_CXX_COMPILER=clang++-22
 cmake --build build -j
 
-# 4. Confirm the GPU is actually visible to the toolkit, not just present.
+# Confirm the GPU is visible to the toolkit, not merely present in lspci.
 nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
 ./build/tests/zetta-tests --gtest_filter='*Cuda*'
 ```
 
-The submodule recursion matters (`automerge-cpp` nests its own, and provides nlohmann/json).
-`oramacore-cpp` is private — a checkout without it still builds green via `ZETTA_WITH_ORAMACORE`.
+Known wrinkle: `clang++-22` warns it would select GCC 13's libstdc++ headers over GCC 14's. If a
+C++26 library feature turns up missing, install `libstdc++-14-dev` and pass `--gcc-install-dir`, or
+switch to `-stdlib=libc++` with `libc++-22-dev`.
 
 **Expect the CUDA tests to be sparse.** `cuda_device.cu` implements the data-engine primitives
 (`gemm`, `reduce`, `scan`, `sort`, `histogram`, `gather`/`scatter`), which is what exists today.
