@@ -942,6 +942,17 @@
             }
           },
           {
+            "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
             "name": "intent",
@@ -972,6 +983,14 @@
                     },
                     "value": {
                       "properties": {
+                        "grounded": {
+                          "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
+                          "type": "boolean"
+                        },
+                        "grounding_warning": {
+                          "description": "why the reply is ungrounded, when it is",
+                          "type": "string"
+                        },
                         "reply": {
                           "type": "string"
                         },
@@ -999,7 +1018,8 @@
                       "required": [
                         "reply",
                         "tool_calls",
-                        "rounds"
+                        "rounds",
+                        "grounded"
                       ],
                       "type": "object"
                     }

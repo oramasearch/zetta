@@ -300,14 +300,16 @@ InteractionFamily qa_results_family(const std::vector<ProjectContext>& contexts,
 
         for (std::size_t ask_index = 0; ask_index < asks.size(); ++ask_index) {
             for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
-                EndState required = facts({{"grounded", true},
-                                           {"numbers_from_context", true},
-                                           {"top_driver", top_driver},
-                                           {"measure_auc", context.auc}});
+                // A required fact must be PROJECTABLE from the response — you cannot verify what
+                // you cannot check, and a corpus that requires unverifiable facts silently stops
+                // measuring anything. So each ask requires exactly what its reference answer
+                // carries, and nothing more.
+                EndState required = facts({{"grounded", true}, {"numbers_from_context", true}});
                 std::string message;
                 switch (ask_index) {
                     case 0:
                     case 5:
+                        required.set("top_driver", top_driver);
                         message = "The strongest driver is **" + top_driver + "** at " +
                                   percent(context.drivers.front().second) +
                                   " of total feature importance.";
@@ -315,11 +317,16 @@ InteractionFamily qa_results_family(const std::vector<ProjectContext>& contexts,
                     case 1:
                     case 7:
                         required.set("top_account", top_account);
+                        required.set("top_driver", top_driver);
                         message = "The highest-risk account is **" + top_account + "** at risk " +
                                   number(context.at_risk.front().second, 3) + ", driven mainly by " +
                                   top_driver + ".";
                         break;
                     default:
+                        // Round-trip the figure through the SAME formatting the grounding uses,
+                        // so the required value is bit-identical to what a correct answer cites.
+                        required.set("measure_auc", std::stod(number(context.auc, 3)));
+                        required.set("top_driver", top_driver);
                         message = "This model scores **AUC " + number(context.auc, 3) +
                                   "** (accuracy " + number(context.accuracy, 3) +
                                   "), with " + top_driver + " the strongest driver.";
@@ -457,15 +464,25 @@ InteractionFamily capability_family(int phrasings) {
                 if (character == '_') character = ' ';
             }
             shape.replace(slot, 2, readable);
+            // Grounded in the REGISTRY listing, not in the model's memory of what Orama offers.
+            // That makes "did it name a capability that actually exists?" decidable, and makes
+            // inventing a plausible-sounding one a graded failure.
+            std::string listing = "Capabilities:\n";
+            for (std::size_t offset = 0; offset < 8; ++offset) {
+                listing += "  " +
+                           std::string(kCapabilities[(index + offset) % kCapabilities.size()]) +
+                           "\n";
+            }
             EndState required = facts({{"grounded", true},
+                                       {"numbers_from_context", true},
                                        {"capability_named", capability},
                                        {"capability_exists", true}});
             const std::string message = "Yes - use the `" + capability +
                                         "` capability. It's available over both MCP and the "
                                         "REST surface at `/v1/" + capability + "`.";
             family.cases.push_back(make_case(
-                "capability/" + capability + "/" + std::to_string(phrasing), shape, std::string(),
-                InteractionKind::Answer, message, required));
+                "capability/" + capability + "/" + std::to_string(phrasing), shape,
+                std::move(listing), InteractionKind::Answer, message, required));
         }
     }
     return family;
@@ -497,10 +514,10 @@ InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
         thin.auc = 0.0;
         const std::string grounding = render_grounding(thin, GroundingView::Results);
         for (std::size_t ask_index = 0; ask_index < unsupported.size(); ++ask_index) {
-            EndState required = facts({{"abstain", true},
-                                       {"in_scope", true},
-                                       {"reason", std::string("insufficient_context")},
-                                       {"built_nothing", true}});
+            // Only projectable facts: declining and building nothing are both checkable from the
+            // response. Whether the ask was "in scope" is a property of the ASK, not of the
+            // answer, so requiring it would be requiring something no grader can verify.
+            EndState required = facts({{"abstain", true}, {"built_nothing", true}});
             family.cases.push_back(make_case(
                 "abstain/unsupported/" + std::to_string(context_index) + "/" +
                     std::to_string(ask_index),
@@ -510,10 +527,7 @@ InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
                 required));
         }
         if (context_index < out_of_scope.size()) {
-            EndState required = facts({{"abstain", true},
-                                       {"in_scope", false},
-                                       {"reason", std::string("out_of_scope")},
-                                       {"built_nothing", true}});
+            EndState required = facts({{"abstain", true}, {"built_nothing", true}});
             family.cases.push_back(make_case(
                 "abstain/scope/" + std::to_string(context_index), out_of_scope[context_index],
                 std::string(), InteractionKind::Abstain,
@@ -751,15 +765,18 @@ InteractionFamily governance_family(const std::vector<ProjectContext>& contexts,
     InteractionFamily family{
         "governance",
         "Lifecycle and governance turns: approvals, audit, rollback, deployment readiness", {}};
+    // {ask, the CAPABILITY a correct response calls, is it an action}. Governance turns are
+    // graded on the capability requested — a checkable fact — rather than on prose claiming an
+    // approval was recorded.
     const std::array<std::tuple<const char*, const char*, bool>, 8> asks = {{
-        {"What's waiting on my approval?", "listed_pending_approvals", false},
-        {"Who ran this last?", "named_actor", false},
-        {"Show me the audit trail for this Project.", "listed_audit", false},
-        {"Is this ready for production?", "checked_verification", false},
-        {"Roll back to the previous Saved Version.", "rollback_requested", true},
-        {"Deploy the approved version.", "deploy_requested", true},
-        {"Who can see this Project?", "listed_permissions", false},
-        {"Schedule this to run nightly.", "schedule_requested", true},
+        {"What's waiting on my approval?", "list_consent_requests", false},
+        {"Who ran this last?", "list_runs", false},
+        {"Show me the audit trail for this Project.", "list_traces", false},
+        {"Is this ready for production?", "get_spec", false},
+        {"Roll back to the previous Saved Version.", "deploy", true},
+        {"Deploy the approved version.", "deploy", true},
+        {"Who can see this Project?", "get_project", false},
+        {"Schedule this to run nightly.", "run", true},
     }};
     const std::array<const char*, 3> shapes = {"{}", "Quick question - {}", "Hey, {}"};
 
@@ -767,7 +784,7 @@ InteractionFamily governance_family(const std::vector<ProjectContext>& contexts,
         const std::string grounding =
             render_grounding(contexts[context_index], GroundingView::Runs);
         for (std::size_t ask_index = 0; ask_index < asks.size(); ++ask_index) {
-            const auto& [request, fact, is_action] = asks[ask_index];
+            const auto& [request, capability, is_action] = asks[ask_index];
             for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
                 std::string ask = request;
                 if (phrasing > 0) {
@@ -779,8 +796,12 @@ InteractionFamily governance_family(const std::vector<ProjectContext>& contexts,
                     shape.replace(shape.find("{}"), 2, lowered);
                     ask = shape;
                 }
-                EndState required = facts({{fact, true}, {"approval_gated", true}});
-                if (!is_action) required.set("grounded", true);
+                EndState required =
+                    facts({{std::string("called_") + capability, true},
+                           {"grounded", true},
+                           {"numbers_from_context", true}});
+                std::vector<zetta::agent::ToolCall> calls;
+                calls.emplace_back(capability, nlohmann::json::object());
                 family.cases.push_back(make_case(
                     "governance/" + std::to_string(context_index) + "/" +
                         std::to_string(ask_index) + "/" + std::to_string(phrasing),
@@ -789,7 +810,7 @@ InteractionFamily governance_family(const std::vector<ProjectContext>& contexts,
                     is_action ? "I've queued that as a governed change - it needs an approval "
                                 "before it takes effect. Here's the impact preview."
                               : "Here's what the Project's records show for that.",
-                    required));
+                    required, {}, std::move(calls)));
             }
         }
     }

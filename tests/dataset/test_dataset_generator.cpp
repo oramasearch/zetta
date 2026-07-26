@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "zetta/agent/admission_gate.hpp"
+#include "zetta/agent/response_facts.hpp"
 #include "zetta/agent/solution_graph.hpp"
 #include "zetta/dataset/base_agent_generator.hpp"
 #include "zetta/dataset/dataset_generator.hpp"
@@ -43,14 +44,20 @@ TEST(DatasetGenerator, BaseAgentProducesAGatedCorpus) {
     // Churn + search + the plan templates (#878), each × 2 variants. Coverage grows, so assert a
     // floor rather than an exact count; every case is gated with a gradeable reference action.
     EXPECT_GE(dataset.subjects.size(), 12u) << "grows toward full-plan coverage";
-    EXPECT_EQ(dataset.cases.size(), dataset.subjects.size() * spec.variants_per_subject);
+    // The corpus is no longer one-case-per-subject: the interaction families (#918) expand a
+    // cross product of contexts x asks x phrasings under each family's subject entry.
+    EXPECT_GE(dataset.cases.size(), dataset.subjects.size() * spec.variants_per_subject);
     for (const zetta::agent::AdmissionCase& admission_case : dataset.cases) {
         ASSERT_TRUE(admission_case.reference_action.has_value()) << "each case carries its action";
+        // Grade through the RESPONSE projection, not the pipeline alone: an `answer`, a
+        // `clarify` and an `abstain` carry no pipeline, so their correctness lives in the
+        // message and in what the model did NOT do. This also enforces the corpus rule that a
+        // required fact must be projectable — you cannot verify what you cannot check.
         EXPECT_TRUE(admission_case.task.grader()
-                        .grade(zetta::agent::graph_solution_facts(
-                            admission_case.reference_action->execution_graph))
+                        .grade(zetta::agent::response_solution_facts(
+                            *admission_case.reference_action, admission_case.grounding))
                         .passed)
-            << "subject " << admission_case.task.id() << " pipeline must pass its grader";
+            << "case " << admission_case.task.id() << " reference must pass its own grader";
     }
 
     // The whole generated corpus ADMITS — reference passes, negative controls fail everywhere.

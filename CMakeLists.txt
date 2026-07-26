@@ -623,6 +623,7 @@ add_library(zetta-core STATIC
   src/core/agent/agent_store.cpp
   src/core/agent/base_prompt.cpp
   src/core/agent/interaction.cpp
+  src/core/agent/response_facts.cpp
   src/core/agent/solution_graph.cpp
   src/core/dataset/auto_suggest_generator.cpp
   src/core/dataset/base_agent_generator.cpp
