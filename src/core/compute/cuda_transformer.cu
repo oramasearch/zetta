@@ -637,6 +637,51 @@ __global__ void unpack_heads_kernel(const float* __restrict__ in, float* __restr
         static_cast<long long>(head) * head_dim + dim] = in[index];
 }
 
+// The softmax Jacobian, in place over [n_heads * seq, seq]: dS = P * (dP - sum_j dP_j P_j).
+// One block per row, so the row reduction is shared memory and nothing spills to global.
+__global__ void softmax_jacobian_kernel(const float* __restrict__ probabilities,
+                                        float* __restrict__ grad, int seq, float scale) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    const int query = row % seq;
+    const long long base = static_cast<long long>(row) * seq;
+    const int visible = query + 1;  // causal
+
+    float local = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        local += grad[base + c] * probabilities[base + c];
+    }
+    const float dot = block_sum(local, scratch);
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        grad[base + c] = probabilities[base + c] * (grad[base + c] - dot) * scale;
+    }
+    // Masked positions contribute nothing; the following GEMMs read the whole row.
+    for (int c = visible + static_cast<int>(threadIdx.x); c < seq; c += kThreadsPerBlock) {
+        grad[base + c] = 0.0F;
+    }
+}
+
+// Sum a packed [n_heads, seq, head_dim] gradient down onto [seq, n_kv_heads * head_dim], adding
+// each GQA group's members in a FIXED order — the determinism the streaming kernel got from owning
+// the key index.
+__global__ void unpack_kv_sum_kernel(const float* __restrict__ packed, float* __restrict__ out,
+                                     int seq, int n_heads, int n_kv_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(seq) * n_kv_heads * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int kv_head = static_cast<int>((index / head_dim) % n_kv_heads);
+    const int token = static_cast<int>(index / (static_cast<long long>(head_dim) * n_kv_heads));
+    const int group = n_heads / n_kv_heads;
+    float total_value = 0.0F;
+    for (int member = 0; member < group; ++member) {
+        const int head = kv_head * group + member;
+        total_value += packed[(static_cast<long long>(head) * seq + token) * head_dim + dim];
+    }
+    out[index] = total_value;
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -1068,6 +1113,102 @@ ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuff
     unpack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(context_packed), as_float(out),
                                                       seq, n_heads, head_dim);
     return check_launch("attention_batched.unpack");
+}
+
+ComputeStatus cuda_causal_attention_backward_batched(
+    CudaDevice& device, const DeviceBuffer& q, const DeviceBuffer& k, const DeviceBuffer& v,
+    const DeviceBuffer& probabilities, const DeviceBuffer& grad_out, DeviceBuffer& grad_scores,
+    DeviceBuffer& grad_q, DeviceBuffer& grad_k, DeviceBuffer& grad_v, int seq, int n_heads,
+    int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    const std::size_t per_head = static_cast<std::size_t>(seq) * static_cast<std::size_t>(head_dim);
+    const std::size_t packed = per_head * static_cast<std::size_t>(n_heads);
+    const std::size_t score_stride = static_cast<std::size_t>(seq) * static_cast<std::size_t>(seq);
+
+    DeviceBuffer q_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer k_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer v_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_out_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_q_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_k_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_v_packed = device.allocate(DataType::Float32, packed);
+    if (q_packed.empty() || k_packed.empty() || v_packed.empty() || grad_out_packed.empty() ||
+        grad_q_packed.empty() || grad_k_packed.empty() || grad_v_packed.empty()) {
+        return ComputeStatus::out_of_memory("attention_backward_batched: packing");
+    }
+    const int blocks = static_cast<int>((packed + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(q), as_float(q_packed), seq,
+                                                    n_heads, n_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(k), as_float(k_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(v), as_float(v_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(grad_out),
+                                                    as_float(grad_out_packed), seq, n_heads,
+                                                    n_heads, head_dim);
+    if (const auto s = check_launch("attention_backward_batched.pack"); !s.ok()) return s;
+
+    // grad_P = grad_out * V^T
+    GemmParams dp;
+    dp.rows = static_cast<std::size_t>(seq);
+    dp.inner = static_cast<std::size_t>(head_dim);
+    dp.cols = static_cast<std::size_t>(seq);
+    dp.alpha = 1.0; dp.beta = 0.0; dp.transpose_a = false; dp.transpose_b = true;
+    if (const auto s = device.gemm_batched(dp, grad_out_packed, per_head, v_packed, per_head,
+                                           grad_scores, score_stride, n_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    // Softmax Jacobian, folding in the 1/sqrt(head_dim) the forward applied to the scores.
+    const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+    softmax_jacobian_kernel<<<n_heads * seq, kThreadsPerBlock>>>(as_const_float(probabilities),
+                                                                 as_float(grad_scores), seq, scale);
+    if (const auto s = check_launch("attention_backward_batched.jacobian"); !s.ok()) return s;
+
+    // grad_Q = grad_S * K
+    GemmParams dq;
+    dq.rows = static_cast<std::size_t>(seq);
+    dq.inner = static_cast<std::size_t>(seq);
+    dq.cols = static_cast<std::size_t>(head_dim);
+    dq.alpha = 1.0; dq.beta = 0.0; dq.transpose_a = false; dq.transpose_b = false;
+    if (const auto s = device.gemm_batched(dq, grad_scores, score_stride, k_packed, per_head,
+                                           grad_q_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+    // grad_K = grad_S^T * Q
+    GemmParams dk = dq;
+    dk.transpose_a = true;
+    if (const auto s = device.gemm_batched(dk, grad_scores, score_stride, q_packed, per_head,
+                                           grad_k_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+    // grad_V = P^T * grad_out
+    GemmParams dv = dq;
+    dv.transpose_a = true;
+    if (const auto s = device.gemm_batched(dv, probabilities, score_stride, grad_out_packed,
+                                           per_head, grad_v_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    unpack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(grad_q_packed),
+                                                      as_float(grad_q), seq, n_heads, head_dim);
+    const std::size_t kv_elements =
+        static_cast<std::size_t>(seq) * n_kv_heads * static_cast<std::size_t>(head_dim);
+    const int kv_blocks = static_cast<int>((kv_elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    unpack_kv_sum_kernel<<<kv_blocks, kThreadsPerBlock>>>(as_const_float(grad_k_packed),
+                                                          as_float(grad_k), seq, n_heads,
+                                                          n_kv_heads, head_dim);
+    unpack_kv_sum_kernel<<<kv_blocks, kThreadsPerBlock>>>(as_const_float(grad_v_packed),
+                                                          as_float(grad_v), seq, n_heads,
+                                                          n_kv_heads, head_dim);
+    return check_launch("attention_backward_batched.unpack");
 }
 
 }  // namespace zetta::compute

@@ -206,6 +206,21 @@ ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuff
                                             DeviceBuffer& softmax_lse, int seq, int n_heads,
                                             int n_kv_heads, int head_dim);
 
+// The batched backward. Takes the softmax PROBABILITIES the forward already wrote (its `scores`
+// buffer, overwritten in place), so nothing is recomputed and the four products are batched GEMMs:
+//
+//   grad_P = grad_out V^T ;  grad_S = P * (grad_P - rowsum(grad_P * P))   [softmax Jacobian]
+//   grad_Q = grad_S K   ;    grad_K = grad_S^T Q   ;    grad_V = P^T grad_out
+//
+// grad_K and grad_V are summed across each GQA group, which is where the streaming kernel avoided
+// an atomic by owning the key index; here the group reduction is an explicit fixed-order pass, same
+// determinism guarantee.
+ComputeStatus cuda_causal_attention_backward_batched(
+    CudaDevice& device, const DeviceBuffer& q, const DeviceBuffer& k, const DeviceBuffer& v,
+    const DeviceBuffer& probabilities, const DeviceBuffer& grad_out, DeviceBuffer& grad_scores,
+    DeviceBuffer& grad_q, DeviceBuffer& grad_k, DeviceBuffer& grad_v, int seq, int n_heads,
+    int n_kv_heads, int head_dim);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute
