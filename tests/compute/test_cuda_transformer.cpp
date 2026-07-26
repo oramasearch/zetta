@@ -218,6 +218,117 @@ TEST(CudaTransformer, RmsNormBackwardIsBitwiseReproducible) {
     }
 }
 
+
+// --- RoPE ------------------------------------------------------------------------------------
+// RoPE is a ROTATION, which gives two properties no formula comparison would catch on its own:
+// it preserves each row's norm, and it is the identity at position 0. A swapped sin/cos, a wrong
+// sign, or a mispaired (i, i+half) still "looks like" a rotation formula but breaks these.
+TEST(CudaTransformer, RopePreservesRowNormsAndIsIdentityAtPositionZero) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int rows = 6;
+    const int head_dim = 64;
+    const std::vector<float> x = random_values(static_cast<std::size_t>(rows) * head_dim, 101U);
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer device_out = device.allocate(DataType::Float32, x.size());
+    ASSERT_TRUE(zetta::compute::cuda_rope(device_x, device_out, rows, head_dim, 10000.0F, 0).ok());
+    std::vector<float> out(x.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(device_out, std::span<float>(out)).ok());
+
+    for (int row = 0; row < rows; ++row) {
+        double before = 0.0;
+        double after = 0.0;
+        for (int c = 0; c < head_dim; ++c) {
+            const std::size_t index = static_cast<std::size_t>(row) * head_dim + c;
+            before += static_cast<double>(x[index]) * x[index];
+            after += static_cast<double>(out[index]) * out[index];
+        }
+        EXPECT_NEAR(std::sqrt(after), std::sqrt(before), 1e-3) << "row " << row << " norm changed";
+    }
+    // Row 0 is position 0, where every angle is 0, so the rotation is the identity.
+    for (int c = 0; c < head_dim; ++c) {
+        EXPECT_NEAR(out[static_cast<std::size_t>(c)], x[static_cast<std::size_t>(c)], 1e-6F)
+            << "position 0 must be the identity, at " << c;
+    }
+}
+
+// The backward is the INVERSE rotation, so forward-then-backward must return the original. This
+// verifies the gradient without numerical differencing, and would catch a sign error immediately.
+TEST(CudaTransformer, RopeBackwardIsTheInverseRotation) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int rows = 5;
+    const int head_dim = 32;
+    const std::vector<float> x = random_values(static_cast<std::size_t>(rows) * head_dim, 202U);
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer rotated = device.allocate(DataType::Float32, x.size());
+    DeviceBuffer restored = device.allocate(DataType::Float32, x.size());
+    ASSERT_TRUE(zetta::compute::cuda_rope(device_x, rotated, rows, head_dim, 10000.0F, 0).ok());
+    ASSERT_TRUE(
+        zetta::compute::cuda_rope_backward(rotated, restored, rows, head_dim, 10000.0F, 0).ok());
+
+    std::vector<float> round_trip(x.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(restored, std::span<float>(round_trip)).ok());
+    for (std::size_t index = 0; index < x.size(); ++index) {
+        EXPECT_NEAR(round_trip[index], x[index], 1e-4F) << "round trip differs at " << index;
+    }
+}
+
+TEST(CudaTransformer, RopeRejectsAnOddHeadDim) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    // rotate_half pairs (i, i + head_dim/2); an odd head_dim has no such pairing, and truncating
+    // silently would rotate some elements and leave others untouched.
+    const std::vector<float> x(15, 0.5F);
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer out = device.allocate(DataType::Float32, x.size());
+    EXPECT_FALSE(zetta::compute::cuda_rope(device_x, out, 3, 5, 10000.0F, 0).ok());
+}
+
+// --- SwiGLU ----------------------------------------------------------------------------------
+TEST(CudaTransformer, SwigluMatchesTheHostReferenceAndItsGradients) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const std::size_t elements = 1000;  // not a multiple of the 256-thread block
+    const std::vector<float> gate = random_values(elements, 303U);
+    const std::vector<float> up = random_values(elements, 404U);
+    const std::vector<float> grad_out = random_values(elements, 505U);
+
+    const auto sigmoid = [](double value) { return 1.0 / (1.0 + std::exp(-value)); };
+
+    DeviceBuffer device_gate = device.upload<float>(std::span<const float>(gate));
+    DeviceBuffer device_up = device.upload<float>(std::span<const float>(up));
+    DeviceBuffer device_grad_out = device.upload<float>(std::span<const float>(grad_out));
+    DeviceBuffer device_out = device.allocate(DataType::Float32, elements);
+    DeviceBuffer device_grad_gate = device.allocate(DataType::Float32, elements);
+    DeviceBuffer device_grad_up = device.allocate(DataType::Float32, elements);
+
+    ASSERT_TRUE(zetta::compute::cuda_swiglu(device_gate, device_up, device_out, elements).ok());
+    ASSERT_TRUE(zetta::compute::cuda_swiglu_backward(device_gate, device_up, device_grad_out,
+                                                     device_grad_gate, device_grad_up, elements)
+                    .ok());
+
+    std::vector<float> out(elements, 0.0F);
+    std::vector<float> grad_gate(elements, 0.0F);
+    std::vector<float> grad_up(elements, 0.0F);
+    ASSERT_TRUE(device.download<float>(device_out, std::span<float>(out)).ok());
+    ASSERT_TRUE(device.download<float>(device_grad_gate, std::span<float>(grad_gate)).ok());
+    ASSERT_TRUE(device.download<float>(device_grad_up, std::span<float>(grad_up)).ok());
+
+    for (std::size_t index = 0; index < elements; ++index) {
+        const double g = gate[index];
+        const double s = sigmoid(g);
+        const double silu = g * s;
+        EXPECT_NEAR(out[index], silu * up[index], 1e-5) << "forward at " << index;
+        EXPECT_NEAR(grad_gate[index], grad_out[index] * up[index] * s * (1.0 + g * (1.0 - s)), 1e-5)
+            << "grad_gate at " << index;
+        EXPECT_NEAR(grad_up[index], grad_out[index] * silu, 1e-5) << "grad_up at " << index;
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

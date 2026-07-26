@@ -145,6 +145,71 @@ __global__ void rms_norm_row_scale_kernel(const float* __restrict__ x, float* __
     }
 }
 
+
+// --- RoPE ------------------------------------------------------------------------------------
+// One thread per ROTATED PAIR: thread (row, i) owns elements i and i + half, so the rotation is a
+// single read-modify-write of both halves with no synchronization. Writing per-element instead
+// would make each thread recompute the same sin/cos its partner needs.
+__global__ void rope_kernel(const float* __restrict__ x, float* __restrict__ out, int rows,
+                            int head_dim, float base, int position_offset, bool inverse) {
+    const int half = head_dim / 2;
+    const int pair = static_cast<int>(blockIdx.x) * kThreadsPerBlock + static_cast<int>(threadIdx.x);
+    const int total = rows * half;
+    if (pair >= total) return;
+    const int row = pair / half;
+    const int index = pair % half;
+
+    const float exponent = -2.0F * static_cast<float>(index) / static_cast<float>(head_dim);
+    const float inverse_frequency = powf(base, exponent);
+    const float angle =
+        static_cast<float>(row + position_offset) * inverse_frequency;
+    const float cosine = cosf(angle);
+    const float sine = sinf(angle);
+
+    const long long offset = static_cast<long long>(row) * head_dim + index;
+    const float low = x[offset];
+    const float high = x[offset + half];
+    if (inverse) {
+        // The transpose of the rotation, which for an orthogonal matrix is its inverse.
+        out[offset] = low * cosine + high * sine;
+        out[offset + half] = -low * sine + high * cosine;
+    } else {
+        out[offset] = low * cosine - high * sine;
+        out[offset + half] = low * sine + high * cosine;
+    }
+}
+
+// --- SwiGLU ----------------------------------------------------------------------------------
+__device__ inline float sigmoid_of(float value) { return 1.0F / (1.0F + expf(-value)); }
+
+// out = silu(gate) * up. silu(gate) is never written to memory — that is the fusion.
+__global__ void swiglu_kernel(const float* __restrict__ gate, const float* __restrict__ up,
+                              float* __restrict__ out, long long elements) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    if (index >= elements) return;
+    const float g = gate[index];
+    out[index] = g * sigmoid_of(g) * up[index];
+}
+
+// Both gradients in one pass: they share sigmoid(gate), and recomputing it is cheaper than saving
+// it in the forward pass and reading it back.
+__global__ void swiglu_backward_kernel(const float* __restrict__ gate,
+                                       const float* __restrict__ up,
+                                       const float* __restrict__ grad_out,
+                                       float* __restrict__ grad_gate, float* __restrict__ grad_up,
+                                       long long elements) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    if (index >= elements) return;
+    const float g = gate[index];
+    const float s = sigmoid_of(g);
+    const float silu = g * s;
+    const float upstream = grad_out[index];
+    grad_gate[index] = upstream * up[index] * s * (1.0F + g * (1.0F - s));
+    grad_up[index] = upstream * silu;
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -220,6 +285,95 @@ ComputeStatus cuda_rms_norm_backward(const DeviceBuffer& x, const DeviceBuffer& 
         as_const_float(x), as_const_float(grad_out), as_const_float(row_scale),
         as_float(grad_weight), rows, cols);
     return check_launch("rms_norm_backward.grad_weight");
+}
+
+namespace {
+
+ComputeStatus validate_rope(const DeviceBuffer& in, const DeviceBuffer& out, int rows,
+                            int head_dim) {
+    if (rows <= 0 || head_dim <= 0) {
+        return ComputeStatus::invalid_argument("rope: rows and head_dim must be positive");
+    }
+    if (head_dim % 2 != 0) {
+        // rotate_half pairs (i, i + head_dim/2); an odd head_dim has no such pairing, and
+        // silently truncating would rotate some elements and leave others untouched.
+        return ComputeStatus::invalid_argument("rope: head_dim must be even (rotate_half pairs)");
+    }
+    const std::size_t elements =
+        static_cast<std::size_t>(rows) * static_cast<std::size_t>(head_dim);
+    if (in.empty() || in.element_count() < elements || out.element_count() < elements) {
+        return ComputeStatus::invalid_argument("rope: buffers must hold rows * head_dim");
+    }
+    return ComputeStatus::success();
+}
+
+ComputeStatus launch_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
+                          float base, int position_offset, bool inverse, const char* context) {
+    if (const ComputeStatus valid = validate_rope(x, out, rows, head_dim); !valid.ok()) return valid;
+    const int pairs = rows * (head_dim / 2);
+    const int blocks = (pairs + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    rope_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(x), as_float(out), rows, head_dim,
+                                              base, position_offset, inverse);
+    return check_launch(context);
+}
+
+ComputeStatus validate_elementwise(const DeviceBuffer& a, const DeviceBuffer& b,
+                                   std::size_t elements, const char* op) {
+    if (elements == 0) {
+        return ComputeStatus::invalid_argument(std::string(op) + ": elements must be positive");
+    }
+    if (a.element_count() < elements || b.element_count() < elements) {
+        return ComputeStatus::invalid_argument(std::string(op) + ": buffers are too small");
+    }
+    return ComputeStatus::success();
+}
+
+}  // namespace
+
+ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
+                        float base, int position_offset) {
+    return launch_rope(x, out, rows, head_dim, base, position_offset, /*inverse=*/false, "rope");
+}
+
+ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
+                                 int head_dim, float base, int position_offset) {
+    return launch_rope(grad_out, grad_x, rows, head_dim, base, position_offset, /*inverse=*/true,
+                       "rope_backward");
+}
+
+ComputeStatus cuda_swiglu(const DeviceBuffer& gate, const DeviceBuffer& up, DeviceBuffer& out,
+                          std::size_t elements) {
+    if (const ComputeStatus valid = validate_elementwise(gate, up, elements, "swiglu");
+        !valid.ok()) {
+        return valid;
+    }
+    if (out.element_count() < elements) {
+        return ComputeStatus::invalid_argument("swiglu: out is too small");
+    }
+    const long long count = static_cast<long long>(elements);
+    const int blocks = static_cast<int>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    swiglu_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(gate), as_const_float(up),
+                                                as_float(out), count);
+    return check_launch("swiglu");
+}
+
+ComputeStatus cuda_swiglu_backward(const DeviceBuffer& gate, const DeviceBuffer& up,
+                                   const DeviceBuffer& grad_out, DeviceBuffer& grad_gate,
+                                   DeviceBuffer& grad_up, std::size_t elements) {
+    if (const ComputeStatus valid = validate_elementwise(gate, up, elements, "swiglu_backward");
+        !valid.ok()) {
+        return valid;
+    }
+    if (grad_out.element_count() < elements || grad_gate.element_count() < elements ||
+        grad_up.element_count() < elements) {
+        return ComputeStatus::invalid_argument("swiglu_backward: gradient buffers are too small");
+    }
+    const long long count = static_cast<long long>(elements);
+    const int blocks = static_cast<int>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    swiglu_backward_kernel<<<blocks, kThreadsPerBlock>>>(
+        as_const_float(gate), as_const_float(up), as_const_float(grad_out), as_float(grad_gate),
+        as_float(grad_up), count);
+    return check_launch("swiglu_backward");
 }
 
 }  // namespace zetta::compute

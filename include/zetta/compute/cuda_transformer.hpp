@@ -56,6 +56,42 @@ ComputeStatus cuda_rms_norm_backward(const DeviceBuffer& x, const DeviceBuffer& 
                                      const DeviceBuffer& grad_out, DeviceBuffer& grad_x,
                                      DeviceBuffer& grad_weight, int rows, int cols, float epsilon);
 
+// --- RoPE ------------------------------------------------------------------------------------
+// Rotary positional embedding, the rotate_half convention Qwen/LLaMA use and the same one
+// autograd::rope implements: rotate the pair (i, i + head_dim/2) of each row by
+// angle = position * base^(-2i/head_dim).
+//
+//   out[p, i]        = x[p, i] * cos(angle) - x[p, i + half] * sin(angle)
+//   out[p, i + half] = x[p, i] * sin(angle) + x[p, i + half] * cos(angle)
+//
+// `x` is [rows, head_dim] where the row index IS the position (so a [seq, n_heads * head_dim]
+// tensor is passed one head at a time, or with rows = seq and head_dim per head). Being a
+// rotation, it preserves each row's norm and is the identity at position 0 — two properties the
+// tests assert directly, because they catch a swapped sin/cos that a formula comparison can miss.
+ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
+                        float base, int position_offset);
+
+// The inverse rotation, which is what the transpose of an orthogonal matrix gives:
+//   grad_x[p, i]        =  grad_out[p, i] * cos + grad_out[p, i + half] * sin
+//   grad_x[p, i + half] = -grad_out[p, i] * sin + grad_out[p, i + half] * cos
+ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
+                                 int head_dim, float base, int position_offset);
+
+// --- SwiGLU ----------------------------------------------------------------------------------
+// out = silu(gate) * up, elementwise, with silu(v) = v * sigmoid(v) — the Qwen MLP activation.
+// Fused so the intermediate silu(gate) is never written to memory: at these sizes the op is
+// bandwidth-bound, so materializing it would roughly double the traffic for no benefit.
+ComputeStatus cuda_swiglu(const DeviceBuffer& gate, const DeviceBuffer& up, DeviceBuffer& out,
+                          std::size_t elements);
+
+// grad_gate = grad_out * up * sigmoid(g) * (1 + g * (1 - sigmoid(g)))
+// grad_up   = grad_out * silu(g)
+// Both are written in one pass, since both need sigmoid(gate) and recomputing it is cheaper than
+// reading a saved copy back from memory.
+ComputeStatus cuda_swiglu_backward(const DeviceBuffer& gate, const DeviceBuffer& up,
+                                   const DeviceBuffer& grad_out, DeviceBuffer& grad_gate,
+                                   DeviceBuffer& grad_up, std::size_t elements);
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace zetta::compute
