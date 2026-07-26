@@ -622,10 +622,12 @@ add_library(zetta-core STATIC
   src/core/agent/agent_record.cpp
   src/core/agent/agent_store.cpp
   src/core/agent/base_prompt.cpp
+  src/core/agent/interaction.cpp
   src/core/agent/solution_graph.cpp
   src/core/dataset/auto_suggest_generator.cpp
   src/core/dataset/base_agent_generator.cpp
   src/core/dataset/dataset_generator_factory.cpp
+  src/core/dataset/interaction_families.cpp
   src/core/dataset/plan_templates.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp

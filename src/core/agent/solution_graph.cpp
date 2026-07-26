@@ -65,6 +65,7 @@ StudioAction reference_action_from_facts(const EndState& facts) {
     // graph still carries the abstain facts so the gate scores the abstain end-state (the agent
     // must learn to refuse, not fabricate a pipeline — the ABSTAIN discrimination).
     if (facts.matches("abstain", true)) {
+        action.kind = InteractionKind::Abstain;
         action.message =
             "That isn't something Orama Zetta builds \xE2\x80\x94 it's out of scope, so I won't "
             "set up a pipeline for it.";
@@ -88,8 +89,13 @@ void attach_reference_action(AdmissionCase& admission_case) {
 }
 
 std::pair<std::string, std::string> render_action_example(const AdmissionCase& admission_case) {
-    std::string prompt = agent_prompt_format(base_agent_system_prompt(),
-                                             admission_case.task.description());
+    // THE shared renderer (#918) — the identical call the serving harness makes in
+    // agent::respond. Going through it (rather than framing the prompt here) is what makes
+    // train/serve skew structurally impossible; test_interaction_contract asserts the two
+    // agree byte for byte.
+    std::string prompt = render_interaction_prompt(base_agent_system_prompt(),
+                                                   admission_case.grounding,
+                                                   admission_case.task.description());
     const StudioAction action = admission_case.reference_action
                                     ? *admission_case.reference_action
                                     : reference_action_from_facts(admission_case.reference);

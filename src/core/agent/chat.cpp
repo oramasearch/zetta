@@ -12,7 +12,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/action.hpp"
+#include "zetta/agent/base_prompt.hpp"
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/interaction.hpp"
 #include "zetta/agent/model_cache.hpp"
 #include "zetta/agent/inference_runner.hpp"
 #include "zetta/autograd/qwen.hpp"
@@ -148,6 +151,39 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
     return result;
 }
 
+std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
+                              const std::string& grounding,
+                              const std::vector<AgentToolSpec>& tool_specs) {
+    // The trained frame (#916/#918). `base_agent_system_prompt()` is baked into EVERY SFT example
+    // by `render_action_example`, and `render_interaction_prompt` is the renderer they share — so
+    // serving MUST frame the turn identically or the model is prompted off-distribution. It was
+    // not: this path prepended the record's own prompt (nothing in the serving path referenced
+    // the trained one at all) and appended "User:"/"Assistant:" turn labels that appear in ZERO
+    // training examples. That skew is a sufficient explanation for the raw-JSON replies, the
+    // ignored instructions, and the invented numbers, each of which had been getting patched as
+    // a separate defect.
+    const std::string_view system_prompt = agent.system_prompt.empty()
+                                               ? base_agent_system_prompt()
+                                               : std::string_view(agent.system_prompt);
+    // Everything the model needs rides INSIDE the ask, within the frame — never as foreign
+    // blocks wrapped around it. `grounding` is placed by the shared renderer itself.
+    std::string ask;
+    // Name the live tools and the call format, so the model can ask the node about its real
+    // state instead of guessing (#904). Omitted when none are wired, so a plain chat keeps the
+    // exact prompt it trained on.
+    if (!tool_specs.empty()) {
+        ask += "You can call these tools to read this node's real state:\n";
+        for (const AgentToolSpec& spec : tool_specs) {
+            ask += "- " + spec.name + ": " + spec.description + "\n";
+        }
+        ask +=
+            "To call one, emit <tool_call>{\"tool\": \"<name>\", \"arguments\": {…}}</tool_call> "
+            "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
+    }
+    ask += message;
+    return render_interaction_prompt(system_prompt, grounding, ask);
+}
+
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds,
                      const AgentToolRunner& tools,
@@ -231,34 +267,14 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
                                     .generate_greedy(prompt_tokens, max_new_tokens, eos_id));
     };
 
-    std::string conversation;
-    if (!agent.system_prompt.empty()) conversation += agent.system_prompt + "\n\n";
-    // Name the live tools and the call format, so the model can ask the node about
-    // its real state instead of guessing (#904). Omitted when none are wired, so a
-    // plain chat keeps the exact prompt it trained on.
-    if (tools && !tool_specs.empty()) {
-        conversation += "You can call these tools to read this node's real state:\n";
-        for (const AgentToolSpec& spec : tool_specs) {
-            conversation += "- " + spec.name + ": " + spec.description + "\n";
-        }
-        conversation +=
-            "To call one, emit <tool_call>{\"tool\": \"<name>\", \"arguments\": {…}}</tool_call> "
-            "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
-    }
-    // Facts the embedding read off the node for this Project — the trained model's
-    // measure and ranked drivers. Placed ahead of the question so the answer is
-    // about what the pipeline produced, not what the model remembers (#914). The
-    // instruction is explicit that these numbers are the source of truth, because
-    // the failure mode to design against is inventing accounts and scores.
-    if (!grounding.empty()) {
-        conversation +=
-            "Here is what this Project's pipeline actually produced on this node. "
-            "Answer using ONLY these numbers, and name them. Do not invent accounts, "
-            "scores, or measures.\n" + grounding + "\n";
-    }
-    conversation += "User: " + message + "\nAssistant:";
+    // One builder, shared with the contract test — see build_chat_prompt above. Live tool specs
+    // only enter the prompt when a runner is actually wired, so a plain chat keeps the exact
+    // prompt it trained on.
+    const std::string prompt =
+        build_chat_prompt(agent, message, grounding,
+                          tools ? tool_specs : std::vector<AgentToolSpec>{});
 
-    response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);
+    response.result = run_chat_turn(generate, sandbox, prompt, max_rounds);
 
     std::string& reply = response.result.reply;
     // Strip the special stop/turn markers the decoder emits as literal text.
@@ -279,16 +295,30 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     if (const std::size_t first = reply.find(marker); first != std::string::npos) {
         reply.erase(first);
     }
+    // The model is TRAINED to emit exactly one action — {message, tool_calls, execution_graph}
+    // (render_action_example is the SFT target) — so the prose a user should read is
+    // `action.message` and the proposed Pipeline is `action.execution_graph`.
+    // `parse_studio_action`'s own header says it is "Used by agent::respond". It was not: the
+    // harness looked for <tool_call> tags, found none, concluded "the model answered", and
+    // assigned the raw envelope as the reply — which is exactly the JSON blob that reached the
+    // web app, MCP, and agent_run. Open the envelope instead of rendering it (#916). Assign
+    // unconditionally on a parse: an action with an empty message falls through to the
+    // fallback below, so the envelope is never what a user sees.
+    if (std::optional<StudioAction> action = parse_studio_action(reply)) {
+        reply = action->message;
+        response.action = std::move(action);
+    }
     const std::size_t last = reply.find_last_not_of(" \t\r\n");
     reply.erase(last == std::string::npos ? 0 : last + 1);
     // A generation that was ONLY the facts block leaves nothing behind. Say that
     // plainly rather than returning a blank the caller has to guess at — an empty
     // reply reads as a broken endpoint, which is the wrong diagnosis.
     if (reply.empty()) {
-        reply =
-            "The agent produced no readable answer to that — it emitted only its "
-            "training-format block. Try rephrasing, or ask about the Project's data, "
-            "pipeline, or model.";
+        reply = response.action
+                    ? "I put together a pipeline for that but didn't describe it. Open the "
+                      "Build tab to review the proposed Pipeline."
+                    : "The agent produced no readable answer to that. Try rephrasing, or ask "
+                      "about the Project's data, pipeline, or model.";
     }
 
     response.ok = true;

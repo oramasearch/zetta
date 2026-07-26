@@ -6,6 +6,7 @@
 
 #include "zetta/agent/curriculum.hpp"      // churn_solution_case, search_solution_case
 #include "zetta/agent/solution_graph.hpp"  // attach_reference_action
+#include "zetta/dataset/interaction_families.hpp"  // interaction_families, ProjectContext
 #include "zetta/dataset/plan_templates.hpp"  // plan_solution_templates, case_from_template
 
 namespace zetta::dataset {
@@ -46,7 +47,43 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
         return emitted;
     };
     emit(0, subjects.size() - reserved);
-    dataset.held_out = emit(subjects.size() - reserved, subjects.size());
+    const std::size_t plan_canary = emit(subjects.size() - reserved, subjects.size());
+
+    // The interaction corpus (#918): every OTHER kind of turn a user has — grounded QA about
+    // results/data/platform, capability discovery, abstention, and clarification. These carry
+    // their own retrieved context (`grounding`) and their own reference action, so they are
+    // emitted as-is rather than run through the solution-graph bridge.
+    //
+    // Contexts are split the same way subjects are: the trailing ones become canary Projects
+    // whose numbers the model has never seen. Because the grounded-QA families hold the question
+    // fixed and vary the context, a model that memorized answers instead of reading the supplied
+    // facts fails the canary outright — which is precisely what we want measured.
+    const int interaction_contexts = 30;
+    const int phrasings = 4;
+    const std::vector<ProjectContext> contexts =
+        synthetic_project_contexts(interaction_contexts);
+    const std::size_t context_canary =
+        held_out_subject_count(contexts.size(), spec.held_out_fraction);
+    const std::vector<ProjectContext> train_contexts(
+        contexts.begin(), contexts.end() - static_cast<std::ptrdiff_t>(context_canary));
+    const std::vector<ProjectContext> canary_contexts(
+        contexts.end() - static_cast<std::ptrdiff_t>(context_canary), contexts.end());
+
+    const auto emit_families = [&](const std::vector<ProjectContext>& used) {
+        std::size_t emitted = 0;
+        if (used.empty()) return emitted;
+        for (const InteractionFamily& family : interaction_families(used, phrasings)) {
+            for (const zetta::agent::AdmissionCase& interaction : family.cases) {
+                dataset.cases.push_back(interaction);
+                ++emitted;
+            }
+            dataset.subjects.push_back(family.name);
+        }
+        return emitted;
+    };
+    emit_families(train_contexts);
+    // Canary convention: held-out cases are the LAST entries of `cases`.
+    dataset.held_out = plan_canary + emit_families(canary_contexts);
 
     return dataset;
 }

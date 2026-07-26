@@ -1,9 +1,11 @@
 #pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "zetta/agent/action.hpp"
 #include "zetta/agent/agent_record.hpp"
 #include "zetta/agent/sandbox.hpp"
 #include "zetta/agent/tool_call.hpp"
@@ -49,6 +51,13 @@ struct ChatResponse {
     bool ok = false;
     ChatResult result;   // reply + tool invocations + rounds (valid when ok)
     std::string error;   // the reason (model/tokenizer load failure) when !ok
+    // The action the model emitted, when its generation parsed as one (#916). The base
+    // agent is TRAINED to emit exactly one `{message, tool_calls, execution_graph}` action
+    // (agent/action.hpp; render_action_example is the SFT target), so this — not `reply` —
+    // is the structured truth of the turn: `action->message` is the user-facing prose and
+    // `action->execution_graph` is the proposed Pipeline. Empty when the generation did not
+    // parse as an action (an error path worth surfacing, not text worth showing raw).
+    std::optional<StudioAction> action;
 };
 
 // Runs one named tool on behalf of the agent and returns what it produced (#904).
@@ -65,6 +74,15 @@ struct AgentToolSpec {
     std::string name;
     std::string description;
 };
+
+// Build the EXACT prompt `respond` sends to the model (#918). Exposed so the contract test can
+// assert it is byte-identical to what the corpus renders for the same input — the check that
+// makes train/serve skew structurally impossible rather than a thing we keep rediscovering.
+// `agent.system_prompt` overrides the trained prompt when set; empty means "the prompt this
+// model was trained under", never "no prompt".
+std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
+                              const std::string& grounding = {},
+                              const std::vector<AgentToolSpec>& tool_specs = {});
 
 // Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
 // checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for

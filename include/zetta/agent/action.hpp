@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/interaction.hpp"
 #include "zetta/agent/tool_call.hpp"
 #include "zetta/ir/execution_graph.hpp"
 
@@ -24,7 +25,13 @@
 namespace zetta::agent {
 
 struct StudioAction {
-    std::string message;                 // what "Ask Orama" shows the user
+    // The mode this response declares (#918). The harness switches on it instead of guessing
+    // from the payload's shape, and the grader scores a WRONG mode as a hard failure — building
+    // a Pipeline for an ambiguous ask, or answering where the context does not support one, is
+    // exactly the discrimination the corpus exists to teach. Defaults to Action so every
+    // pre-#918 action document still parses to the same value it always had.
+    InteractionKind kind = InteractionKind::Action;
+    std::string message;                 // what "Ask Orama" shows the user (markdown)
     std::vector<ToolCall> tool_calls;    // pipeline setup actions (name + JSON arguments)
     zetta::ir::ExecutionGraph execution_graph;  // the pipeline itself
 };
