@@ -184,6 +184,7 @@ add_executable(zetta-tests
   data/test_large_object_replication.cpp
   agent/test_action.cpp
   agent/test_interaction_contract.cpp
+  agent/test_sft_device_agnostic.cpp
   agent/test_solution_graph.cpp
   dataset/test_dataset_generator.cpp
   agent/test_agent_record.cpp
