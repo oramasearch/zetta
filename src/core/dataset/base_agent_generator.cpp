@@ -1,5 +1,6 @@
 #include "zetta/dataset/base_agent_generator.hpp"
 
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,21 +70,34 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
     const std::vector<ProjectContext> canary_contexts(
         contexts.end() - static_cast<std::ptrdiff_t>(context_canary), contexts.end());
 
-    const auto emit_families = [&](const std::vector<ProjectContext>& used) {
+    // Every (ask, context) pair already emitted. Not every family varies with the ProjectContext
+    // — capability discovery asks about the registry, not about a Project — so generating those
+    // over the canary contexts reproduces the training cases EXACTLY. Left unchecked that put 105
+    // duplicates in the canary, where they measure memorization and report it as generalization.
+    // The canary is only worth having if the model has genuinely never seen its contents.
+    std::set<std::string> already_emitted;
+    const auto emit_families = [&](const std::vector<ProjectContext>& used, bool is_canary) {
         std::size_t emitted = 0;
         if (used.empty()) return emitted;
         for (const InteractionFamily& family : interaction_families(used, phrasings)) {
+            bool kept_any = false;
             for (const zetta::agent::AdmissionCase& interaction : family.cases) {
+                const std::string key =
+                    interaction.task.description() + "\n\x1f" + interaction.grounding;
+                if (!already_emitted.insert(key).second) continue;  // a duplicate of a seen case
                 dataset.cases.push_back(interaction);
+                kept_any = true;
                 ++emitted;
             }
-            dataset.subjects.push_back(family.name);
+            // A family that contributed nothing new is not coverage; don't claim it as a subject.
+            if (kept_any) dataset.subjects.push_back(family.name);
         }
+        (void)is_canary;
         return emitted;
     };
-    emit_families(train_contexts);
+    emit_families(train_contexts, /*is_canary=*/false);
     // Canary convention: held-out cases are the LAST entries of `cases`.
-    dataset.held_out = plan_canary + emit_families(canary_contexts);
+    dataset.held_out = plan_canary + emit_families(canary_contexts, /*is_canary=*/true);
 
     return dataset;
 }

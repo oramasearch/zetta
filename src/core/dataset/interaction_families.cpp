@@ -2,6 +2,7 @@
 
 #include <array>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -86,6 +87,21 @@ AdmissionCase make_case(std::string id, std::string ask, std::string grounding,
     action.message = std::move(message);
     action.execution_graph = std::move(graph);
     action.tool_calls = std::move(tool_calls);
+
+    // An ACTION is a promise to build something, and the agent builds by CALLING TOOLS — the
+    // harness turns each call into a pipeline node. So a case that declares a pipeline must carry
+    // the calls that construct it; derive them from the graph when the family did not spell them
+    // out, rather than leaving the two encodings free to disagree.
+    //
+    // They disagreed badly: `tool_calls` defaulted to empty here, and most families passed only a
+    // graph, so 91% of the v1 corpus's action cases taught "an action calls nothing" — and the
+    // checkpoint trained on it emitted an empty `tool_calls` for every request, building no
+    // pipeline at all. Other kinds are left alone on purpose: an abstain carries a graph the gate
+    // scores while deliberately building nothing, and answer/clarify build nothing either.
+    if (action.kind == InteractionKind::Action && action.tool_calls.empty() &&
+        !action.execution_graph.nodes().empty()) {
+        action.tool_calls = zetta::agent::tool_calls_from_graph(action.execution_graph);
+    }
 
     // Aggregate-initialized: AdmissionCase holds a Task, which has no default constructor by
     // design (a task without a verifiable criterion should be unrepresentable).
@@ -596,20 +612,34 @@ InteractionFamily feature_family(const std::vector<ProjectContext>& contexts, in
         "Add or correct features on an existing Pipeline, preserving leakage-free point-in-time "
         "discipline",
         {}};
-    // {what the user asks for, the fact it must produce}
-    const std::array<std::pair<const char*, const char*>, 12> requests = {{
-        {"Add a rolling 30-day event count.", "rolling_window"},
-        {"Add a 90-day lag of usage.", "lag_feature"},
-        {"Roll up support tickets per account.", "aggregate_feature"},
-        {"Join in the billing table as of the scoring date.", "point_in_time_join"},
-        {"Drop anything that leaks the outcome.", "leakage_removed"},
-        {"One-hot encode the plan tier.", "categorical_encoded"},
-        {"Handle the class imbalance.", "imbalance_handled"},
-        {"Impute the missing NPS scores.", "imputed"},
-        {"Add a trend feature on monthly usage.", "trend_feature"},
-        {"Bucket tenure into quartiles.", "binned_feature"},
-        {"Normalize the revenue columns.", "scaled_feature"},
-        {"Add days since last login.", "recency_feature"},
+    // {what the user asks for, the fact it must produce, what the agent says it DID}
+    //
+    // The third column exists because this family previously answered every one of its 1080 cases
+    // with one identical sentence. A constant target is the cheapest thing a model can learn, and
+    // it learned it — the checkpoint replayed corpus messages verbatim for unrelated asks. The
+    // reply now names the actual change and the actual table, so the target varies with the input
+    // the way a real answer does. Deliberately free of digits: this family's reply is not grounded
+    // in a retrieved measure, so stating a figure here would train fabrication.
+    const std::array<std::tuple<const char*, const char*, const char*>, 12> requests = {{
+        {"Add a rolling 30-day event count.", "rolling_window",
+         "added the rolling event count over your chosen window"},
+        {"Add a 90-day lag of usage.", "lag_feature", "added the lagged usage feature"},
+        {"Roll up support tickets per account.", "aggregate_feature",
+         "rolled support tickets up to one row per account"},
+        {"Join in the billing table as of the scoring date.", "point_in_time_join",
+         "joined billing in as of the scoring date"},
+        {"Drop anything that leaks the outcome.", "leakage_removed",
+         "dropped the columns that leaked the outcome"},
+        {"One-hot encode the plan tier.", "categorical_encoded",
+         "one-hot encoded the plan tier"},
+        {"Handle the class imbalance.", "imbalance_handled",
+         "rebalanced the classes for training"},
+        {"Impute the missing NPS scores.", "imputed", "imputed the missing NPS scores"},
+        {"Add a trend feature on monthly usage.", "trend_feature",
+         "added the monthly usage trend"},
+        {"Bucket tenure into quartiles.", "binned_feature", "bucketed tenure into quartiles"},
+        {"Normalize the revenue columns.", "scaled_feature", "normalized the revenue columns"},
+        {"Add days since last login.", "recency_feature", "added days since last login"},
     }};
     const std::array<const char*, 3> shapes = {"{}", "Can you {}", "I want to {}"};
 
@@ -618,7 +648,7 @@ InteractionFamily feature_family(const std::vector<ProjectContext>& contexts, in
         const std::string grounding = render_grounding(context, GroundingView::Data);
         for (std::size_t request = 0; request < requests.size(); ++request) {
             for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
-                std::string ask = requests[request].first;
+                std::string ask = std::get<0>(requests[request]);
                 if (phrasing > 0) {
                     std::string lowered = ask;
                     if (!lowered.empty() && lowered[0] >= 'A' && lowered[0] <= 'Z') {
@@ -629,7 +659,7 @@ InteractionFamily feature_family(const std::vector<ProjectContext>& contexts, in
                     ask = shape;
                 }
                 EndState required = supervised_facts(context.model_kind);
-                required.set(requests[request].second, true);
+                required.set(std::get<1>(requests[request]), true);
                 required.set("preserved_other_steps", true);
                 zetta::ir::ExecutionGraph graph =
                     zetta::agent::build_solution_graph(required);
@@ -637,8 +667,9 @@ InteractionFamily feature_family(const std::vector<ProjectContext>& contexts, in
                     "feature/" + std::to_string(context_index) + "/" + std::to_string(request) +
                         "/" + std::to_string(phrasing),
                     ask, grounding, InteractionKind::Action,
-                    "I've added that to the Pipeline's feature step, kept the point-in-time cut "
-                    "so nothing leaks, and left the rest of the Pipeline unchanged.",
+                    std::string("I ") + std::get<2>(requests[request]) + " on `" + context.table +
+                        "` and put it in the Pipeline's feature step. The point-in-time cut is "
+                        "preserved, so nothing leaks, and the rest of the Pipeline is unchanged.",
                     required, std::move(graph)));
             }
         }
@@ -712,17 +743,32 @@ InteractionFamily modify_family(const std::vector<ProjectContext>& contexts, int
         "Change an existing Pipeline by re-emitting the WHOLE graph, so the gate can still score "
         "a runnable pipeline",
         {}};
-    const std::array<std::pair<const char*, const char*>, 10> changes = {{
-        {"Use a wider data window - go back two years.", "data_window_changed"},
-        {"Switch the algorithm to a gradient-boosted tree.", "algorithm_changed"},
-        {"Change the prediction horizon to 60 days.", "horizon_changed"},
-        {"Add an approval step before it acts.", "approval_gated"},
-        {"Remove the indexing step, we don't need search.", "step_removed"},
-        {"Also write the results to a table.", "step_added"},
-        {"Retrain it weekly instead of monthly.", "schedule_changed"},
-        {"Predict downgrade instead of churn.", "target_changed"},
-        {"Exclude the trial accounts from training.", "filter_added"},
-        {"Add a calibration step.", "calibrated"},
+    // {the change asked for, the fact it must produce, what the agent says it DID}
+    //
+    // The third column names the specific edit. A single constant confirmation across every case
+    // here trained the agent to acknowledge changes it had not made — and, worse, to emit that
+    // sentence for unrelated asks, because a constant is the cheapest target to memorize.
+    // Digit-free on purpose: this reply states no retrieved figure, so it cannot fabricate one.
+    const std::array<std::tuple<const char*, const char*, const char*>, 10> changes = {{
+        {"Use a wider data window - go back two years.", "data_window_changed",
+         "widened the training window to two years"},
+        {"Switch the algorithm to a gradient-boosted tree.", "algorithm_changed",
+         "switched the model step to a gradient-boosted tree"},
+        {"Change the prediction horizon to 60 days.", "horizon_changed",
+         "moved the prediction horizon out to the window you asked for"},
+        {"Add an approval step before it acts.", "approval_gated",
+         "put an approval step in front of the action"},
+        {"Remove the indexing step, we don't need search.", "step_removed",
+         "removed the indexing step"},
+        {"Also write the results to a table.", "step_added",
+         "added a step that writes the results back to a table"},
+        {"Retrain it weekly instead of monthly.", "schedule_changed",
+         "moved the retraining schedule to weekly"},
+        {"Predict downgrade instead of churn.", "target_changed",
+         "repointed the model at downgrade instead of churn"},
+        {"Exclude the trial accounts from training.", "filter_added",
+         "filtered the trial accounts out of training"},
+        {"Add a calibration step.", "calibrated", "added a calibration step after the model"},
     }};
     const std::array<const char*, 3> shapes = {"{}", "Can you {}", "Let's {}"};
 
@@ -731,7 +777,7 @@ InteractionFamily modify_family(const std::vector<ProjectContext>& contexts, int
         const std::string grounding = render_grounding(context, GroundingView::Results);
         for (std::size_t change = 0; change < changes.size(); ++change) {
             for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
-                std::string ask = changes[change].first;
+                std::string ask = std::get<0>(changes[change]);
                 if (phrasing > 0) {
                     std::string lowered = ask;
                     if (!lowered.empty() && lowered[0] >= 'A' && lowered[0] <= 'Z') {
@@ -742,7 +788,7 @@ InteractionFamily modify_family(const std::vector<ProjectContext>& contexts, int
                     ask = shape;
                 }
                 EndState required = supervised_facts(context.model_kind);
-                required.set(changes[change].second, true);
+                required.set(std::get<1>(changes[change]), true);
                 // The whole graph is re-emitted, never a delta: a mutation is not runnable, so it
                 // could not be scored by the gate, and the gate is the reward.
                 required.set("preserved_other_steps", true);
@@ -751,8 +797,9 @@ InteractionFamily modify_family(const std::vector<ProjectContext>& contexts, int
                     "modify/" + std::to_string(context_index) + "/" + std::to_string(change) +
                         "/" + std::to_string(phrasing),
                     ask, grounding, InteractionKind::Action,
-                    "Done - here's the updated Pipeline. Only that step changed; everything else "
-                    "is as it was. Review it and I'll run a Verification.",
+                    std::string("I ") + std::get<2>(changes[change]) + " on `" + context.project +
+                        "`. Only that step changed - everything else is as it was. Review it and "
+                        "I'll run a Verification.",
                     required, std::move(graph)));
             }
         }
