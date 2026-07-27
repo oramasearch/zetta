@@ -808,6 +808,115 @@ EndState supervised_facts(const std::string& model_kind) {
                   {"explain", std::string("shap")}});
 }
 
+// --- Class 10: the cold open ------------------------------------------------------------------
+// The first thing anyone says. Not "add a rolling window to the feature step" — "we have a bunch
+// of customer data and want to use AI, where do we start?" Every evaluation begins here, and the
+// corpus had only vague FOLLOW-UPS ("make it better", "fix this"), whose answers assume a Project
+// already exists.
+//
+// The behaviour this trains is deliberate. A cold open answered with a bare "predict what?" is
+// technically a clarify and is a bad product: the person asking does not yet know the vocabulary,
+// and bouncing the question back puts the work on them. So the reply ORIENTS FIRST — it names what
+// their columns actually support, in their words — and then asks exactly one question. Naming real
+// options is also the honest move: it shows what the platform would do rather than promising that
+// it could do anything.
+//
+// Still a `clarify` under the contract: exactly one question, and it builds nothing. Grounded in
+// the Data view so the options come from the schema the harness retrieved rather than from a guess
+// about what the customer might have.
+InteractionFamily discovery_family(const std::vector<ProjectContext>& contexts, int phrasings) {
+    InteractionFamily family{
+        "cold_open",
+        "The first exchange: an exploratory ask with no Project yet - orient from the schema, "
+        "name real options, then ask ONE question",
+        {}};
+
+    const std::array<const char*, 8> openers = {
+        "We have a bunch of customer and billing data and want to use AI. Where do we start?",
+        "I'm not sure what's possible here. What would you suggest?",
+        "We want to use our data better but don't know where to begin.",
+        "What should we build first?",
+        "My team wants to do something with AI this quarter. Ideas?",
+        "We've got years of history in here and we're not using it. What now?",
+        "Where would you start if this were your data?",
+        "What's the highest-value thing we could do with this?",
+    };
+
+    // What a given kind of Project makes possible, said in the buyer's words rather than the
+    // platform's. The options must be things the engine genuinely builds — AND they must match the
+    // data in front of them. Keyed on the Project's model kind, because offering "who's likely to
+    // leave" on a demand-forecasting table is the same incoherence that taught an earlier
+    // checkpoint to ignore the Project name entirely.
+    // Keyed on the SOLUTION, not the model kind: gbdt alone covers lead scoring, collections,
+    // fraud and claims triage, and offering "who's likely to churn" over an invoices table is the
+    // same incoherence that taught an earlier checkpoint to ignore the Project name.
+    static const std::map<std::string, std::array<const char*, 3>> kMenus = {
+        {"S-2", {"which leads will convert", "which to call first", "what makes them convert"}},
+        {"S-3", {"what each customer is worth over time", "which are worth the most", "what moves that number"}},
+        {"S-4", {"which overdue accounts will pay", "who to chase first", "what predicts recovery"}},
+        {"S-5", {"what demand looks like next month", "how confident to be in it", "where it varies by location"}},
+        {"S-6", {"what to reorder and when", "how much, under your stock limits", "what a stockout would cost"}},
+        {"S-7", {"when a number moves abnormally", "what's driving the move", "who needs to be told"}},
+        {"S-8", {"which machines will fail and roughly when", "what to service first", "the early warning signs"}},
+        {"S-10", {"which transactions look fraudulent", "why each was flagged", "how to review without over-blocking"}},
+        {"S-11", {"who actually changes because of an offer", "where the spend is wasted", "what the lift is worth"}},
+        {"S-12", {"which claims carry risk", "which need a human", "why each was routed that way"}},
+        {"M-10", {"what's actually in these documents", "answers with the passage they came from", "which ones matter"}},
+        {"M-11", {"the fields on every invoice", "which ones need a human", "how to find any of them later"}},
+        {"M-12", {"how these accounts are connected", "which relationships carry risk", "what's hiding behind them"}},
+        {"M-13", {"which images show a defect", "which need a second look", "what the model actually saw"}},
+        {"M-14", {"what was said on these calls", "which ones went wrong", "what keeps coming up"}},
+        {"M-15", {"which offer works for whom", "how fast that's learned", "what exploring is costing you"}},
+        {"M-16", {"the best plan under your constraints", "what changing it costs", "where the slack is"}},
+        {"M-17", {"a prediction with honest uncertainty", "where the data is too thin to trust", "what would narrow it"}},
+        {"M-18", {"the most accuracy your data supports", "whether the gain is real", "what each model contributes"}},
+        {"M-19", {"a working model from very few labels", "which rows are worth labelling next", "how much that would help"}},
+        {"M-20", {"a model trained without exposing the data", "what privacy that buys you", "what it costs in accuracy"}},
+        {"M-21", {"a model that stays fresh as data arrives", "when the pattern has drifted", "who to tell when it does"}},
+        {"UC-13", {"which applicants are likely to default", "a defensible reason for every decision", "how it compares to a simple baseline"}},
+        {"UC-14", {"the right price within your guardrails", "what a change would earn", "where you're leaving money"}},
+        {"UC-15", {"which employees are at risk of leaving", "which teams are most exposed", "what's driving it"}},
+        {"UC-16", {"where each ticket should go", "which need a human first", "why each was routed"}},
+        {"UC-18", {"which suppliers are becoming risky", "what changed recently", "who needs to be told"}},
+        {"UC-19", {"which claims will be denied", "which patients will miss an appointment", "what to do about each"}},
+        {"UC-20", {"what cash looks like next quarter", "how confident to be in it", "where the pressure points are"}},
+        {"UC-21", {"when something is going wrong", "what's causing it", "who to page"}},
+        {"UC-22", {"what's driving scrap and yield", "which factors matter most", "what to change first"}},
+        {"UC-23", {"who responds because of the campaign", "where the budget is wasted", "what the incremental lift is"}},
+        {"UC-24", {"what your contracts commit you to", "which renewals carry risk", "how to find any clause later"}},
+    };
+    static const std::array<const char*, 3> kDefaultMenu = {
+        "what's likely to happen next", "which of these to act on first", "what's driving it"};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        const std::string grounding = render_grounding(context, GroundingView::Data);
+        const auto found = kMenus.find(context.solution);
+        const std::array<const char*, 3>& menu =
+            found != kMenus.end() ? found->second : kDefaultMenu;
+        for (std::size_t opener = 0; opener < openers.size(); ++opener) {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 1; ++phrasing) {
+                EndState required = facts({{"clarify", true},
+                                           {"asked_one_question", true},
+                                           {"built_nothing", true}});
+                // Orient from the columns they actually have, offer three real things, ask ONE
+                // question. No figures: nothing here is a measured result.
+                const std::string message =
+                    std::string("With `") + context.table +
+                    "` I can usually get to three things: " + menu[0] + ", " + menu[1] +
+                    ", and " + menu[2] +
+                    ". Each one is a Pipeline I'd build, verify, and run on your own "
+                    "infrastructure. Which of those matters most to you right now?";
+                family.cases.push_back(make_case(
+                    "open/" + std::to_string(context_index) + "/" + std::to_string(opener) + "/" +
+                        std::to_string(phrasing),
+                    openers[opener], grounding, InteractionKind::Clarify, message, required));
+            }
+        }
+    }
+    return family;
+}
+
 // --- Class 9: replace what they already have --------------------------------------------------
 // The single most common way this product is actually encountered: the person already built
 // something. An n8n workflow calling an LLM per row, a cron job running a SQL script, a notebook
@@ -1192,6 +1301,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(capability_family(phrasings));
     families.push_back(product_knowledge_family(phrasings));
     families.push_back(migration_family(contexts, phrasings));
+    families.push_back(discovery_family(contexts, phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));
