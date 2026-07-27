@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "zetta/agent/action.hpp"
+#include "zetta/agent/interaction.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/agent/agent_record.hpp"
 #include "zetta/agent/sandbox.hpp"
@@ -94,7 +95,8 @@ struct AgentToolSpec {
 // model was trained under", never "no prompt".
 std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
                               const std::string& grounding = {},
-                              const std::vector<AgentToolSpec>& tool_specs = {});
+                              const std::vector<AgentToolSpec>& tool_specs = {},
+                              const std::vector<PriorTurn>& history = {});
 
 // Talk to `agent`: load its model + tokenizer (device-agnostic; `agent.model` is a local
 // checkpoint dir), wire its tools into a sandbox, and run one tool-calling chat turn for
@@ -110,10 +112,14 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
 // measure and ranked drivers, say — placed in the conversation ahead of the user's
 // message so the agent answers from what the pipeline actually produced instead of
 // from its training priors (#914). Empty = answer from the model alone.
+// `history` is the conversation so far, oldest first (interaction.hpp). Without it every turn is
+// a first turn: "list all of those options" has no referent, and three different follow-ups
+// produce the same reply because the model sees three unrelated opening messages.
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens = 256, int max_rounds = 3,
                      const AgentToolRunner& tools = {},
                      const std::vector<AgentToolSpec>& tool_specs = {},
-                     const std::string& grounding = {});
+                     const std::string& grounding = {},
+                     const std::vector<PriorTurn>& history = {});
 
 }  // namespace zetta::agent

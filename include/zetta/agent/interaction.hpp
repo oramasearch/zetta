@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 #include <string_view>
 
 // The interaction contract (#916, #918) — the ONE definition of how a turn is framed and what
@@ -46,7 +47,27 @@ std::string_view grounding_preamble();
 // The engine fetches and the model only answers from what it was handed, which is what makes
 // the reward well defined (we know the context, so we know ground truth) and what makes the
 // retrieval auditable. Model-driven retrieval is a later capability (#859), not this contract.
+// One earlier exchange, as the model is shown it. `reply` is what the agent SAID — the action's
+// message, never the raw envelope, because the envelope is machinery and re-showing it teaches the
+// model that JSON is part of a conversation.
+struct PriorTurn {
+    std::string ask;
+    std::string reply;
+};
+
+// `history` is the exchanges BEFORE this ask, oldest first.
+//
+// Without it a follow-up has no referent: "list all of those options" and "which project?" arrive
+// as standalone questions, and the agent answers each as if it were the first thing said. That is
+// exactly what happened — three different follow-ups produced the same reply, because to the model
+// they were three unrelated first messages.
+//
+// Rendered INSIDE the trained frame, ahead of the grounding, the same way grounding rides inside
+// the ask rather than as a foreign block wrapped around it. Both the corpus and `agent::respond`
+// call this, so a multi-turn prompt at serving time is byte-identical to one in training —
+// `test_interaction_contract.cpp` asserts it.
 std::string render_interaction_prompt(std::string_view system_prompt, std::string_view grounding,
-                                      std::string_view ask);
+                                      std::string_view ask,
+                                      const std::vector<PriorTurn>& history = {});
 
 }  // namespace zetta::agent

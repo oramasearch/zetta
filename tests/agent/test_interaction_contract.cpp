@@ -274,4 +274,47 @@ TEST(InteractionContract, ReportPromptToTargetTokenSplit) {
               << 100.0 * prompt_mean / (prompt_mean + target_mean) << "%\n";
 }
 
+// A follow-up must resolve against what was actually said. Without history every turn is a FIRST
+// turn: "list all of those options" has no referent, and three different follow-ups produce the
+// same reply because the model sees three unrelated opening messages.
+TEST(InteractionContract, HistoryAppearsInThePromptAndServingMatchesTraining) {
+    const std::vector<zetta::agent::PriorTurn> history = {
+        {"What can I do with Orama Studio?", "I can build churn, lead scoring, or forecasting."}};
+
+    const std::string trained = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), /*grounding=*/"",
+        "List all of those options.", history);
+
+    EXPECT_NE(trained.find("What can I do with Orama Studio?"), std::string::npos)
+        << "the earlier ask must be visible";
+    EXPECT_NE(trained.find("I can build churn, lead scoring, or forecasting."), std::string::npos)
+        << "the earlier reply must be visible";
+    // The reply shown is the MESSAGE, never the envelope — re-showing JSON would teach the model
+    // that the envelope is part of the dialogue. Checked on the history BLOCK, because the system
+    // prompt legitimately names tool_calls when it describes the response shape.
+    const std::size_t block = trained.find("Earlier in this conversation");
+    ASSERT_NE(block, std::string::npos);
+    const std::string history_block = trained.substr(block, trained.find("List all of those") - block);
+    EXPECT_EQ(history_block.find("\"tool_calls\""), std::string::npos);
+
+    // THE contract: what serving sends is byte-identical to what training rendered.
+    zetta::agent::AgentRecord agent;
+    agent.name = "test";
+    agent.model = "/checkpoints/base";
+    const std::string served =
+        zetta::agent::build_chat_prompt(agent, "List all of those options.", /*grounding=*/"",
+                                        /*tool_specs=*/{}, history);
+    EXPECT_EQ(served, trained) << "a multi-turn prompt must not differ between training and serving";
+}
+
+// No history renders exactly as before, so every single-turn case is unchanged.
+TEST(InteractionContract, NoHistoryRendersIdenticallyToBefore) {
+    const std::string without = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), "", "Set up churn.");
+    const std::string empty = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), "", "Set up churn.", {});
+    EXPECT_EQ(without, empty);
+    EXPECT_EQ(without.find("Earlier in this conversation"), std::string::npos);
+}
+
 }  // namespace

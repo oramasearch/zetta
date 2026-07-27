@@ -155,7 +155,8 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
 
 std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
                               const std::string& grounding,
-                              const std::vector<AgentToolSpec>& tool_specs) {
+                              const std::vector<AgentToolSpec>& tool_specs,
+                              const std::vector<PriorTurn>& history) {
     // The trained frame (#916/#918). `base_agent_system_prompt()` is baked into EVERY SFT example
     // by `render_action_example`, and `render_interaction_prompt` is the renderer they share — so
     // serving MUST frame the turn identically or the model is prompted off-distribution. It was
@@ -183,14 +184,15 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
             "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
     }
     ask += message;
-    return render_interaction_prompt(system_prompt, grounding, ask);
+    return render_interaction_prompt(system_prompt, grounding, ask, history);
 }
 
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds,
                      const AgentToolRunner& tools,
                      const std::vector<AgentToolSpec>& tool_specs,
-                     const std::string& grounding) {
+                     const std::string& grounding,
+                     const std::vector<PriorTurn>& history) {
     ChatResponse response;
     std::string error;
     // The tokenizer is cheap and always needed (encode/decode); load it from a small
@@ -271,7 +273,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // prompt it trained on.
     const std::string prompt =
         build_chat_prompt(agent, message, grounding,
-                          tools ? tool_specs : std::vector<AgentToolSpec>{});
+                          tools ? tool_specs : std::vector<AgentToolSpec>{}, history);
 
     response.result = run_chat_turn(generate, sandbox, prompt, max_rounds);
 

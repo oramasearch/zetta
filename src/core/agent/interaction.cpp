@@ -39,10 +39,26 @@ std::string_view grounding_preamble() {
 }
 
 std::string render_interaction_prompt(std::string_view system_prompt, std::string_view grounding,
-                                      std::string_view ask) {
+                                      std::string_view ask,
+                                      const std::vector<PriorTurn>& history) {
     // The retrieved context rides INSIDE the ask, within the trained frame — never as a foreign
     // block wrapped around it. `agent_prompt_format` stays the single frame both paths share.
     std::string framed_ask;
+    // The conversation so far, oldest first, before the retrieved facts. A follow-up resolves
+    // against what was actually said, not against a fresh context — and the reply shown is the
+    // agent's MESSAGE, never the action envelope, because re-showing JSON would teach the model
+    // that the envelope is part of the dialogue.
+    if (!history.empty()) {
+        framed_ask.append("Earlier in this conversation:\n");
+        for (const PriorTurn& turn : history) {
+            framed_ask.append("- They asked: ");
+            framed_ask.append(turn.ask);
+            framed_ask.append("\n  You answered: ");
+            framed_ask.append(turn.reply);
+            framed_ask.append("\n");
+        }
+        framed_ask.append("\n");
+    }
     if (!grounding.empty()) {
         framed_ask.append(grounding_preamble());
         framed_ask.append("\n\n");
