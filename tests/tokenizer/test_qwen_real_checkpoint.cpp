@@ -708,6 +708,127 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
 //
 // ZETTA_QWEN_DIR = the checkpoint · ZETTA_CANARY = the canary JSONL.
 // Knobs: ZETTA_EVAL_CASES (default 200), ZETTA_EVAL_TOKENS (default 200), ZETTA_EVAL_OUT.
+// Grow the corpus from the model's OWN verified rollouts — RLVR's "grow by generation, gate by
+// verification", applied to the dataset rather than only to the weights.
+//
+// Why this beats writing more cases by hand. Hand-authored text is off-distribution for the policy:
+// I can write what a good answer looks like, but not in the model's own voice, and a 0.6B asked to
+// reproduce someone else's phrasing blends memorized fragments instead. Its own sampled output is
+// on-distribution by construction — the only question is whether it is CORRECT, and that is exactly
+// what the grader already decides. Sample K, keep what verifies, train on it.
+//
+// The asymmetry that makes this work: THE VERIFIER MAY SEE WHAT THE POLICY DID NOT. A product
+// question is served with no capability listing, so the model answers from weights alone — but the
+// grader scores that answer AGAINST the listing, and can tell whether it named a capability that
+// exists. That turns the ungrounded turns (the ones a demo opens with, and the ones no projectable
+// fact could previously verify) into gradeable training data.
+//
+// Volume without gating poisons the reward signal, so nothing is kept that does not pass, and
+// duplicates are dropped — K samples of one memorized answer are one example, not K.
+//
+// ZETTA_QWEN_DIR = the policy · ZETTA_CORPUS = the tasks to roll out on · ZETTA_HARVEST_OUT = where
+// verified cases are written. Knobs: ZETTA_HARVEST_K (default 8), ZETTA_HARVEST_TEMP (default 0.9),
+// ZETTA_HARVEST_CASES (default 200), ZETTA_HARVEST_TOKENS (default 220).
+TEST(QwenRealCheckpoint, HarvestVerifiedRollouts) {
+    namespace mx = mlx::core;
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the policy) to run";
+    const char* corpus_path = std::getenv("ZETTA_CORPUS");
+    if (corpus_path == nullptr) GTEST_SKIP() << "set ZETTA_CORPUS to the tasks to roll out on";
+    const char* out_path = std::getenv("ZETTA_HARVEST_OUT");
+    if (out_path == nullptr) GTEST_SKIP() << "set ZETTA_HARVEST_OUT to write verified cases";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    std::ifstream file(corpus_path);
+    ASSERT_TRUE(file.good()) << "cannot open " << corpus_path;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const auto corpus = zetta::agent::load_corpus_jsonl(buffer.str(), &error);
+    ASSERT_TRUE(corpus.has_value()) << error;
+    ASSERT_FALSE(corpus->empty());
+
+    const int group = std::getenv("ZETTA_HARVEST_K")
+                          ? std::atoi(std::getenv("ZETTA_HARVEST_K")) : 8;
+    const float temperature = std::getenv("ZETTA_HARVEST_TEMP")
+                                  ? std::strtof(std::getenv("ZETTA_HARVEST_TEMP"), nullptr) : 0.9F;
+    const int limit = std::getenv("ZETTA_HARVEST_CASES")
+                          ? std::atoi(std::getenv("ZETTA_HARVEST_CASES")) : 200;
+    const int max_new = std::getenv("ZETTA_HARVEST_TOKENS")
+                            ? std::atoi(std::getenv("ZETTA_HARVEST_TOKENS")) : 220;
+
+    std::mt19937 rng(20260727U);  // fixed: a harvest must reproduce
+    std::vector<zetta::agent::AdmissionCase> harvested;
+    int rolled = 0, verified = 0, distinct_kept = 0;
+
+    const std::size_t total = corpus->size();
+    const std::size_t stride =
+        static_cast<std::size_t>(limit) >= total ? 1 : total / static_cast<std::size_t>(limit);
+    int seen = 0;
+    for (std::size_t index = 0; index < total && seen < limit; index += stride) {
+        const zetta::agent::AdmissionCase& admission_case = (*corpus)[index];
+        ++seen;
+        // The prompt the POLICY sees — exactly what serving would send.
+        const std::string prompt = zetta::agent::render_interaction_prompt(
+            zetta::agent::base_agent_system_prompt(), admission_case.grounding,
+            admission_case.task.description());
+        const std::vector<int> prompt_ids = tokenizer->encode(prompt);
+
+        std::set<std::string> kept_here;  // K samples of one memorized answer are ONE example
+        for (int sample = 0; sample < group; ++sample) {
+            ++rolled;
+            const std::vector<int> completion =
+                model->generate(prompt_ids, max_new, temperature, rng, /*eos_id=*/151645);
+            const std::optional<zetta::agent::StudioAction> action =
+                zetta::agent::parse_studio_action(tokenizer->decode(completion));
+            if (!action) continue;
+
+            // Verified against the case's OWN grader, with the verifier's grounding — which may be
+            // richer than what the policy was given.
+            if (!admission_case.task.grader()
+                     .grade(zetta::agent::response_solution_facts(*action,
+                                                                  admission_case.grounding))
+                     .passed) {
+                continue;
+            }
+            ++verified;
+            const std::string signature = zetta::agent::to_json(*action).dump();
+            if (!kept_here.insert(signature).second) continue;
+
+            // The harvested case trains: what the model SAW -> what it PRODUCED and got right.
+            zetta::agent::AdmissionCase grown = admission_case;
+            grown.reference_action = *action;
+            harvested.push_back(std::move(grown));
+            ++distinct_kept;
+        }
+    }
+
+    std::cerr << "\n===== harvest — " << dir << " =====\n"
+              << "tasks rolled out : " << seen << "\n"
+              << "rollouts         : " << rolled << " (K=" << group << ", T=" << temperature
+              << ")\n"
+              << "verified         : " << verified << " ("
+              << (rolled ? 100.0 * verified / rolled : 0.0) << "% of rollouts)\n"
+              << "kept (distinct)  : " << distinct_kept << "\n";
+
+    // A harvest that admits nothing is a harvest that taught nothing — and one that admits
+    // everything is not gating. Both are worth failing on.
+    ASSERT_GT(distinct_kept, 0) << "no rollout verified — the policy cannot yet solve these tasks";
+    EXPECT_LT(distinct_kept, rolled) << "everything verified — check the grader is discriminating";
+
+    // The grown corpus must still pass the gate it grew from.
+    const zetta::agent::AdmissionResult admitted = zetta::agent::admit_corpus(harvested);
+    EXPECT_TRUE(admitted.admitted) << "harvested cases must admit";
+    std::ofstream out(out_path);
+    out << zetta::agent::dump_corpus_jsonl(harvested);
+    std::cerr << "wrote " << harvested.size() << " verified cases to " << out_path << "\n";
+}
+
 TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
     const char* dir = qwen_dir();
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the checkpoint) to run";

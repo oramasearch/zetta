@@ -499,6 +499,52 @@ InteractionFamily platform_family(const std::vector<ProjectContext>& contexts, i
 // AWS / Azure / bare-metal provisioners (src/core/cloud/), and the Python frontend
 // (src/core/input/python_frontend.cpp). Adding an entry here without the code to back it trains
 // the agent to lie about the product.
+// Alternate CORRECT answers to the questions a buyer actually presses on.
+//
+// Every other question in this family has exactly ONE reference answer, and that is why the model
+// mangles these: with a single target per question it memorizes fragments and, served without the
+// capability listing, blends them. Asked "why not just use an LLM" it produced "Studio will answer
+// over the data it - that is the most common way a model that has not passed one does not get
+// deployed." Several correct answers teach the CONTENT; one teaches a string.
+//
+// Provenance, because it matters for trust: these were drafted by a frontier model given ONLY the
+// verified fact list from this repository, then admitted by a gate — no digits (nothing here is a
+// measured result), no claim outside the fact list, no comparative or superlative marketing. That
+// is "grow by generation, gate by verification" applied to authoring, which is what the
+// rlvr-training-data skill prescribes. Nothing was taken on the generator's word.
+const std::array<std::pair<const char*, std::array<const char*, 4>>, 6> kAlternateAnswers = {{
+        {"Why not just use an LLM for this?",
+         {"Here the system trains a model on your own historical data instead of calling a general rented model for each row, so the predictions come from a model built on your records.",
+          "Rather than relying on a language model, it builds a dedicated model from your past data and then measures it against outcomes it did not see during training in a verification step.",
+          "This approach focuses on structured pipelines where steps are chosen, checked, and run automatically, with the core model trained on your history instead of a generic model that is rented by the row.",
+          "The tool is set up to create leakage free point in time features from your historical data and validate the resulting model on later data, which is different from just asking a language model for a score each time."}},
+        {"How do I know the score is right?",
+         {"The model goes through a verification where it is checked against outcomes it never saw during training, and it is not treated as production ready until it passes that.",
+          "Every prediction is explained with TreeSHAP, so each score comes with the features that drove it and you can see why it was produced.",
+          "You get leakage free point in time features where each row only sees what was known then, and the model is validated on data from later periods than it trained on, which helps confirm the scores.",
+          "Between the verification against unseen outcomes and TreeSHAP explanations for every prediction, you have both performance checks and a clear view of the factors behind each score."}},
+        {"What languages can I write a step in?",
+         {"You can write pipeline steps in Python or in SQL, whichever fits the part of the process you are working on.",
+          "In this system, pipeline steps are written in Python or in SQL.",
+          "If you are defining a step, you do it in Python or in SQL.",
+          "Steps inside a pipeline are described using Python code or SQL statements."}},
+        {"What happens when it gets one wrong?",
+         {"Before a pipeline is treated as ready, its model is measured against outcomes it never saw during training in a verification, and deployments are tied to saved versions so you can roll back to an earlier version without rebuilding.",
+          "Whenever you need to change the behavior, every deployment points at a saved version, and you can roll back to an earlier one without rebuilding.",
+          "The system is designed around leakage free point in time features and validation on later data, and models that do not pass verification against unseen outcomes are not treated as production ready in the first place.",
+          "Because pipelines must pass a verification and each deployment is anchored to a saved version that you can roll back, you have both upfront checks and a way to step back if the results are not acceptable."}},
+        {"Do I need an ML person to run this?",
+         {"You do not need a machine learning specialist, because it picks the steps, checks them, and runs them, so someone who knows the data and the business is enough.",
+          "The workflow is built so that an expert in the data and the business can operate it, since the system itself chooses, validates, and executes the pipeline steps.",
+          "Rather than relying on an ML engineer, a person who understands the data and the business context can use it, as the platform handles selecting and running the steps.",
+          "Because it picks, checks, and runs the pipeline steps for you, the person operating it just needs to know the data and the business, not the details of machine learning."}},
+        {"Won't it just leak the future into the model?",
+         {"It builds leakage free point in time features so each row only sees what was known at that moment, and the model is validated on data from later times than it trained on.",
+          "Future information is kept out of the training rows by using point in time features that only reflect what was known then, and later data is used to validate the model.",
+          "The design is explicitly leakage free, with each observation limited to information available at that time and model checks carried out on data that arrives afterward.",
+          "To prevent leaking the future, it restricts features to what was known at the time for each row and evaluates the trained model on data from later periods."}}
+}};
+
 InteractionFamily product_knowledge_family(int phrasings) {
     InteractionFamily family{
         "product_knowledge",
@@ -654,10 +700,21 @@ InteractionFamily product_knowledge_family(int phrasings) {
             // right, which is why every entry is verified against source.
             EndState bare_required = facts({{"kind", std::string("answer")},
                                             {"built_nothing", true}});
+            // Rotate through the alternates where we have them, so a pressed-on question is
+            // answered several correct ways rather than one memorizable way.
+            std::string bare_answer = std::get<2>(knowledge[index]);
+            for (const auto& [question, alternates] : kAlternateAnswers) {
+                if (std::string(question) != std::string(std::get<0>(knowledge[index]))) continue;
+                if (phrasing > 0) {
+                    bare_answer = alternates[static_cast<std::size_t>(phrasing - 1) %
+                                             alternates.size()];
+                }
+                break;
+            }
             family.cases.push_back(make_case("product-bare/" + std::to_string(index) + "/" +
                                                  std::to_string(phrasing),
-                                             ask, "", InteractionKind::Answer,
-                                             std::get<2>(knowledge[index]), bare_required));
+                                             ask, "", InteractionKind::Answer, bare_answer,
+                                             bare_required));
         }
     }
     return family;

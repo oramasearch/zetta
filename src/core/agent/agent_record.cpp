@@ -26,6 +26,8 @@ const nlohmann::json& agent_schema() {
         "model": { "type": "string", "minLength": 1, "description": "checkpoint dir, model:<uuid>, or a HuggingFace repo id" },
         "system_prompt": { "type": "string" },
         "tools": { "type": "array", "items": { "type": "string" } },
+        "goals": { "type": "array", "items": { "type": "object" },
+                   "description": "what this agent is trained to be good at, and how much each matters; the RLVR reward is derived from these" },
         "created_at": { "type": "string" },
         "updated_at": { "type": "string" }
       }
@@ -41,6 +43,9 @@ nlohmann::json to_json(const AgentRecord& agent) {
     value["model"] = agent.model;
     value["system_prompt"] = agent.system_prompt;
     value["tools"] = agent.tools;
+    nlohmann::json goals = nlohmann::json::array();
+    for (const Goal& goal : agent.goals) goals.push_back(to_json(goal));
+    value["goals"] = std::move(goals);
     value["created_at"] = agent.created_at;
     value["updated_at"] = agent.updated_at;
     return value;
@@ -80,6 +85,19 @@ std::optional<AgentRecord> agent_from_json(const nlohmann::json& value, std::str
             if (!tool.is_string()) return fail("agent.tools entries must be strings");
             agent.tools.push_back(tool.get<std::string>());
         }
+    }
+
+    if (const auto goals = value.find("goals"); goals != value.end()) {
+        if (!goals->is_array()) return fail("agent.goals must be an array");
+        for (const nlohmann::json& entry : *goals) {
+            std::string reason;
+            std::optional<Goal> goal = goal_from_json(entry, &reason);
+            if (!goal) return fail("agent.goals: " + reason);
+            agent.goals.push_back(*std::move(goal));
+        }
+        // Resolve plain-language goals to their checks on the way in, so a stored record always
+        // says what it is actually training on rather than leaving it to be inferred later.
+        interpret_goals(agent.goals);
     }
 
     if (agent.id.empty()) return fail("agent.id must be a non-empty string");
