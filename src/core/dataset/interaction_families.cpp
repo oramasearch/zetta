@@ -637,6 +637,27 @@ InteractionFamily product_knowledge_family(int phrasings) {
                                                  std::to_string(phrasing),
                                              ask, std::move(listing), InteractionKind::Answer,
                                              std::get<2>(knowledge[index]), required));
+
+            // The same question with NO capability listing — which is how it actually arrives,
+            // because nobody has a Project selected when they ask what the product does.
+            //
+            // Served ungrounded, a checkpoint trained only on the grounded form BLENDS memorized
+            // answers into word salad: asked "why not just use an LLM" it produced "an assistant
+            // can read from it and directly as a set of tools from it and drive it...". That is the
+            // most important objection this product has to answer, so it cannot be left to a
+            // retrieval path that may not fire.
+            //
+            // The required facts are necessarily weaker — capability_exists is only projectable
+            // against a listing, and the corpus rule is that a required fact must be checkable. So
+            // the gate verifies the MODE and that it built nothing, and the anti-fabrication rule
+            // still forbids a figure. Content correctness here rests on the reference text being
+            // right, which is why every entry is verified against source.
+            EndState bare_required = facts({{"kind", std::string("answer")},
+                                            {"built_nothing", true}});
+            family.cases.push_back(make_case("product-bare/" + std::to_string(index) + "/" +
+                                                 std::to_string(phrasing),
+                                             ask, "", InteractionKind::Answer,
+                                             std::get<2>(knowledge[index]), bare_required));
         }
     }
     return family;

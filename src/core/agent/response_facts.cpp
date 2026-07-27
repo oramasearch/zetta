@@ -41,6 +41,15 @@ std::vector<std::string> numeric_literals(std::string_view text) {
         }
         const std::size_t begin = index;
         while (index < text.size() && is_number_char(text[index])) ++index;
+        // A digit run touching a letter is part of an IDENTIFIER — BM25F, GPT-4, S-2, gpt4o — not
+        // a figure the answer is claiming. Same reasoning as the code-span skip above: this check
+        // exists to catch invented MEASURES, and flagging an algorithm's name as a fabricated
+        // number inverts it.
+        const bool letter_before = begin > 0 && (std::isalpha(static_cast<unsigned char>(
+                                                     text[begin - 1])) != 0);
+        const bool letter_after =
+            index < text.size() && (std::isalpha(static_cast<unsigned char>(text[index])) != 0);
+        if (letter_before || letter_after) continue;
         std::string literal(text.substr(begin, index - begin));
         // Trim a trailing '.' that was sentence punctuation rather than a decimal point.
         while (!literal.empty() && literal.back() == '.') literal.pop_back();

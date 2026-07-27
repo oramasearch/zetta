@@ -303,7 +303,9 @@ TEST_F(CorpusInvariants, NoReferenceMessageCitesANumberItsGroundingDoesNotContai
 // through every gate and teach the agent to invent measures for a Project it has not read. A
 // build-from-intent reply, or a product-knowledge answer, must stay qualitative.
 TEST_F(CorpusInvariants, UngroundedMessagesStateNoFigures) {
-    const std::regex figure("[0-9]{2,}|[0-9]+\\.[0-9]+");
+    // A digit run touching a letter is a NAME (BM25F, GPT-4), not a stated figure — the same
+    // distinction production's numeric_literals makes.
+    const std::regex figure("(^|[^A-Za-z0-9])([0-9]{2,}|[0-9]+\\.[0-9]+)([^A-Za-z0-9]|$)");
     int ungrounded = 0;
     for (const AdmissionCase& admission_case : cases()) {
         if (!admission_case.reference_action) continue;
