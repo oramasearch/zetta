@@ -506,7 +506,7 @@ InteractionFamily product_knowledge_family(int phrasings) {
         {}};
 
     // {the question, the capability the answer must NAME, the answer}
-    const std::array<std::tuple<const char*, const char*, const char*>, 24> knowledge = {{
+    const std::array<std::tuple<const char*, const char*, const char*>, 30> knowledge = {{
         {"What is Orama Studio?", "turn a question in plain language into a running Pipeline",
          "Orama Studio is where you turn a question in plain language into a running Pipeline. "
          "You describe the outcome you want; Studio designs the steps, checks them with a "
@@ -576,6 +576,31 @@ InteractionFamily product_knowledge_family(int phrasings) {
         {"Can you predict equipment failure?", "predict equipment failure",
          "Yes. Studio can predict equipment failure from machine history so maintenance goes "
          "where it is needed first."},
+        {"Why not just use an LLM for this?", "train on your own data rather than calling a rented model",
+         "For a scoring question, Studio will train on your own data rather than calling a rented "
+         "model. A general model guesses from what it read on the internet; a model trained on "
+         "your history learns what actually preceded the outcome in your business - and you can "
+         "measure it against what really happened, which you cannot do with a guess."},
+        {"How do I know the score is right?", "measure a model against outcomes it never saw",
+         "Studio will measure a model against outcomes it never saw before it is treated as "
+         "production-ready. That is what a Verification checks, and a Pipeline that has not "
+         "passed one does not get deployed."},
+        {"Can I see why it scored something that way?", "explain a prediction with TreeSHAP",
+         "Yes. Studio can explain a prediction with TreeSHAP, so each score comes with the "
+         "features that drove it - which is also how you catch a model that is right for the "
+         "wrong reason."},
+        {"What happens when it gets one wrong?", "roll back to an earlier Saved Version",
+         "You keep the evidence and the ability to undo. Every score is explained, every "
+         "deployment points at a Saved Version, and you can roll back to an earlier Saved Version "
+         "without a rebuild."},
+        {"Do I need an ML person to run this?", "turn a question in plain language into a running Pipeline",
+         "No. Studio will turn a question in plain language into a running Pipeline - it picks the "
+         "steps, checks them, and runs them. Someone who knows the data and the business is "
+         "enough; the ML decisions are the part it handles."},
+        {"Won't it just leak the future into the model?", "build leakage-free point-in-time features",
+         "That is the most common way a model looks brilliant and then fails, so Studio will "
+         "build leakage-free point-in-time features - each row sees only what was known at the "
+         "time - and validate on later data than it trained on."},
         {"Can you detect fraud?", "flag likely fraud for review",
          "Yes. Studio can flag likely fraud for review with the reasons attached, so a reviewer "
          "sees why something was flagged instead of a bare score."},
@@ -781,6 +806,110 @@ EndState supervised_facts(const std::string& model_kind) {
                   {"temporal_validation", true},
                   {"calibrated", true},
                   {"explain", std::string("shap")}});
+}
+
+// --- Class 9: replace what they already have --------------------------------------------------
+// The single most common way this product is actually encountered: the person already built
+// something. An n8n workflow calling an LLM per row, a cron job running a SQL script, a notebook
+// someone re-runs monthly, a rules engine with a hand-tuned threshold. They are not asking "what is
+// AI" — they are asking whether this is better than the thing they maintain.
+//
+// The corpus had no turn of this shape at all, which made the agent unable to hold the conversation
+// the product is positioned on: hand over the artifact you already have, get a correct pipeline
+// back. It is also the hardest interaction to fake, because the honest answer has to name what the
+// existing approach genuinely lacks rather than dismiss it.
+//
+// Two rules this family encodes, both load-bearing:
+//   * NEVER disparage what they built. It works, it got them here, and the person reading is the
+//     person who built it. Name what it cannot do — not what is wrong with them.
+//   * The improvement must be SPECIFIC and true of the pipeline actually produced: a point-in-time
+//     cut, a temporal split, calibration, per-prediction explanations, a Verification before
+//     deploy. A vague "it's more robust" teaches the agent to oversell.
+InteractionFamily migration_family(const std::vector<ProjectContext>& contexts, int phrasings) {
+    InteractionFamily family{
+        "replace_existing",
+        "Take what the user already built - an n8n flow, a script, a notebook, a rules engine - "
+        "and produce the production Pipeline that replaces it",
+        {}};
+
+    // {what they have today, what that approach cannot do, what the Pipeline gives them instead}
+    const std::array<std::tuple<const char*, const char*, const char*>, 12> artifacts = {{
+        {"Right now an n8n workflow calls an LLM on every row each night to score them.",
+         "asks a general model to guess, one row at a time",
+         "trains on your own history instead of guessing, and scores every row in one pass"},
+        {"We have a Zapier flow that emails us when a number crosses a threshold.",
+         "fires on a threshold somebody picked",
+         "learns which movements actually matter, and ranks what to work first"},
+        {"There's a cron job that runs a SQL script and drops a CSV in a bucket.",
+         "recomputes the same query and cannot tell you why a row scored the way it did",
+         "keeps the query as a step, adds a model on top, and explains each score"},
+        {"A data scientist re-runs a notebook by hand every month.",
+         "depends on one person remembering to run it",
+         "runs on a schedule, versioned, with the results served where the team already works"},
+        {"Honestly it's a spreadsheet - someone scores the rows manually.",
+         "scales with the time of the person filling it in",
+         "scores every row automatically and keeps the reasoning visible"},
+        {"We have dbt models feeding a dashboard, and someone eyeballs it weekly.",
+         "shows what happened, and leaves the judgement to whoever is looking",
+         "keeps your dbt models as the source and adds the prediction and the ranking on top"},
+        {"There's an Airflow DAG that loads a pickled scikit-learn model.",
+         "has no check that the model is still any good before it serves",
+         "revalidates on later data than it trained on and will not deploy a Saved Version that "
+         "fails Verification"},
+        {"We use a rules engine - a couple of hand-picked thresholds and we flag the row.",
+         "treats every row that trips a threshold the same",
+         "weighs each signal against everything else you know about the row"},
+        {"We pay a vendor for a score and we don't know how they compute it.",
+         "cannot be inspected, and cannot be tuned to your business",
+         "trains on your data, in your environment, with the drivers behind every score visible"},
+        {"It's a formula field in Salesforce that someone set up years ago.",
+         "was tuned to a business that has since changed",
+         "retrains as the data moves and tells you when the pattern has drifted"},
+        {"A Looker dashboard, and then we go on gut feel.",
+         "puts the whole judgement on the person reading it",
+         "makes the judgement explicit and measurable, so it can be checked and improved"},
+        {"We built a Python service that calls an LLM API once per row.",
+         "pays per row and cannot be evaluated against a ground truth",
+         "runs the model on your own infrastructure and is measured against what actually "
+         "happened"},
+    }};
+
+    const std::array<const char*, 4> shapes = {
+        "{} Can Orama do better?", "{} What would you do instead?", "{} Is this something you'd "
+        "replace?", "{} We're wondering if there's a better way."};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        const std::string grounding = render_grounding(context, GroundingView::Data);
+        for (std::size_t artifact = 0; artifact < artifacts.size(); ++artifact) {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+                std::string shape = shapes[static_cast<std::size_t>(phrasing)];
+                shape.replace(shape.find("{}"), 2, std::get<0>(artifacts[artifact]));
+
+                // The replacement is THIS Project's real solution, not a generic pipeline — the
+                // whole point is that the answer is production-grade for their actual use case.
+                EndState required = solution_facts(context);
+                required.set("replaces_existing", true);
+                zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+
+                // Credit what they built, name the limit, then say what changes. No numbers: this
+                // reply is not grounded in a measured result, so a figure here would be invented.
+                const std::string message =
+                    std::string("That already does real work - it just ") +
+                    std::get<1>(artifacts[artifact]) + ". I'd keep `" + context.table +
+                    "` as the source and build the " + context.project +
+                    " Pipeline, which " + std::get<2>(artifacts[artifact]) +
+                    ". Nothing switches over until it passes a Verification and you deploy it.";
+
+                family.cases.push_back(make_case(
+                    "migrate/" + std::to_string(context_index) + "/" +
+                        std::to_string(artifact) + "/" + std::to_string(phrasing),
+                    shape, grounding, InteractionKind::Action, message, required,
+                    std::move(graph)));
+            }
+        }
+    }
+    return family;
 }
 
 // --- Class 3: feature engineering -------------------------------------------------------------
@@ -1062,6 +1191,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(platform_family(contexts, phrasings));
     families.push_back(capability_family(phrasings));
     families.push_back(product_knowledge_family(phrasings));
+    families.push_back(migration_family(contexts, phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));
