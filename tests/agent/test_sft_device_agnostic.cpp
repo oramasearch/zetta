@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -66,6 +68,25 @@ const char* env_or(const char* name, const char* fallback) {
 int env_int(const char* name, int fallback) {
     const char* value = std::getenv(name);
     return value != nullptr ? std::atoi(value) : fallback;
+}
+
+// The checkpoint's stop token, read from config.json (fallback: Qwen <|im_end|>).
+//
+// Every training example must END with it. Without a stop token in the training data the model is
+// never shown where an answer finishes, so in open-ended generation it writes one action and then
+// starts another — which is precisely what happened: a checkpoint emitting perfectly good tool
+// calls scored 0% parse rate, because the runaway second action corrupted the JSON span.
+int checkpoint_eos_id(const std::string& model_dir) {
+    std::ifstream config_file(model_dir + "/config.json");
+    if (config_file) {
+        const nlohmann::json config =
+            nlohmann::json::parse(config_file, nullptr, /*allow_exceptions=*/false);
+        if (!config.is_discarded() && config.contains("eos_token_id") &&
+            config["eos_token_id"].is_number_integer()) {
+            return config["eos_token_id"].get<int>();
+        }
+    }
+    return 151645;
 }
 
 // One SFT example: the full prompt+target token sequence, and where the prompt ends.
@@ -144,6 +165,7 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
     // Render each case with the SHARED renderer, so a training prompt is byte-identical to what
     // agent::respond will serve (#918). The target is the reference response envelope.
     const int max_examples = env_int("ZETTA_SFT_EXAMPLES", 64);
+    const int eos_id = checkpoint_eos_id(model_dir);
     std::vector<SftExample> examples;
     for (const AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
@@ -152,6 +174,7 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
         const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
+        tokens.push_back(eos_id);  // teach the model to STOP after the action
         if (tokens.size() >= 4) examples.push_back({std::move(tokens), prompt_tokens});
     }
     ASSERT_FALSE(examples.empty());
@@ -285,6 +308,7 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
     ASSERT_TRUE(zetta::agent::admit_corpus(*corpus).admitted) << "corpus must pass the native gate";
 
     const int max_examples = env_int("ZETTA_SFT_EXAMPLES", 256);
+    const int eos_id = checkpoint_eos_id(model_dir);
     std::vector<SftExample> examples;
     std::size_t longest = 0;
     std::size_t shortest = SIZE_MAX;
@@ -295,6 +319,7 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
         const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
+        tokens.push_back(eos_id);  // teach the model to STOP after the action
         if (tokens.size() < 4) continue;
         longest = std::max(longest, tokens.size());
         shortest = std::min(shortest, tokens.size());

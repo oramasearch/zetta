@@ -90,4 +90,37 @@ TEST(StudioAction, RejectsMalformed) {
     EXPECT_NE(error.find("tool_calls[0]"), std::string::npos);
 }
 
+// A model that never learned to stop writes a SECOND action after the first. Spanning first-`{`
+// to last-`}` covered both, produced invalid JSON, and threw away a perfectly good first action —
+// which is exactly how a checkpoint that WAS emitting correct tool calls measured 0% parse rate.
+TEST(StudioAction, ParsesTheFirstActionWhenTheModelKeepsGenerating) {
+    const std::string runaway =
+        R"({"kind":"action","message":"Here's the pipeline.","tool_calls":[{"tool":"connect",)"
+        R"("arguments":{"name":"source"}}]})"
+        R"({"kind":"action","message":"Here's the pipeline.","tool_calls":[]})";
+    const std::optional<zetta::agent::StudioAction> action =
+        zetta::agent::parse_studio_action(runaway);
+    ASSERT_TRUE(action.has_value()) << "a trailing second action must not destroy the first";
+    EXPECT_EQ(action->kind, zetta::agent::InteractionKind::Action);
+    ASSERT_EQ(action->tool_calls.size(), 1U);
+    EXPECT_EQ(action->tool_calls[0].tool, "connect");
+}
+
+// A brace or quote INSIDE the message must not end the scan early.
+TEST(StudioAction, BracesInsideTheMessageDoNotTruncateTheScan) {
+    const std::string tricky =
+        R"({"kind":"answer","message":"Use {\"a\": 1} as the config }","tool_calls":[]} trailing)";
+    const std::optional<zetta::agent::StudioAction> action =
+        zetta::agent::parse_studio_action(tricky);
+    ASSERT_TRUE(action.has_value());
+    EXPECT_NE(action->message.find("config"), std::string::npos);
+}
+
+// A truncated generation has no complete object, and must fail rather than half-parse.
+TEST(StudioAction, ATruncatedGenerationDoesNotParse) {
+    const std::string cut =
+        R"({"kind":"action","message":"Here's the pipeline.","tool_calls":[{"tool":"conn)";
+    EXPECT_FALSE(zetta::agent::parse_studio_action(cut).has_value());
+}
+
 }  // namespace
