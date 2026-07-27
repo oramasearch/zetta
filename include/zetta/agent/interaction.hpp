@@ -47,12 +47,27 @@ std::string_view grounding_preamble();
 // The engine fetches and the model only answers from what it was handed, which is what makes
 // the reward well defined (we know the context, so we know ground truth) and what makes the
 // retrieval auditable. Model-driven retrieval is a later capability (#859), not this contract.
-// One earlier exchange, as the model is shown it. `reply` is what the agent SAID — the action's
-// message, never the raw envelope, because the envelope is machinery and re-showing it teaches the
-// model that JSON is part of a conversation.
+// One earlier exchange, as the model is shown it.
+//
+// A turn is not just (ask, reply). The agent CALLED TOOLS and those calls RETURNED THINGS, and a
+// follow-up routinely refers to exactly that: "why did that fail?", "use the other table",
+// "re-run it". Collapsing a turn to its prose hides the execution, so the model cannot condition
+// on what actually came back — which is the tool-calling-as-retrieval loop going missing the
+// moment a conversation has a second turn.
+//
+// `reply` is what the agent SAID — the action's message, never the raw envelope, because the
+// envelope is machinery and re-showing it would teach the model that JSON is part of a dialogue.
+// The calls and their outcomes are shown as what they are instead.
+struct ToolOutcome {
+    std::string tool;
+    std::string status;  // "ok" / "failed" / "unknown tool" — the sandbox's own words
+    std::string detail;  // what it returned, or why it failed; may be empty
+};
+
 struct PriorTurn {
     std::string ask;
     std::string reply;
+    std::vector<ToolOutcome> tools;  // what ran during that turn, in order
 };
 
 // `history` is the exchanges BEFORE this ask, oldest first.

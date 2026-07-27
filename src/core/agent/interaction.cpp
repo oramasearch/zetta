@@ -53,6 +53,18 @@ std::string render_interaction_prompt(std::string_view system_prompt, std::strin
         for (const PriorTurn& turn : history) {
             framed_ask.append("- They asked: ");
             framed_ask.append(turn.ask);
+            // What actually RAN, between the ask and the answer. A follow-up that says "why did
+            // that fail?" is asking about this, not about the prose.
+            for (const ToolOutcome& outcome : turn.tools) {
+                framed_ask.append("\n  You called `");
+                framed_ask.append(outcome.tool);
+                framed_ask.append("` -> ");
+                framed_ask.append(outcome.status);
+                if (!outcome.detail.empty()) {
+                    framed_ask.append(": ");
+                    framed_ask.append(outcome.detail);
+                }
+            }
             framed_ask.append("\n  You answered: ");
             framed_ask.append(turn.reply);
             framed_ask.append("\n");

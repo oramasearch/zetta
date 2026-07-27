@@ -963,7 +963,25 @@ InteractionFamily follow_up_family(const std::vector<ProjectContext>& contexts, 
             family.cases.push_back(std::move(add));
         }
 
-        // 4. A follow-up that is still ambiguous — history does not make every referent clear, and
+        // 4. "Why did that fail?" — answerable ONLY from the tool outcome in the history. The
+        //    prose of the previous turn does not contain the reason; the call that ran does. This
+        //    is the case that justifies carrying outcomes rather than just (ask, reply).
+        if (context.last_run_status == "failed" && !context.last_run_failure.empty()) {
+            EndState required = facts({{"grounded", true},
+                                       {"numbers_from_context", true},
+                                       {"built_nothing", true}});
+            AdmissionCase failed = make_case(
+                "follow/failure/" + std::to_string(context_index), "Why did that fail?",
+                render_grounding(context, GroundingView::Runs), InteractionKind::Answer,
+                std::string("The connect step didn't finish - ") + context.last_run_failure +
+                    ". Nothing downstream ran, so there's no result to read yet.",
+                required);
+            failed.history = {{"Run it.", "Started the run on " + context.project + ".",
+                               {{"run", "failed", context.last_run_failure}}}};
+            family.cases.push_back(std::move(failed));
+        }
+
+        // 5. A follow-up that is still ambiguous — history does not make every referent clear, and
         //    an agent that guesses when it should ask is worse than one that asks.
         if (phrasings > 1) {
             EndState required = facts({{"clarify", true},

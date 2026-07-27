@@ -45,7 +45,14 @@ nlohmann::json to_json(const AdmissionCase& admission_case) {
     if (!admission_case.history.empty()) {
         nlohmann::json history = nlohmann::json::array();
         for (const PriorTurn& turn : admission_case.history) {
-            history.push_back({{"ask", turn.ask}, {"reply", turn.reply}});
+            nlohmann::json tools = nlohmann::json::array();
+            for (const ToolOutcome& outcome : turn.tools) {
+                tools.push_back({{"tool", outcome.tool},
+                                 {"status", outcome.status},
+                                 {"detail", outcome.detail}});
+            }
+            history.push_back(
+                {{"ask", turn.ask}, {"reply", turn.reply}, {"tools", std::move(tools)}});
         }
         output["history"] = std::move(history);
     }
@@ -191,8 +198,23 @@ std::optional<AdmissionCase> admission_case_from_json(const nlohmann::json& valu
                 set_error(error, "admission case.history[]: needs string `ask` and `reply`");
                 return std::nullopt;
             }
-            admission_case.history.push_back(
-                {turn["ask"].get<std::string>(), turn["reply"].get<std::string>()});
+            PriorTurn prior{turn["ask"].get<std::string>(), turn["reply"].get<std::string>(), {}};
+            if (turn.contains("tools")) {
+                if (!turn["tools"].is_array()) {
+                    set_error(error, "admission case.history[].tools: must be an array");
+                    return std::nullopt;
+                }
+                for (const nlohmann::json& outcome : turn["tools"]) {
+                    if (!outcome.is_object() || !outcome.value("tool", nlohmann::json()).is_string()) {
+                        set_error(error, "admission case.history[].tools[]: needs a string `tool`");
+                        return std::nullopt;
+                    }
+                    prior.tools.push_back({outcome["tool"].get<std::string>(),
+                                           outcome.value("status", std::string()),
+                                           outcome.value("detail", std::string())});
+                }
+            }
+            admission_case.history.push_back(std::move(prior));
         }
     }
     return admission_case;
