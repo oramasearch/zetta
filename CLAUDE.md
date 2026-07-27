@@ -582,6 +582,27 @@ the load-bearing rules:
   closing comment on what changed, and **leave the PR open for review** — solved
   work must not clutter the tracker (umbrella `CLAUDE.md` → "Close shipped tickets").
 
+### Datasets and models are published to HuggingFace, with cards
+
+**Every corpus version and every checkpoint goes to the private `OramaSearch` org on the Hub, with
+a dataset card / model card** — see the **hf-ops** skill for the procedure and the card rules.
+
+- `OramaSearch/base-agent-interaction-corpus` (datasets) · `OramaSearch/base-agent-0.6b` (models).
+- **Private, always, and verified private before any upload.** These carry product detail, the
+  solution catalogue's correctness profiles, and models trained on them. A public repo cannot be
+  made private after the content has existed publicly.
+- **Not in git.** They were once gitignored as "reproducible from the native generator", which is
+  false the moment the generator changes — regenerating from a later commit yields a *different*
+  corpus, so a checkpoint whose corpus was not published cannot be reproduced or audited. **The
+  corpus is the provenance of the model.**
+- **A corpus publishes with its canary**; a checkpoint publishes naming its exact corpus version
+  and carrying its tokenizer.
+- **A card states its limitations plainly**, not only its wins, and cites the dated report in
+  [`docs/reports/`](docs/reports/README.md) behind any number. A card that only lists wins is
+  marketing, and the next person rediscovers the weakness expensively.
+- **Never print or commit the token** (`HF_TOKEN` from the environment). If one surfaces anywhere
+  durable — a card, a config, a transcript — redact and rotate it.
+
 ### Documentation — update it with EVERY change (not optional)
 
 Docs are **part of the change, in the same commit** — never a follow-up. After
@@ -661,5 +682,9 @@ Project skills live in `.claude/skills/` (committed, shared):
   API into a partitioned dataset; the read-only guard, the injected transport,
   typed cells, no vendor SDK).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).
+- **hf-ops** — publish + version datasets and models on the **private** `OramaSearch`
+  HuggingFace org: private-by-default (verified, never assumed), a corpus goes up with its
+  canary, a checkpoint names the exact corpus it learned from, and every artifact carries an
+  honest card that states its limitations rather than only its wins.
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.
