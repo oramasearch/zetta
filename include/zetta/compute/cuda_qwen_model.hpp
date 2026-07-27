@@ -113,10 +113,13 @@ public:
     // One full training step, entirely on-device (#923 rungs 6c + 7): forward with caches, loss,
     // backward through every layer, AdamW update. Only the scalar loss returns to the host.
     // `step` is 1-based (AdamW's bias correction requires it).
+    // `first_scored` masks the prompt out of the loss and its gradient (#932) — an index into
+    // `targets`, so for a prompt of P tokens it is P-1 (targets[i] predicts ids[i+1], so the first
+    // completion token is predicted at index P-1). Default 0 trains on every position.
     ComputeStatus train_step(ComputeDevice& device, const std::vector<int>& ids,
                              const std::vector<int>& targets, Gradients& gradients,
                              Gradients& moment1, Gradients& moment2, int step,
-                             float learning_rate, float& loss);
+                             float learning_rate, float& loss, int first_scored = 0);
 
     // Copy the resident weights back into a host model — how a trained checkpoint is saved, and
     // how #926 compares backends. Not on any hot path.

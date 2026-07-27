@@ -623,13 +623,17 @@ Tensor embedding(const Tensor& table, const std::vector<int>& ids) {
     return Tensor{node};
 }
 
-Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets) {
+Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets, int first_scored) {
     const int rows = logits.shape()[0];
     const int vocab = logits.shape()[1];
+    // Clamp rather than reject: a boundary past the end would divide by zero, and a caller whose
+    // prompt filled the whole window should train on nothing rather than produce a NaN loss.
+    const int begin = first_scored < 0 ? 0 : (first_scored >= rows ? rows - 1 : first_scored);
+    const int scored = rows - begin;
     std::vector<float> softmax(static_cast<std::size_t>(rows) * vocab, 0.0F);
     float total = 0.0F;
 
-    for (int row = 0; row < rows; ++row) {
+    for (int row = begin; row < rows; ++row) {  // masked rows keep softmax 0 and are skipped
         const float* x = logits.data().data() + row * vocab;
         float max_value = x[0];
         for (int j = 1; j < vocab; ++j) {
@@ -647,15 +651,15 @@ Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets) {
         // loss_row = log(sum_exp) + max − x[target] = −log(softmax[target]).
         total += std::log(sum_exp) + max_value - x[targets[row]];
     }
-    total /= static_cast<float>(rows);
+    total /= static_cast<float>(scored);
 
     auto node = make_node({total}, {1});
     node->parents = {logits.node()};
     const std::shared_ptr<Node> logits_node = logits.node();
-    node->backward = [logits_node, softmax, targets, rows,
+    node->backward = [logits_node, softmax, targets, rows, begin, scored,
                       vocab](const std::vector<float>& g) {
-        const float scale_factor = g[0] / static_cast<float>(rows);
-        for (int row = 0; row < rows; ++row) {
+        const float scale_factor = g[0] / static_cast<float>(scored);
+        for (int row = begin; row < rows; ++row) {  // masked rows receive exactly zero gradient
             for (int j = 0; j < vocab; ++j) {
                 const float indicator = (j == targets[row]) ? 1.0F : 0.0F;
                 logits_node->grad[row * vocab + j] +=

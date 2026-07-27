@@ -158,14 +158,22 @@ ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids,
 //
 // `row_loss` is an output of the forward and an input to the backward, the same
 // compute-once-share-it pattern `softmax_lse` uses in attention.
+//
+// `first_scored` masks the PROMPT out of the loss (#932): rows before it contribute nothing and the
+// mean is taken over the completion only. In SFT the prompt is near-identical across the corpus, so
+// the model memorizes it in a few steps and it then contributes ~0 error while occupying most of
+// the positions — measured at 87% of the loss on the base-agent corpus. Default 0 scores every row.
 ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
                                  DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
-                                 int vocab_size);
+                                 int vocab_size, int first_scored = 0);
 
 // grad_logits = (softmax(logits) - onehot(target)) / seq, recomputed from the logits rather than
 // from a saved softmax — recomputing an exp is far cheaper than storing and re-reading 600 MB.
+// Masked rows are ZEROED, not skipped — grad_logits is a reused pool buffer, so leaving a masked
+// row untouched would feed the previous step's gradient into this one.
 ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
-                                          DeviceBuffer& grad_logits, int seq, int vocab_size);
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size,
+                                          int first_scored = 0);
 
 // grad_table[ids[t], :] += grad_out[t, :] — the embedding's backward, a scatter-add.
 //

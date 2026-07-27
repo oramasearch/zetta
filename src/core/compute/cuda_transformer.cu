@@ -440,10 +440,17 @@ __global__ void embedding_kernel(const float* __restrict__ table, const int* __r
 // never written to memory.
 __global__ void cross_entropy_row_kernel(const float* __restrict__ logits,
                                          const int* __restrict__ targets,
-                                         float* __restrict__ row_loss, int seq, int vocab_size) {
+                                         float* __restrict__ row_loss, int seq, int vocab_size,
+                                         int first_scored) {
     __shared__ float scratch[kThreadsPerBlock];
     const int row = static_cast<int>(blockIdx.x);
     if (row >= seq) return;
+    // Prompt masking (#932): a row before the completion contributes no loss. Written as an
+    // explicit zero rather than an early return so the mean below reads a defined value.
+    if (row < first_scored) {
+        if (threadIdx.x == 0) row_loss[row] = 0.0F;
+        return;
+    }
     const float* x = logits + static_cast<long long>(row) * vocab_size;
 
     float local_max = -INFINITY;
@@ -487,12 +494,21 @@ __global__ void mean_kernel(const float* __restrict__ values, float* __restrict_
 // grad = (softmax - onehot) / seq, recomputing the softmax from the logits.
 __global__ void cross_entropy_backward_kernel(const float* __restrict__ logits,
                                               const int* __restrict__ targets,
-                                              float* __restrict__ grad, int seq, int vocab_size) {
+                                              float* __restrict__ grad, int seq, int vocab_size,
+                                              int first_scored) {
     __shared__ float scratch[kThreadsPerBlock];
     const int row = static_cast<int>(blockIdx.x);
     if (row >= seq) return;
     const float* x = logits + static_cast<long long>(row) * vocab_size;
     float* g = grad + static_cast<long long>(row) * vocab_size;
+    // A masked row must be zeroed, not skipped: grad_logits is a reused pool buffer, so leaving it
+    // untouched would feed the previous step's gradient back into this one.
+    if (row < first_scored) {
+        for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+            g[c] = 0.0F;
+        }
+        return;
+    }
 
     float local_max = -INFINITY;
     for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
@@ -514,7 +530,7 @@ __global__ void cross_entropy_backward_kernel(const float* __restrict__ logits,
         local_sum += __expf(x[c] - max_value);
     }
     const float sum_exp = block_sum(local_sum, scratch);
-    const float inverse_rows = 1.0F / static_cast<float>(seq);
+    const float inverse_rows = 1.0F / static_cast<float>(seq - first_scored);
     const int target = targets[row];
     for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
         const float probability = __expf(x[c] - max_value) / sum_exp;
@@ -960,10 +976,13 @@ ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids,
 
 ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
                                  DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
-                                 int vocab_size) {
+                                 int vocab_size, int first_scored) {
     if (seq <= 0 || vocab_size <= 0) {
         return ComputeStatus::invalid_argument("cross_entropy: extents must be positive");
     }
+    // Clamp rather than reject: a prompt that filled the window should score its last position
+    // rather than divide by zero.
+    const int begin = first_scored < 0 ? 0 : (first_scored >= seq ? seq - 1 : first_scored);
     const std::size_t elements =
         static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
     if (logits.element_count() < elements ||
@@ -973,17 +992,22 @@ ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer&
     }
     cross_entropy_row_kernel<<<seq, kThreadsPerBlock>>>(
         as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(row_loss), seq,
-        vocab_size);
+        vocab_size, begin);
     if (const auto status = check_launch("cross_entropy.rows"); !status.ok()) return status;
-    mean_kernel<<<1, kThreadsPerBlock>>>(as_const_float(row_loss), as_float(total), seq);
+    // Mean over the SCORED rows only — the masked prefix is skipped by offsetting the pointer, so
+    // the divisor is the number of completion tokens rather than the sequence length.
+    mean_kernel<<<1, kThreadsPerBlock>>>(as_const_float(row_loss) + begin, as_float(total),
+                                         seq - begin);
     return check_launch("cross_entropy.mean");
 }
 
 ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
-                                          DeviceBuffer& grad_logits, int seq, int vocab_size) {
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size,
+                                          int first_scored) {
     if (seq <= 0 || vocab_size <= 0) {
         return ComputeStatus::invalid_argument("cross_entropy_backward: extents must be positive");
     }
+    const int begin = first_scored < 0 ? 0 : (first_scored >= seq ? seq - 1 : first_scored);
     const std::size_t elements =
         static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
     if (logits.element_count() < elements || grad_logits.element_count() < elements) {
@@ -991,7 +1015,7 @@ ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const Devi
     }
     cross_entropy_backward_kernel<<<seq, kThreadsPerBlock>>>(
         as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(grad_logits),
-        seq, vocab_size);
+        seq, vocab_size, begin);
     return check_launch("cross_entropy_backward");
 }
 

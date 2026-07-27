@@ -544,17 +544,23 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     // Render SFT examples: prompt (the intent) + target (the required-facts solution) + EOS.
     const int max_examples =
         std::getenv("ZETTA_SFT_EXAMPLES") ? std::atoi(std::getenv("ZETTA_SFT_EXAMPLES")) : 64;
-    std::vector<std::vector<int>> examples;
+    // The prompt boundary rides along with the tokens: the loss scores the COMPLETION only (#932).
+    struct MlxSftExample {
+        std::vector<int> tokens;
+        int prompt_tokens = 0;
+    };
+    std::vector<MlxSftExample> examples;
     for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
         // #873: train on the ACTION, not the facts — prompt is the Studio system prompt + the
-        // ask, target is the reference {message, tool_calls, execution_graph} JSON.
+        // ask, target is the reference {message, tool_calls} JSON.
         const auto [prompt, target] = zetta::agent::render_action_example(admission_case);
         std::vector<int> tokens = tokenizer->encode(prompt);
+        const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
         tokens.push_back(eos_id);  // teach the model to stop after the solution
-        if (tokens.size() >= 4) examples.push_back(std::move(tokens));
+        if (tokens.size() >= 4) examples.push_back({std::move(tokens), prompt_tokens});
     }
     ASSERT_FALSE(examples.empty());
 
@@ -623,11 +629,13 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         if (position == 0 && step > 0) {
             std::shuffle(order.begin(), order.end(), order_rng);  // reshuffle each epoch
         }
-        const std::vector<int>& example = examples[order[position]];
-        const mx::array tokens(example.data(),
-                               mx::Shape{static_cast<int>(example.size())}, mx::int32);
+        const MlxSftExample& example = examples[order[position]];
+        const mx::array tokens(example.tokens.data(),
+                               mx::Shape{static_cast<int>(example.tokens.size())}, mx::int32);
+        // targets[i] predicts tokens[i+1], so the first completion token is predicted at prompt-1.
+        const int first_scored = example.prompt_tokens > 0 ? example.prompt_tokens - 1 : 0;
         const auto loss_fn = [&](const std::vector<mx::array>& params) {
-            return model->next_token_loss(params, tokens);
+            return model->next_token_loss(params, tokens, first_scored);
         };
         auto [loss, gradients] = mx::value_and_grad(loss_fn, argnums)(model->parameters());
         optimizer.update(model->parameters(), gradients);
@@ -641,6 +649,9 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         // from a panic report afterwards (#919: instrument, do not guess).
         constexpr double kToMib = 1024.0 * 1024.0;
         metrics << R"({"step":)" << step << R"(,"loss":)" << value
+                << R"(,"prompt_tokens":)" << example.prompt_tokens
+                << R"(,"completion_tokens":)"
+                << static_cast<int>(example.tokens.size()) - example.prompt_tokens
                 << R"(,"active_mib":)" << static_cast<double>(mx::get_active_memory()) / kToMib
                 << R"(,"cache_mib":)" << static_cast<double>(mx::get_cache_memory()) / kToMib
                 << R"(,"peak_mib":)" << static_cast<double>(mx::get_peak_memory()) / kToMib

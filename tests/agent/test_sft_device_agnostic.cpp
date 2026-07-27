@@ -68,6 +68,20 @@ int env_int(const char* name, int fallback) {
     return value != nullptr ? std::atoi(value) : fallback;
 }
 
+// One SFT example: the full prompt+target token sequence, and where the prompt ends.
+//
+// The boundary is what lets the loss score the COMPLETION only (#932). Without it, training spends
+// ~87% of its loss and its gradient on a prompt that is near-identical across the corpus and is
+// memorized within a few steps — so the reported number measures prompt memorization and the
+// effective learning rate on the part we care about is a fraction of what was set.
+struct SftExample {
+    std::vector<int> tokens;
+    int prompt_tokens = 0;
+    // targets[i] predicts tokens[i+1], so the first completion token is predicted at prompt-1.
+    int first_scored() const { return prompt_tokens > 0 ? prompt_tokens - 1 : 0; }
+    int completion_tokens() const { return static_cast<int>(tokens.size()) - prompt_tokens; }
+};
+
 TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
     const char* model_dir = std::getenv("ZETTA_QWEN_DIR");
     if (model_dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
@@ -130,14 +144,15 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
     // Render each case with the SHARED renderer, so a training prompt is byte-identical to what
     // agent::respond will serve (#918). The target is the reference response envelope.
     const int max_examples = env_int("ZETTA_SFT_EXAMPLES", 64);
-    std::vector<std::vector<int>> examples;
+    std::vector<SftExample> examples;
     for (const AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
         const auto [prompt, target] = zetta::agent::render_action_example(admission_case);
         std::vector<int> tokens = tokenizer->encode(prompt);
+        const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
-        if (tokens.size() >= 4) examples.push_back(std::move(tokens));
+        if (tokens.size() >= 4) examples.push_back({std::move(tokens), prompt_tokens});
     }
     ASSERT_FALSE(examples.empty());
 
@@ -175,15 +190,17 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
     for (int step = 0; step < steps; ++step) {
         const std::size_t position = static_cast<std::size_t>(step) % examples.size();
         if (position == 0 && step > 0) std::shuffle(order.begin(), order.end(), order_rng);
-        const std::vector<int>& example = examples[order[position]];
+        const SftExample& example = examples[order[position]];
+        const std::vector<int>& ids = example.tokens;
 
         zetta::autograd::zero_grad(model->parameters());
         // Predict token t+1 from position t: drop the last row of logits and the first token.
-        const Tensor logits = model->forward(example);
+        const Tensor logits = model->forward(ids);
         const Tensor predicted =
-            zetta::autograd::row_slice(logits, 0, static_cast<int>(example.size()) - 1);
-        const std::vector<int> targets(example.begin() + 1, example.end());
-        Tensor loss = cross_entropy(predicted, targets);
+            zetta::autograd::row_slice(logits, 0, static_cast<int>(ids.size()) - 1);
+        const std::vector<int> targets(ids.begin() + 1, ids.end());
+        // Score the completion only (#932) — the loss now means "how well did it answer".
+        Tensor loss = cross_entropy(predicted, targets, example.first_scored());
         loss.backward();
         optimizer.step(model->parameters());
 
@@ -191,7 +208,10 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
         if (step == 0) first_loss = value;
         last_loss = value;
         min_loss = std::min(min_loss, value);
-        metrics << R"({"step":)" << step << R"(,"loss":)" << value << "}\n";
+        // Log the token split, so the prompt/completion ratio is visible rather than inferred.
+        metrics << R"({"step":)" << step << R"(,"loss":)" << value << R"(,"prompt_tokens":)"
+                << example.prompt_tokens << R"(,"completion_tokens":)"
+                << example.completion_tokens() << "}\n";
         metrics.flush();  // durable per step
         if (step % 10 == 0) {
             std::cerr << "[sft] step " << step << "/" << steps << " loss " << value << "\n";
@@ -265,19 +285,20 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
     ASSERT_TRUE(zetta::agent::admit_corpus(*corpus).admitted) << "corpus must pass the native gate";
 
     const int max_examples = env_int("ZETTA_SFT_EXAMPLES", 256);
-    std::vector<std::vector<int>> examples;
+    std::vector<SftExample> examples;
     std::size_t longest = 0;
     std::size_t shortest = SIZE_MAX;
     for (const AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
         const auto [prompt, target] = zetta::agent::render_action_example(admission_case);
         std::vector<int> tokens = tokenizer->encode(prompt);
+        const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
         if (tokens.size() < 4) continue;
         longest = std::max(longest, tokens.size());
         shortest = std::min(shortest, tokens.size());
-        examples.push_back(std::move(tokens));
+        examples.push_back({std::move(tokens), prompt_tokens});
     }
     ASSERT_FALSE(examples.empty());
     // Report the spread, because it is the thing the synthetic benchmark did not have: varying
@@ -313,19 +334,22 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
     for (int step = 1; step <= steps; ++step) {
         const std::size_t position = static_cast<std::size_t>(step - 1) % examples.size();
         if (position == 0 && step > 1) std::shuffle(order.begin(), order.end(), order_rng);
-        const std::vector<int>& example = examples[order[position]];
-        const std::vector<int> targets(example.begin() + 1, example.end());
+        const SftExample& example = examples[order[position]];
+        const std::vector<int>& ids = example.tokens;
+        const std::vector<int> targets(ids.begin() + 1, ids.end());
 
         float loss = 0.0F;
-        const auto status = resident.train_step(device, example, targets, gradients, moment1,
-                                                moment2, step, /*learning_rate=*/1e-5F, loss);
+        const auto status =
+            resident.train_step(device, ids, targets, gradients, moment1, moment2, step,
+                                /*learning_rate=*/1e-5F, loss, example.first_scored());
         ASSERT_TRUE(status.ok()) << "step " << step << ": " << status.message;
         ASSERT_TRUE(std::isfinite(loss)) << "step " << step << " produced a non-finite loss";
         if (step == 1) first_loss = loss;
         last_loss = loss;
         min_loss = std::min(min_loss, static_cast<double>(loss));
         metrics << R"({"step":)" << step << R"(,"loss":)" << loss << R"(,"tokens":)"
-                << example.size() << "}\n";
+                << ids.size() << R"(,"prompt_tokens":)" << example.prompt_tokens
+                << R"(,"completion_tokens":)" << example.completion_tokens() << "}\n";
         metrics.flush();
         if (step % 10 == 0) std::cerr << "[sft-cuda] step " << step << "/" << steps << " loss "
                                       << loss << "\n";

@@ -735,7 +735,7 @@ ComputeStatus CudaQwenModel::backward_layer(ComputeDevice& device, const LayerCa
 ComputeStatus CudaQwenModel::train_step(ComputeDevice& device, const std::vector<int>& ids,
                                         const std::vector<int>& targets, Gradients& gradients,
                                         Gradients& moment1, Gradients& moment2, int step,
-                                        float learning_rate, float& loss) {
+                                        float learning_rate, float& loss, int first_scored) {
     if (!valid()) return ComputeStatus::invalid_argument("train_step: model is not resident");
     if (ids.empty() || targets.size() + 1 != ids.size()) {
         // Next-token prediction: position t predicts token t+1, so targets is exactly one shorter.
@@ -800,7 +800,8 @@ ComputeStatus CudaQwenModel::train_step(ComputeDevice& device, const std::vector
     DeviceBuffer row_loss = device.allocate(DataType::Float32, static_cast<std::size_t>(predicted));
     DeviceBuffer total = device.allocate(DataType::Float32, 1);
     if (row_loss.empty() || total.empty()) return ComputeStatus::out_of_memory("train_step: loss");
-    if (const auto s = cuda_cross_entropy(logits, device_targets, row_loss, total, predicted, vocab);
+    if (const auto s = cuda_cross_entropy(logits, device_targets, row_loss, total, predicted, vocab,
+                                          first_scored);
         !s.ok()) {
         return s;
     }
@@ -817,7 +818,7 @@ ComputeStatus CudaQwenModel::train_step(ComputeDevice& device, const std::vector
     // nothing rather than whatever the allocator last left there.
     if (const auto s = device.axpy(-1.0, grad_logits, grad_logits); !s.ok()) return s;
     if (const auto s = cuda_cross_entropy_backward(logits, device_targets, grad_logits, predicted,
-                                                   vocab);
+                                                   vocab, first_scored);
         !s.ok()) {
         return s;
     }
