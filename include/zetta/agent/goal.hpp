@@ -84,6 +84,23 @@ double goal_reward(const std::vector<Goal>& goals, const EndState& facts);
 // goal the training silently drops, and a user who wrote it deserves to be told.
 std::vector<std::string> unmapped_goals(const std::vector<Goal>& goals);
 
+// The RLVR reward for one generated response, anchored to an agent's goals.
+//
+// This is the connection the loop was missing: `grpo_step` takes a `CompletionReward`, and until
+// now callers hand-built one around a fixed rubric. Here the reward comes from the AGENT — its
+// goals, its importances — so training moves the policy toward what this deployment actually wants
+// rather than toward what was compiled in.
+//
+// `generation` is the model's raw text. It is parsed as a StudioAction and projected through
+// `response_solution_facts`; a generation that does not parse scores 0, because a response the
+// harness cannot execute is worth nothing regardless of what it says.
+//
+// `grounding` is the VERIFIER's view, which may be richer than what the policy saw — the same
+// asymmetry the rollout harvest relies on. A product answer can be served with no capability
+// listing and still be scored against one.
+double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
+                                  const std::string& grounding);
+
 nlohmann::json to_json(const Goal& goal);
 std::optional<Goal> goal_from_json(const nlohmann::json& value, std::string* error = nullptr);
 const nlohmann::json& goal_schema();

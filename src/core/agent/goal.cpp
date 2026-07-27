@@ -1,5 +1,8 @@
 #include "zetta/agent/goal.hpp"
 
+#include "zetta/agent/action.hpp"
+#include "zetta/agent/response_facts.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <utility>
@@ -141,6 +144,16 @@ std::vector<std::string> unmapped_goals(const std::vector<Goal>& goals) {
         if (goal.checks.empty()) unmapped.push_back(goal.statement);
     }
     return unmapped;
+}
+
+double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
+                                  const std::string& grounding) {
+    // A generation the harness cannot parse is worth nothing, whatever it says. Scoring it on the
+    // goals it happens to mention would reward text that reads well and does not run — which is
+    // precisely the failure RLVR exists to avoid.
+    const std::optional<StudioAction> action = parse_studio_action(generation);
+    if (!action) return 0.0;
+    return goal_reward(goals, response_solution_facts(*action, grounding));
 }
 
 nlohmann::json to_json(const Goal& goal) {

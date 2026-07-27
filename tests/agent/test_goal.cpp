@@ -148,4 +148,59 @@ TEST(Goals, AnAgentWithoutGoalsIsUnchanged) {
     EXPECT_TRUE(agent->goals.empty());
 }
 
+// THE CONNECTION #941 is about: a raw generation scored against the agent's own goals, which is
+// what `grpo_step` needs as its CompletionReward. Training now moves the policy toward what this
+// deployment wants rather than toward a rubric compiled into the engine.
+TEST(Goals, AGenerationIsScoredAgainstTheAgentsOwnGoals) {
+    const std::vector<Goal> goals = {
+        {"Never state a number we cannot evidence.", 5.0, {"numbers_from_context"}}};
+    const std::string grounding = "Project: Churn\nTable: accounts\nMeasure: AUC 0.880\n";
+
+    const std::string honest =
+        R"({"kind":"answer","message":"The model scores 0.880 AUC.","tool_calls":[]})";
+    const std::string invented =
+        R"({"kind":"answer","message":"The model scores 0.947 AUC.","tool_calls":[]})";
+
+    EXPECT_GT(zetta::agent::goal_reward_for_generation(goals, honest, grounding), 0.9);
+    EXPECT_LT(zetta::agent::goal_reward_for_generation(goals, invented, grounding), 0.1)
+        << "a figure the context does not contain must not be rewarded";
+}
+
+// A generation the harness cannot execute is worth nothing, however well it reads. Rewarding
+// fluent-but-unparseable text is exactly the failure verifiable reward exists to prevent.
+TEST(Goals, AnUnparseableGenerationScoresZero) {
+    const std::vector<Goal> goals = {{"Never fabricate.", 1.0, {"numbers_from_context"}}};
+    EXPECT_DOUBLE_EQ(
+        zetta::agent::goal_reward_for_generation(goals, "Sure! I can help with that.", "ctx"), 0.0);
+}
+
+// The verifier may see what the policy did not — the asymmetry the rollout harvest relies on. A
+// product answer served with NO capability listing is still scored against one.
+TEST(Goals, TheVerifierMaySeeGroundingThePolicyDidNot) {
+    const std::vector<Goal> goals = {
+        {"Only offer capabilities that exist.", 1.0, {"capability_exists"}}};
+    const std::string listing = "Capabilities:\n  train a gradient-boosted model\n  deploy to AWS\n";
+    const std::string real =
+        R"({"kind":"answer","message":"Studio can train a gradient-boosted model.","tool_calls":[]})";
+    const std::string invented =
+        R"({"kind":"answer","message":"Studio can autotune your Kubernetes spend.","tool_calls":[]})";
+
+    EXPECT_GT(zetta::agent::goal_reward_for_generation(goals, real, listing), 0.9);
+    EXPECT_DOUBLE_EQ(zetta::agent::goal_reward_for_generation(goals, invented, listing), 0.0)
+        << "inventing a feature must earn nothing";
+}
+
+// Importance still drives the gradient at the generation level, not just over raw facts.
+TEST(Goals, ImportanceStillWeightsAGenerationsReward) {
+    const std::vector<Goal> weighted = {
+        {"Never state a number we cannot evidence.", 9.0, {"numbers_from_context"}},
+        {"Nothing acts without approval.", 1.0, {"approval_gated"}}};
+    const std::string grounding = "Measure: AUC 0.880\n";
+    const std::string fabricates =
+        R"({"kind":"action","message":"AUC is 0.947.","tool_calls":[{"tool":"serve",)"
+        R"("arguments":{"name":"solution","approval_gated":true}}]})";
+    EXPECT_LT(zetta::agent::goal_reward_for_generation(weighted, fabricates, grounding), 0.2)
+        << "failing the 9x goal must dominate passing the 1x one";
+}
+
 }  // namespace
