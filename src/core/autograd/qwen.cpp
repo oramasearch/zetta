@@ -662,8 +662,8 @@ std::vector<int> QwenInference::generate(const std::vector<int>& prompt,
     return generated;
 }
 
-bool save_qwen_model(const QwenModel& model, const std::string& directory,
-                     std::string* error) {
+bool save_qwen_model(const QwenModel& model, const std::string& directory, std::string* error,
+                     const std::string& source_directory) {
     const auto fail = [&](std::string reason) {
         if (error != nullptr) *error = std::move(reason);
         return false;
@@ -690,6 +690,25 @@ bool save_qwen_model(const QwenModel& model, const std::string& directory,
                                 model.to_safetensors())) {
         return fail("save_qwen: cannot write " +
                     (root / "model.safetensors").string());
+    }
+
+    // Carry the tokenizer over, so the saved directory is a checkpoint rather than a bag of
+    // weights. A missing tokenizer is not a load error you can diagnose from the message — the
+    // model appears to load and then nothing can encode a prompt for it.
+    if (!source_directory.empty()) {
+        const std::filesystem::path source(source_directory);
+        for (const char* name : {"tokenizer.json", "tokenizer_config.json", "generation_config.json",
+                                 "vocab.json", "merges.txt"}) {
+            const std::filesystem::path from = source / name;
+            std::error_code exists_ec;
+            if (!std::filesystem::exists(from, exists_ec) || exists_ec) continue;  // optional
+            std::error_code copy_ec;
+            std::filesystem::copy_file(from, root / name,
+                                       std::filesystem::copy_options::overwrite_existing, copy_ec);
+            if (copy_ec) {
+                return fail("save_qwen: cannot copy " + from.string() + ": " + copy_ec.message());
+            }
+        }
     }
     return true;
 }

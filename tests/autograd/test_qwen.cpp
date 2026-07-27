@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <random>
@@ -586,6 +587,38 @@ TEST(QwenModel, SamplingIsReproducibleAndInVocab) {
         EXPECT_GE(token, 0);
         EXPECT_LT(token, model.config().vocab_size);
     }
+}
+
+// A saved checkpoint must be loadable on its own. Without the tokenizer files the directory holds
+// weights that nothing can encode a prompt for — and that failure is invisible at load time, so it
+// surfaces as a model that "loads" and then cannot be used. Two checkpoints shipped that way.
+TEST(QwenModel, SaveCarriesTheTokenizerFromTheSourceCheckpoint) {
+    zetta::test::TempDir source_dir;
+    zetta::test::TempDir out_dir;
+    const std::string source = source_dir.path().string();
+    const std::string out = out_dir.path().string();
+
+    // A source checkpoint with tokenizer files beside the weights.
+    for (const char* name : {"tokenizer.json", "tokenizer_config.json", "generation_config.json"}) {
+        std::ofstream file(std::filesystem::path(source) / name);
+        file << "{}";
+    }
+
+    const QwenConfig config{/*vocab_size=*/16, /*d_model=*/8,  /*n_layers=*/1, /*n_heads=*/2,
+                            /*n_kv_heads=*/1,  /*head_dim=*/4, /*ffn_dim=*/16, /*rope_theta=*/10000.0F,
+                            /*rms_eps=*/1e-6F, /*tie_word_embeddings=*/true};
+    QwenModel model(config);
+    std::string error;
+    ASSERT_TRUE(save_qwen_model(model, out, &error, source)) << error;
+
+    for (const char* name : {"tokenizer.json", "tokenizer_config.json", "generation_config.json"}) {
+        EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(out) / name))
+            << name << " must travel with the weights";
+    }
+    // The weights and config are still written, and a source with no tokenizer is not an error.
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(out) / "model.safetensors"));
+    zetta::test::TempDir bare_out;
+    EXPECT_TRUE(save_qwen_model(model, bare_out.path().string(), &error, source_dir.path().string()));
 }
 
 }  // namespace

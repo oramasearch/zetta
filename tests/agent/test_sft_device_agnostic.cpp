@@ -220,7 +220,7 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
         // (a machine crash previously discarded ~90 steps because saving happened only at the end).
         if (save_every > 0 && step > 0 && step % save_every == 0) {
             std::string save_error;
-            if (zetta::autograd::save_qwen_model(*model, out_dir, &save_error)) {
+            if (zetta::autograd::save_qwen_model(*model, out_dir, &save_error, model_dir)) {
                 metrics << R"({"event":"checkpoint","step":)" << step << "}\n";
                 metrics.flush();
             } else {
@@ -239,7 +239,7 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
     EXPECT_LT(min_loss, first_loss) << "SFT should reduce the loss";
 
     // The checkpoint must reload — a checkpoint that cannot be read back is not a checkpoint.
-    ASSERT_TRUE(zetta::autograd::save_qwen_model(*model, out_dir, &error)) << error;
+    ASSERT_TRUE(zetta::autograd::save_qwen_model(*model, out_dir, &error, model_dir)) << error;
     const std::optional<QwenModel> reloaded = zetta::autograd::load_qwen_model(out_dir, &error);
     ASSERT_TRUE(reloaded.has_value()) << "the saved checkpoint must reload: " << error;
     std::cerr << "[sft] checkpoint saved + reloaded from " << out_dir << "\n";
@@ -356,7 +356,7 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
         if (save_every > 0 && step % save_every == 0) {
             ASSERT_TRUE(resident.download_into(*host).ok());
             std::string save_error;
-            if (!zetta::autograd::save_qwen_model(*host, out_dir, &save_error)) {
+            if (!zetta::autograd::save_qwen_model(*host, out_dir, &save_error, model_dir)) {
                 std::cerr << "[sft-cuda] checkpoint FAILED at step " << step << ": " << save_error
                           << "\n";
             }
@@ -377,7 +377,7 @@ TEST(SftCudaResident, TrainsTheInteractionCorpusOnTheGpu) {
     // The checkpoint must come back to a host model and reload — training on the GPU is worthless
     // if what it produces cannot be served anywhere else.
     ASSERT_TRUE(resident.download_into(*host).ok());
-    ASSERT_TRUE(zetta::autograd::save_qwen_model(*host, out_dir, &error)) << error;
+    ASSERT_TRUE(zetta::autograd::save_qwen_model(*host, out_dir, &error, model_dir)) << error;
     const std::optional<QwenModel> reloaded = zetta::autograd::load_qwen_model(out_dir, &error);
     ASSERT_TRUE(reloaded.has_value()) << "the saved checkpoint must reload: " << error;
     std::cerr << "[sft-cuda] checkpoint saved + reloaded from " << out_dir << "\n";
