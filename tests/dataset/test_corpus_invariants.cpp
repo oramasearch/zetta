@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <map>
 #include <regex>
@@ -507,6 +508,66 @@ TEST_F(CorpusInvariants, PipelineShapesAreDiverse) {
     EXPECT_GE(shapes.size(), 4u) << "only " << shapes.size()
                                  << " distinct pipeline shapes across " << builds
                                  << " build cases — the agent will learn one pipeline";
+}
+
+// An ACTION corpus must teach more than one pipeline. This is the rule that would have predicted
+// the v3 checkpoint's behaviour before a GPU was booked: 92% of its action cases were just two
+// shapes, so the model learned one pipeline and emitted it for churn, lead scoring and collections
+// alike — passing any grader whose facts that shape happens to satisfy and failing the rest.
+//
+// Measured on the SHAPE (the ordered step kinds), not on the attributes: two cases that differ only
+// in a config value still teach the same structure.
+TEST_F(CorpusInvariants, ActionCasesTeachMoreThanOnePipelineShape) {
+    std::map<std::string, int> shapes;
+    int actions = 0;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const StudioAction& action = *admission_case.reference_action;
+        if (action.kind != InteractionKind::Action) continue;
+        std::string shape;
+        for (const ToolCall& call : action.tool_calls) {
+            shape += call.tool;
+            shape += ">";
+        }
+        if (shape.empty()) continue;
+        ++actions;
+        shapes[shape]++;
+    }
+    ASSERT_GT(actions, 0);
+    int most = 0;
+    std::string dominant;
+    for (const auto& [shape, count] : shapes) {
+        if (count > most) {
+            most = count;
+            dominant = shape;
+        }
+    }
+    const double share = 100.0 * most / actions;
+    EXPECT_LE(share, 45.0) << "one pipeline shape is " << share << "% of all action cases ("
+                           << dominant << ") — the agent will learn it and emit it for everything";
+    EXPECT_GE(shapes.size(), 12u)
+        << "only " << shapes.size() << " distinct pipeline shapes across " << actions
+        << " action cases";
+}
+
+// The targets must carry enough information to be worth learning. A corpus whose targets collapse
+// onto a handful of strings drives training loss to ~0 while teaching nothing that generalizes —
+// v3 reached a loss of 0.0001 and 47% grader pass on held-out cases, which is what memorizing a
+// low-entropy target set looks like from the inside. Low loss is not evidence of learning; this is
+// the check that says whether there was anything to learn.
+TEST_F(CorpusInvariants, TargetsCarryEnoughInformationToBeWorthLearning) {
+    std::map<std::string, int> targets;
+    for (const AdmissionCase& admission_case : cases()) {
+        targets[zetta::agent::render_action_example(admission_case).second]++;
+    }
+    const double total = static_cast<double>(cases().size());
+    double entropy = 0.0;
+    for (const auto& [target, count] : targets) {
+        const double probability = count / total;
+        entropy -= probability * std::log2(probability);
+    }
+    EXPECT_GE(entropy, 9.5) << "target entropy is only " << entropy << " bits across "
+                            << targets.size() << " distinct targets — a model can memorize this";
 }
 
 // Every grounded family must draw on many different contexts. Context variation is the

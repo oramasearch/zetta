@@ -28,6 +28,15 @@ namespace zetta::dataset {
 // single context feeds many families.
 struct ProjectContext {
     std::string project;                                    // "Churn risk — EMEA mid-market"
+    // Which solution template this Project IS (a plan id: "S-2", "M-10", "UC-20", …).
+    //
+    // Every Project in the corpus is a real use case with a real, production-grade pipeline, not a
+    // generic one. Without this every family answered from the same supervised skeleton, so 92% of
+    // action cases taught two pipeline shapes and the trained agent emitted one pipeline for churn,
+    // lead scoring and collections alike. Carrying the solution means a feature request on a
+    // forecasting Project produces the FORECASTING pipeline — backtested, no calibration — and on
+    // a retrieval Project the indexed one.
+    std::string solution;                                   // "S-2", "M-10", … (a plan template id)
     std::string table;                                      // the primary table name
     std::string model_kind;                                 // "gbdt", "regression", …
     double auc = 0.0;                                       // 0 when the Project has no model yet

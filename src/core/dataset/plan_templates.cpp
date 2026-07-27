@@ -57,14 +57,19 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          supervised_core("gbdt")});
     templates.push_back(
         {"S-8", "Predict which machines are likely to fail so we can service them first.",
-         supervised_core("survival")});
+         // Servicing is the outcome; a maintenance model that raises no work order is shelfware.
+         with_fact(with_fact(supervised_core("survival"), "act", true), "approval_gated", true)});
     templates.push_back(
         {"S-10",
          "Flag likely fraud on transactions for review, with reasons, without over-blocking.",
-         with_fact(supervised_core("gbdt"), "anomaly", true)});
+         // The flag IS the action, and "without over-blocking" is what the approval gate is for:
+         // a fraud model that auto-blocks is how a business loses good customers.
+         with_fact(with_fact(with_fact(supervised_core("gbdt"), "anomaly", true), "act", true),
+                   "approval_gated", true)});
     templates.push_back(
         {"S-12", "Triage incoming claims by risk + route the risky ones for review.",
-         supervised_core("gbdt")});
+         // "route the risky ones" is an action step; without it this is a scorer, not triage.
+         with_fact(with_fact(supervised_core("gbdt"), "act", true), "approval_gated", true)});
 
     // --- Forecasting + optimization (Family III / IV) ---
     templates.push_back(
@@ -130,9 +135,10 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     // --- The methods with no coverage yet (doc 03 §4) — each with its distinguishing checks ---
     templates.push_back(
         {"M-11", "Extract the key fields from our invoices/contracts (touchless AP).",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"model_kind", "document_intelligence"}, {"extraction", true},
-                {"grounded_in_data", true}})});
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"index", true},
+                {"serve", true}, {"model_kind", "document_intelligence"}, {"extraction", true},
+                {"grounded_in_data", true},
+                {"index_kind", "semantic"}})});  // extracted fields have to be findable
     templates.push_back(
         {"M-12", "Score risk across our account/transaction graph using its relationships.",
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
@@ -140,7 +146,8 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     templates.push_back(
         {"M-13", "Classify/inspect our images for defects.",
          facts({{"connect", true}, {"model", true}, {"serve", true},
-                {"model_kind", "vision"}, {"explain", "gradcam"}})});
+                {"act", true},  // a defect nobody is told about is a defect that ships
+                {"model_kind", "vision"}, {"explain", "gradcam"}, {"approval_gated", true}})});
     templates.push_back(
         {"M-14", "Transcribe + analyze our support calls.",
          facts({{"connect", true}, {"model", true}, {"serve", true}, {"model_kind", "speech"}})});
@@ -174,7 +181,9 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     templates.push_back(
         {"M-21", "Keep the model fresh as data streams in, watching for drift.",
          facts({{"connect", true}, {"model", true}, {"serve", true},
-                {"model_kind", "online"}, {"streaming", true}, {"drift_monitoring", true}})});
+                {"act", true},  // drift that raises no alert is drift nobody noticed
+                {"model_kind", "online"}, {"streaming", true}, {"drift_monitoring", true},
+                {"approval_gated", true}})});
 
     // --- Remaining use cases (doc 02, UC-13…24) mapped to their methodology ---
     templates.push_back(
@@ -191,18 +200,24 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true}, {"act", true},
                 {"model_kind", "classifier"}, {"grounded_in_data", true},
                 {"approval_gated", true}})});
-    templates.push_back({"UC-18", "Monitor our suppliers for emerging risk.",
-                         with_fact(supervised_core("gbdt"), "monitoring", true)});
-    templates.push_back({"UC-19", "Predict claim denials + patient no-shows.",
-                         supervised_core("gbdt")});
+    templates.push_back(
+        {"UC-18", "Monitor our suppliers for emerging risk.",
+         // Monitoring that notifies no one is a dashboard nobody opens.
+         with_fact(with_fact(with_fact(supervised_core("gbdt"), "monitoring", true), "act", true),
+                   "approval_gated", true)});
+    templates.push_back(
+        {"UC-19", "Predict claim denials + patient no-shows.",
+         // The intervention (a reminder, a corrected claim) is where the value is.
+         with_fact(with_fact(supervised_core("gbdt"), "act", true), "approval_gated", true)});
     templates.push_back({"UC-20", "Forecast cash flow + working capital.",
                          facts({{"connect", true}, {"model", true}, {"serve", true},
                                 {"model_kind", "forecast"}, {"temporal_validation", true},
                                 {"backtest", true}})});
     templates.push_back({"UC-21", "Detect + explain incidents across our systems (AIOps).",
                          facts({{"connect", true}, {"model", true}, {"serve", true},
+                                {"act", true},  // an undetected-incident alert is the product
                                 {"model_kind", "anomaly"}, {"streaming", true},
-                                {"drivers", true}})});
+                                {"drivers", true}, {"drift_monitoring", true}})});
     templates.push_back({"UC-22", "Find what drives scrap/quality/yield in our process.",
                          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
                                 {"model_kind", "gbdt"}, {"explain", "shap"}, {"drivers", true},
@@ -214,9 +229,11 @@ std::vector<SolutionTemplate> plan_solution_templates() {
                                 {"approval_gated", true}})});
     templates.push_back(
         {"UC-24", "Read our contracts + flag obligation/renewal risk.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
+         facts({{"connect", true}, {"clean", true}, {"model", true}, {"index", true},
+                {"serve", true}, {"act", true},  // a renewal you are not told about is one you miss
                 {"model_kind", "document_intelligence"}, {"extraction", true},
-                {"grounded_in_data", true}})});
+                {"grounded_in_data", true}, {"index_kind", "semantic"},
+                {"approval_gated", true}})});
 
     // --- The data supply chain (doc 08, DSC-1…8) — the correct data path a pipeline honors ---
     templates.push_back(

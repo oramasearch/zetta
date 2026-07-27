@@ -1,5 +1,7 @@
 #include "zetta/dataset/interaction_families.hpp"
 
+#include "zetta/dataset/plan_templates.hpp"
+
 #include <array>
 #include <string>
 #include <tuple>
@@ -164,7 +166,17 @@ std::vector<ProjectContext> synthetic_project_contexts(int count) {
         context.project = std::string(kProjectNames[slot % kProjectNames.size()]) + " #" +
                           std::to_string(index + 1);
         context.table = kTableNames[slot % kTableNames.size()];
-        context.model_kind = (index % 5 == 3) ? "regression" : "gbdt";
+        // Round-robin over the whole plan, so the contexts collectively cover every use case and
+        // methodology rather than 30 variations of one supervised Project.
+        const std::vector<SolutionTemplate>& plan = plan_solution_templates();
+        const SolutionTemplate& solution = plan[slot % plan.size()];
+        context.solution = solution.id;
+        // The model kind the SOLUTION calls for — not a coin flip. A forecasting Project has a
+        // forecasting model; a retrieval Project has none.
+        const auto kind = solution.required.facts().find("model_kind");
+        context.model_kind = (kind != solution.required.facts().end() && kind->second.is_string())
+                                 ? kind->second.get<std::string>()
+                                 : "gbdt";
         // Deliberately spread across the believable range, and NEVER 1.000 — a perfect measure
         // reads as leakage to the technical buyer this product is sold to.
         context.auc = 0.72 + static_cast<double>((index * 7) % 22) / 100.0;
@@ -446,7 +458,8 @@ InteractionFamily platform_family(const std::vector<ProjectContext>& contexts, i
             for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
                 EndState required = facts({{"grounded", true},
                                            {"run_status", context.last_run_status}});
-                std::string message = "The last run **" + context.last_run_status + "**.";
+                std::string message = "The last run of " + context.project + " **" +
+                                      context.last_run_status + "**.";
                 if (!context.last_run_failure.empty()) {
                     required.set("failure_reason", context.last_run_failure);
                     message += " Reason: " + context.last_run_failure + ".";
@@ -674,8 +687,9 @@ InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
                 "abstain/unsupported/" + std::to_string(context_index) + "/" +
                     std::to_string(ask_index),
                 unsupported[ask_index], grounding, InteractionKind::Abstain,
-                "I can't answer that from what this Project holds - there's no trained model or "
-                "scored result here yet. Train the Pipeline first and I'll answer from its output.",
+                std::string("I can't answer that from what ") + context.project +
+                    " holds - there's no trained model or scored result on `" + context.table +
+                    "` yet. Run the Pipeline first and I'll answer from its output.",
                 required));
         }
         if (context_index < out_of_scope.size()) {
@@ -728,6 +742,30 @@ InteractionFamily clarify_family(const std::vector<ProjectContext>& contexts) {
 
 // The supervised correctness profile every predictive pipeline must satisfy — the same facts the
 // plan templates encode, so an action family is graded by the existing gate vocabulary.
+// The production-grade facts for THIS Project's solution — the template's own correctness profile
+// (leakage-free point-in-time features, temporal validation, calibration, SHAP, backtesting,
+// approval gating, a GLM baseline where a regulator expects one). Falls back to the supervised
+// core for a context with no template.
+//
+// This is what makes the corpus teach production pipelines rather than one skeleton: a change
+// requested on a Project inherits that Project's real pipeline, so the reference answer is the
+// correct pipeline for THAT use case.
+EndState solution_facts(const ProjectContext& context) {
+    for (const SolutionTemplate& candidate : plan_solution_templates()) {
+        if (candidate.id == context.solution) return candidate.required;
+    }
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"serve", true},
+                  {"leakage_free", true},
+                  {"point_in_time", true},
+                  {"model_kind", context.model_kind},
+                  {"temporal_validation", true},
+                  {"calibrated", true},
+                  {"explain", std::string("shap")}});
+}
+
 EndState supervised_facts(const std::string& model_kind) {
     return facts({{"connect", true},
                   {"clean", true},
@@ -794,7 +832,7 @@ InteractionFamily feature_family(const std::vector<ProjectContext>& contexts, in
                     shape.replace(shape.find("{}"), 2, lowered);
                     ask = shape;
                 }
-                EndState required = supervised_facts(context.model_kind);
+                EndState required = solution_facts(context);
                 required.set(std::get<1>(requests[request]), true);
                 required.set("preserved_other_steps", true);
                 zetta::ir::ExecutionGraph graph =
@@ -851,12 +889,17 @@ InteractionFamily code_family(const std::vector<ProjectContext>& contexts, int p
                     shape.replace(shape.find("{}"), 2, lowered);
                     ask = shape;
                 }
-                EndState required = facts({{"connect", true},
-                                           {"clean", true},
-                                           {"code_language", std::string(language)},
-                                           {"code_runs", true},
-                                           {"output_column", std::string(column)},
-                                           {"leakage_free", true}});
+                // The code step lands INSIDE this Project's real pipeline, not beside a stub.
+                // Writing a transform does not discard the model, the index, or the action layer
+                // that Project already has — and a corpus that said otherwise taught the agent
+                // that every code request collapses to connect->clean->serve, which was 34% of
+                // all action cases on one shape.
+                EndState required = solution_facts(context);
+                required.set("code_language", std::string(language));
+                required.set("code_runs", true);
+                required.set("output_column", std::string(column));
+                required.set("leakage_free", true);
+                required.set("preserved_other_steps", true);
                 zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
                 family.cases.push_back(make_case(
                     "code/" + std::to_string(context_index) + "/" + std::to_string(task_index) +
@@ -923,7 +966,7 @@ InteractionFamily modify_family(const std::vector<ProjectContext>& contexts, int
                     shape.replace(shape.find("{}"), 2, lowered);
                     ask = shape;
                 }
-                EndState required = supervised_facts(context.model_kind);
+                EndState required = solution_facts(context);
                 required.set(std::get<1>(changes[change]), true);
                 // The whole graph is re-emitted, never a delta: a mutation is not runnable, so it
                 // could not be scored by the gate, and the gate is the reward.
@@ -990,9 +1033,13 @@ InteractionFamily governance_family(const std::vector<ProjectContext>& contexts,
                         std::to_string(ask_index) + "/" + std::to_string(phrasing),
                     ask, grounding,
                     is_action ? InteractionKind::Action : InteractionKind::Answer,
-                    is_action ? "I've queued that as a governed change - it needs an approval "
-                                "before it takes effect. Here's the impact preview."
-                              : "Here's what the Project's records show for that.",
+                    is_action ? std::string("I've queued `") + capability + "` on " +
+                                    contexts[context_index].project +
+                                    " as a governed change - it needs an approval before it takes "
+                                    "effect. Here's the impact preview."
+                              : std::string("I read `") + capability + "` for " +
+                                    contexts[context_index].project +
+                                    " - here's what its records show.",
                     required, {}, std::move(calls)));
             }
         }

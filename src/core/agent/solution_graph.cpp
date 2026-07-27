@@ -1,7 +1,9 @@
 #include "zetta/agent/solution_graph.hpp"
 
+#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -58,6 +60,98 @@ EndState graph_solution_facts(const ir::ExecutionGraph& graph) {
     return facts;
 }
 
+namespace {
+
+// A sentence describing the pipeline these facts produce — the steps in order, then the
+// methodology that matters to the person reading it.
+//
+// This replaces a single constant reply that covered 1,802 action cases. A constant is the
+// cheapest thing a model can learn, and it learned it: the v3 checkpoint answered churn, lead
+// scoring and collections with the identical sentence, because that is what every one of those
+// cases taught. Deriving the message from the facts means a pipeline that differs reads
+// differently, which is both better training signal and a better answer.
+//
+// Deliberately free of digits: an action reply is not grounded in a retrieved measure, so any
+// figure here would be one the engine never computed.
+std::string describe_pipeline(const EndState& facts) {
+    const auto has = [&facts](const char* key) { return facts.matches(key, true); };
+    const auto text = [&facts](const char* key) -> std::string {
+        const auto found = facts.facts().find(key);
+        if (found == facts.facts().end() || !found->second.is_string()) return {};
+        return found->second.get<std::string>();
+    };
+
+    // How each model kind reads to someone who does not think in model families.
+    const std::string kind = text("model_kind");
+    static const std::map<std::string, std::string> kModelPhrase = {
+        {"gbdt", "train a gradient-boosted model"},
+        {"regression", "fit a regression model"},
+        {"survival", "fit a time-to-event model"},
+        {"forecast", "fit a forecasting model"},
+        {"anomaly", "fit an anomaly detector"},
+        {"uplift", "fit an uplift model, so we act only where it changes the outcome"},
+        {"classifier", "train a classifier"},
+        {"graph", "score over the relationship graph"},
+        {"vision", "train an image model"},
+        {"speech", "transcribe and analyze the audio"},
+        {"bandit", "learn online which option works, while still exploring"},
+        {"optimization", "solve for the best plan under your constraints"},
+        {"bayesian", "fit a model that reports its own uncertainty"},
+        {"ensemble", "combine several models"},
+        {"online", "keep a model training as data arrives"},
+        {"document_intelligence", "extract the fields from the documents"},
+    };
+
+    std::vector<std::string> steps;
+    if (has("connect")) steps.emplace_back("connect your source");
+    if (has("clean")) {
+        steps.emplace_back(has("leakage_free")
+                               ? "build leakage-free point-in-time features"
+                               : "clean and reshape the data");
+    }
+    if (has("model")) {
+        const auto phrase = kModelPhrase.find(kind);
+        steps.push_back(phrase != kModelPhrase.end() ? phrase->second : "train a model");
+    }
+    if (has("index")) {
+        steps.emplace_back(facts.matches("index_kind", std::string("semantic"))
+                               ? "build a semantic index over them"
+                               : "build a search index");
+    }
+    if (has("serve")) steps.emplace_back("serve the results");
+    if (has("act")) steps.emplace_back("act on them");
+
+    std::string message = "I'll ";
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        if (index > 0) message += (index + 1 == steps.size()) ? ", then " : ", ";
+        message += steps[index];
+    }
+    message += steps.empty() ? "set up the Pipeline for that." : ".";
+
+    // The guarantees worth stating back, in the vocabulary contract's words.
+    std::vector<std::string> notes;
+    if (has("temporal_validation")) notes.emplace_back("validated on later data than it trains on");
+    if (has("backtest")) notes.emplace_back("backtested over rolling origins");
+    if (has("calibrated")) notes.emplace_back("with calibrated probabilities");
+    if (facts.matches("explain", std::string("shap"))) notes.emplace_back("with per-prediction explanations");
+    if (has("holdout")) notes.emplace_back("measured against a held-out group");
+    if (has("grounded_in_data")) notes.emplace_back("grounded in your own records");
+    if (has("approval_gated")) notes.emplace_back("and nothing acts without your approval");
+    if (has("uncertainty")) notes.emplace_back("reporting its own uncertainty");
+    if (has("drift_monitoring")) notes.emplace_back("watched for drift");
+    if (!notes.empty()) {
+        message += " It'll be ";
+        for (std::size_t index = 0; index < notes.size(); ++index) {
+            if (index > 0) message += (index + 1 == notes.size()) ? " and " : ", ";
+            message += notes[index];
+        }
+        message += ".";
+    }
+    return message;
+}
+
+}  // namespace
+
 StudioAction reference_action_from_facts(const EndState& facts) {
     StudioAction action;
     action.execution_graph = build_solution_graph(facts);
@@ -74,7 +168,7 @@ StudioAction reference_action_from_facts(const EndState& facts) {
     // One tool call per pipeline step — what the agent DOES to build it. Derived from the graph
     // rather than written alongside it, so the two encodings cannot drift apart.
     action.tool_calls = tool_calls_from_graph(action.execution_graph);
-    action.message = "Here's the pipeline I'll build and run for your request.";
+    action.message = describe_pipeline(facts);
     return action;
 }
 

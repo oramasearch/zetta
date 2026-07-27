@@ -59,7 +59,12 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
     // whose numbers the model has never seen. Because the grounded-QA families hold the question
     // fixed and vary the context, a model that memorized answers instead of reading the supplied
     // facts fails the canary outright — which is precisely what we want measured.
-    const int interaction_contexts = 30;
+    // At least one Project per solution in the plan, and then some. At 30 the contexts could not
+    // even reach all 40 templates, so a third of the catalogue never appeared as a Project and the
+    // corpus taught a narrower world than the product supports. Contexts are the cheapest axis of
+    // diversity there is — they are deterministic, and each one carries a different use case, table,
+    // schema and set of measures.
+    const int interaction_contexts = 50;
     const int phrasings = 4;
     const std::vector<ProjectContext> contexts =
         synthetic_project_contexts(interaction_contexts);
