@@ -16,6 +16,31 @@ built nothing at all. **Owner.**
 agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per-customer fork) ·
 #873 (reshape) · #248 (eval).
 
+## Where it lives
+
+**Published, privately, to the Hub** —
+[`OramaSearch/base-agent-0.6b`](https://huggingface.co/OramaSearch/base-agent-0.6b), one folder per
+version (`v9/`, `v10/`), each naming the exact corpus it learned from. Procedure: the **hf-ops**
+skill.
+
+| version | corpus | canary grader | note |
+|---|---|---|---|
+| v3 | v3 (6,102) | **47%** | first to emit tool calls; one pipeline shape for every ask |
+| v7 | v7 (12,744) | **98%** | use-case-coherent corpus; a Project's name predicts its pipeline |
+| v9 | v9 (14,889) | 97.5% | ungrounded coverage — the turns a demo opens with |
+| v10 | v10 (15,069) | *pending* | multi-turn follow-ups; teacher-authored objection answers |
+
+**The v3 → v7 jump was not a model change.** The corpus had been teaching noise: a Project called
+"Lifetime value forecast" required a gbdt classifier, so the only learnable lesson was that the
+Project name predicts nothing.
+
+**A canary score does not predict demo behaviour.** v7 scored 98% held-out and still failed three
+demo beats, because the canary carries retrieved context and a conversation's opening turns do not.
+Run both `EvaluateBaseAgentOnCanary` and `scripts/demo-smoke.sh`.
+
+This card is the in-repo datasheet; the Hub card is the same content for a reader outside the repo.
+**When one changes, change both.**
+
 ## Intended use
 
 - **In scope.** A creator (70–80% technical-but-not-ML) describes a data/AI problem in Orama

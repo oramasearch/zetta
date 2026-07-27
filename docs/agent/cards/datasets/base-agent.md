@@ -67,6 +67,18 @@ Grounded in the **solutions-discovery plan** (`solutions-designs/docs/plan/` —
   + `base-agent-test-set.jsonl` (117). Retained as reference until the native generator fully
   replaces it.
 
+## Where it lives
+
+**Published, privately, to the Hub** —
+[`OramaSearch/base-agent-interaction-corpus`](https://huggingface.co/datasets/OramaSearch/base-agent-interaction-corpus).
+Every version and its canary. Not in git: they were once ignored as "reproducible from the native
+generator", which is false the moment the generator changes — regenerating from a later commit
+yields a *different* corpus, so a checkpoint whose corpus was not published cannot be reproduced or
+audited. **The corpus is the provenance of the model.** Procedure: the **hf-ops** skill.
+
+This card is the in-repo datasheet; the Hub card is the same content for a reader outside the repo.
+**When one changes, change both.**
+
 ## Composition
 
 Each case is `{task {id, description, initial_state, tool_names, required}, reference,
