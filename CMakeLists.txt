@@ -642,6 +642,7 @@ add_library(zetta-core STATIC
   src/core/ml/playbook.cpp
   src/core/agent/action.cpp
   src/core/agent/goal.cpp
+  src/core/agent/training_policy.cpp
   src/core/agent/agent_record.cpp
   src/core/agent/agent_store.cpp
   src/core/agent/base_prompt.cpp
