@@ -463,6 +463,142 @@ InteractionFamily platform_family(const std::vector<ProjectContext>& contexts, i
 }
 
 // --- Class 9: capability discovery ------------------------------------------------------------
+// --- Class 8: product knowledge ---------------------------------------------------------------
+// What Orama Studio IS, and what it can do — the turns that carry no Pipeline and call no tools.
+// A user evaluating the platform asks these first: which languages, which sources, which models,
+// where it deploys, what happens to their data. An agent that cannot answer them reads as a
+// pipeline compiler with a chat box bolted on rather than something that knows its own product.
+//
+// Grounded in a capability listing rather than answered from the model's memory, for the same
+// reason capability_discovery is: it makes "did it name something that actually exists?"
+// decidable, so inventing a plausible-sounding feature is a GRADED FAILURE. Overselling is the
+// specific fabrication risk for this family — a confident claim about a feature the platform does
+// not have is worse than "I don't know", because someone buys on it.
+//
+// Every entry below is a capability this repository actually implements. Verified against source,
+// not asserted: the six step kinds (ir/step_kind.hpp), the Postgres + Snowflake connectors
+// (src/core/connect/), GBDT training with TreeSHAP explanation and calibration (src/core/ml/), the
+// AWS / Azure / bare-metal provisioners (src/core/cloud/), and the Python frontend
+// (src/core/input/python_frontend.cpp). Adding an entry here without the code to back it trains
+// the agent to lie about the product.
+InteractionFamily product_knowledge_family(int phrasings) {
+    InteractionFamily family{
+        "product_knowledge",
+        "Answer what Orama Studio is and what it can do - no Pipeline, no tool calls, grounded "
+        "in a listing of capabilities that genuinely exist",
+        {}};
+
+    // {the question, the capability the answer must NAME, the answer}
+    const std::array<std::tuple<const char*, const char*, const char*>, 24> knowledge = {{
+        {"What is Orama Studio?", "turn a question in plain language into a running Pipeline",
+         "Orama Studio is where you turn a question in plain language into a running Pipeline. "
+         "You describe the outcome you want; Studio designs the steps, checks them with a "
+         "Verification, and runs them on infrastructure you control."},
+        {"What languages can I write a step in?", "run Python in a Pipeline step",
+         "You can run Python in a Pipeline step for transforms and feature work, and SQL for "
+         "anything set-shaped. Most people mix the two across steps."},
+        {"Can I use SQL?", "query with Postgres-compatible SQL",
+         "Yes. You can query with Postgres-compatible SQL, both inside a Pipeline step and "
+         "directly against your data to look around."},
+        {"What data sources can you connect to?", "connect to Postgres",
+         "Studio can connect to Postgres today, along with Snowflake, and a connect step can "
+         "also pull from files and APIs. The connect step is where a source is configured."},
+        {"Do you support Snowflake?", "connect to Snowflake",
+         "Yes - Studio can connect to Snowflake, and the rest of the Pipeline is identical no "
+         "matter which source the data came from."},
+        {"What kinds of models can you train?", "train a gradient-boosted model",
+         "Studio can train a gradient-boosted model on your data - that is the workhorse for "
+         "risk and propensity questions like churn or conversion."},
+        {"Can it explain a prediction?", "explain a prediction with TreeSHAP",
+         "Yes. Studio can explain a prediction with TreeSHAP, so every score comes with the "
+         "features that drove it rather than a bare number."},
+        {"Are the probabilities trustworthy?", "calibrate a model's probabilities",
+         "Studio can calibrate a model's probabilities, so a score of eight in ten means the "
+         "outcome really does happen about eight times in ten."},
+        {"Can it do search?", "build a BM25F full-text index",
+         "Yes. Studio can build a BM25F full-text index over your documents and serve ranked "
+         "results from it."},
+        {"Where does this run?", "deploy to your own Kubernetes cluster",
+         "Studio can deploy to your own Kubernetes cluster. The platform runs where you put it "
+         "rather than in a vendor tenant."},
+        {"Can I run it on AWS?", "deploy to AWS",
+         "Yes - Studio can deploy to AWS, and the same Pipeline runs unchanged on the other "
+         "targets."},
+        {"Can I run it on Azure?", "deploy to Azure",
+         "Yes - Studio can deploy to Azure, and the same Pipeline runs unchanged on the other "
+         "targets."},
+        {"Can I run it on my own servers?", "deploy to bare metal",
+         "Yes. Studio can deploy to bare metal, which is the usual answer when data is not "
+         "allowed to leave the building."},
+        {"Does my data leave my infrastructure?", "keep your data inside your own infrastructure",
+         "No. Studio is built to keep your data inside your own infrastructure - it deploys into "
+         "your environment and the data stays there."},
+        {"How do I know a Pipeline is correct?", "run a Verification before anything is deployed",
+         "Studio will run a Verification before anything is deployed. A Pipeline that has not "
+         "passed one is not treated as production-ready."},
+        {"What if a change makes things worse?", "roll back to an earlier Saved Version",
+         "You can roll back to an earlier Saved Version. Every deployment points at a specific "
+         "Saved Version, so going back is a pointer change rather than a rebuild."},
+        {"How do I talk to it from my own code?", "answer over the REST surface",
+         "Studio will answer over the REST surface, so anything that can make an HTTP request "
+         "can drive it."},
+        {"Can I connect an AI agent to it?", "answer over MCP",
+         "Yes. Studio will answer over MCP, so an assistant can read from it and drive it "
+         "directly as a set of tools."},
+        {"Can you predict churn?", "score churn risk for every account",
+         "Yes - that is the most common thing people build here. Studio can score churn risk for "
+         "every account and rank them so the team works the riskiest first."},
+        {"Can you help with lead scoring?", "rank leads by conversion likelihood",
+         "Yes. Studio can rank leads by conversion likelihood so sales works the ones most "
+         "likely to close."},
+        {"Can you forecast customer value?", "forecast customer lifetime value",
+         "Yes. Studio can forecast customer lifetime value from each customer's history."},
+        {"Can you help collections?", "prioritize overdue accounts for collections",
+         "Yes. Studio can prioritize overdue accounts for collections, so the team works the "
+         "ones most likely to be recovered."},
+        {"Can you predict equipment failure?", "predict equipment failure",
+         "Yes. Studio can predict equipment failure from machine history so maintenance goes "
+         "where it is needed first."},
+        {"Can you detect fraud?", "flag likely fraud for review",
+         "Yes. Studio can flag likely fraud for review with the reasons attached, so a reviewer "
+         "sees why something was flagged instead of a bare score."},
+    }};
+
+    const std::array<const char*, 3> shapes = {"{}", "Quick question - {}", "Before we start: {}"};
+
+    for (std::size_t index = 0; index < knowledge.size(); ++index) {
+        for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
+            std::string ask = std::get<0>(knowledge[index]);
+            if (phrasing > 0) {
+                std::string lowered = ask;
+                if (!lowered.empty() && lowered[0] >= 'A' && lowered[0] <= 'Z') {
+                    lowered[0] = static_cast<char>(lowered[0] - 'A' + 'a');
+                }
+                std::string shape = shapes[static_cast<std::size_t>(phrasing)];
+                shape.replace(shape.find("{}"), 2, lowered);
+                ask = shape;
+            }
+            // The listing rotates, so the same question meets a different neighbourhood of
+            // capabilities each time and the answer cannot be recovered from listing position.
+            std::string listing = "Capabilities:\n";
+            for (std::size_t offset = 0; offset < 8; ++offset) {
+                listing += "  " +
+                           std::string(std::get<1>(knowledge[(index + offset) % knowledge.size()])) +
+                           "\n";
+            }
+            EndState required = facts({{"grounded", true},
+                                       {"numbers_from_context", true},
+                                       {"capability_named", std::get<1>(knowledge[index])},
+                                       {"capability_exists", true}});
+            family.cases.push_back(make_case("product/" + std::to_string(index) + "/" +
+                                                 std::to_string(phrasing),
+                                             ask, std::move(listing), InteractionKind::Answer,
+                                             std::get<2>(knowledge[index]), required));
+        }
+    }
+    return family;
+}
+
 InteractionFamily capability_family(int phrasings) {
     InteractionFamily family{"capability_discovery",
                              "Answer what the platform can do, grounded in the capability "
@@ -874,6 +1010,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(qa_data_family(contexts, phrasings));
     families.push_back(platform_family(contexts, phrasings));
     families.push_back(capability_family(phrasings));
+    families.push_back(product_knowledge_family(phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));
