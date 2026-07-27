@@ -221,7 +221,8 @@ std::pair<std::string, std::string> render_action_example(const AdmissionCase& a
     // agree byte for byte.
     std::string prompt = render_interaction_prompt(base_agent_system_prompt(),
                                                    admission_case.grounding,
-                                                   admission_case.task.description());
+                                                   admission_case.task.description(),
+                                                   admission_case.history);
     const StudioAction action = admission_case.reference_action
                                     ? *admission_case.reference_action
                                     : reference_action_from_facts(admission_case.reference);

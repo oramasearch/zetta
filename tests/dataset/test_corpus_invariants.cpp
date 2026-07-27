@@ -563,6 +563,28 @@ TEST_F(CorpusInvariants, AProjectNameAlwaysImpliesTheSamePipeline) {
     }
 }
 
+// A follow-up must carry the turn it follows. "Why?" and "Add calibration to that" have no
+// referent in themselves — a case whose history was lost trains as a standalone question, silently,
+// looking exactly like a well-formed case. That is how every turn came to train as a FIRST turn.
+TEST_F(CorpusInvariants, FollowUpCasesCarryTheTurnTheyFollow) {
+    int follow_ups = 0;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (admission_case.task.id().rfind("follow/", 0) != 0) continue;
+        ++follow_ups;
+        ASSERT_FALSE(admission_case.history.empty())
+            << "case " << admission_case.task.id() << " is a follow-up with no history";
+        for (const zetta::agent::PriorTurn& turn : admission_case.history) {
+            EXPECT_FALSE(turn.ask.empty());
+            EXPECT_FALSE(turn.reply.empty());
+            // The reply is the agent's MESSAGE, never the envelope — re-showing JSON would teach
+            // the model that the envelope is part of a conversation.
+            EXPECT_EQ(turn.reply.find("\"tool_calls\""), std::string::npos)
+                << "case " << admission_case.task.id() << " replays an action envelope as dialogue";
+        }
+    }
+    EXPECT_GT(follow_ups, 0) << "the corpus must train follow-ups at all";
+}
+
 // An ACTION corpus must teach more than one pipeline. This is the rule that would have predicted
 // the v3 checkpoint's behaviour before a GPU was booked: 92% of its action cases were just two
 // shapes, so the model learned one pipeline and emitted it for churn, lead scoring and collections

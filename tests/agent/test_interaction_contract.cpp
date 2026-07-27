@@ -49,8 +49,12 @@ TEST(InteractionContract, TrainingPromptIsByteIdenticalToServedPrompt) {
     for (const AdmissionCase& admission_case : dataset.cases) {
         const auto [training_prompt, target] = zetta::agent::render_action_example(admission_case);
         // What the SERVING harness would build for the same ask + retrieved context.
+        // Including the conversation so far: a multi-turn case must be byte-identical too, or
+        // follow-ups train under one frame and serve under another — the exact skew this test
+        // exists to catch, and it did catch it when history was added to the renderer.
         const std::string served_prompt = zetta::agent::build_chat_prompt(
-            base_agent(), admission_case.task.description(), admission_case.grounding);
+            base_agent(), admission_case.task.description(), admission_case.grounding,
+            /*tool_specs=*/{}, admission_case.history);
         EXPECT_EQ(training_prompt, served_prompt)
             << "train/serve prompt skew on case " << admission_case.task.id();
         EXPECT_FALSE(target.empty());

@@ -887,6 +887,101 @@ EndState supervised_facts(const std::string& model_kind) {
                   {"explain", std::string("shap")}});
 }
 
+// --- Class 12: the follow-up --------------------------------------------------------------------
+// The second thing anyone types. "List all of those options." "Why?" "Add calibration to that."
+// None of them mean anything on their own — they resolve against what was just said.
+//
+// The corpus had no case of this shape, so every turn trained as a FIRST turn, and it showed: three
+// different follow-ups in a row produced the same reply, because to the model they were three
+// unrelated opening messages. Serving now carries history into the prompt; this is what makes the
+// model able to use it.
+//
+// The reply in `history` is the agent's MESSAGE, never the action envelope — re-showing JSON would
+// teach the model that the envelope is part of a conversation.
+InteractionFamily follow_up_family(const std::vector<ProjectContext>& contexts, int phrasings) {
+    InteractionFamily family{
+        "follow_up",
+        "A second turn that only makes sense against the first - the referent is in the history, "
+        "not in the ask",
+        {}};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        const EndState solution = solution_facts(context);
+        const std::string described = zetta::agent::describe_pipeline(solution);
+        const std::string data_view = render_grounding(context, GroundingView::Data);
+        const std::string results_view = render_grounding(context, GroundingView::Results);
+
+        // 1. "Do it" after an orientation — the referent is one of the options just offered.
+        {
+            EndState required = solution;
+            zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+            AdmissionCase built = make_case(
+                "follow/build/" + std::to_string(context_index),
+                "Let's do the first one.", data_view, InteractionKind::Action, described, required,
+                std::move(graph));
+            built.history = {{"What could we build with this data?",
+                              std::string("With `") + context.table + "` the usual place to start "
+                              "is the " + context.project + " Pipeline. Shall I build it?"}};
+            family.cases.push_back(std::move(built));
+        }
+
+        // 2. "Why?" after a result — an ANSWER, and it must not rebuild anything. A follow-up that
+        //    silently re-runs the Pipeline because the user asked a question is the failure mode
+        //    this case exists to train against.
+        if (!context.drivers.empty()) {
+            EndState required = facts({{"grounded", true},
+                                       {"numbers_from_context", true},
+                                       {"top_driver", context.drivers.front().first},
+                                       {"built_nothing", true}});
+            AdmissionCase why = make_case(
+                "follow/why/" + std::to_string(context_index), "Why?", results_view,
+                InteractionKind::Answer,
+                std::string("Mostly `") + context.drivers.front().first +
+                    "` - it carries more of the signal than anything else in that model.",
+                required);
+            why.history = {{"Which accounts are most at risk?",
+                            "I ranked them for you - the highest-risk accounts are at the top of "
+                            "the list."}};
+            family.cases.push_back(std::move(why));
+        }
+
+        // 3. "Add X to that" after a build — a modification of the pipeline just proposed, which
+        //    must keep the rest of it.
+        {
+            EndState required = solution;
+            required.set("calibrated", true);
+            required.set("preserved_other_steps", true);
+            zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+            AdmissionCase add = make_case(
+                "follow/modify/" + std::to_string(context_index),
+                "Add calibration to that.", data_view, InteractionKind::Action,
+                std::string("Added a calibration step to the ") + context.project +
+                    " Pipeline. Everything else is as it was.",
+                required, std::move(graph));
+            add.history = {{"Build me that pipeline.", described}};
+            family.cases.push_back(std::move(add));
+        }
+
+        // 4. A follow-up that is still ambiguous — history does not make every referent clear, and
+        //    an agent that guesses when it should ask is worse than one that asks.
+        if (phrasings > 1) {
+            EndState required = facts({{"clarify", true},
+                                       {"asked_one_question", true},
+                                       {"built_nothing", true}});
+            AdmissionCase vague = make_case(
+                "follow/vague/" + std::to_string(context_index), "Change it.", data_view,
+                InteractionKind::Clarify,
+                "Which part - the data it reads, the model it trains, or what it does with the "
+                "result?",
+                required);
+            vague.history = {{"Build me that pipeline.", described}};
+            family.cases.push_back(std::move(vague));
+        }
+    }
+    return family;
+}
+
 // --- Class 11: build the solution itself ------------------------------------------------------
 // "Predict which machines are likely to fail." "Score our leads." "Forecast demand per SKU." The
 // central ask — and the one the whole catalogue exists to answer — had ONE training case per
@@ -1499,6 +1594,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(migration_family(contexts, phrasings));
     families.push_back(discovery_family(contexts, phrasings));
     families.push_back(solution_build_family(contexts, phrasings));
+    families.push_back(follow_up_family(contexts, phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));

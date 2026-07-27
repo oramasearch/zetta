@@ -42,6 +42,13 @@ nlohmann::json to_json(const AdmissionCase& admission_case) {
         {"negative_controls", std::move(negatives)},
     };
     // The reference solution in the agent's ACTION shape, when the corpus carries it (#873).
+    if (!admission_case.history.empty()) {
+        nlohmann::json history = nlohmann::json::array();
+        for (const PriorTurn& turn : admission_case.history) {
+            history.push_back({{"ask", turn.ask}, {"reply", turn.reply}});
+        }
+        output["history"] = std::move(history);
+    }
     if (admission_case.reference_action) {
         output["action"] = to_json(*admission_case.reference_action);
     }
@@ -168,6 +175,25 @@ std::optional<AdmissionCase> admission_case_from_json(const nlohmann::json& valu
             return std::nullopt;
         }
         admission_case.grounding = value["grounding"].get<std::string>();
+    }
+
+    // The conversation so far. Same rule as grounding, for the same reason: a follow-up whose
+    // history is dropped on the round trip trains as a standalone question with no referent —
+    // silently, and looking exactly like a well-formed case.
+    if (value.contains("history")) {
+        if (!value["history"].is_array()) {
+            set_error(error, "admission case.history: must be an array");
+            return std::nullopt;
+        }
+        for (const nlohmann::json& turn : value["history"]) {
+            if (!turn.is_object() || !turn.contains("ask") || !turn.contains("reply") ||
+                !turn["ask"].is_string() || !turn["reply"].is_string()) {
+                set_error(error, "admission case.history[]: needs string `ask` and `reply`");
+                return std::nullopt;
+            }
+            admission_case.history.push_back(
+                {turn["ask"].get<std::string>(), turn["reply"].get<std::string>()});
+        }
     }
     return admission_case;
 }
