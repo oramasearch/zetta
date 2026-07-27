@@ -71,17 +71,51 @@ StudioAction reference_action_from_facts(const EndState& facts) {
             "set up a pipeline for it.";
         return action;
     }
-    // One tool call per pipeline step — what the agent does to build it (mirrors the shape of
-    // churn_reference_trajectory), carrying the node's config as arguments.
-    for (const auto& node : action.execution_graph.nodes()) {
+    // One tool call per pipeline step — what the agent DOES to build it. Derived from the graph
+    // rather than written alongside it, so the two encodings cannot drift apart.
+    action.tool_calls = tool_calls_from_graph(action.execution_graph);
+    action.message = "Here's the pipeline I'll build and run for your request.";
+    return action;
+}
+
+std::vector<ToolCall> tool_calls_from_graph(const ir::ExecutionGraph& graph) {
+    std::vector<ToolCall> calls;
+    calls.reserve(graph.nodes().size());
+    for (const auto& node : graph.nodes()) {
         nlohmann::json arguments =
             node->attributes.is_object() ? node->attributes : nlohmann::json::object();
         arguments["name"] = node->name;
-        action.tool_calls.emplace_back(std::string(ir::to_string(node->kind)),
-                                       std::move(arguments));
+        calls.emplace_back(std::string(ir::to_string(node->kind)), std::move(arguments));
     }
-    action.message = "Here's the pipeline I'll build and run for your request.";
-    return action;
+    return calls;
+}
+
+ir::ExecutionGraph build_pipeline_from_tool_calls(const std::vector<ToolCall>& calls) {
+    ir::ExecutionGraph graph;
+    for (const ToolCall& call : calls) {
+        const std::optional<ir::StepKind> kind = ir::step_kind_from_name(call.tool);
+        if (!kind) continue;  // not a pipeline step (a read tool); it builds nothing
+        nlohmann::json attributes =
+            call.arguments.is_object() ? call.arguments : nlohmann::json::object();
+        std::string name = call.tool;
+        if (const auto named = attributes.find("name");
+            named != attributes.end() && named->is_string()) {
+            name = named->get<std::string>();
+            attributes.erase("name");  // the node's name, not a config value
+        }
+        const bool first = graph.nodes().empty();
+        const ir::NodeId previous = first ? ir::NodeId{} : graph.nodes().back()->id;
+        // A step with no configuration gets NO attributes, not an empty object — so a pipeline
+        // built from tool calls is identical to the same pipeline built directly, and the
+        // graph <-> tool-calls round trip is exact rather than merely equivalent.
+        const std::shared_ptr<ir::Node> node =
+            attributes.empty() ? graph.add_node(*kind, std::move(name))
+                               : graph.add_node(*kind, std::move(name), std::move(attributes));
+        if (node == nullptr) continue;
+        // The calls arrive in pipeline order, and that order IS the data flow.
+        if (!first) graph.add_edge(previous, node->id, ir::EdgeKind::DataFlow);
+    }
+    return graph;
 }
 
 void attach_reference_action(AdmissionCase& admission_case) {
@@ -99,7 +133,23 @@ std::pair<std::string, std::string> render_action_example(const AdmissionCase& a
     const StudioAction action = admission_case.reference_action
                                     ? *admission_case.reference_action
                                     : reference_action_from_facts(admission_case.reference);
-    return {std::move(prompt), to_json(action).dump()};
+
+    // The target is the DECISION — mode, message, tool calls — and deliberately NOT the
+    // execution_graph.
+    //
+    // The graph's node ids are random UUIDs. Training a model to reproduce them token by token is
+    // unlearnable: there is no signal in a random id, and they dominate the target, so the only
+    // thing a model can extract is what a UUID looks like. That is exactly what happened — the
+    // trained checkpoint emits `11111111-1111-4111-8888-…` for every node, so two steps collide on
+    // one id and the pipeline will not compile.
+    //
+    // The agent is a tool-calling harness: the model decides which steps to call and how to
+    // configure them, and the harness mints ids and wires edges when it runs those calls. The
+    // graph stays on the AdmissionCase as the gate's reference for scoring; it is simply not
+    // something the model should be asked to write.
+    nlohmann::json target = to_json(action);
+    target.erase("execution_graph");
+    return {std::move(prompt), target.dump()};
 }
 
 }  // namespace zetta::agent

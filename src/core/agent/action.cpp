@@ -87,10 +87,21 @@ std::optional<StudioAction> parse_studio_action(const std::string& generation) {
     if (begin == std::string::npos || end == std::string::npos || begin >= end) {
         return std::nullopt;
     }
-    const nlohmann::json document = nlohmann::json::parse(
+    nlohmann::json document = nlohmann::json::parse(
         generation.substr(begin, end - begin + 1), nullptr, /*allow_exceptions=*/false);
     if (document.is_discarded()) return std::nullopt;
-    return action_from_json(document);
+    if (std::optional<StudioAction> action = action_from_json(document)) return action;
+    // Retry without the graph. The harness builds the Pipeline itself by running the model's tool
+    // calls, so the model's own graph is advisory — and a checkpoint that writes colliding node
+    // ids would otherwise take the whole action down with it, discarding tool calls that were
+    // perfectly good. Dropping a graph we were never going to use beats losing the turn.
+    // `action_from_json` stays strict: it is a boundary validator, and a bad graph is a real
+    // error there.
+    if (document.is_object() && document.contains("execution_graph")) {
+        document.erase("execution_graph");
+        return action_from_json(document);
+    }
+    return std::nullopt;
 }
 
 const nlohmann::json& studio_action_schema() {

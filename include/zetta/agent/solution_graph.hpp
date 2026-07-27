@@ -47,4 +47,25 @@ void attach_reference_action(AdmissionCase& admission_case);
 // so training targets the action, not the facts.
 std::pair<std::string, std::string> render_action_example(const AdmissionCase& admission_case);
 
+// Build a Pipeline by executing tool calls in order — the harness's job, and the counterpart to
+// the training target's shape.
+//
+// The model decides WHICH steps to call and with what configuration; this mints each node's id and
+// wires the edge from the step before it. Keeping id generation here is the point: node ids are
+// random UUIDs, so a model asked to write them can only learn what one looks like, which is how a
+// checkpoint came to emit `11111111-…` for every node and collide two steps on one id. Shared by
+// `agent::respond` and the corpus tests so both build a pipeline exactly the same way.
+ir::ExecutionGraph build_pipeline_from_tool_calls(const std::vector<ToolCall>& calls);
+
+// The tool calls that BUILD `graph` — one call per node, in pipeline order: the tool is the node's
+// step kind, the arguments are its attributes plus its `name`.
+//
+// This is the exact inverse of build_pipeline_from_tool_calls, and that matters more than it
+// looks. A pipeline has two encodings in a training target — the graph and the calls that build it
+// — and a corpus that writes them independently WILL let them disagree. It did: 91% of the v1
+// corpus's action cases carried a real graph and an empty `tool_calls`, so the corpus taught
+// "an action calls nothing", and the trained checkpoint dutifully called nothing. Deriving one
+// from the other is what makes that disagreement unrepresentable.
+std::vector<ToolCall> tool_calls_from_graph(const ir::ExecutionGraph& graph);
+
 }  // namespace zetta::agent

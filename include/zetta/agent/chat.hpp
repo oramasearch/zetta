@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "zetta/agent/action.hpp"
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/agent/agent_record.hpp"
 #include "zetta/agent/sandbox.hpp"
 #include "zetta/agent/tool_call.hpp"
@@ -58,6 +59,17 @@ struct ChatResponse {
     // `action->execution_graph` is the proposed Pipeline. Empty when the generation did not
     // parse as an action (an error path worth surfacing, not text worth showing raw).
     std::optional<StudioAction> action;
+    // The Pipeline the HARNESS built by executing the model's tool calls (#859/#923).
+    //
+    // The agent is a tool-calling harness: the model decides WHICH steps to call and with what
+    // configuration, and the harness turns each call into a real node with a freshly minted id and
+    // an edge from the step before it. That division matters — asked to emit a graph directly, the
+    // model produces memorized placeholder ids like `11111111-…`, so two steps collide on one id
+    // and the graph will not compile. Minting ids is mechanical work the harness does correctly
+    // every time, and the model should never have been asked to do it.
+    //
+    // Empty when the turn called no build tools (an `answer`, a `clarify`, an `abstain`).
+    zetta::ir::ExecutionGraph built_pipeline;
 };
 
 // Runs one named tool on behalf of the agent and returns what it produced (#904).

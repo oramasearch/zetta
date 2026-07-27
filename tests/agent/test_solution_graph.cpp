@@ -87,11 +87,20 @@ TEST(SolutionGraph, RenderActionExampleTargetsTheAction) {
     EXPECT_NE(prompt.find("Orama Studio"), std::string::npos);
     EXPECT_NE(prompt.find("churn"), std::string::npos);
 
-    // Target: a valid action whose pipeline passes the grader.
+    // Target: the DECISION — mode, message, tool calls — with no execution_graph. Node ids are
+    // random UUIDs, so asking a model to write them teaches it only what a UUID looks like.
     const auto action = zetta::agent::parse_studio_action(target);
     ASSERT_TRUE(action);
-    EXPECT_TRUE(
-        churn.task.grader().grade(graph_solution_facts(action->execution_graph)).passed);
+    EXPECT_FALSE(action->tool_calls.empty()) << "the target must carry the steps to call";
+    EXPECT_TRUE(action->execution_graph.nodes().empty())
+        << "the target must NOT contain a graph; the harness builds it";
+    EXPECT_EQ(target.find("execution_graph"), std::string::npos);
+
+    // And executing those calls the way the harness does must produce a pipeline that passes the
+    // task's grader — the whole loop, not just the model's half of it.
+    const zetta::ir::ExecutionGraph built =
+        zetta::agent::build_pipeline_from_tool_calls(action->tool_calls);
+    EXPECT_TRUE(churn.task.grader().grade(graph_solution_facts(built)).passed);
 }
 
 // Acceptance for the reshape (guarded on ZETTA_CORPUS): EVERY task in the real corpus gets a
@@ -124,6 +133,37 @@ TEST(SolutionGraph, EveryCorpusTaskBecomesAGradeableAction) {
     std::cerr << "[reshape] " << passed << "/" << corpus->size()
               << " corpus tasks became gradeable actions\n";
     EXPECT_EQ(passed, static_cast<int>(corpus->size()));
+}
+
+// The two encodings of a pipeline — the graph, and the tool calls that build it — must be
+// inverses. A corpus that writes them independently lets them disagree, and the v1 corpus did:
+// 91% of its action cases carried a real graph with an empty `tool_calls`, teaching the agent
+// that an action calls nothing. This pins the round trip so that cannot come back.
+TEST(SolutionGraph, ToolCallsAndPipelineAreInverses) {
+    zetta::agent::EndState facts;
+    facts.set("connect", true);
+    facts.set("clean", true);
+    facts.set("model", true);
+    facts.set("serve", true);
+    facts.set("leakage_free", true);
+    facts.set("model_kind", std::string("gbdt"));
+    const zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(facts);
+    ASSERT_GT(graph.node_count(), 1u) << "the fixture needs a real multi-step pipeline";
+
+    const std::vector<zetta::agent::ToolCall> calls = zetta::agent::tool_calls_from_graph(graph);
+    ASSERT_EQ(calls.size(), graph.nodes().size()) << "one call per pipeline step";
+
+    const zetta::ir::ExecutionGraph rebuilt = zetta::agent::build_pipeline_from_tool_calls(calls);
+    ASSERT_EQ(rebuilt.nodes().size(), graph.nodes().size());
+    for (std::size_t index = 0; index < graph.nodes().size(); ++index) {
+        EXPECT_EQ(rebuilt.nodes()[index]->kind, graph.nodes()[index]->kind);
+        EXPECT_EQ(rebuilt.nodes()[index]->name, graph.nodes()[index]->name);
+        EXPECT_EQ(rebuilt.nodes()[index]->attributes, graph.nodes()[index]->attributes);
+    }
+    // The facts survive the round trip, so a rebuilt pipeline still passes its task's grader.
+    const zetta::agent::EndState recovered = zetta::agent::graph_solution_facts(rebuilt);
+    EXPECT_TRUE(recovered.matches("leakage_free", true));
+    EXPECT_TRUE(recovered.matches("model_kind", std::string("gbdt")));
 }
 
 }  // namespace

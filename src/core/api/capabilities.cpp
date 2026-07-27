@@ -3814,6 +3814,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         // graph, which a caller could mistake for "the agent built nothing on purpose".
         if (!chat.action->execution_graph.nodes().empty()) {
             output["pipeline"] = zetta::ir::to_json(chat.action->execution_graph);
+            // How many steps the harness actually built by running the model's tool calls, so a
+            // caller can tell a real Pipeline from an empty gesture without walking the graph.
+            output["pipeline_steps"] =
+                static_cast<int>(chat.action->execution_graph.nodes().size());
         }
     } else {
         // The generation did not parse as a response envelope. Say so explicitly: an unparsed

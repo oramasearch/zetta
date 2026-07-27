@@ -10,6 +10,7 @@
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/base_prompt.hpp"
+#include "zetta/tokenizer/bpe.hpp"
 #include "zetta/agent/chat.hpp"
 #include "zetta/agent/corpus_io.hpp"
 #include "zetta/agent/interaction.hpp"
@@ -236,6 +237,41 @@ TEST(InteractionContract, WriteCorpusJsonl) {
     std::ofstream(std::string(out) + ".canary") << zetta::agent::dump_corpus_jsonl(canary);
     std::cout << "\n  wrote " << train.size() << " training cases to " << out << "\n"
               << "  wrote " << canary.size() << " canary cases to " << out << ".canary\n";
+}
+
+
+// Diagnostic: how much of a training example is the PROMPT? The SFT driver concatenates prompt and
+// target and scores cross-entropy over every position, so a constant system prompt shared by all
+// 6,030 examples gets memorized in a few steps and then dominates the reported loss. If the prompt
+// is most of the sequence, the headline loss says far more about template memorization than about
+// whether the model learned to answer.
+TEST(InteractionContract, ReportPromptToTargetTokenSplit) {
+    const char* model_dir = std::getenv("ZETTA_QWEN_DIR");
+    if (model_dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR for the tokenizer";
+    std::string error;
+    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
+        zetta::tokenizer::BpeTokenizer::from_directory(model_dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+
+    const zetta::dataset::BaseAgentDatasetGenerator generator;
+    const zetta::dataset::GeneratedDataset dataset = generator.generate({});
+
+    std::size_t prompt_total = 0, target_total = 0, counted = 0;
+    std::size_t system_prompt_tokens =
+        tokenizer->encode(std::string(zetta::agent::base_agent_system_prompt())).size();
+    for (const zetta::agent::AdmissionCase& c : dataset.cases) {
+        if (counted >= 400) break;
+        const auto [prompt, target] = zetta::agent::render_action_example(c);
+        prompt_total += tokenizer->encode(prompt).size();
+        target_total += tokenizer->encode(target).size();
+        ++counted;
+    }
+    const double prompt_mean = static_cast<double>(prompt_total) / counted;
+    const double target_mean = static_cast<double>(target_total) / counted;
+    std::cout << "\n  system prompt alone: " << system_prompt_tokens << " tokens\n"
+              << "  mean prompt: " << prompt_mean << "  mean target: " << target_mean << "\n"
+              << "  PROMPT SHARE OF LOSS: "
+              << 100.0 * prompt_mean / (prompt_mean + target_mean) << "%\n";
 }
 
 }  // namespace
