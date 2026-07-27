@@ -740,7 +740,16 @@ TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
     int action_cases = 0, actions_with_calls = 0, actions_building = 0, emitted_uuid = 0;
     std::map<std::string, std::pair<int, int>> by_kind;  // reference kind -> {seen, kind_right}
 
-    for (const zetta::agent::AdmissionCase& admission_case : *canary) {
+    // Stride across the canary rather than taking the first N. The corpus is grouped by family, so
+    // a prefix is a sample of ONE family — an 80-case prefix drew 77 `answer` cases from a canary
+    // that is 53% `action`, which would have reported a pipeline-building rate computed from three
+    // governance cases. A representative sample is the difference between a measurement and an
+    // anecdote.
+    const std::size_t total = canary->size();
+    const std::size_t stride =
+        static_cast<std::size_t>(limit) >= total ? 1 : total / static_cast<std::size_t>(limit);
+    for (std::size_t index = 0; index < total; index += stride) {
+        const zetta::agent::AdmissionCase& admission_case = (*canary)[index];
         if (seen >= limit) break;
         ++seen;
         const std::string prompt = zetta::agent::render_interaction_prompt(

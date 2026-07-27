@@ -3,13 +3,16 @@
 **Model.** The Orama Studio auto-AI **base agent** (#555) — turns a plain-language ask into a
 production pipeline. **Base weights.** Qwen3-0.6B (permissively licensed open-weights start),
 pulled natively (`zetta pull`, ADR-17). **Status.** SFT driver, the #873 action reshape, and
-the #918 interaction contract + corpus are built. **No checkpoint currently reflects the shipped
-protocol.** The installed `base-agent-0.6b-interaction-v1` was trained on the **withdrawn v2
-corpus** and inherits both of its defects — it returns a fluent message with an empty `tool_calls`
-and builds nothing, and it emits placeholder node ids. That is the data it was given, not a
-property of the model, so **its behaviour is not evidence about model capacity**. Retraining on
-v3 and measuring on the canary is https://github.com/oramasearch/zetta/issues/936, and it is the
-open item. **Owner.**
+the #918 interaction contract + corpus are built. **Current checkpoint:
+`base-agent-0.6b-interaction-v3`** — trained 2026-07-27 on corpus v3 with the prompt masked out of
+the loss. On 100 held-out canary cases it parses 100%, picks the right mode 100% (action 53/53 ·
+answer 40/40 · clarify 4/4 · abstain 3/3), emits tool calls and builds a compiling Pipeline on
+100% of action cases, and never writes a node id. **Grader pass rate is 47%** — structure is right,
+case-specific facts often are not, because it has learned ONE pipeline shape and emits it for every
+ask (https://github.com/oramasearch/zetta/issues/937). Full numbers:
+[`docs/reports/base-agent-v3-validation-2026-07-27.md`](../../../reports/base-agent-v3-validation-2026-07-27.md).
+It supersedes `base-agent-0.6b-interaction-v1`, which was trained on the withdrawn v2 corpus and
+built nothing at all. **Owner.**
 agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per-customer fork) ·
 #873 (reshape) · #248 (eval).
 
@@ -85,14 +88,18 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 
 ## Limitations
 
-- **The installed checkpoint does not build Pipelines.** Trained on the v2 corpus, in which 91% of
-  `action` cases carried a Pipeline with an empty `tool_calls`; it learned exactly that. Measured:
-  "Set up a churn prediction pipeline on our accounts data." returns `kind: action`, a fluent
-  message, `tool_calls: []`, and no Pipeline — reproducing a corpus row verbatim. It also emits
-  `11111111-…` for every node id, so two steps collide and the Pipeline will not compile, because
-  v2 asked it to reproduce random UUIDs. **Both are data defects, fixed in v3**
-  (https://github.com/oramasearch/zetta/issues/933). Do not read this checkpoint as a signal that
-  0.6B is too small — it has never been trained on a corpus that showed it a tool call.
+- **One pipeline shape for every ask.** The most consequential limitation. Asked to build for
+  churn, lead scoring, and collections, v3 produces the identical five-step Pipeline and the
+  identical message. It passes any grader whose required facts that shape happens to satisfy and
+  fails the rest, which is the whole of the 47% grader gap. Root cause is the corpus, not capacity
+  (https://github.com/oramasearch/zetta/issues/937) — so **more parameters will not fix it**.
+- **It over-generates.** The CUDA driver that trained it appended no stop token, so it writes one
+  action and starts another. The serving parser absorbs this by taking the first balanced object;
+  the driver is fixed for the next run.
+- **Product-knowledge answers need their grounding.** 95.8% parse / 70.8% grader pass on product
+  cases WITH the capability listing they were trained against; without it the model blends
+  memorized answers. Serving does not supply that listing, and injecting it unconditionally
+  regressed pipeline building from `action` to `clarify` — retrieval here needs routing.
 - **The corpus behind any future checkpoint contains ~354 distinct asks.** Row count (6,102) is a
   cross product, so a model can score well by memorizing far fewer mappings than the size suggests
   (https://github.com/oramasearch/zetta/issues/937). Weigh the canary, not the training loss.
