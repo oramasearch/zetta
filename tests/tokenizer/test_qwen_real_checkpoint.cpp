@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <regex>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -695,6 +697,128 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
 // Judge the trained base agent: feed it realistic user inputs (varied phrasings, a pasted
 // current state, a vague ask) and print the greedy generations. Inspection only — point
 // ZETTA_QWEN_DIR at the TRAINED checkpoint (or the base weights, to compare). No asserts.
+// Evaluate a trained checkpoint on the HELD-OUT canary and report numbers, not vibes (#936).
+//
+// Everything before this point measures training. This measures whether the thing learned, on
+// cases it has never seen — which is the only number worth reporting, and which is only meaningful
+// because the canary is now verifiably disjoint from training (it previously shared 105 cases).
+//
+// Generation goes through `render_interaction_prompt`, the SAME renderer the corpus and
+// agent::respond use, so an eval number is a number about what serving will actually do.
+//
+// ZETTA_QWEN_DIR = the checkpoint · ZETTA_CANARY = the canary JSONL.
+// Knobs: ZETTA_EVAL_CASES (default 200), ZETTA_EVAL_TOKENS (default 200), ZETTA_EVAL_OUT.
+TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the checkpoint) to run";
+    const char* canary_path = std::getenv("ZETTA_CANARY");
+    if (canary_path == nullptr) GTEST_SKIP() << "set ZETTA_CANARY to the held-out JSONL to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenInference> model =
+        zetta::compute::model::MlxQwenInference::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    std::ifstream file(canary_path);
+    ASSERT_TRUE(file.good()) << "cannot open " << canary_path;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const auto canary = zetta::agent::load_corpus_jsonl(buffer.str(), &error);
+    ASSERT_TRUE(canary.has_value()) << error;
+    ASSERT_FALSE(canary->empty());
+
+    const int limit = std::getenv("ZETTA_EVAL_CASES")
+                          ? std::atoi(std::getenv("ZETTA_EVAL_CASES")) : 200;
+    const int max_new = std::getenv("ZETTA_EVAL_TOKENS")
+                            ? std::atoi(std::getenv("ZETTA_EVAL_TOKENS")) : 200;
+    const std::regex uuid(
+        "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+
+    int seen = 0, parsed = 0, kind_right = 0, graded = 0, passed = 0;
+    int action_cases = 0, actions_with_calls = 0, actions_building = 0, emitted_uuid = 0;
+    std::map<std::string, std::pair<int, int>> by_kind;  // reference kind -> {seen, kind_right}
+
+    for (const zetta::agent::AdmissionCase& admission_case : *canary) {
+        if (seen >= limit) break;
+        ++seen;
+        const std::string prompt = zetta::agent::render_interaction_prompt(
+            zetta::agent::base_agent_system_prompt(), admission_case.grounding,
+            admission_case.task.description());
+        model->reset();
+        const std::vector<int> generated =
+            model->generate_greedy(tokenizer->encode(prompt), max_new, /*eos_id=*/151645);
+        const std::string text = tokenizer->decode(generated);
+        if (std::regex_search(text, uuid)) ++emitted_uuid;
+
+        const std::string reference_kind =
+            admission_case.reference_action
+                ? std::string(zetta::agent::to_string(admission_case.reference_action->kind))
+                : "action";
+        by_kind[reference_kind].first++;
+
+        const std::optional<zetta::agent::StudioAction> action =
+            zetta::agent::parse_studio_action(text);
+        if (!action) continue;
+        ++parsed;
+        if (std::string(zetta::agent::to_string(action->kind)) == reference_kind) {
+            ++kind_right;
+            by_kind[reference_kind].second++;
+        }
+        if (reference_kind == "action") {
+            ++action_cases;
+            if (!action->tool_calls.empty()) ++actions_with_calls;
+            if (!zetta::agent::build_pipeline_from_tool_calls(action->tool_calls).nodes().empty()) {
+                ++actions_building;
+            }
+        }
+        // The real question: does what it produced satisfy the task's own grader?
+        ++graded;
+        if (admission_case.task.grader()
+                .grade(zetta::agent::response_solution_facts(*action, admission_case.grounding))
+                .passed) {
+            ++passed;
+        }
+    }
+    ASSERT_GT(seen, 0);
+
+    const auto percent = [&](int numerator, int denominator) {
+        return denominator == 0 ? 0.0 : 100.0 * numerator / denominator;
+    };
+    std::cerr << "\n===== canary eval — " << dir << " =====\n"
+              << "cases                : " << seen << "\n"
+              << "parse rate           : " << percent(parsed, seen) << "% (" << parsed << ")\n"
+              << "kind accuracy        : " << percent(kind_right, seen) << "% (" << kind_right
+              << ")\n"
+              << "grader pass rate     : " << percent(passed, seen) << "% (" << passed << ")\n"
+              << "action cases parsed  : " << action_cases << "\n"
+              << "  ...with tool calls : " << percent(actions_with_calls, action_cases) << "%\n"
+              << "  ...building a Pipe : " << percent(actions_building, action_cases) << "%\n"
+              << "emitted a UUID       : " << emitted_uuid << " (must be 0)\n";
+    for (const auto& [kind, counts] : by_kind) {
+        std::cerr << "  kind " << kind << ": " << counts.second << "/" << counts.first << " ("
+                  << percent(counts.second, counts.first) << "%)\n";
+    }
+
+    if (const char* out = std::getenv("ZETTA_EVAL_OUT")) {
+        std::ofstream report(out);
+        report << R"({"checkpoint":")" << dir << R"(","cases":)" << seen << R"(,"parse_rate":)"
+               << percent(parsed, seen) << R"(,"kind_accuracy":)" << percent(kind_right, seen)
+               << R"(,"grader_pass_rate":)" << percent(passed, seen) << R"(,"action_cases":)"
+               << action_cases << R"(,"actions_with_tool_calls_pct":)"
+               << percent(actions_with_calls, action_cases) << R"(,"actions_building_pct":)"
+               << percent(actions_building, action_cases) << R"(,"emitted_uuid":)" << emitted_uuid
+               << "}\n";
+    }
+
+    // The floor that makes the checkpoint usable at all: if it cannot be parsed, the harness has
+    // nothing to execute and every other number is meaningless. Deliberately the ONLY assertion —
+    // the rest are reported so a run produces evidence rather than a pass/fail with no detail.
+    EXPECT_GT(percent(parsed, seen), 50.0) << "fewer than half the generations parse";
+    EXPECT_EQ(emitted_uuid, 0) << "the model is writing node ids again — the harness mints those";
+}
+
 TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     const char* dir = qwen_dir();
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the trained checkpoint) to run";
