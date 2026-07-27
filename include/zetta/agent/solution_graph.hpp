@@ -34,6 +34,15 @@ EndState graph_solution_facts(const ir::ExecutionGraph& graph);
 // The reference solution in the agent's ACTION shape, built generically from its `facts`: the
 // build_solution_graph pipeline, one tool call per pipeline step, and a message. graph_solution_
 // facts(action.execution_graph) satisfies `facts`, so the action passes the task's grader.
+// A sentence describing the pipeline `facts` produce — the steps in order, then the guarantees
+// worth stating back (validated on later data, calibrated, explained, approval-gated).
+//
+// Shared so a corpus family and the agent's own reply describe a pipeline the same way. Replaces a
+// constant confirmation that once covered 1,802 cases: a constant is the cheapest thing a model can
+// learn, and it learned it. Digit-free by construction — an action reply is not grounded in a
+// measured result, so any figure in it would be one the engine never computed.
+std::string describe_pipeline(const EndState& facts);
+
 StudioAction reference_action_from_facts(const EndState& facts);
 
 // Attach a generic reference action (from the case's reference facts) to an admission case, so

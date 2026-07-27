@@ -808,6 +808,61 @@ EndState supervised_facts(const std::string& model_kind) {
                   {"explain", std::string("shap")}});
 }
 
+// --- Class 11: build the solution itself ------------------------------------------------------
+// "Predict which machines are likely to fail." "Score our leads." "Forecast demand per SKU." The
+// central ask — and the one the whole catalogue exists to answer — had ONE training case per
+// solution, while a request to add a rolling window had thousands. So the agent learned to edit
+// pipelines far better than to propose one, which is backwards: proposing is the first thing it is
+// ever asked to do.
+//
+// Each case pairs a solution's own ask with a Project actually running that solution, so the
+// grounding never contradicts the request. The reply is rendered by `describe_pipeline` from the
+// same facts that build the graph, so what the agent says it will do and what it builds cannot
+// drift apart.
+InteractionFamily solution_build_family(const std::vector<ProjectContext>& contexts,
+                                        int phrasings) {
+    InteractionFamily family{
+        "build_solution",
+        "The central ask: a plain-language request for a use case, answered with that use case's "
+        "production Pipeline",
+        {}};
+
+    // Paraphrases, because a buyer does not read the ask off the catalogue.
+    const std::array<const char*, 5> shapes = {
+        "{}", "Can you {}", "We need to {}", "I'd like to {}", "How would you {}"};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        std::string description;
+        for (const SolutionTemplate& candidate : plan_solution_templates()) {
+            if (candidate.id == context.solution) description = candidate.description;
+        }
+        if (description.empty()) continue;
+
+        const std::string grounding = render_grounding(context, GroundingView::Data);
+        const EndState required = solution_facts(context);
+        const std::string message = zetta::agent::describe_pipeline(required);
+
+        for (int phrasing = 0; phrasing < phrasings && phrasing < 5; ++phrasing) {
+            std::string ask = description;
+            if (phrasing > 0) {
+                std::string lowered = ask;
+                if (!lowered.empty() && lowered[0] >= 'A' && lowered[0] <= 'Z') {
+                    lowered[0] = static_cast<char>(lowered[0] - 'A' + 'a');
+                }
+                std::string shape = shapes[static_cast<std::size_t>(phrasing)];
+                shape.replace(shape.find("{}"), 2, lowered);
+                ask = shape;
+            }
+            zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+            family.cases.push_back(make_case(
+                "build/" + std::to_string(context_index) + "/" + std::to_string(phrasing), ask,
+                grounding, InteractionKind::Action, message, required, std::move(graph)));
+        }
+    }
+    return family;
+}
+
 // --- Class 10: the cold open ------------------------------------------------------------------
 // The first thing anyone says. Not "add a rolling window to the feature step" — "we have a bunch
 // of customer data and want to use AI, where do we start?" Every evaluation begins here, and the
@@ -1302,6 +1357,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(product_knowledge_family(phrasings));
     families.push_back(migration_family(contexts, phrasings));
     families.push_back(discovery_family(contexts, phrasings));
+    families.push_back(solution_build_family(contexts, phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));

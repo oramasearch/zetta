@@ -60,8 +60,6 @@ EndState graph_solution_facts(const ir::ExecutionGraph& graph) {
     return facts;
 }
 
-namespace {
-
 // A sentence describing the pipeline these facts produce — the steps in order, then the
 // methodology that matters to the person reading it.
 //
@@ -149,8 +147,6 @@ std::string describe_pipeline(const EndState& facts) {
     }
     return message;
 }
-
-}  // namespace
 
 StudioAction reference_action_from_facts(const EndState& facts) {
     StudioAction action;
