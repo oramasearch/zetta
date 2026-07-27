@@ -35,7 +35,19 @@ ZETTA_CORPUS_OUT=data/corpora/interaction-corpus-vN.jsonl \
   ./build/tests/zetta-tests --gtest_filter='InteractionContract.WriteCorpusJsonl'
 ```
 
-Writes the training split and `<file>.canary` beside it. **Run the corpus rules before training** —
+Writes the training split and `<file>.canary` beside it.
+
+**Publish it.** Corpora are not in git — they are versioned on the Hub, privately:
+
+```sh
+hf upload OramaSearch/base-agent-interaction-corpus \
+  data/corpora/interaction-corpus-vN.jsonl interaction-corpus-vN.jsonl --repo-type dataset
+```
+
+`https://huggingface.co/datasets/OramaSearch/base-agent-interaction-corpus` — **private**, and it
+must stay that way; it carries product detail and the correctness profiles of the solution
+catalogue. A checkpoint whose corpus was never published cannot be reproduced or audited, because
+regenerating from a later commit gives a different corpus. **Run the corpus rules before training** —
 they cost seconds and a training run costs hours:
 
 ```sh
