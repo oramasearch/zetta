@@ -134,7 +134,9 @@ std::string describe_pipeline(const EndState& facts) {
     if (facts.matches("explain", std::string("shap"))) notes.emplace_back("with per-prediction explanations");
     if (has("holdout")) notes.emplace_back("measured against a held-out group");
     if (has("grounded_in_data")) notes.emplace_back("grounded in your own records");
-    if (has("approval_gated")) notes.emplace_back("and nothing acts without your approval");
+    // No leading "and" — the joiner below supplies one for the last item, and this note produced
+    // "...explanations and and nothing acts without your approval" in every approval-gated case.
+    if (has("approval_gated")) notes.emplace_back("gated so nothing acts without your approval");
     if (has("uncertainty")) notes.emplace_back("reporting its own uncertainty");
     if (has("drift_monitoring")) notes.emplace_back("watched for drift");
     if (!notes.empty()) {

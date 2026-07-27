@@ -33,6 +33,9 @@ beat() {
     KIND="${want_kind}" PIPE="${want_pipe}" python3 - "$body" <<'PY'
 import json, os, sys
 want_kind, want_pipe = os.environ["KIND"], os.environ["PIPE"] == "yes"
+# Backticked things that are platform vocabulary rather than a claim about the user's workspace.
+KNOWN_TERMS = {"python", "sql", "mcp", "rest", "treeshap", "bm25f", "/v1", "postgres",
+               "snowflake", "kubernetes", "verification", "saved version", "pipeline"}
 try:
     value = json.loads(sys.argv[1]).get("value", {})
 except Exception:
@@ -62,6 +65,15 @@ if not reply:
 # A raw envelope leaking to the user is a demo-ending failure on its own.
 if reply.lstrip().startswith("{"):
     problems.append("raw JSON leaked into the user-facing reply")
+# Naming a table or Project that does not exist. With nothing selected there is nothing
+# legitimate to name, and the model was trained on a corpus where a table is ALWAYS in front of
+# it — so it supplies one. This is how "With `customers` I can get to three things" passed a
+# check on mode and Pipeline while being a fabrication, and how a migration answer came back
+# offering to keep "`Orama Studio`" as the source.
+import re
+named = [m for m in re.findall(r"`([^`]+)`", reply) if m.lower() not in KNOWN_TERMS]
+if named:
+    problems.append("named entities that do not exist here: " + ", ".join(named))
 # Node ids must be unique or the Pipeline will not compile.
 ids = [n["id"] for n in nodes]
 if len(set(ids)) != len(ids):
