@@ -26,6 +26,9 @@ const nlohmann::json& agent_schema() {
         "model": { "type": "string", "minLength": 1, "description": "checkpoint dir, model:<uuid>, or a HuggingFace repo id" },
         "system_prompt": { "type": "string" },
         "tools": { "type": "array", "items": { "type": "string" } },
+        "training": { "type": "object", "description": "how and when this agent retrains" },
+        "versions": { "type": "array", "items": { "type": "object" },
+                      "description": "every checkpoint this agent has produced, oldest first" },
         "goals": { "type": "array", "items": { "type": "object" },
                    "description": "what this agent is trained to be good at, and how much each matters; the RLVR reward is derived from these" },
         "created_at": { "type": "string" },
@@ -46,6 +49,10 @@ nlohmann::json to_json(const AgentRecord& agent) {
     nlohmann::json goals = nlohmann::json::array();
     for (const Goal& goal : agent.goals) goals.push_back(to_json(goal));
     value["goals"] = std::move(goals);
+    value["training"] = to_json(agent.training);
+    nlohmann::json versions = nlohmann::json::array();
+    for (const AgentVersion& version : agent.versions) versions.push_back(to_json(version));
+    value["versions"] = std::move(versions);
     value["created_at"] = agent.created_at;
     value["updated_at"] = agent.updated_at;
     return value;
@@ -98,6 +105,22 @@ std::optional<AgentRecord> agent_from_json(const nlohmann::json& value, std::str
         // Resolve plain-language goals to their checks on the way in, so a stored record always
         // says what it is actually training on rather than leaving it to be inferred later.
         interpret_goals(agent.goals);
+    }
+
+    if (const auto training = value.find("training"); training != value.end()) {
+        std::string reason;
+        std::optional<TrainingSpec> spec = training_spec_from_json(*training, &reason);
+        if (!spec) return fail("agent.training: " + reason);
+        agent.training = *std::move(spec);
+    }
+    if (const auto versions = value.find("versions"); versions != value.end()) {
+        if (!versions->is_array()) return fail("agent.versions must be an array");
+        for (const nlohmann::json& entry : *versions) {
+            std::string reason;
+            std::optional<AgentVersion> version = agent_version_from_json(entry, &reason);
+            if (!version) return fail("agent.versions: " + reason);
+            agent.versions.push_back(*std::move(version));
+        }
     }
 
     if (agent.id.empty()) return fail("agent.id must be a non-empty string");

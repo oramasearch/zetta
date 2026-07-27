@@ -149,4 +149,27 @@ TEST(TrainingPolicy, MalformedInputIsRejectedWithAReason) {
     EXPECT_FALSE(zetta::agent::agent_version_from_json({{"checkpoint", ""}}, &error).has_value());
 }
 
+// One call answers "should I retrain?", because answering it from scattered predicates is how a
+// console ends up disagreeing with a scheduler about the same agent.
+TEST(TrainingPolicy, StatusDistinguishesNeverTrainedFromStale) {
+    TrainingSpec spec;
+    const auto fresh = zetta::agent::retrain_status(spec, {}, kTools, kGoals, "2026-07-27T00:00:00Z");
+    EXPECT_FALSE(fresh.trained);
+    EXPECT_FALSE(fresh.stale) << "never trained is not stale";
+    EXPECT_NE(fresh.reason.find("Never trained"), std::string::npos);
+
+    const std::vector<AgentVersion> current = {
+        {"/ck", "2026-07-01T00:00:00Z", "", environment_fingerprint(kTools, kGoals, ""), "", -1.0}};
+    const auto ok = zetta::agent::retrain_status(spec, current, kTools, kGoals, "2026-07-27T00:00:00Z");
+    EXPECT_TRUE(ok.trained);
+    EXPECT_FALSE(ok.stale);
+    EXPECT_NE(ok.reason.find("Up to date"), std::string::npos);
+
+    std::vector<std::string> more = kTools;
+    more.push_back("act");
+    const auto stale = zetta::agent::retrain_status(spec, current, more, kGoals, "2026-07-27T00:00:00Z");
+    EXPECT_TRUE(stale.stale);
+    EXPECT_NE(stale.reason.find("tools or goals changed"), std::string::npos);
+}
+
 }  // namespace

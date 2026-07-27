@@ -378,3 +378,6 @@ The whole base-agent programme is validated by the manual test script
 eval, the graders demonstrably catch wrong answers, and a second person
 reproduces the numbers.
 - [`corpus-diversity-runbook.md`](corpus-diversity-runbook.md) — diagnosing and fixing corpus mode collapse: why low loss is not evidence of learning, and the fix order.
+- [`training-agents-runbook.md`](training-agents-runbook.md) — **runbook**: how an agent is trained today
+  (corpus → SFT → canary + demo smoke → dated report), how it is operated over MCP (goals, cadence,
+  staleness), and the future state marked as design rather than fact.

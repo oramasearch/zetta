@@ -3149,7 +3149,12 @@ const nlohmann::json& create_agent_schema() {
             {"minLength", 1},
             {"description", "checkpoint dir, model:<uuid>, or a HuggingFace repo id"}}},
           {"system_prompt", {{"type", "string"}}},
-          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          // Goals are editable after creation: what an agent is rewarded for is the thing most
+          // likely to change as a deployment learns what it wants. Editing them moves the
+          // environment fingerprint and marks every existing Saved Version stale — the intended
+          // consequence, reported by agent_training_status.
+          {"goals", {{"type", "array"}, {"items", {{"type", "object"}}}}}}}};
     return schema;
 }
 
@@ -3164,7 +3169,12 @@ const nlohmann::json& update_agent_schema() {
           {"description", {{"type", "string"}}},
           {"model", {{"type", "string"}, {"minLength", 1}}},
           {"system_prompt", {{"type", "string"}}},
-          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+          {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          // Goals are editable after creation: what an agent is rewarded for is the thing most
+          // likely to change as a deployment learns what it wants. Editing them moves the
+          // environment fingerprint and marks every existing Saved Version stale — the intended
+          // consequence, reported by agent_training_status.
+          {"goals", {{"type", "array"}, {"items", {{"type", "object"}}}}}}}};
     return schema;
 }
 
@@ -3220,6 +3230,17 @@ zetta::agent::AgentRecord agent_from_input(const nlohmann::json& input,
             if (tool.is_string()) base.tools.push_back(tool.get<std::string>());
         }
     }
+    if (input.contains("goals") && input.at("goals").is_array()) {
+        base.goals.clear();
+        for (const nlohmann::json& entry : input.at("goals")) {
+            if (std::optional<zetta::agent::Goal> goal = zetta::agent::goal_from_json(entry)) {
+                base.goals.push_back(*std::move(goal));
+            }
+        }
+        // Resolve to checks here, so the stored record says what it actually trains on rather
+        // than leaving it to be inferred at reward time.
+        zetta::agent::interpret_goals(base.goals);
+    }
     return base;
 }
 
@@ -3264,6 +3285,33 @@ ApiResult handle_get_agent(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(zetta::agent::to_json(*agent));
 }
 
+const nlohmann::json& training_schedule_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json document;
+        document["type"] = "object";
+        document["required"] = nlohmann::json::array({"id", "training"});
+        document["additionalProperties"] = false;
+        document["properties"]["id"] = {{"type", "string"}, {"minLength", 1},
+                                        {"description", "the agent's id"}};
+        document["properties"]["training"] = zetta::agent::training_spec_schema();
+        return document;
+    }();
+    return schema;
+}
+
+const nlohmann::json& training_status_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json document;
+        document["type"] = "object";
+        document["properties"]["stale"] = {{"type", "boolean"}};
+        document["properties"]["due"] = {{"type", "boolean"}};
+        document["properties"]["reason"] = {{"type", "string"}};
+        document["properties"]["versions"] = {{"type", "array"}};
+        return document;
+    }();
+    return schema;
+}
+
 ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) {
     if (context.node.replication() == nullptr) {
         return ApiResult::failure("engine_error", "agents require a replicated node");
@@ -3273,6 +3321,65 @@ ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) 
     const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
     if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
     zetta::agent::AgentRecord updated = agent_from_input(input, *existing);
+    updated.updated_at = zetta::util::now_iso8601();
+    std::string error;
+    const std::optional<zetta::agent::AgentRecord> stored = store.put(updated, &error);
+    if (!stored) return ApiResult::failure("invalid_argument", error);
+    return ApiResult::success(zetta::agent::to_json(*stored));
+}
+
+// Whether an agent should be retrained, and why (#941). Read-only: the answer a console shows
+// next to a Retrain button, and the same answer a scheduler acts on — one source, so the two
+// cannot disagree about the same agent.
+ApiResult handle_agent_training_status(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> agent = store.get(id);
+    if (!agent) return ApiResult::failure("not_found", "no agent '" + id + "'");
+
+    const zetta::agent::RetrainStatus status = zetta::agent::retrain_status(
+        agent->training, agent->versions, agent->tools, agent->goals, zetta::util::now_iso8601());
+
+    nlohmann::json versions = nlohmann::json::array();
+    for (const zetta::agent::AgentVersion& version : agent->versions) {
+        versions.push_back(zetta::agent::to_json(version));
+    }
+    // Goals nobody can verify are reported here too — a goal that resolves to no check is one
+    // training silently drops, and the person who wrote it should be told rather than assume.
+    return ApiResult::success(
+        nlohmann::json{{"agent", agent->id},
+                       {"trained", status.trained},
+                       {"stale", status.stale},
+                       {"due", status.due},
+                       {"reason", status.reason},
+                       {"fingerprint", status.fingerprint},
+                       {"training", zetta::agent::to_json(agent->training)},
+                       {"versions", std::move(versions)},
+                       {"unverifiable_goals", zetta::agent::unmapped_goals(agent->goals)}});
+}
+
+// Set how and when an agent retrains (#941). Separate from update_agent because changing a
+// SCHEDULE is not the same act as changing what the agent can do — one is operational, the other
+// changes the environment and makes every existing version stale.
+ApiResult handle_set_training_schedule(const nlohmann::json& input, ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure("engine_error", "agents require a replicated node");
+    }
+    const std::string id = input.at("id").get<std::string>();
+    zetta::agent::AgentStore store(*context.node.replication());
+    const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
+    if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
+
+    std::string reason;
+    const std::optional<zetta::agent::TrainingSpec> spec =
+        zetta::agent::training_spec_from_json(input.at("training"), &reason);
+    if (!spec) return ApiResult::failure("invalid_argument", reason);
+
+    zetta::agent::AgentRecord updated = *existing;
+    updated.training = *spec;
     updated.updated_at = zetta::util::now_iso8601();
     std::string error;
     const std::optional<zetta::agent::AgentRecord> stored = store.put(updated, &error);
@@ -4496,6 +4603,32 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_update_agent});
+    registry.add(Capability{
+        "agent_training_status",
+        "Should this agent be retrained?",
+        "Whether an agent is stale (its tools or goals changed since its newest Saved Version was "
+        "trained), whether its schedule says it is due, every version it has produced, and any "
+        "goals that resolve to no verifiable check. Read-only.",
+        agent_id_schema(),
+        training_status_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Orchestration, "agent_training_status"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_agent_training_status});
+    registry.add(Capability{
+        "set_training_schedule",
+        "Set when an agent retrains",
+        "Set an agent's training spec: the corpus, the base checkpoint, the step count, and the "
+        "cadence (manual, on_change, daily, weekly, monthly). Manual is the default - an agent "
+        "never retrains behind your back.",
+        training_schedule_schema(),
+        agent_fields_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "set_training_schedule"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_set_training_schedule});
     registry.add(Capability{
         "delete_agent",
         "Delete an agent",

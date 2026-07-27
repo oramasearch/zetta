@@ -112,6 +112,33 @@ bool retrain_due(const TrainingSpec& spec, const std::vector<AgentVersion>& vers
     return false;
 }
 
+RetrainStatus retrain_status(const TrainingSpec& spec, const std::vector<AgentVersion>& versions,
+                             const std::vector<std::string>& tools, const std::vector<Goal>& goals,
+                             const std::string& now) {
+    RetrainStatus status;
+    status.fingerprint = environment_fingerprint(tools, goals, spec.corpus);
+    status.trained = !versions.empty();
+    status.stale = needs_retraining(versions, status.fingerprint);
+    status.due = retrain_due(spec, versions, status.fingerprint, now);
+
+    // Say which of the three it is, in the order a person would care. "Stale" and "never trained"
+    // are different situations and must not read the same.
+    if (!status.trained) {
+        status.reason = spec.cadence == RetrainCadence::Manual
+                            ? "Never trained. Train it when you're ready."
+                            : "Never trained. Its schedule will train it.";
+    } else if (status.stale) {
+        status.reason =
+            "The tools or goals changed since this version was trained, so it is training for a "
+            "world that no longer exists.";
+    } else if (status.due) {
+        status.reason = "Its schedule says it is time to retrain.";
+    } else {
+        status.reason = "Up to date with its current tools and goals.";
+    }
+    return status;
+}
+
 nlohmann::json to_json(const AgentVersion& version) {
     return nlohmann::json{{"checkpoint", version.checkpoint},
                           {"created_at", version.created_at},

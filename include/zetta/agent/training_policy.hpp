@@ -90,6 +90,23 @@ bool needs_retraining(const std::vector<AgentVersion>& versions,
 bool retrain_due(const TrainingSpec& spec, const std::vector<AgentVersion>& versions,
                  const std::string& current_fingerprint, const std::string& now);
 
+// Is this agent stale, and why — the answer a UI shows next to a Retrain button.
+//
+// One call rather than three, because "should I retrain?" is one question and answering it from
+// scattered predicates is how a console ends up disagreeing with a scheduler.
+struct RetrainStatus {
+    bool trained = false;        // has it ever produced a version?
+    bool stale = false;          // was the newest version trained for a different environment?
+    bool due = false;            // does its cadence say retrain now?
+    std::string fingerprint;     // the environment in force
+    std::string reason;          // one line, in the vocabulary a user reads
+};
+
+// `now` is ISO-8601, supplied by the caller — zetta-core holds no clock.
+RetrainStatus retrain_status(const TrainingSpec& spec, const std::vector<AgentVersion>& versions,
+                             const std::vector<std::string>& tools, const std::vector<Goal>& goals,
+                             const std::string& now);
+
 nlohmann::json to_json(const AgentVersion& version);
 nlohmann::json to_json(const TrainingSpec& spec);
 std::optional<AgentVersion> agent_version_from_json(const nlohmann::json& value,

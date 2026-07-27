@@ -61,6 +61,8 @@ const std::vector<PermissionEntry>& vocabulary() {
           {CapabilityDomain::Orchestration, "testsuite_run"},
           {CapabilityDomain::Orchestration, "create_agent"},
           {CapabilityDomain::Orchestration, "update_agent"},
+          {CapabilityDomain::Orchestration, "agent_training_status"},
+          {CapabilityDomain::Orchestration, "set_training_schedule"},
           {CapabilityDomain::Orchestration, "delete_agent"},
           {CapabilityDomain::Orchestration, "create_workspace_profile"},
           {CapabilityDomain::Orchestration, "update_workspace_profile"},

@@ -59,7 +59,8 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 66u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D)
+    EXPECT_EQ(registry.size(), 68u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+                                      // +agent_training_status +set_training_schedule (#941)
     EXPECT_TRUE(registry.find("server_info"));
     // The #849 agent CRUD surface (create/list/get/update/delete).
     for (const char* name :
