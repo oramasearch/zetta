@@ -4,13 +4,10 @@
 agent to handle the interactions a user actually has with Studio: turning a plain-language ask
 into a production **pipeline**, answering about a Project from retrieved facts, changing a
 Pipeline, writing code inside a node, declining, and asking for clarification.
-**Version.** v3 — the interaction corpus with **tool calls on every action** and a
-**product-knowledge** family, 2026-07-26. **6,102 gated cases across 11 families**, canary held
-out and verified disjoint from training. Supersedes v2 (2026-07-25, 6,793 cases) — which is
-**withdrawn for training**, see [Limitations](#limitations--biases): 91% of its `action` cases
-carried a Pipeline with an empty `tool_calls`, and the checkpoint trained on it learned to build
-nothing. Supersedes v1 (native generator, 2026-07-23) and the offline
-`data/base-agent-training-set.jsonl` (565 tasks) — see [Sourcing](#sourcing--provenance).
+**Version.** v4 — **every Project is a use case**, 2026-07-27. **10,026 gated cases across 11
+families**, 1,094 canary. Supersedes v3 (6,102 cases), which trained a checkpoint to a loss of
+0.0001 and **47% grader pass on held-out cases** — see [Limitations](#limitations--biases).
+Supersedes v2 (withdrawn) and v1 — see [Sourcing](#sourcing--provenance).
 **Owner.** The agent domain (#555). **Related:** #866 (synthesis) · #873 (the reshape epic) ·
 #878 (full-plan coverage) · #863 (the fine-tune that consumes it).
 
@@ -106,6 +103,49 @@ hold the question fixed and vary the retrieved facts, and the example becomes *u
 without reading them*. Trailing contexts are the canary, so a model that memorized answers rather
 than reading the supplied facts fails outright.
 
+### What changed in v4 (2026-07-27) — the corpus stopped teaching one pipeline
+
+v3 trained cleanly and generalized badly: loss 0.0001, **47% grader pass on the canary**, and the
+same five-step pipeline emitted for churn, lead scoring and collections alike. The corpus explains
+it exactly — 3,139 action cases carried only **10 pipeline shapes, 92% of them two**, and the whole
+target set held **8.74 bits of entropy**, roughly 430 effective outcomes for a 600M-parameter model
+to memorize. Low loss was never evidence of learning; there was very little to learn. Procedure:
+[`../../corpus-diversity-runbook.md`](../../corpus-diversity-runbook.md).
+
+**Every synthetic Project now IS a use case.** `ProjectContext` carries the solution template it
+represents, and the feature, modify and code families build on that Project's real pipeline instead
+of a shared supervised skeleton. A code step requested on a forecasting Project lands inside the
+forecasting pipeline — backtested, uncalibrated — rather than collapsing it to
+`connect→clean→serve`, which alone had been 34% of all action cases.
+
+**The templates were corrected against their own descriptions**, which found real defects rather
+than just adding variety: S-12 promised to "route the risky ones for review" and had no `act` step;
+S-10 promised to "flag likely fraud for review" and had none either. S-8, M-13, M-21, UC-18, UC-19,
+UC-21 and UC-24 shared the error. Each now carries the action step its description requires,
+**approval-gated** — a fraud model that auto-blocks loses good customers. M-11 and UC-24 index what
+they extract, because fields nobody can find are not touchless.
+
+**Replies say what they did.** Action messages describe the pipeline built rather than repeating one
+constant across 1,802 cases; governance, abstain and run-status answers name the Project and the
+capability. A confirmation that does not say what was queued is not one a user can check.
+
+**Contexts 30 → 50.** At 30 they could not reach all 40 templates, so a quarter of the catalogue
+never appeared as a Project.
+
+| | v3 | v4 |
+|---|---|---|
+| cases | 6,102 | 10,026 |
+| distinct targets | 715 | **2,111** |
+| **target entropy** | 8.74 bits | **10.65 bits** |
+| distinct pipeline shapes | 10 | 12 |
+| dominant shape share | 57.4% | **34.8%** |
+| distinct messages | 681 | 1,360 |
+
+Guarded by two new rules: no pipeline shape may exceed 45% of action cases, and target entropy must
+clear 9.5 bits. **Both thresholds are locally calibrated, not published standards** — the
+tool-calling corpus literature (ToolBench, APIGen, ToolMind, xLAM, τ-bench) argues for diversity
+consistently but reports no entropy figure to compare against.
+
 ### What changed in v3 (2026-07-26)
 
 **Every `action` carries the tool calls that build its Pipeline.** The agent is a tool-calling
@@ -177,6 +217,12 @@ on prose claiming an approval happened.
   ids first in the target, burning the token budget on unlearnable hex. Any checkpoint trained on
   v2 exhibits both and should not be read as evidence about the model
   (https://github.com/oramasearch/zetta/issues/933). v3 fixes both.
+- **v3 is superseded and should not be trained on.** It taught 10 pipeline shapes across 3,139
+  action cases and produced a checkpoint that emitted one pipeline for every ask (47% grader pass).
+- **Techniques from the literature not yet applied.** No distractor tools (tools present but wrong
+  for the ask, so the model must select rather than recall), no parallel/multi-call query styles, no
+  multi-turn tool results, and the emitted code is graded structurally rather than by executing it.
+  These are the next diversity axes, recorded in the runbook.
 - **Corpus size overstates corpus information.** 6,102 cases contain **354 distinct asks** and
   **184 distinct grounding blocks** — the cross product presents roughly 354 problems about 19
   ways each. Repetition against *varying* context is the design and is load-bearing (it is the
