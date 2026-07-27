@@ -65,7 +65,10 @@ GeneratedDataset BaseAgentDatasetGenerator::generate(const DatasetGenSpec& spec)
     // diversity there is — they are deterministic, and each one carries a different use case, table,
     // schema and set of measures.
     const int interaction_contexts = 50;
-    const int phrasings = 4;
+    // How many ways each ask is phrased. Raised from 4 because paraphrase is the ONLY diversity
+    // axis an ungrounded case has — it carries no context to vary — and the ungrounded form is how
+    // the first message of an evaluation actually arrives.
+    const int phrasings = 7;
     const std::vector<ProjectContext> contexts =
         synthetic_project_contexts(interaction_contexts);
     const std::size_t context_canary =

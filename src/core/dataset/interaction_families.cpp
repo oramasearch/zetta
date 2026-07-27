@@ -3,6 +3,7 @@
 #include "zetta/dataset/plan_templates.hpp"
 
 #include <array>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -828,9 +829,21 @@ InteractionFamily solution_build_family(const std::vector<ProjectContext>& conte
         {}};
 
     // Paraphrases, because a buyer does not read the ask off the catalogue.
-    const std::array<const char*, 5> shapes = {
-        "{}", "Can you {}", "We need to {}", "I'd like to {}", "How would you {}"};
+    const std::array<const char*, 10> shapes = {
+        "{}",
+        "Can you {}",
+        "We need to {}",
+        "I'd like to {}",
+        "How would you {}",
+        "What would it take to {}",
+        "Is it possible to {}",
+        "We're trying to {}",
+        "Our team wants to {}",
+        "Could Orama {}"};
 
+    // An ungrounded case carries no context, so two Projects running the same solution would
+    // render byte-identical examples. One per (solution, phrasing).
+    std::set<std::string> bare_done;
     for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
         const ProjectContext& context = contexts[context_index];
         std::string description;
@@ -843,7 +856,7 @@ InteractionFamily solution_build_family(const std::vector<ProjectContext>& conte
         const EndState required = solution_facts(context);
         const std::string message = zetta::agent::describe_pipeline(required);
 
-        for (int phrasing = 0; phrasing < phrasings && phrasing < 5; ++phrasing) {
+        for (int phrasing = 0; phrasing < phrasings && phrasing < 10; ++phrasing) {
             std::string ask = description;
             if (phrasing > 0) {
                 std::string lowered = ask;
@@ -858,6 +871,30 @@ InteractionFamily solution_build_family(const std::vector<ProjectContext>& conte
             family.cases.push_back(make_case(
                 "build/" + std::to_string(context_index) + "/" + std::to_string(phrasing), ask,
                 grounding, InteractionKind::Action, message, required, std::move(graph)));
+
+            // The SAME ask with no Project at all. This is how the first message of an evaluation
+            // actually arrives — nothing is selected yet — and a corpus that only ever shows the
+            // grounded form leaves the model off-distribution for the one turn that opens every
+            // conversation. Measured: asked to set up a churn pipeline with no Project, a
+            // checkpoint trained only on the grounded form answered with a governance approval
+            // notice instead of building anything.
+            //
+            // The reply is the same description, because what the agent will build does not depend
+            // on whether a Project has been picked yet — only the table name does, and this reply
+            // names none.
+            // Keyed on the EXAMPLE, not on the solution: different solutions can share an
+            // identical fact set (S-2 and UC-15 are both the supervised core over gbdt), which
+            // makes their ungrounded cases byte-identical.
+            //
+            // Phrasing 0 is skipped because the plan SUBJECT cases already train each template's
+            // canonical ask ungrounded — this family's job here is to add the paraphrases of it.
+            if (phrasing > 0 && bare_done.insert(ask + "\x1f" + message).second) {
+                zetta::ir::ExecutionGraph bare = zetta::agent::build_solution_graph(required);
+                family.cases.push_back(
+                    make_case("build-bare/" + context.solution + "/" + std::to_string(phrasing),
+                              ask, "", InteractionKind::Action, message, required,
+                              std::move(bare)));
+            }
         }
     }
     return family;
@@ -1038,15 +1075,21 @@ InteractionFamily migration_family(const std::vector<ProjectContext>& contexts, 
          "happened"},
     }};
 
-    const std::array<const char*, 4> shapes = {
-        "{} Can Orama do better?", "{} What would you do instead?", "{} Is this something you'd "
-        "replace?", "{} We're wondering if there's a better way."};
+    const std::array<const char*, 7> shapes = {
+        "{} Can Orama do better?",
+        "{} What would you do instead?",
+        "{} Is this something you'd replace?",
+        "{} We're wondering if there's a better way.",
+        "{} Would this be better here?",
+        "{} Honestly, is that good enough?",
+        "{} What's the production version of that?"};
 
+    std::set<std::string> migrate_bare_done;  // see build_solution: one per (solution, ask)
     for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
         const ProjectContext& context = contexts[context_index];
         const std::string grounding = render_grounding(context, GroundingView::Data);
         for (std::size_t artifact = 0; artifact < artifacts.size(); ++artifact) {
-            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 7; ++phrasing) {
                 std::string shape = shapes[static_cast<std::size_t>(phrasing)];
                 shape.replace(shape.find("{}"), 2, std::get<0>(artifacts[artifact]));
 
@@ -1070,6 +1113,26 @@ InteractionFamily migration_family(const std::vector<ProjectContext>& contexts, 
                         std::to_string(artifact) + "/" + std::to_string(phrasing),
                     shape, grounding, InteractionKind::Action, message, required,
                     std::move(graph)));
+
+                // ...and with no Project selected, which is how this question is actually asked:
+                // somebody describes what they run today before they have set anything up here.
+                // Names no table, because there is none to name.
+                const std::string bare_message =
+                    std::string("That already does real work - it just ") +
+                    std::get<1>(artifacts[artifact]) +
+                    ". I'd keep your source and build a Pipeline that " +
+                    std::get<2>(artifacts[artifact]) +
+                    ". Nothing switches over until it passes a Verification and you deploy it.";
+                const std::string bare_key = shape + "\x1f" + bare_message;
+                if (migrate_bare_done.insert(bare_key).second) {
+                    zetta::ir::ExecutionGraph bare =
+                        zetta::agent::build_solution_graph(required);
+                    family.cases.push_back(make_case(
+                        "migrate-bare/" + context.solution + "/" + std::to_string(artifact) + "/" +
+                            std::to_string(phrasing),
+                        shape, "", InteractionKind::Action, bare_message, required,
+                        std::move(bare)));
+                }
             }
         }
     }
