@@ -738,6 +738,8 @@ TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
 
     int seen = 0, parsed = 0, kind_right = 0, graded = 0, passed = 0;
     int action_cases = 0, actions_with_calls = 0, actions_building = 0, emitted_uuid = 0;
+    std::map<std::string, int> missing_fact;  // required but not projectable from the response
+    std::map<std::string, int> wrong_fact;    // present with the wrong value
     std::map<std::string, std::pair<int, int>> by_kind;  // reference kind -> {seen, kind_right}
 
     // Stride across the canary rather than taking the first N. The corpus is grouped by family, so
@@ -784,10 +786,22 @@ TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
         }
         // The real question: does what it produced satisfy the task's own grader?
         ++graded;
-        if (admission_case.task.grader()
-                .grade(zetta::agent::response_solution_facts(*action, admission_case.grounding))
-                .passed) {
+        const zetta::agent::EndState produced =
+            zetta::agent::response_solution_facts(*action, admission_case.grounding);
+        if (admission_case.task.grader().grade(produced).passed) {
             ++passed;
+        } else {
+            // Tally WHICH required facts were missing or wrong. A bare pass rate says the model is
+            // wrong; this says what it is wrong ABOUT, which is the difference between a number and
+            // a next step.
+            for (const auto& [key, value] : admission_case.reference.facts()) {
+                const auto found = produced.facts().find(key);
+                if (found == produced.facts().end()) {
+                    missing_fact[key]++;
+                } else if (found->second != value) {
+                    wrong_fact[key]++;
+                }
+            }
         }
     }
     ASSERT_GT(seen, 0);
@@ -809,6 +823,17 @@ TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
         std::cerr << "  kind " << kind << ": " << counts.second << "/" << counts.first << " ("
                   << percent(counts.second, counts.first) << "%)\n";
     }
+    const auto report_facts = [](const char* label, const std::map<std::string, int>& tally) {
+        std::vector<std::pair<std::string, int>> ranked(tally.begin(), tally.end());
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& left, const auto& right) { return left.second > right.second; });
+        std::cerr << label << "\n";
+        for (std::size_t index = 0; index < ranked.size() && index < 12; ++index) {
+            std::cerr << "    " << ranked[index].second << "x  " << ranked[index].first << "\n";
+        }
+    };
+    report_facts("required facts MISSING from the response (top):", missing_fact);
+    report_facts("required facts WRONG in the response (top):", wrong_fact);
 
     if (const char* out = std::getenv("ZETTA_EVAL_OUT")) {
         std::ofstream report(out);

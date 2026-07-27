@@ -163,13 +163,17 @@ std::vector<ProjectContext> synthetic_project_contexts(int count) {
     for (int index = 0; index < count; ++index) {
         ProjectContext context;
         const std::size_t slot = static_cast<std::size_t>(index);
-        context.project = std::string(kProjectNames[slot % kProjectNames.size()]) + " #" +
-                          std::to_string(index + 1);
-        context.table = kTableNames[slot % kTableNames.size()];
+        // Name the Project after the solution it runs, and give it that solution's table. Naming
+        // it independently made the grounding LIE about what the Project was — "Lifetime value
+        // forecast" paired with a gbdt classifier — which teaches the model that the Project name
+        // predicts nothing and must be ignored.
+        const std::vector<SolutionTemplate>& plan_for_name = plan_solution_templates();
+        const SolutionTemplate& named = plan_for_name[slot % plan_for_name.size()];
+        context.project = named.project + " #" + std::to_string(index + 1);
+        context.table = named.table;
         // Round-robin over the whole plan, so the contexts collectively cover every use case and
         // methodology rather than 30 variations of one supervised Project.
-        const std::vector<SolutionTemplate>& plan = plan_solution_templates();
-        const SolutionTemplate& solution = plan[slot % plan.size()];
+        const SolutionTemplate& solution = named;
         context.solution = solution.id;
         // The model kind the SOLUTION calls for — not a coin flip. A forecasting Project has a
         // forecasting model; a retrieval Project has none.

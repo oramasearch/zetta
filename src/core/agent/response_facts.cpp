@@ -133,7 +133,18 @@ std::string first_ranked_name(std::string_view grounding, std::string_view secti
 
 EndState response_solution_facts(const StudioAction& action, const std::string& grounding) {
     // Start from the pipeline's own facts so an `action` turn grades exactly as it always has.
-    EndState state = graph_solution_facts(action.execution_graph);
+    //
+    // A MODEL's response carries tool calls and no graph — the agent is a tool-calling harness, so
+    // the model decides which steps to call and the harness builds the Pipeline by running them.
+    // Reading only `execution_graph` therefore graded every real response as having built nothing:
+    // a checkpoint emitting correct calls on 100% of action cases scored 47%, with `connect` and
+    // `serve` reported missing from responses that plainly called them. Build the pipeline the same
+    // way the harness does when the model supplied no graph, so grading measures what the turn
+    // actually produces. A response that carries a graph is unchanged.
+    EndState state = graph_solution_facts(action.execution_graph.nodes().empty() &&
+                                                  !action.tool_calls.empty()
+                                              ? build_pipeline_from_tool_calls(action.tool_calls)
+                                              : action.execution_graph);
 
     state.set("kind", std::string(to_string(action.kind)));
     const bool built_nothing =

@@ -510,6 +510,57 @@ TEST_F(CorpusInvariants, PipelineShapesAreDiverse) {
                                  << " build cases — the agent will learn one pipeline";
 }
 
+// A Project's NAME must predict its pipeline. The grounding shows the name, so the model reads it;
+// if the same label sometimes means a classifier and sometimes a forecaster, the only thing the
+// corpus teaches is that the name is noise to be ignored.
+//
+// That is not hypothetical. Contexts once drew their name from one rotating list and their solution
+// from another, so a Project called "Lifetime value forecast" required a gbdt classifier and one
+// called "Churn risk" required regression. The checkpoint trained on it got `model_kind` wrong on
+// 23 of 100 canary cases — it had been taught, correctly, that the name predicts nothing.
+TEST_F(CorpusInvariants, AProjectNameAlwaysImpliesTheSamePipeline) {
+    // Project label (without the trailing " #n" instance number) -> the pipeline shapes seen.
+    std::map<std::string, std::set<std::string>> shapes_by_project;
+    std::map<std::string, std::set<std::string>> kinds_by_project;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const StudioAction& action = *admission_case.reference_action;
+        if (action.kind != InteractionKind::Action || action.tool_calls.empty()) continue;
+        if (admission_case.grounding.rfind("Project:", 0) != 0) continue;
+        std::string label = admission_case.grounding.substr(
+            9, admission_case.grounding.find('\n') - 9);
+        if (const std::size_t hash = label.rfind(" #"); hash != std::string::npos) {
+            label = label.substr(0, hash);
+        }
+        std::string shape;
+        for (const ToolCall& call : action.tool_calls) {
+            shape += call.tool;
+            shape += ">";
+            if (call.arguments.is_object()) {
+                const auto kind = call.arguments.find("model_kind");
+                if (kind != call.arguments.end() && kind->is_string()) {
+                    kinds_by_project[label].insert(kind->get<std::string>());
+                }
+            }
+        }
+        shapes_by_project[label].insert(shape);
+    }
+    ASSERT_FALSE(shapes_by_project.empty()) << "no grounded action cases to check";
+
+    for (const auto& [label, kinds] : kinds_by_project) {
+        EXPECT_LE(kinds.size(), 1u)
+            << "Project \"" << label << "\" is trained with " << kinds.size()
+            << " different model kinds — its name predicts nothing";
+    }
+    // Shapes may legitimately vary a little (a modify request adds a step), but not wildly: a
+    // handful of variants is a Project being edited, a dozen is a label meaning nothing.
+    for (const auto& [label, shapes] : shapes_by_project) {
+        EXPECT_LE(shapes.size(), 4u)
+            << "Project \"" << label << "\" is trained with " << shapes.size()
+            << " different pipeline shapes";
+    }
+}
+
 // An ACTION corpus must teach more than one pipeline. This is the rule that would have predicted
 // the v3 checkpoint's behaviour before a GPU was booked: 92% of its action cases were just two
 // shapes, so the model learned one pipeline and emitted it for churn, lead scoring and collections

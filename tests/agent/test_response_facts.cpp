@@ -8,6 +8,7 @@
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/response_facts.hpp"
+#include "zetta/agent/solution_graph.hpp"
 
 namespace {
 
@@ -80,6 +81,51 @@ TEST(ResponseFacts, WithoutGroundingNoGroundingFactIsProjected) {
         zetta::agent::response_solution_facts(answer_saying("Here's what I'll build."), "");
     EXPECT_FALSE(facts.matches("numbers_from_context", true));
     EXPECT_FALSE(facts.matches("grounded", true));
+}
+
+// A model response carries TOOL CALLS, not a graph — the harness builds the Pipeline by running
+// them. So the projection must read the pipeline out of the calls when no graph is present, or a
+// perfectly good response grades as having built nothing.
+//
+// This was not hypothetical: it made a checkpoint that emitted correct tool calls on 100% of action
+// cases score 47% on the grader, with `connect` and `serve` reported missing from responses that
+// plainly called them.
+TEST(ResponseFacts, PipelineFactsComeFromToolCallsWhenThereIsNoGraph) {
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "I'll connect your source, then serve the results.";
+    action.tool_calls.emplace_back("connect", nlohmann::json{{"name", "source"}});
+    action.tool_calls.emplace_back("clean", nlohmann::json{{"name", "clean"}});
+    action.tool_calls.emplace_back(
+        "model", nlohmann::json{{"name", "model"}, {"model_kind", "gbdt"}});
+    action.tool_calls.emplace_back(
+        "serve", nlohmann::json{{"name", "solution"}, {"leakage_free", true}});
+    ASSERT_TRUE(action.execution_graph.nodes().empty()) << "the model emits no graph";
+
+    const zetta::agent::EndState facts = zetta::agent::response_solution_facts(action, "");
+    EXPECT_TRUE(facts.matches("connect", true));
+    EXPECT_TRUE(facts.matches("clean", true));
+    EXPECT_TRUE(facts.matches("model", true));
+    EXPECT_TRUE(facts.matches("serve", true));
+    // Node attributes are configuration and must survive too — a grader requiring leakage_free
+    // is asking about the step's config, not its presence.
+    EXPECT_TRUE(facts.matches("leakage_free", true));
+    EXPECT_TRUE(facts.matches("model_kind", std::string("gbdt")));
+}
+
+// An explicit graph still wins, so nothing about reference cases changes.
+TEST(ResponseFacts, AnExplicitGraphIsStillTheSourceOfTruth) {
+    zetta::agent::EndState reference;
+    reference.set("connect", true);
+    reference.set("index", true);
+    reference.set("serve", true);
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "Building it.";
+    action.execution_graph = zetta::agent::build_solution_graph(reference);
+
+    const zetta::agent::EndState facts = zetta::agent::response_solution_facts(action, "");
+    EXPECT_TRUE(facts.matches("index", true));
 }
 
 }  // namespace
