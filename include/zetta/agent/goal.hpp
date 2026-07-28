@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/interaction.hpp"
 #include "zetta/agent/reward.hpp"
 
 // An agent's GOALS — what it is being trained to be good at, and how much each one matters.
@@ -83,6 +84,25 @@ double goal_reward(const std::vector<Goal>& goals, const EndState& facts);
 // Goals that resolved to no check. Surfaced rather than ignored: a goal nobody can verify is a
 // goal the training silently drops, and a user who wrote it deserves to be told.
 std::vector<std::string> unmapped_goals(const std::vector<Goal>& goals);
+
+// What a turn's tool calls ACTUALLY DID, as gradeable facts (#941).
+//
+// Every other projection describes what a response CLAIMED. This one describes what happened when
+// the harness ran it — the sandbox's own verdict per call. A response can satisfy every projected
+// fact and still not survive execution, and rewarding it would be rewarding a claim.
+//
+// Takes ToolOutcome — the same type a turn's history carries, so what the reward grades and
+// what a follow-up sees are one shape rather than two that must be kept in step.
+//
+//   tools_ran            every call succeeded
+//   tools_failed         at least one ran and reported failure
+//   called_unknown_tool  it named a tool that does not exist — it invented a capability, which is
+//                        a different mistake from misusing a real one and worth distinguishing
+//
+// A turn that called NOTHING projects none of these. Absent, not false: an answer that ran no
+// tools must not score full marks on a goal about tools running, and `false` would read as a
+// measured failure rather than as nothing measured.
+EndState execution_facts(const std::vector<ToolOutcome>& outcomes);
 
 // The RLVR reward for one generated response, anchored to an agent's goals.
 //

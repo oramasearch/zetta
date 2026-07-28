@@ -203,4 +203,39 @@ TEST(Goals, ImportanceStillWeightsAGenerationsReward) {
         << "failing the 9x goal must dominate passing the 1x one";
 }
 
+// --- Bite 1: what actually RAN becomes gradeable facts (#941) -----------------------------------
+//
+// The reward has scored facts PROJECTED from a response — what it claimed. A projection can be
+// satisfied by a response that would not survive execution, which is the failure verifiable reward
+// exists to prevent. These facts come from the sandbox's own verdict on each call.
+TEST(Goals, ExecutionFactsReportWhetherTheCallsActuallyRan) {
+    const std::vector<zetta::agent::ToolOutcome> ran = {{"connect", "ok", ""},
+                                                        {"model", "ok", ""}};
+    const zetta::agent::EndState good = zetta::agent::execution_facts(ran);
+    EXPECT_TRUE(good.matches("tools_ran", true));
+    EXPECT_TRUE(good.matches("tools_failed", false));
+
+    // One failure is a failure. A pipeline whose model step did not run is not a pipeline.
+    const std::vector<zetta::agent::ToolOutcome> broke = {
+        {"connect", "ok", ""}, {"model", "failed", "no such table"}};
+    const zetta::agent::EndState bad = zetta::agent::execution_facts(broke);
+    EXPECT_TRUE(bad.matches("tools_ran", false));
+    EXPECT_TRUE(bad.matches("tools_failed", true));
+
+    // Calling a tool that does not exist is its own failure, and worth distinguishing: it means
+    // the model invented a capability rather than misusing a real one.
+    const std::vector<zetta::agent::ToolOutcome> invented = {{"autotune", "unknown tool", ""}};
+    const zetta::agent::EndState made_up = zetta::agent::execution_facts(invented);
+    EXPECT_TRUE(made_up.matches("tools_ran", false));
+    EXPECT_TRUE(made_up.matches("called_unknown_tool", true));
+}
+
+// A turn that called nothing has nothing to say about execution. It must not read as SUCCESS —
+// an answer that ran no tools would otherwise score full marks on a goal about tools running.
+TEST(Goals, ATurnThatCalledNothingProjectsNoExecutionFacts) {
+    const zetta::agent::EndState none = zetta::agent::execution_facts({});
+    EXPECT_FALSE(none.matches("tools_ran", true));
+    EXPECT_FALSE(none.matches("tools_ran", false)) << "absent, not false — nothing was measured";
+}
+
 }  // namespace

@@ -146,6 +146,34 @@ std::vector<std::string> unmapped_goals(const std::vector<Goal>& goals) {
     return unmapped;
 }
 
+EndState execution_facts(const std::vector<ToolOutcome>& outcomes) {
+    EndState state;
+    // Nothing ran, so there is nothing to say. Setting these false would claim a measured failure
+    // where none was measured.
+    if (outcomes.empty()) return state;
+
+    bool all_ok = true;
+    bool any_failed = false;
+    bool unknown = false;
+    for (const ToolOutcome& outcome : outcomes) {
+        const bool ok = outcome.status == "ok";
+        if (!ok) {
+            all_ok = false;
+            if (outcome.status == "unknown tool") {
+                unknown = true;
+            } else {
+                any_failed = true;
+            }
+        }
+        // Per-tool, so a goal can be about one step rather than the whole pipeline.
+        state.set("ran_" + outcome.tool, ok);
+    }
+    state.set("tools_ran", all_ok);
+    state.set("tools_failed", any_failed);
+    if (unknown) state.set("called_unknown_tool", true);
+    return state;
+}
+
 double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
                                   const std::string& grounding) {
     // A generation the harness cannot parse is worth nothing, whatever it says. Scoring it on the
