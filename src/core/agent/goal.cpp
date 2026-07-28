@@ -174,6 +174,18 @@ EndState execution_facts(const std::vector<ToolOutcome>& outcomes) {
     return state;
 }
 
+double goal_reward_for_execution(const std::vector<Goal>& goals, const StudioAction& action,
+                                 const std::string& grounding,
+                                 const std::vector<ToolOutcome>& outcomes) {
+    EndState facts = response_solution_facts(action, grounding);
+    // Execution wins on overlap: what HAPPENED outranks what was claimed. A response asserting a
+    // step ran, whose call failed, must grade on the failure.
+    for (const auto& [key, value] : execution_facts(outcomes).facts()) {
+        facts.set(key, value);
+    }
+    return goal_reward(goals, facts);
+}
+
 double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
                                   const std::string& grounding) {
     // A generation the harness cannot parse is worth nothing, whatever it says. Scoring it on the

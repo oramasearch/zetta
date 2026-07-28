@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/action.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/reward.hpp"
@@ -120,6 +121,20 @@ EndState execution_facts(const std::vector<ToolOutcome>& outcomes);
 // listing and still be scored against one.
 double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
                                   const std::string& grounding);
+
+// The reward for one turn, counting BOTH what the response claimed and what its calls actually
+// did (#941).
+//
+// This is the distinction that makes the reward verifiable rather than merely well-formed: two
+// identical actions — same message, same tool calls, same projected facts — score differently when
+// one's calls succeeded and the other's did not. A projection cannot tell them apart.
+//
+// Execution does not replace the projection. A goal about grounding still grades the response, a
+// goal about execution grades the outcome, and a reward can be about both. Where they overlap, the
+// execution fact wins, because what happened outranks what was claimed.
+double goal_reward_for_execution(const std::vector<Goal>& goals, const StudioAction& action,
+                                 const std::string& grounding,
+                                 const std::vector<ToolOutcome>& outcomes);
 
 nlohmann::json to_json(const Goal& goal);
 std::optional<Goal> goal_from_json(const nlohmann::json& value, std::string* error = nullptr);

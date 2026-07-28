@@ -238,4 +238,53 @@ TEST(Goals, ATurnThatCalledNothingProjectsNoExecutionFacts) {
     EXPECT_FALSE(none.matches("tools_ran", false)) << "absent, not false — nothing was measured";
 }
 
+// --- Bite 2: the reward counts what RAN, not only what was claimed (#941) ----------------------
+//
+// THE case that distinguishes an execution-backed reward from a projected one: two IDENTICAL
+// actions — same message, same tool calls, same projected facts — where one's calls succeeded and
+// the other's did not. A projection cannot tell them apart. The reward must.
+TEST(Goals, IdenticalActionsScoreDifferentlyWhenTheCallsFail) {
+    const std::vector<Goal> goals = {
+        {"Every step of the Pipeline must actually run.", 5.0, {"tools_ran"}}};
+
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "I'll connect your source and train a model.";
+    action.tool_calls.emplace_back("connect", nlohmann::json{{"name", "source"}});
+    action.tool_calls.emplace_back("model", nlohmann::json{{"name", "model"}});
+
+    const double ran = zetta::agent::goal_reward_for_execution(
+        goals, action, /*grounding=*/"", {{"connect", "ok", ""}, {"model", "ok", ""}});
+    const double failed = zetta::agent::goal_reward_for_execution(
+        goals, action, /*grounding=*/"",
+        {{"connect", "ok", ""}, {"model", "failed", "no such table"}});
+
+    EXPECT_GT(ran, 0.9) << "calls that ran must be rewarded";
+    EXPECT_LT(failed, 0.1) << "the SAME action whose calls failed must not be";
+}
+
+// Execution does not replace the projection — a goal about grounding still grades the response.
+// Both sets of facts are in scope, so a reward can be about what it said AND what it did.
+TEST(Goals, ExecutionAndResponseFactsAreBothInScope) {
+    const std::vector<Goal> goals = {
+        {"Never state a number we cannot evidence.", 1.0, {"numbers_from_context"}},
+        {"Every step must actually run.", 1.0, {"tools_ran"}}};
+
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "Built it against 1200 rows.";
+    action.tool_calls.emplace_back("connect", nlohmann::json::object());
+
+    // Grounded figure AND a call that ran: both goals satisfied.
+    const double both = zetta::agent::goal_reward_for_execution(
+        goals, action, "Rows: 1200, columns: 9\n", {{"connect", "ok", ""}});
+    EXPECT_GT(both, 0.9);
+
+    // Same response, same figure — but the call failed. Half the goals now.
+    const double half = zetta::agent::goal_reward_for_execution(
+        goals, action, "Rows: 1200, columns: 9\n", {{"connect", "failed", "timeout"}});
+    EXPECT_GT(half, 0.4);
+    EXPECT_LT(half, 0.6) << "one of two equally-weighted goals held";
+}
+
 }  // namespace
