@@ -25,6 +25,7 @@
 #include "zetta/agent/base_prompt.hpp"     // base_agent_system_prompt, agent_prompt_format
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/goal.hpp"            // goal-anchored RLVR reward (#941)
+#include "zetta/agent/sandbox.hpp"         // the world a rollout acts in (#941)
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/response_facts.hpp"
@@ -792,6 +793,84 @@ TEST(QwenRealCheckpoint, GoalAnchoredRlvrMovesThePolicy) {
     // rise below vacuous.
     EXPECT_GT(best, 0.0) << "no rollout ever satisfied the goals; the reward is not reachable";
     EXPECT_GE(last, first) << "goal-anchored reward did not move the policy";
+}
+
+// --- Bite 5: RLVR on a reward the ENVIRONMENT produces (#941) ----------------------------------
+//
+// GoalAnchoredRlvrMovesThePolicy trains against a reward read off the response. This trains
+// against a reward read off what happened when the response RAN: each rollout's tool calls are
+// applied to a sandbox and the sandbox's verdict is the reward.
+//
+// The difference is not cosmetic. A reward on text can be earned by text — emit a beautiful action
+// and never succeed at anything. A reward on execution cannot: the sandbox does not care how the
+// action reads.
+//
+// ZETTA_QWEN_DIR = the policy. Knobs: ZETTA_EXEC_RLVR_STEPS (default 8).
+TEST(QwenRealCheckpoint, ExecutionBackedRlvrMovesThePolicy) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Every step of the Pipeline must actually run.", 5.0, {"tools_ran"}}};
+
+    // The world the agent acts in: the six pipeline steps, and nothing else. A call to anything
+    // else is UnknownTool — the environment's answer to an invented capability.
+    const auto fresh_sandbox = [] {
+        zetta::agent::Sandbox sandbox;
+        for (const char* tool : {"connect", "clean", "model", "index", "serve", "act"}) {
+            const std::string name = tool;
+            sandbox.register_tool(name, [name](zetta::agent::EndState& world,
+                                               const nlohmann::json&) {
+                world.set(name, true);
+                return zetta::agent::ToolResult::success();
+            });
+        }
+        return sandbox;
+    };
+
+    const std::string prompt = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), /*grounding=*/"",
+        "Set up a churn prediction pipeline on our accounts data.");
+    const std::vector<int> prompt_ids = tokenizer->encode(prompt);
+
+    // A FRESH sandbox per rollout: rollouts in a group must not see each other's effects, or the
+    // reward measures the order they were sampled in.
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& completion) {
+        zetta::agent::Sandbox sandbox = fresh_sandbox();
+        return zetta::agent::goal_reward_for_rollout(goals, tokenizer->decode(completion),
+                                                     /*grounding=*/"", sandbox);
+    };
+
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
+    std::mt19937 rng(23);
+    const int steps = std::getenv("ZETTA_EXEC_RLVR_STEPS")
+                          ? std::atoi(std::getenv("ZETTA_EXEC_RLVR_STEPS")) : 8;
+
+    double first = -1.0, best = 0.0, last = 0.0;
+    for (int step = 0; step < steps; ++step) {
+        // Long enough for a COMPLETE action. A truncated generation does not parse, is never
+        // executed, and scores 0 — at 96 tokens every rollout in a group scored zero and the
+        // reward was unreachable, which the guard below caught. The action envelope with its tool
+        // calls runs to a couple of hundred tokens.
+        const double mean = model->grpo_step(optimizer, prompt_ids, reward, /*group=*/6,
+                                             /*max_new=*/280, /*temperature=*/1.0F, rng);
+        if (first < 0.0) first = mean;
+        last = mean;
+        best = std::max(best, mean);
+        std::cerr << "[exec-rlvr] step " << step << " mean execution reward " << mean << "\n";
+    }
+    std::cerr << "[exec-rlvr] first " << first << " -> last " << last << " (best " << best << ")\n";
+
+    // Reachable first — a reward that is always 0 trains nothing and would make any rise vacuous.
+    EXPECT_GT(best, 0.0) << "no rollout's calls ever ran; the reward is not reachable";
+    EXPECT_GE(last, first) << "the execution-backed reward did not move the policy";
 }
 
 TEST(QwenRealCheckpoint, HarvestVerifiedRollouts) {
