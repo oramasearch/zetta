@@ -3890,12 +3890,39 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         }
     }
 
+    // The conversation so far, supplied by the caller. Without it every turn is a FIRST turn:
+    // "list all of those options" has no referent, and three different follow-ups produce the same
+    // reply because the model sees three unrelated opening messages (#942).
+    //
+    // Caller-managed on purpose, and TEMPORARY: once a Conversation is persisted (#945) the thread
+    // is read from the node and this parameter goes away. Two sources of history is how they drift.
+    std::vector<zetta::agent::PriorTurn> history;
+    if (const auto turns = input.find("history"); turns != input.end() && turns->is_array()) {
+        for (const nlohmann::json& turn : *turns) {
+            if (!turn.is_object()) continue;
+            zetta::agent::PriorTurn prior;
+            prior.ask = turn.value("ask", std::string());
+            prior.reply = turn.value("reply", std::string());
+            // Tool outcomes matter: a follow-up like "why did that fail?" refers to what RAN, not
+            // to the prose of the previous answer.
+            if (const auto tools = turn.find("tools"); tools != turn.end() && tools->is_array()) {
+                for (const nlohmann::json& outcome : *tools) {
+                    if (!outcome.is_object()) continue;
+                    prior.tools.push_back({outcome.value("tool", std::string()),
+                                           outcome.value("status", std::string()),
+                                           outcome.value("detail", std::string())});
+                }
+            }
+            if (!prior.ask.empty() || !prior.reply.empty()) history.push_back(std::move(prior));
+        }
+    }
+
     const zetta::agent::ChatResponse chat =
         enabled_tools.empty()
             ? zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, {}, {},
-                                    grounding)
+                                    grounding, history)
             : zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, agent_tools,
-                                    enabled_tools, grounding);
+                                    enabled_tools, grounding, history);
     if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
 
     nlohmann::json tool_calls = nlohmann::json::array();
