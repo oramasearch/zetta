@@ -341,4 +341,62 @@ TEST(Goals, AnUnparseableGenerationIsNeverExecuted) {
     EXPECT_FALSE(touched) << "nothing may run from a response the harness could not parse";
 }
 
+// --- Bite 4: where the two rewards disagree, execution wins (#941) -----------------------------
+//
+// The adversarial case, and the reason this work exists. A response can be PERFECT on every
+// projected fact — right mode, right steps, right config, a Pipeline that compiles — and still be
+// worthless, because the steps did not run. A projected reward gives it full marks. Under RLVR
+// that is a reward-hacking gradient: the cheapest way to earn it is to emit a beautiful action and
+// never succeed at anything.
+TEST(Goals, APerfectLookingActionWhoseCallsFailedDoesNotScoreFullMarks) {
+    // A goal about the pipeline's SHAPE — satisfied entirely by the projection.
+    const std::vector<Goal> shape = {{"Build leakage-free features.", 1.0, {"leakage_free"}}};
+    // The same turn, plus a goal about it actually working.
+    const std::vector<Goal> shape_and_execution = {
+        {"Build leakage-free features.", 1.0, {"leakage_free"}},
+        {"Every step must actually run.", 1.0, {"tools_ran"}}};
+
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "Built it.";
+    action.tool_calls.emplace_back("connect", nlohmann::json{{"name", "source"}});
+    action.tool_calls.emplace_back(
+        "clean", nlohmann::json{{"name", "clean"}, {"leakage_free", true}});
+
+    const std::vector<zetta::agent::ToolOutcome> everything_failed = {
+        {"connect", "failed", "the source connection timed out"},
+        {"clean", "failed", "no upstream"}};
+
+    // Judged on shape alone, a response whose every call failed is FLAWLESS. That is the hack.
+    EXPECT_GT(zetta::agent::goal_reward_for_execution(shape, action, "", everything_failed), 0.9);
+
+    // Add the execution goal and the same response is halved — the projection still holds, the
+    // execution does not, and the reward reflects both.
+    const double honest =
+        zetta::agent::goal_reward_for_execution(shape_and_execution, action, "", everything_failed);
+    EXPECT_LT(honest, 0.6) << "a response whose calls all failed must not score like one that ran";
+
+    // And when it does run, it earns the full mark.
+    const double worked = zetta::agent::goal_reward_for_execution(
+        shape_and_execution, action, "", {{"connect", "ok", ""}, {"clean", "ok", ""}});
+    EXPECT_GT(worked, 0.9);
+    EXPECT_GT(worked, honest) << "running must always beat not running, all else equal";
+}
+
+// An execution fact overrides a response fact that contradicts it. A model that asserts a step ran
+// cannot talk its way to the reward.
+TEST(Goals, AnExecutionFactOverridesAContradictingResponseFact) {
+    const std::vector<Goal> goals = {{"The connect step must run.", 1.0, {"ran_connect"}}};
+
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Action;
+    action.message = "Connected successfully.";
+    action.tool_calls.emplace_back("connect", nlohmann::json{{"name", "source"}});
+
+    EXPECT_LT(zetta::agent::goal_reward_for_execution(
+                  goals, action, "", {{"connect", "failed", "timeout"}}),
+              0.1)
+        << "claiming success cannot earn what failing to run did not";
+}
+
 }  // namespace
