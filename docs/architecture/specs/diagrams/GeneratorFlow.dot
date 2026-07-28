@@ -1,0 +1,17 @@
+digraph GeneratorFlow {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+
+  Orchestrator -> GeneratorConfig [label="constructs"];
+  GeneratorConfig -> Generator [label="passed to"];
+  Generator -> ModelProviderChoice [label="reads model_provider"];
+  ModelProviderChoice -> OpenRouter [label="llm_backed"];
+  ModelProviderChoice -> LocalModel [label="local"];
+  ModelProviderChoice -> DeterministicTemplate [label="deterministic"];
+  Generator -> CandidateArtifact [label="produces"];
+  CandidateArtifact -> VerifierCheck [label="if verifier_refs set"];
+  VerifierCheck -> AcceptedArtifact [label="pass"];
+  VerifierCheck -> RetryPolicy [label="fail"];
+  RetryPolicy -> Generator [style=dashed, label="retry"];
+  AcceptedArtifact -> ProjectKnowledgeBase [label="registered in"];
+}
