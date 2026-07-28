@@ -3600,7 +3600,14 @@ const nlohmann::json& chat_schema() {
         {"additionalProperties", false},
         {"properties",
          {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
-          {"message", {{"type", "string"}, {"minLength", 1}}},
+          {"history",
+             {{"type", "array"},
+              {"description",
+               "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. "
+               "The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what "
+               "ran, not to the prose."},
+              {"items", {{"type", "object"}}}}},
+            {"message", {{"type", "string"}, {"minLength", 1}}},
           {"project",
            {{"type", "string"},
             {"minLength", 1},
