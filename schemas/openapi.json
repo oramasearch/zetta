@@ -1014,6 +1014,23 @@
             }
           },
           {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+            "in": "query",
+            "name": "history",
+            "required": false
+          },
+          {
             "in": "query",
             "name": "max_new_tokens",
             "required": false,
