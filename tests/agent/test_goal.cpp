@@ -12,6 +12,7 @@
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/agent_record.hpp"
 #include "zetta/agent/goal.hpp"
+#include "zetta/agent/sandbox.hpp"
 
 namespace {
 
@@ -285,6 +286,59 @@ TEST(Goals, ExecutionAndResponseFactsAreBothInScope) {
         goals, action, "Rows: 1200, columns: 9\n", {{"connect", "failed", "timeout"}});
     EXPECT_GT(half, 0.4);
     EXPECT_LT(half, 0.6) << "one of two equally-weighted goals held";
+}
+
+// --- Bite 3: a generation is RUN, and graded on what running it did (#941) ---------------------
+//
+// The reward RLVR takes is (prompt, completion) -> double. Until now that scored the parsed
+// response. Here the emitted calls are APPLIED to a sandbox first, and the reward grades the
+// outcome — so a rollout that names a tool the agent does not have earns less than one that runs.
+//
+// This is the whole point of verifiable reward: the environment answers, not the text.
+TEST(Goals, AGenerationIsExecutedAndGradedOnTheOutcome) {
+    const std::vector<Goal> goals = {
+        {"Every step of the Pipeline must actually run.", 5.0, {"tools_ran"}}};
+
+    // A sandbox with connect and model, and nothing else.
+    zetta::agent::Sandbox sandbox;
+    sandbox.register_tool("connect", [](zetta::agent::EndState& world, const nlohmann::json&) {
+        world.set("connect", true);
+        return zetta::agent::ToolResult::success();
+    });
+    sandbox.register_tool("model", [](zetta::agent::EndState& world, const nlohmann::json&) {
+        world.set("model", true);
+        return zetta::agent::ToolResult::success();
+    });
+
+    const std::string real =
+        R"({"kind":"action","message":"Building it.","tool_calls":)"
+        R"([{"tool":"connect","arguments":{}},{"tool":"model","arguments":{}}]})";
+    const std::string invented =
+        R"({"kind":"action","message":"Building it.","tool_calls":)"
+        R"([{"tool":"connect","arguments":{}},{"tool":"autotune","arguments":{}}]})";
+
+    const double ran = zetta::agent::goal_reward_for_rollout(goals, real, "", sandbox);
+    const double made_up = zetta::agent::goal_reward_for_rollout(goals, invented, "", sandbox);
+
+    EXPECT_GT(ran, 0.9) << "calls the sandbox could run must be rewarded";
+    EXPECT_LT(made_up, 0.1)
+        << "naming a tool the agent does not have must not be — the environment answered, not the text";
+}
+
+// A generation the harness cannot parse never reaches the sandbox and is worth nothing. Running
+// half a malformed action would be worse than not running it.
+TEST(Goals, AnUnparseableGenerationIsNeverExecuted) {
+    const std::vector<Goal> goals = {{"Steps must run.", 1.0, {"tools_ran"}}};
+    zetta::agent::Sandbox sandbox;
+    bool touched = false;
+    sandbox.register_tool("connect", [&touched](zetta::agent::EndState&, const nlohmann::json&) {
+        touched = true;
+        return zetta::agent::ToolResult::success();
+    });
+
+    EXPECT_DOUBLE_EQ(
+        zetta::agent::goal_reward_for_rollout(goals, "Sure, I'll connect that!", "", sandbox), 0.0);
+    EXPECT_FALSE(touched) << "nothing may run from a response the harness could not parse";
 }
 
 }  // namespace

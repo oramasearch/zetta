@@ -9,6 +9,7 @@
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/interaction.hpp"
+#include "zetta/agent/sandbox.hpp"
 #include "zetta/agent/reward.hpp"
 
 // An agent's GOALS — what it is being trained to be good at, and how much each one matters.
@@ -135,6 +136,19 @@ double goal_reward_for_generation(const std::vector<Goal>& goals, const std::str
 double goal_reward_for_execution(const std::vector<Goal>& goals, const StudioAction& action,
                                  const std::string& grounding,
                                  const std::vector<ToolOutcome>& outcomes);
+
+// The RLVR reward for one rollout: parse the generation, RUN its tool calls in `sandbox`, and
+// grade what running them did (#941).
+//
+// This is the reward `grpo_step` should take. Everything before it graded text; this grades the
+// environment's answer. A rollout naming a tool the agent does not have earns less than one that
+// runs — which no amount of reading the text could establish.
+//
+// The sandbox is MUTATED, so the caller supplies a fresh one per rollout when rollouts must not
+// see each other's effects. A generation that does not parse is never executed and scores 0:
+// running half a malformed action is worse than not running it.
+double goal_reward_for_rollout(const std::vector<Goal>& goals, const std::string& generation,
+                               const std::string& grounding, Sandbox& sandbox);
 
 nlohmann::json to_json(const Goal& goal);
 std::optional<Goal> goal_from_json(const nlohmann::json& value, std::string* error = nullptr);

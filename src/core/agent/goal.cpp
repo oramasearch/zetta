@@ -196,6 +196,29 @@ double goal_reward_for_generation(const std::vector<Goal>& goals, const std::str
     return goal_reward(goals, response_solution_facts(*action, grounding));
 }
 
+double goal_reward_for_rollout(const std::vector<Goal>& goals, const std::string& generation,
+                               const std::string& grounding, Sandbox& sandbox) {
+    // Not parseable, never executed. Running the calls out of a half-formed action would apply
+    // real effects on the strength of text the harness could not read.
+    const std::optional<StudioAction> action = parse_studio_action(generation);
+    if (!action) return 0.0;
+
+    // Run what it asked for, and keep the sandbox's verdict on each call. THIS is the environment
+    // answering — a tool the agent does not have reports UnknownTool here, and no amount of
+    // reading the generation could have established that.
+    std::vector<ToolOutcome> outcomes;
+    outcomes.reserve(action->tool_calls.size());
+    for (const ToolCall& call : action->tool_calls) {
+        const ApplyOutcome applied = sandbox.apply(call);
+        outcomes.push_back({call.tool,
+                            applied.status == ApplyStatus::Ok            ? "ok"
+                            : applied.status == ApplyStatus::UnknownTool ? "unknown tool"
+                                                                        : "failed",
+                            applied.reason});
+    }
+    return goal_reward_for_execution(goals, *action, grounding, outcomes);
+}
+
 nlohmann::json to_json(const Goal& goal) {
     return nlohmann::json{{"statement", goal.statement},
                           {"importance", goal.importance},
