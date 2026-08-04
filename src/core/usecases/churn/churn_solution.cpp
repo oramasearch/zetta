@@ -654,14 +654,24 @@ std::shared_ptr<AsyncChurnRun> AsyncChurnRun::start(Node& node,
     // No make_shared: the constructor is private (start() is the one way in,
     // so a handle always has its worker running).
     return std::shared_ptr<AsyncChurnRun>(new AsyncChurnRun(
-        node, std::move(graph), std::move(dataset), std::move(options)));
+        node, std::move(graph), std::move(dataset), {}, std::move(options)));
+}
+
+std::shared_ptr<AsyncChurnRun> AsyncChurnRun::start(Node& node,
+                                                    ir::ExecutionGraph graph,
+                                                    ChurnTableInput table,
+                                                    ChurnSolutionOptions options) {
+    return std::shared_ptr<AsyncChurnRun>(new AsyncChurnRun(
+        node, std::move(graph), {}, std::move(table), std::move(options)));
 }
 
 AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
-                             ChurnDataset dataset, ChurnSolutionOptions options)
+                             ChurnDataset dataset, ChurnTableInput table,
+                             ChurnSolutionOptions options)
     : node_(node),
       graph_(std::move(graph)),
       dataset_(std::move(dataset)),
+      table_(std::move(table)),
       options_(std::move(options)),
       project_(options_.project),
       device_(std::make_unique<compute::CpuDevice>()),
@@ -671,8 +681,10 @@ AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
     worker_ = std::thread([this] {
         // Everything the worker reads it owns (the by-value snapshots above);
         // every node-tree write on this path gates through Node::run_on_owner.
-        result_ = run_churn_solution_on_node(node_, *device_, graph_, dataset_,
-                                             options_);
+        result_ = table_.empty() ? run_churn_solution_on_node(node_, *device_, graph_,
+                                                              dataset_, options_)
+                                 : run_churn_solution_on_table(node_, *device_, graph_,
+                                                               table_, options_);
         done_.store(true, std::memory_order_release);  // last act
     });
 }

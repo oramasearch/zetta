@@ -22,6 +22,7 @@
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
@@ -2066,8 +2067,11 @@ const nlohmann::json& run_schema() {
           {"dataset_path",
            {{"type", "string"},
             {"description",
-             "a churn dataset directory on the node's filesystem (default: the "
-             "built-in demo dataset)"}}},
+             "the data to train on, in either form: a `database.table` landed by "
+             "a connection or a query (what add_dataset / create_dataset_from_query "
+             "produce), or a churn dataset directory on the node's filesystem. "
+             "Default: the built-in demo dataset"}}},
+          {"dataset", zetta::data::dataset_contract_schema()},
           {"model_name",
            {{"type", "string"},
             {"minLength", 1},
@@ -2104,7 +2108,18 @@ const nlohmann::json& run_output_schema() {
             {"description", "structural runs only, on failure"}}},
           {"poll",
            {{"type", "string"},
-            {"description", "churn runs: where to read progress"}}}}}};
+            {"description", "churn runs: where to read progress"}}},
+          {"dataset",
+           {{"type", "object"},
+            {"description",
+             "table datasets only: the resolved column contract the run trained "
+             "under"}}},
+          {"dataset_notes",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description",
+             "what was inferred rather than given — read these before trusting the "
+             "model"}}}}}};
     return schema;
 }
 
@@ -2164,15 +2179,46 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
             "run is a job capability and this embedding wired no background "
             "action owner");
     }
+    // ONE dataset_path grammar (#947): a `database.table` landed by a connection
+    // or a query, or a dataset directory on the node's filesystem. Before this,
+    // only the directory form was accepted and a customer's own data — already
+    // partitioned and healthy — could not reach the pipeline that trains on it.
     zetta::usecases::churn::ChurnDataset dataset;
+    zetta::usecases::churn::ChurnTableInput table;
+    nlohmann::json dataset_notes = nlohmann::json::array();
+    nlohmann::json dataset_contract;
     if (const auto dataset_path = input.find("dataset_path");
         dataset_path != input.end()) {
-        auto loaded = zetta::usecases::churn::load_churn_dataset(
-            dataset_path->get<std::string>());
-        if (!loaded.ok()) {
-            return ApiResult::failure("engine_error", loaded.error);
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
+        if (path.kind == zetta::data::DatasetPathKind::Table) {
+            zetta::data::DatasetContract overrides;
+            if (const auto given = input.find("dataset"); given != input.end()) {
+                std::string reason;
+                const std::optional<zetta::data::DatasetContract> parsed =
+                    zetta::data::dataset_contract_from_json(*given, &reason);
+                if (!parsed) return ApiResult::failure("invalid_input", reason);
+                overrides = *parsed;
+            }
+            const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+                context.node, path, overrides,
+                zetta::data::default_dataset_sampler(context.node, context.cluster));
+            if (!resolved.ok()) {
+                return ApiResult::failure("engine_error", resolved.error);
+            }
+            table.table_id = resolved.table_id;
+            table.contract = resolved.contract;
+            // What was INFERRED travels back with the run: an assumption the caller
+            // never sees is one they discover inside a trained model.
+            dataset_notes = resolved.notes;
+            dataset_contract = to_json(resolved.contract);
+        } else {
+            auto loaded = zetta::usecases::churn::load_churn_dataset(path.directory);
+            if (!loaded.ok()) {
+                return ApiResult::failure("engine_error", loaded.error);
+            }
+            dataset = std::move(loaded.dataset);
         }
-        dataset = std::move(loaded.dataset);
     } else {
         dataset = zetta::usecases::churn::demo_churn_dataset();
     }
@@ -2187,8 +2233,11 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
     for (const auto& existing : context.node.runs()) {
         if (existing) prior.insert(existing->id());
     }
-    auto handle = zetta::usecases::churn::AsyncChurnRun::start(
-        context.node, graph->graph(), std::move(dataset), options);
+    auto handle = table.empty()
+                      ? zetta::usecases::churn::AsyncChurnRun::start(
+                            context.node, graph->graph(), std::move(dataset), options)
+                      : zetta::usecases::churn::AsyncChurnRun::start(
+                            context.node, graph->graph(), std::move(table), options);
     context.background->adopt(
         handle, [worker = handle.get()] { return worker->done(); });
 
@@ -2235,6 +2284,10 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
     output["status"] = "running";
     output["poll"] = "get_run / system.runs for status+logs; system.jobs for "
                      "the featurize/train/explain/score jobs";
+    if (!dataset_contract.is_null()) {
+        output["dataset"] = std::move(dataset_contract);
+        output["dataset_notes"] = std::move(dataset_notes);
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -4003,7 +4056,10 @@ const nlohmann::json& agent_run_schema() {
            {{"type", "integer"}, {"minimum", 0}, {"description", "at-risk list cap (0 = all)"}}},
           {"dataset_path",
            {{"type", "string"},
-            {"description", "a churn dataset dir on the node (default: the built-in demo)"}}},
+            {"description",
+             "`database.table` (a connection/query landed it) or a churn dataset dir "
+             "on the node (default: the built-in demo)"}}},
+          {"dataset", zetta::data::dataset_contract_schema()},
           {"model_name", {{"type", "string"}, {"description", "registered model name"}}}}}};
     return schema;
 }
@@ -4089,7 +4145,8 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
     nlohmann::json run_input;
     run_input["project"] = project->name();
     run_input["graph"] = graph_name;
-    for (const char* passthrough : {"top_k", "dataset_path", "model_name", "coordinate"}) {
+    for (const char* passthrough :
+         {"top_k", "dataset_path", "dataset", "model_name", "coordinate"}) {
         if (const auto found = input.find(passthrough); found != input.end()) {
             run_input[passthrough] = *found;
         }

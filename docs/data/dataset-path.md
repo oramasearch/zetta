@@ -136,6 +136,25 @@ schema's `field`), because the feature frame, the score job, and the ranked list
 it that — threading a per-customer spelling through them would be a second name for one
 concept.
 
+## Over the API
+
+`run` and `agent_run` take `dataset_path` in either form, plus an optional `dataset`
+object carrying the contract overrides (validated against `dataset_contract_schema()`
+at the boundary). A table run reports back what it **inferred**:
+
+```json
+{ "run_id": "...", "engine": "churn", "status": "running",
+  "dataset": { "entity_column": "account_id", "label_column": "churned",
+               "feature_columns": ["failed_payments", "logins_30d", "nps"] },
+  "dataset_notes": ["label column: 'churned' (binary across the sampled rows)",
+                    "entity column: 'account_id' (integer across the sampled rows)",
+                    "feature columns (3): failed_payments, logins_30d, nps",
+                    "no time column given — the rows are taken as already point-in-time correct"] }
+```
+
+The notes are not decoration. An assumption the caller never sees is one they discover
+inside a trained model.
+
 ## Deliberately a later slice
 
 - **Multi-node co-launch for the table path.** The SPMD rounds need every participant

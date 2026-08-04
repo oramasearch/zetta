@@ -259,6 +259,14 @@ public:
                                                 ir::ExecutionGraph graph,
                                                 ChurnDataset dataset,
                                                 ChurnSolutionOptions options);
+
+    // The same, over a connector-landed table (#947) — the worker runs
+    // `run_churn_solution_on_table` instead, so the shard is read near data
+    // rather than encoded and carried in the handle.
+    static std::shared_ptr<AsyncChurnRun> start(Node& node,
+                                                ir::ExecutionGraph graph,
+                                                ChurnTableInput table,
+                                                ChurnSolutionOptions options);
     ~AsyncChurnRun();
 
     AsyncChurnRun(const AsyncChurnRun&) = delete;
@@ -286,11 +294,12 @@ public:
 
 private:
     AsyncChurnRun(Node& node, ir::ExecutionGraph graph, ChurnDataset dataset,
-                  ChurnSolutionOptions options);
+                  ChurnTableInput table, ChurnSolutionOptions options);
 
     Node& node_;
     ir::ExecutionGraph graph_;
     ChurnDataset dataset_;
+    ChurnTableInput table_;  // non-empty => the table path (#947)
     ChurnSolutionOptions options_;
     std::string project_;
     std::unique_ptr<compute::ComputeDevice> device_;
