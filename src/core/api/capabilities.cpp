@@ -2467,6 +2467,17 @@ const nlohmann::json& add_dataset_schema() {
            {{"type", "boolean"},
             {"description", "shard + place the rows across the cluster "
                             "(default true)"}}},
+          {"partition_only",
+           {{"type", "boolean"},
+            {"description",
+             "do NOT capture the rows into the replicated document (#833) — the "
+             "data lives only in its partition bodies, which their owners hold. "
+             "This is the right setting for connector-sized data: capturing rows "
+             "replicates every one of them to every peer, and reconciling them "
+             "back rewrites the whole local store per row, which saturates the "
+             "node's owner loop. Reads go through the scatter-gather select. "
+             "Default false, for back-compatibility with small replicated "
+             "tables"}}},
           {"partition_count",
            {{"type", "integer"},
             {"minimum", 1},
@@ -2512,6 +2523,7 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     options.database = input.value("database", options.database);
     options.table_name = input.value("table_name", options.table_name);
     options.partitioned = input.value("partitioned", options.partitioned);
+    options.partition_only = input.value("partition_only", options.partition_only);
     // Absent means AUTO — the scheduler targets a partition size instead of a
     // constant (#833). A value present is a manual override, honoured exactly.
     if (const auto it = input.find("partition_count"); it != input.end()) {

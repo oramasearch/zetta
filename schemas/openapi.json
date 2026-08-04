@@ -85,6 +85,10 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "partition_only": {
+                    "description": "do NOT capture the rows into the replicated document (#833) — the data lives only in its partition bodies, which their owners hold. This is the right setting for connector-sized data: capturing rows replicates every one of them to every peer, and reconciling them back rewrites the whole local store per row, which saturates the node's owner loop. Reads go through the scatter-gather select. Default false, for back-compatibility with small replicated tables",
+                    "type": "boolean"
+                  },
                   "partitioned": {
                     "description": "shard + place the rows across the cluster (default true)",
                     "type": "boolean"
