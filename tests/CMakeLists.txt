@@ -104,6 +104,7 @@ add_executable(zetta-tests
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
   usecases/churn/test_churn_table_run.cpp
+  usecases/churn/test_motive_demo_dataset.cpp
   usecases/churn/test_churn_coordinated_launch.cpp
   usecases/churn/test_uc1_end_to_end.cpp
   testkit/test_testkit.cpp
@@ -254,6 +255,7 @@ endif()
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main

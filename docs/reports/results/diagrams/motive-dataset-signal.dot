@@ -46,7 +46,7 @@ digraph motive_signal {
 
   label_node [label="p(churn) = logistic(weighted sum)\nthe label is DRAWN from p —\nthe overlap is real, not injected",
               shape=box, fillcolor="#fff8e1", color="#f1c21b", fontsize=11];
-  outcome [label="Churn rate 17.5%\nAll twelve columns together: AUC 0.756\nBest single column: 0.642",
+  outcome [label="Churn rate 17.5%\nTrained model (gradient-boosted trees): AUC 0.868\nBest single column alone: 0.642",
            shape=box, fillcolor="#defbe6", color="#24a148", fontsize=11];
 
   r -> cr -> fr;

@@ -21,12 +21,10 @@ That difference is the whole point of separating them, and it sets the rules:
 ## Reports
 
 - [motive-churn-results-2026-08-04.md](motive-churn-results-2026-08-04.md) — churn for
-  Motive: the table shape reconstructed from their documentation when the extract could not
-  be moved, a stand-in dataset measured at 0.756 held-out AUC with no single column above
-  0.642, a connector-landed dataset now feeding the pipeline that trains on it, two traps
-  found in their data, two defects found in ours, and the one open defect blocking a live
-  walkthrough.
-  Diagrams: [flow](diagrams/motive-churn-flow.svg) ·
+  Motive: the pipeline runs end to end on a 1,500-account communications dataset built to
+  the source table's shape — **AUC 0.868**, 1,500 accounts ranked, TreeSHAP putting repeat
+  escalations first and account size near zero. Next step is the full ~12 GB event log.
+  Diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
   [signal structure](diagrams/motive-dataset-signal.svg)
 
 ## Rendering the diagrams
