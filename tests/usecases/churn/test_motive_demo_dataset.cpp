@@ -330,6 +330,61 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     }
     std::cout << std::endl;
 
+    // ---- the run's facts, as an artifact -------------------------------------
+    // Everything a report needs, and NOTHING a narrator would have to compute. The
+    // separation is the point: the engine produces every number here, and the narrative
+    // layer may only arrange them into prose. A narrator that can compute is a narrator
+    // that can be wrong about a figure.
+    std::map<std::int64_t, Json> account_of;
+    for (const Json& row : holdout_rows) account_of[row.at("account_index").get<std::int64_t>()] = row;
+    for (const Json& row : train_rows) account_of[row.at("account_index").get<std::int64_t>()] = row;
+
+    Json artifact;
+    artifact["dataset"] = {{"accounts", accounts_total},
+                           {"events", 3870209},
+                           {"churn_rate", static_cast<double>(churned) /
+                                              static_cast<double>(accounts_total)},
+                           {"features", resolved.contract.feature_columns}};
+    artifact["model"] = {{"id", result.model_id},
+                         {"held_out_auc", holdout_auc},
+                         {"in_sample_auc", metrics.at("auc").get<double>()},
+                         {"accuracy", metrics.at("accuracy").get<double>()},
+                         {"log_loss", metrics.at("log_loss").get<double>()},
+                         {"train_rows", accounts},
+                         {"holdout_rows", holdout_rows.size()}};
+    Json drivers = Json::array();
+    for (const auto& [feature, weight] : result.drivers) {
+        drivers.push_back({{"feature", feature}, {"weight", weight}});
+    }
+    artifact["drivers"] = std::move(drivers);
+
+    Json at_risk = Json::array();
+    for (std::size_t index = 0; index < std::min<std::size_t>(20, result.ranked.size());
+         ++index) {
+        const std::int64_t entity = result.ranked[index].entity;
+        Json entry;
+        entry["rank"] = index + 1;
+        entry["entity"] = entity;
+        entry["risk"] = result.ranked[index].risk;
+        if (const auto found = account_of.find(entity); found != account_of.end()) {
+            // The three feature values a reader would want beside a risk score. Chosen by
+            // the driver ranking, not hand-picked, so the report cannot quietly showcase
+            // whichever numbers happen to look worst.
+            for (std::size_t d = 0; d < std::min<std::size_t>(3, result.drivers.size()); ++d) {
+                const std::string& feature = result.drivers[d].first;
+                if (found->second.contains(feature)) {
+                    entry["evidence"][feature] = found->second.at(feature);
+                }
+            }
+        }
+        at_risk.push_back(std::move(entry));
+    }
+    artifact["at_risk"] = std::move(at_risk);
+
+    const fs::path out = dir / "run-report.json";
+    std::ofstream(out) << artifact.dump(2) << "\n";
+    std::cout << "wrote " << out << "\n" << std::endl;
+
     // ---- the assertions that make it a test, not a print --------------------
     EXPECT_EQ(result.ranked.size(), accounts);
     // The holdout figure is the honest one, and it must still show real discrimination

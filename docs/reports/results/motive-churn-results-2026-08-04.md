@@ -35,21 +35,23 @@ account's score:
 | Driver | Weight | |
 |---|---|---|
 | `escalations_90d` | **0.53** | repeat support escalations in the last quarter |
-| `billing_disputes_180d` | **0.33** | invoice friction over six months |
-| `unresolved_contacts_90d` | **0.31** | contacts that went unanswered |
-| `support_events_90d` | 0.26 | overall support volume |
-| `days_since_last_sales_touch` | 0.24 | the account stopped taking sales calls |
-| `escalation_trend` | 0.21 | last quarter against the one before |
-| `nps_score` | 0.16 | |
-| `tenure_days` · `seats` | 0.06 · 0.05 | **size, at the bottom — where it belongs** |
+| `unresolved_contacts_90d` | **0.39** | contacts that went unanswered |
+| `billing_disputes_180d` | **0.34** | invoice friction over six months |
+| `seats` | 0.21 | fleet size — used as a denominator, see below |
+| `support_events_90d` | 0.19 | overall support volume |
+| `days_since_last_sales_touch` | 0.16 | the account stopped taking sales calls |
+| `nps_score` · `escalation_trend` | 0.09 · 0.09 | |
+| `tenure_days` · `chat_deflection_failures_90d` | 0.02 · 0.01 | |
 
 **No single column carries the model** — the strongest scores 0.631 alone against 0.726 for
 the model. Risk comes from combining evidence across channels, which is what makes the list
 worth working rather than a rename of "accounts with open tickets".
 
-**Account size sits at the bottom.** A large fleet generates more of everything, and a churn
-model that quietly ranks by account size is the most common way this goes wrong. This one
-doesn't.
+**Fleet size is used as a denominator, not as risk.** `seats` barely separates churners on its
+own (0.53 AUC — near chance), yet the model gives it real weight. That is the model learning
+to read counts *relative to size*: twenty escalations means something very different for a
+five-truck operator than for a fifteen-hundred-truck fleet. It is the difference between a
+model that ranks big accounts first and one that finds the small account in trouble.
 
 ![signal structure](diagrams/motive-dataset-signal.svg)
 

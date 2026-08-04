@@ -40,7 +40,7 @@ digraph motive_signal {
     fb [label="billing_disputes_180d\nalone: AUC 0.601", fillcolor="#defbe6", color="#24a148"];
     fq [label="days_since_last_sales_touch\nalone: AUC 0.555", fillcolor="#defbe6", color="#24a148"];
     fk [label="unresolved_contacts_90d\nalone: AUC 0.610", fillcolor="#defbe6", color="#24a148"];
-    fs [label="seats · tenure_days\nalone: ~0.52 — the SIZE control,\nso volume is not mistaken for risk",
+    fs [label="seats · tenure_days\nalone: ~0.52 — near chance.\nThe model uses size as a DENOMINATOR:\n20 escalations differs for a 5-truck\noperator and a 1,500-truck fleet",
         fillcolor="#f4f4f4", color="#a8a8a8"];
   }
 

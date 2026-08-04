@@ -33,6 +33,13 @@ That difference is the whole point of separating them, and it sets the rules:
   Diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
   [signal structure](diagrams/motive-dataset-signal.svg)
 
+- [motive-churn-run-report-2026-08-04.md](motive-churn-run-report-2026-08-04.md) — **the
+  run report itself**: the artifact a run produces, generated from its facts by the prompt
+  in [`docs/pipeline/run-report-prompt.md`](../../pipeline/run-report-prompt.md). Every
+  number in it appears verbatim in the facts artifact — the narrator arranges, it never
+  computes. Regenerate with
+  [`docs/runbooks/regenerating-the-run-report.md`](../../runbooks/regenerating-the-run-report.md).
+
 ## Rendering the diagrams
 
 ```
