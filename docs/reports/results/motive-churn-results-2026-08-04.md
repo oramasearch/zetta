@@ -95,15 +95,29 @@ support backlog — each surface through a *different* channel, and the churn la
 That last detail is what makes the overlap real: some quiet accounts leave and some
 visibly struggling ones stay, exactly as they do in life.
 
-Measured on the dataset, 70/30 split, plain logistic regression:
+Measured on the dataset. **The metric is AUC** — the probability that a randomly chosen
+churner scores above a randomly chosen stayer. 0.5 is a coin flip, 1.0 is perfect
+separation.
 
-| | |
-|---|---|
-| Churn rate | **17.5%** |
-| All twelve features, held-out | **AUC 0.756** |
-| Strongest single feature (`escalations_90d`) | **0.642** |
-| Next three | 0.600 · 0.586 · 0.583 |
-| Size controls (`seats`, `tenure_days`) | ~0.52 — deliberately uninformative |
+| | Value | How it was measured |
+|---|---|---|
+| Churn rate | **17.5%** | 263 of 1,500 accounts |
+| All twelve features together | **AUC 0.756** | logistic regression, 70/30 split, **held-out** |
+| Strongest single feature (`escalations_90d`) | **AUC 0.642** | the column alone as the score, full 1,500 rows |
+| Next three | 0.600 · 0.586 · 0.583 | same |
+| Size controls (`seats`, `tenure_days`) | ~0.52 | deliberately uninformative |
+
+Two notes on method, because the two AUC figures are not measured the same way. The model
+number is **held out**; the single-feature numbers are over the **full set** — which is
+sound, because a lone column used as a score has no fitted parameters and so nothing to
+overfit. And each single-feature figure is reported as `max(AUC, 1−AUC)`, so a
+*protective* feature shows its true strength instead of appearing weak.
+
+For readers who prefer correlation: `escalations_90d` has a point-biserial *r* of **+0.19**.
+Underneath both numbers, churners average **17.1** escalations in 90 days against **12.4**
+for stayers — a real gap, and nowhere near a clean split. AUC is the headline here because
+it is rank-based (these counts are skewed and non-normal, which correlation handles badly)
+and because it is directly comparable to the model figure above it.
 
 **Why the second number matters as much as the first.** If one column predicted churn on
 its own, the dataset would teach nothing and any model trained on it would fall over on the
