@@ -1,0 +1,149 @@
+// Motive churn — what runs today, and what does not.
+//
+// Generated source for motive-churn-flow.svg. Render with:
+//   dot -Tsvg motive-churn-flow.dot -o motive-churn-flow.svg
+//
+// Colour is status, not decoration:
+//   green  = built and verified
+//   blue   = built, verified only in-process (not yet through the deployed API)
+//   amber  = built, not yet verified at all
+//   grey   = not built
+//   red    = blocked, with the blocker named
+digraph motive_churn {
+  rankdir=TB;
+  bgcolor="white";
+  fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+  node [fontname="IBM Plex Sans,Helvetica,Arial,sans-serif", fontsize=11,
+        shape=box, style="rounded,filled", penwidth=1.2, margin="0.18,0.10"];
+  edge [fontname="IBM Plex Sans,Helvetica,Arial,sans-serif", fontsize=9,
+        color="#525252", penwidth=1.1];
+
+  // --- legend ---------------------------------------------------------------
+  subgraph cluster_legend {
+    label="Status";
+    fontsize=11;
+    fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6";
+    style="rounded";
+    margin=10;
+    node [shape=box, width=2.2, height=0.28, fontsize=9];
+    L1 [label="verified end to end", fillcolor="#defbe6", color="#24a148"];
+    L2 [label="verified in-process only", fillcolor="#d0e2ff", color="#0f62fe"];
+    L3 [label="built, unverified", fillcolor="#fff8e1", color="#f1c21b"];
+    L4 [label="not built", fillcolor="#f4f4f4", color="#a8a8a8"];
+    L5 [label="blocked", fillcolor="#fff1f1", color="#da1e28"];
+    L1 -> L2 -> L3 -> L4 -> L5 [style=invis];
+  }
+
+  // --- the source -----------------------------------------------------------
+  subgraph cluster_source {
+    label="1 · Your data";
+    fontsize=12; fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6"; style="rounded"; margin=12;
+
+    snowflake [label="Snowflake\nprotected_communications.analytics.\nfact_customer_communications_events\n~47.7M events · 11 sources with published volumes",
+               fillcolor="#defbe6", color="#24a148"];
+    extract [label="The ~12 GB extract\nnever delivered",
+             fillcolor="#fff1f1", color="#da1e28"];
+    dim [label="SFDC account dimension\ncarries FINANCE_SEGMENT, CHURN_DATE,\nLAST_CHURN_REASON — the LABEL lives here",
+         fillcolor="#fff1f1", color="#da1e28"];
+    synth [label="Stand-in dataset, built to the documented shape\n1,500 accounts · 386,090 events · 17.5% churn\nsame columns, same source mix, same join gaps",
+           fillcolor="#defbe6", color="#24a148"];
+
+    extract -> synth [label="  substituted for", style=dashed, color="#da1e28"];
+    snowflake -> synth [label="  shape taken from\n  its documentation", style=dashed];
+  }
+
+  // --- ingest ---------------------------------------------------------------
+  subgraph cluster_ingest {
+    label="2 · Pulled in, and made internal";
+    fontsize=12; fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6"; style="rounded"; margin=12;
+
+    connection [label="Saved connection\nread-only, credential never shown again",
+                fillcolor="#defbe6", color="#24a148"];
+    query [label="create_dataset_from_query\nyour SQL, run against your warehouse",
+           fillcolor="#fff8e1", color="#f1c21b"];
+    internal [label="Internal dataset\nParquet, partitioned across the cluster\naddressed database.table",
+              fillcolor="#defbe6", color="#24a148"];
+    ponly [label="partition_only\nrows never replicated row-by-row\n(without this the node saturates)",
+           fillcolor="#defbe6", color="#24a148"];
+
+    connection -> query -> internal;
+    ponly -> internal [style=dotted, label="  storage mode"];
+  }
+
+  synth -> connection [style=invis];
+  synth -> internal [label="  loaded as 1,500 rows,\n  2 partitions"];
+
+  // --- the pipeline ---------------------------------------------------------
+  subgraph cluster_pipeline {
+    label="3 · One pipeline · the model is a step inside it";
+    fontsize=12; fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6"; style="rounded"; margin=12;
+
+    contract [label="Column contract\nwhich column is the entity, the label,\nthe features — inferred, and reported back",
+              fillcolor="#defbe6", color="#24a148"];
+    shard [label="Near-data shard load\neach node reads only the partitions\nit holds — rows never cross the wire",
+           fillcolor="#d0e2ff", color="#0f62fe"];
+    featurize [label="Featurize\npoint-in-time; the cutoff is never guessed",
+               fillcolor="#d0e2ff", color="#0f62fe"];
+    train [label="Train\ngradient-boosted trees, on YOUR columns",
+           fillcolor="#d0e2ff", color="#0f62fe"];
+    explain [label="Explain\nper-row TreeSHAP drivers",
+             fillcolor="#d0e2ff", color="#0f62fe"];
+    rank [label="Rank\nthe at-risk list",
+          fillcolor="#d0e2ff", color="#0f62fe"];
+
+    contract -> shard -> featurize -> train -> explain -> rank;
+  }
+
+  internal -> contract [label="  dataset_path = \"database.table\""];
+
+  // --- what you get ---------------------------------------------------------
+  subgraph cluster_out {
+    label="4 · What you get back";
+    fontsize=12; fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6"; style="rounded"; margin=12;
+
+    model [label="A registered model\nkept, versioned, re-scorable",
+           fillcolor="#d0e2ff", color="#0f62fe"];
+    atrisk [label="The at-risk list\nsurvives the run that produced it",
+            fillcolor="#d0e2ff", color="#0f62fe"];
+    infer [label="Score an account not in the data\na missing feature FAILS, never zero-fills",
+           fillcolor="#d0e2ff", color="#0f62fe"];
+    report [label="A report artifact\nhow good the model is, what drives churn",
+            fillcolor="#f4f4f4", color="#a8a8a8"];
+
+    rank -> atrisk;
+    train -> model;
+    model -> infer;
+    model -> report [style=dashed];
+    atrisk -> report [style=dashed];
+  }
+
+  // --- the conversation -----------------------------------------------------
+  subgraph cluster_chat {
+    label="5 · Ask it questions";
+    fontsize=12; fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+    color="#c6c6c6"; style="rounded"; margin=12;
+
+    q1 [label="\"What's in this data?\"", fillcolor="#f4f4f4", color="#a8a8a8"];
+    q2 [label="\"What would this account score?\"", fillcolor="#d0e2ff", color="#0f62fe"];
+    q3 [label="\"Which accounts are most at risk, and why?\"", fillcolor="#d0e2ff", color="#0f62fe"];
+    q4 [label="\"What's our revenue next quarter?\"\n→ declines, invents nothing", fillcolor="#defbe6", color="#24a148"];
+    chat [label="One conversational surface\nreaching all four", fillcolor="#f4f4f4", color="#a8a8a8"];
+
+    chat -> q1; chat -> q2; chat -> q3; chat -> q4;
+  }
+
+  internal -> q1 [style=dotted];
+  infer -> q2 [style=dotted];
+  atrisk -> q3 [style=dotted];
+  report -> q3 [style=dotted];
+
+  // --- the one open defect --------------------------------------------------
+  blocker [label="OPEN · after a run completes, the API stops serving reads\nengine path verified in-process; the deployed surface is not",
+           shape=note, fillcolor="#fff1f1", color="#da1e28", fontsize=10];
+  rank -> blocker [style=dotted, color="#da1e28", label="  blocks the\n  live walkthrough"];
+}
