@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/dataset_path.hpp"    // data::DatasetContract (the table's columns)
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_step_executor.hpp"  // RetentionAction
 #include "zetta/ddf/data_frame.hpp"       // ddf::DataFrameSchema
@@ -176,6 +177,55 @@ ChurnSolutionResult run_churn_solution_on_node(
     Node& node, compute::ComputeDevice& device,
     const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
     const ChurnSolutionOptions& options = {});
+
+// --- Running on a CONNECTOR-LANDED dataset (#947) -----------------------------
+//
+// The dataset a customer actually brings — a warehouse query landed as a
+// partitioned table — instead of an in-memory ChurnDataset. This is the path that
+// was missing: `add_dataset` / `create_dataset_from_query` produce a
+// `database.table`, and nothing could feed one to the pipeline that trains on it.
+// The canonical name of the entity key inside the pipeline. A customer's own
+// spelling (`account_id`, `customer_key`, …) is read from the row via the column
+// schema's `field` and renamed to this on the way in, so the feature frame, the
+// score job, and the ranked list all name one thing one way.
+inline constexpr std::string_view kTableEntityColumn = "entity";
+
+struct ChurnTableInput {
+    std::string table_id;  // a `Table::id()` — what the partition catalog records
+    // What the table's columns MEAN. Resolve it from a `dataset_path` with
+    // zetta::data::resolve_dataset, which infers what the caller left unsaid and
+    // reports every inference.
+    zetta::data::DatasetContract contract;
+
+    bool empty() const { return table_id.empty(); }
+};
+
+// The DDF schema of the accounts shard for `contract`: the entity key as Int64,
+// each feature column as Float64, the label as Int64, and the time column (when
+// set) as Float64. Pure — the encoder's output contract in table form.
+ddf::DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contract);
+
+// The featurization for `contract`: **static carry-through mode** — no windowed
+// event features, the contract's feature columns carried through, the label as the
+// target. A connector query returns one already-featurized row per entity (the
+// windowing happened in the warehouse SQL), so there are no events to aggregate.
+// When the contract names a time column the row universe is still cut at `as_of`,
+// so the point-in-time guarantee holds where it applies. Pure.
+ddf::FeaturizeSpec table_featurize_spec(const zetta::data::DatasetContract& contract);
+
+// Run a churn graph over a connector-landed table, **compute-near-data**: each
+// participant loads only the partition bodies it physically holds
+// (`ddf::load_local_partitions`), so the rows never cross the wire — unlike the
+// in-memory path above, which encodes the whole dataset on the initiator and ships
+// it to every peer.
+//
+// Multi-node co-launch is NOT wired yet: with peers on the roster and
+// `options.coordinate` set, this fails with the reason rather than running a
+// single node's shard and reporting it as the whole. The fan-out is a small payload
+// (a table id and a contract, not the rows) and is the follow-up.
+ChurnSolutionResult run_churn_solution_on_table(
+    Node& node, compute::ComputeDevice& device, const ir::ExecutionGraph& graph,
+    const ChurnTableInput& input, const ChurnSolutionOptions& options = {});
 
 // --- Run the churn solution WITHOUT blocking the caller's thread (#624) ------
 //

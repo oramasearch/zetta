@@ -116,7 +116,34 @@ unit-testable against rows built in a test. The default reads through
 non-throwing `dataset_contract_from_json` mirroring `dataset_contract_schema()` — the
 boundary rule for value types. Nothing here throws.
 
+## Running on the resolved table
+
+`zetta::usecases::churn::run_churn_solution_on_table` takes the resolved table id plus
+its contract and runs a churn graph over it **compute-near-data**: the accounts shard
+comes from this node's own partition bodies (`ddf::load_local_partitions`) rather than
+from an injected store, so the rows never cross the wire. That is the difference from
+the in-memory path, which encodes the whole dataset on the initiator and ships it to
+every peer.
+
+The featurization runs in **static carry-through mode** — no windowed event features.
+A connector query returns one already-featurized row per entity, so there are no events
+to aggregate, and inventing windowed aggregates over rows that are not events would be
+arithmetic on a shape that does not exist. When the contract names a time column the row
+universe is still cut at `as_of`, so the point-in-time guarantee holds where it applies.
+
+The entity is renamed to the canonical `entity` on the way into the frame (via the column
+schema's `field`), because the feature frame, the score job, and the ranked list all name
+it that — threading a per-customer spelling through them would be a second name for one
+concept.
+
 ## Deliberately a later slice
+
+- **Multi-node co-launch for the table path.** The SPMD rounds need every participant
+  co-running; the in-memory path fans a launch out over the signal plane, and the table
+  path's fan-out is not wired yet. With peers on the roster the run **fails with the
+  reason** rather than training one node's shard and reporting it as the whole. The
+  payload is small — a table id and a contract, not the rows — so this is a smaller
+  change than the one it replaces.
 
 - **Typing columns from the partition catalog.** The default sampler reads the whole
   table and keeps the first `kDefaultSampleRows` rows, because the SQL subset has no

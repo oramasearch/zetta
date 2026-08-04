@@ -12,6 +12,8 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/featurize_job.hpp"
+#include "zetta/ddf/local_partitions.hpp"
+#include "zetta/storage/json_store.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_backend.hpp"
@@ -131,13 +133,20 @@ ChurnStepExecutor::~ChurnStepExecutor() = default;
 
 bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
     State& state = *state_;
+    const bool from_table = !config_.accounts_table.empty();
     if (!state.events_loaded) {
-        if (config_.events_store == nullptr) {
+        if (config_.events_store == nullptr && !from_table) {
             error = "no events shard configured";
             return false;
         }
-        auto loaded = ddf::load_data_frame(*config_.events_store,
-                                           config_.events_schema, device_);
+        // A connector-landed table is one already-featurized row per entity, so
+        // there is no events shard to pair it with. An EMPTY events frame is the
+        // honest input for static carry-through mode — not an error, and not a
+        // reason to skip the load and leave the frame uninitialized.
+        static const zetta::storage::JsonStore kNoEvents;
+        const zetta::storage::StorageEngine& events =
+            config_.events_store != nullptr ? *config_.events_store : kNoEvents;
+        auto loaded = ddf::load_data_frame(events, config_.events_schema, device_);
         if (!loaded.ok()) {
             error = "load events to DDF: " + loaded.status.message;
             return false;
@@ -146,6 +155,21 @@ bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
         state.events_loaded = true;
     }
     if (!state.accounts_loaded) {
+        if (from_table) {
+            // Compute-near-data (#947): only the partition bodies this node
+            // physically holds, read from local disk. On a multi-node cluster each
+            // participant loads a different, disjoint shard — which is the point.
+            ddf::LocalShardResult shard = ddf::load_local_partitions(
+                node_, config_.accounts_table, config_.accounts_schema, device_);
+            if (!shard.ok()) {
+                error = "load '" + config_.accounts_table +
+                        "' partitions to DDF: " + shard.status.message;
+                return false;
+            }
+            state.accounts = std::move(shard.frame);
+            state.accounts_loaded = true;
+            return true;
+        }
         if (config_.accounts_store == nullptr) {
             error = "no accounts shard configured";
             return false;
@@ -213,8 +237,18 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
     // near-data composition's slice step), so a coordinated multi-node run
     // (#601) counts every entity exactly once. On a single node the shard IS
     // the whole table, so this is the identity there.
+    //
+    // The shard is read from the LOADED FRAME, not from the store: a table-backed
+    // run (#947) has no store at all — its accounts came from this node's owned
+    // partitions — and slicing against an empty set drops every row, which surfaces
+    // much later and much less legibly as "no training rows".
     std::unordered_set<std::int64_t> local_entities;
-    if (config_.accounts_store != nullptr) {
+    if (std::vector<std::int64_t> entities(state.accounts.row_count());
+        state.accounts.row_count() > 0 &&
+        state.accounts.to_host<std::int64_t>(config_.entity_column, entities).ok()) {
+        local_entities.insert(entities.begin(), entities.end());
+    }
+    if (local_entities.empty() && config_.accounts_store != nullptr) {
         for (std::size_t row = 0; row < config_.accounts_store->size(); ++row) {
             const zetta::storage::ParquetLazyPtr account =
                 config_.accounts_store->at(row);

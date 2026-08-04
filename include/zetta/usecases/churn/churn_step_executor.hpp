@@ -97,6 +97,19 @@ struct ChurnPipelineConfig {
     const zetta::storage::StorageEngine* accounts_store = nullptr;
     ddf::DataFrameSchema accounts_schema;
 
+    // **Compute-near-data over a connector-landed dataset** (#947). When set to a
+    // `Table::id()`, the accounts shard is loaded from THIS NODE'S OWNED PARTITIONS
+    // of that table (`ddf::load_local_partitions`) instead of from `accounts_store`
+    // — the rows never cross the wire, and the shard is placement-aware by
+    // construction rather than by slicing a copy every node already holds.
+    //
+    // A connector query returns ONE already-featurized row per entity (the
+    // windowing happened in the warehouse SQL), so there is no events shard to
+    // pair it with: `featurize` runs in static carry-through mode
+    // (`event_features` empty) and the events frame is empty. Setting this with a
+    // windowed spec is a configuration error the featurize step reports.
+    std::string accounts_table;
+
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
     ml::GbdtParams params;               // the GBDT hyperparameters
     ml::CalibrationConfig calibration;   // opt-in held-out probability calibration
