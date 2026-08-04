@@ -159,8 +159,18 @@ bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
             // Compute-near-data (#947): only the partition bodies this node
             // physically holds, read from local disk. On a multi-node cluster each
             // participant loads a different, disjoint shard — which is the point.
-            ddf::LocalShardResult shard = ddf::load_local_partitions(
-                node_, config_.accounts_table, config_.accounts_schema, device_);
+            //
+            // **Gated onto the owner thread (#624).** This reads the partition
+            // catalog and the blob store off the Node tree, which is owner-thread
+            // only, and a churn run driven through AsyncChurnRun executes on a
+            // worker. Calling it directly deadlocks the node — an in-process test
+            // that runs the pipeline on the owner thread never sees it, and the
+            // deployed API path hangs every time.
+            ddf::LocalShardResult shard;
+            node_.run_on_owner([&] {
+                shard = ddf::load_local_partitions(node_, config_.accounts_table,
+                                                   config_.accounts_schema, device_);
+            });
             if (!shard.ok()) {
                 error = "load '" + config_.accounts_table +
                         "' partitions to DDF: " + shard.status.message;

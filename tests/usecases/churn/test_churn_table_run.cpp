@@ -17,6 +17,8 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/score_table.hpp"
+#include <chrono>
+#include <thread>
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
@@ -339,6 +341,49 @@ TEST(ChurnTableRun, AnAccountThatIsNotInTheDataCanStillBeScored) {
         *model, {Json{{"failed_payments", 4}, {"nps", 1.0}}});
     EXPECT_FALSE(incomplete.ok());
     EXPECT_NE(incomplete.error.find("logins_30d"), std::string::npos);
+}
+
+// The shape that deadlocked the node: the pipeline driven on a WORKER thread.
+//
+// AsyncChurnRun runs the graph off the owner loop, and the table path reads the
+// partition catalog and blob store off the Node tree — which is owner-thread only. The
+// direct-call tests above never see it, because a test calls the runner from the thread
+// that owns the node. The deployed API path hangs every time. This pins the gate.
+TEST(ChurnTableRun, TheTablePathRunsFromAWorkerThreadWithoutDeadlocking) {
+    AttachedNode host(24725);
+    const std::string table_id = land_dataset(host.node, "churn_demo", "accounts", 200);
+    ASSERT_FALSE(table_id.empty());
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    ChurnSolutionOptions options;
+    options.project = "churn-demo";
+    options.coordinate = false;
+
+    const std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> handle =
+        zetta::usecases::churn::AsyncChurnRun::start(host.node, solution->graph,
+                                                     std::move(input), options);
+    ASSERT_TRUE(handle);
+
+    // Pump the owner gate, exactly as the node's tick loop does. Without the gate on
+    // the shard load this never completes: the worker blocks on the tree while the
+    // owner blocks here.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!handle->done() && std::chrono::steady_clock::now() < deadline) {
+        host.node.drain_owner_work();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(handle->done()) << "the run never finished — the owner gate deadlocked";
+    EXPECT_TRUE(handle->result().ok()) << handle->result().execution.error;
+    EXPECT_EQ(handle->result().ranked.size(), 200u);
 }
 
 // --- the pure spec construction ----------------------------------------------
