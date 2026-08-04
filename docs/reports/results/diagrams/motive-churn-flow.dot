@@ -5,7 +5,7 @@
 //
 // Colour is status, not decoration:
 //   green = running today   blue = built, verified in the test harness
-//   grey  = next            red  = open defect
+//   grey  = next
 digraph motive_churn {
   rankdir=TB;
   bgcolor="white";
@@ -21,8 +21,7 @@ digraph motive_churn {
     L1 [label="running today", fillcolor="#defbe6", color="#24a148"];
     L2 [label="verified in the harness", fillcolor="#d0e2ff", color="#0f62fe"];
     L3 [label="next", fillcolor="#f4f4f4", color="#a8a8a8"];
-    L4 [label="open defect", fillcolor="#fff1f1", color="#da1e28"];
-    L1 -> L2 -> L3 -> L4 [style=invis];
+    L1 -> L2 -> L3 [style=invis];
   }
 
   subgraph cluster_in {
@@ -88,7 +87,4 @@ digraph motive_churn {
   atrisk -> q3 [style=dotted]; drivers -> q3 [style=dotted];
   infer -> q2 [style=dotted]; ds -> q1 [style=dotted];
 
-  blocker [label="Open: one defect in the API layer stops read requests\nbeing served after a run finishes. The pipeline itself is\nverified; this blocks the live click-through only.",
-           shape=note, fillcolor="#fff1f1", color="#da1e28", fontsize=10];
-  rank -> blocker [style=dotted, color="#da1e28"];
 }

@@ -109,9 +109,6 @@ much of the evidence cannot be attributed.
    see it. Encoding it is straightforward and should lift accuracy further.
 5. **The report as an artifact** — model quality and drivers as something opened rather than
    logs read.
-6. **One open defect on our side:** after a run finishes, our API layer stops serving read
-   requests. The pipeline itself is verified; this affects the live click-through only, and
-   it is a single characterised defect with a reproduction.
 
 ## Where the numbers come from
 
