@@ -74,6 +74,21 @@ public:
     // copy, and nearly every caller copied already (a CRDT key, an error string,
     // an element pushed into a vector).
     virtual std::string id_at(std::size_t i) const = 0;
+
+    // Make every pending write durable.
+    //
+    // An engine MAY defer the cost of writing — reconciling a table issues one
+    // `update` per row, and paying a file rewrite on each made reconcile
+    // quadratic and saturated the node's owner loop (#952). Deferring lets a
+    // batch of updates cost one rewrite instead of one per row.
+    //
+    // The contract that keeps that safe: an engine that defers must be
+    // **indistinguishable through its own reads** — `at`, `contains` and `size`
+    // answer from memory and already reflect the write. Only the on-disk
+    // projection lags, and only until the owner loop's next flush.
+    //
+    // Default: nothing to do, for engines that write through.
+    virtual void flush() {}
 };
 
 }  // namespace zetta::storage

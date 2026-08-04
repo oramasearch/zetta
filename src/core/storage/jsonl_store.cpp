@@ -71,12 +71,16 @@ void zetta::storage::JsonlStore::update(const std::string& id,
     const std::size_t i = index_of(id);
     if (i == kMissing) return;
     records_[i] = std::move(doc);
-    // Only the row's OWN chunk changed. Rewriting every chunk made an update cost
-    // O(rows) — and reconciling a table means one update per row, so the whole
-    // reconcile was O(rows squared) and saturated the node's owner loop on a
-    // few thousand rows (#952). An update does not move any other row, so no
-    // other chunk can differ.
-    persist_chunk(i / kRecordsPerChunk);
+    // Record the chunk; do not rewrite it yet. Reconciling a table issues one
+    // update PER ROW, and a chunk holds up to kRecordsPerChunk rows — so
+    // rewriting on each update still wrote ~10,000 rows per row reconciled, which
+    // is the quadratic term that outlived the first fix (#952). Deferring
+    // collapses a whole reconcile into one rewrite per touched chunk.
+    //
+    // Reads are unaffected: `records_` already holds the new value, so `at`,
+    // `contains` and `size` answer correctly before the flush. Only the on-disk
+    // projection lags, and only until the owner loop flushes.
+    dirty_chunks_.insert(i / kRecordsPerChunk);
 }
 
 void zetta::storage::JsonlStore::remove(const std::string& id) {
@@ -90,6 +94,7 @@ void zetta::storage::JsonlStore::remove(const std::string& id) {
     // the full rewrite.
     for (std::size_t at = i; at < ids_.size(); ++at) id_index_[ids_[at]] = at;
     persist_all();
+    dirty_chunks_.clear();  // persist_all wrote everything
 }
 
 std::size_t zetta::storage::JsonlStore::index_of(const std::string& id) const {
@@ -131,6 +136,15 @@ void zetta::storage::JsonlStore::persist_all() {
     const std::size_t chunks =
         records_.empty() ? 0 : (records_.size() - 1) / kRecordsPerChunk + 1;
     for (std::size_t chunk = 0; chunk < chunks; ++chunk) persist_chunk(chunk);
+}
+
+// Write every chunk an update touched since the last flush. Called by the owner
+// loop once per tick, so a reconcile of any size costs one rewrite per chunk it
+// actually changed rather than one per row.
+void zetta::storage::JsonlStore::flush() {
+    if (dirty_chunks_.empty()) return;
+    for (const std::size_t chunk : dirty_chunks_) persist_chunk(chunk);
+    dirty_chunks_.clear();
 }
 
 fs::path JsonlStore::chunk_path(std::size_t chunk_index) const {

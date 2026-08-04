@@ -303,6 +303,19 @@ bool Node::start() {
     return true;
 }
 
+// Flush every table's storage engine. The engines defer file writes so a
+// reconcile pass costs one rewrite per touched chunk instead of one per row; this
+// is the point at which that deferral is settled, on the thread that owns the
+// tree.
+void Node::flush_stores() {
+    for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
+        if (!database) continue;
+        for (const std::shared_ptr<zetta::data::Table>& table : database->tables()) {
+            if (table) table->store().flush();
+        }
+    }
+}
+
 void Node::tick() {
     // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
     //    adopt this thread, then execute any node-tree work queued by
@@ -337,6 +350,13 @@ void Node::tick() {
         //     rebalance partition placement (#517). This DOES capture updated
         //     part: owners; step 3 persists the moved document.
         rebalance_partitions_on_membership_change(snapshot);
+        // 1c. Make the reconciled rows durable, ONCE. Reconcile issues an update
+        //     per row and the storage engine defers the file write (#952), so the
+        //     whole pass costs one rewrite per chunk it actually touched rather
+        //     than one per row. Reads never saw the difference — the engine
+        //     answers from memory — but the projection must not lag past the tick
+        //     that produced it.
+        flush_stores();
     }
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
