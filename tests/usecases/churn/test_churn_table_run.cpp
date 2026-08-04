@@ -16,6 +16,7 @@
 #include "zetta/ddf/local_partitions.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
@@ -228,6 +229,116 @@ TEST(ChurnTableRun, ResolvingAMissingTableNamesWhatTheClusterHas) {
         zetta::data::default_dataset_sampler(host.node, &host.cluster));
     EXPECT_FALSE(wrong_database.ok());
     EXPECT_NE(wrong_database.error.find("churn_demo.accounts"), std::string::npos);
+}
+
+// =====================================================================
+// After the run: the at-risk list is answerable again (#948 steps 5 + 7).
+// =====================================================================
+
+// The ranked list a run produces dies with the run. This is the question the whole
+// product exists to answer — "which accounts are most at risk?" — asked AFTER the
+// run has ended, and answered by recomputing from the durable Model + table.
+TEST(ChurnTableRun, TheAtRiskListSurvivesTheRunThatProducedIt) {
+    AttachedNode host(24723);
+    const std::string table_id = land_dataset(host.node, "churn_demo", "accounts", 300);
+    ASSERT_FALSE(table_id.empty());
+
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    ChurnSolutionOptions options;
+    options.project = "churn-demo";
+    const ChurnSolutionResult run = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, options);
+    ASSERT_TRUE(run.ok()) << run.execution.error;
+    ASSERT_FALSE(run.model_id.empty());
+
+    // The run is over; everything it held in memory is gone. Ask again from the
+    // durable Model + the table.
+    const std::shared_ptr<zetta::ml::Model> model = host.node.find_model(run.model_id);
+    ASSERT_TRUE(model);
+    CpuDevice score_device;
+    const zetta::ml::TableScoreResult scored = zetta::ml::score_table(
+        host.node, *model, resolved.table_id, resolved.contract, score_device);
+    ASSERT_TRUE(scored.ok()) << scored.error;
+
+    EXPECT_EQ(scored.rows_scored, 300u);
+    EXPECT_GT(scored.partitions_read, 0u);
+    EXPECT_EQ(scored.feature_columns,
+              (std::vector<std::string>{"failed_payments", "logins_30d", "nps"}));
+    EXPECT_FALSE(scored.drivers.empty());
+
+    // The same accounts, the same risks, the same order as the run reported — a
+    // recomputed answer that disagreed with the run would be worse than none.
+    ASSERT_EQ(scored.ranked.size(), run.ranked.size());
+    for (std::size_t index = 0; index < scored.ranked.size(); ++index) {
+        EXPECT_EQ(scored.ranked[index].entity, run.ranked[index].entity) << index;
+        EXPECT_NEAR(scored.ranked[index].risk, run.ranked[index].risk, 1e-9) << index;
+    }
+
+    // top_k caps the list without changing what is at the top.
+    const zetta::ml::TableScoreResult top = zetta::ml::score_table(
+        host.node, *model, resolved.table_id, resolved.contract, score_device, 10);
+    ASSERT_TRUE(top.ok()) << top.error;
+    ASSERT_EQ(top.ranked.size(), 10u);
+    EXPECT_EQ(top.ranked.front().entity, scored.ranked.front().entity);
+}
+
+// "Take an account not in the training data and ask what it would score."
+TEST(ChurnTableRun, AnAccountThatIsNotInTheDataCanStillBeScored) {
+    AttachedNode host(24724);
+    const std::string table_id = land_dataset(host.node, "churn_demo", "accounts", 200);
+    ASSERT_FALSE(table_id.empty());
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    const ChurnSolutionResult run = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, {});
+    ASSERT_TRUE(run.ok()) << run.execution.error;
+    const std::shared_ptr<zetta::ml::Model> model = host.node.find_model(run.model_id);
+    ASSERT_TRUE(model);
+
+    // An account nobody has seen: many failed payments, barely logging in.
+    const zetta::ml::TableScoreResult risky = zetta::ml::score_rows(
+        *model, {Json{{"failed_payments", 4}, {"logins_30d", 6.0}, {"nps", 1.0}}},
+        {9001});
+    ASSERT_TRUE(risky.ok()) << risky.error;
+    ASSERT_EQ(risky.ranked.size(), 1u);
+    EXPECT_EQ(risky.ranked.front().entity, 9001);
+    EXPECT_GE(risky.ranked.front().risk, 0.0);
+    EXPECT_LE(risky.ranked.front().risk, 1.0);
+
+    // A healthy account scores lower than the struggling one — the model is being
+    // asked a question, not returning a constant.
+    const zetta::ml::TableScoreResult healthy = zetta::ml::score_rows(
+        *model, {Json{{"failed_payments", 0}, {"logins_30d", 58.0}, {"nps", 10.0}}},
+        {9002});
+    ASSERT_TRUE(healthy.ok()) << healthy.error;
+    EXPECT_LT(healthy.ranked.front().risk, risky.ranked.front().risk);
+
+    // A row missing a feature the model needs FAILS. Zero-filling it would score
+    // the account as if it had never logged in, which is confidently wrong rather
+    // than visibly broken.
+    const zetta::ml::TableScoreResult incomplete = zetta::ml::score_rows(
+        *model, {Json{{"failed_payments", 4}, {"nps", 1.0}}});
+    EXPECT_FALSE(incomplete.ok());
+    EXPECT_NE(incomplete.error.find("logins_30d"), std::string::npos);
 }
 
 // --- the pure spec construction ----------------------------------------------

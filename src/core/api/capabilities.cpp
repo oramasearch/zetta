@@ -23,6 +23,8 @@
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/compute/cpu_device.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
@@ -2288,6 +2290,155 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
         output["dataset"] = std::move(dataset_contract);
         output["dataset_notes"] = std::move(dataset_notes);
     }
+    return ApiResult::success(std::move(output));
+}
+
+// --- score ---------------------------------------------------------------------
+
+const nlohmann::json& score_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the registered model's id, or its name"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"description",
+             "`database.table` to score every row of; omit when supplying `rows`"}}},
+          {"dataset", zetta::data::dataset_contract_schema()},
+          {"rows",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description",
+             "score these rows instead of a dataset - an account that is not in the "
+             "data at all. Each row is keyed by the model's own feature columns"}}},
+          {"entities",
+           {{"type", "array"},
+            {"items", {{"type", "integer"}}},
+            {"description",
+             "entity key per supplied row (default: the row's index)"}}},
+          {"top_k",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "cap the ranked list (0 = all)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& score_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"ranked", "feature_columns", "rows_scored"}},
+        {"properties",
+         {{"ranked",
+           {{"type", "array"},
+            {"description", "entities by risk, highest first"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"entity", {{"type", "integer"}}},
+                {"risk", {{"type", "number"}}}}}}}}},
+          {"feature_columns",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "what the model was trained on, in the order it expects"}}},
+          {"drivers",
+           {{"type", "array"},
+            {"description", "population drivers, strongest first"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"feature", {{"type", "string"}}},
+                {"importance", {{"type", "number"}}}}}}}}},
+          {"rows_scored", {{"type", "integer"}}},
+          {"partitions_read", {{"type", "integer"}}}}}};
+    return schema;
+}
+
+ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
+    const std::string wanted = input.at("model").get<std::string>();
+    std::shared_ptr<zetta::ml::Model> model = context.node.find_model(wanted);
+    if (!model) {
+        for (const std::shared_ptr<zetta::ml::Model>& candidate : context.node.models()) {
+            if (candidate && candidate->value().name == wanted) {
+                model = candidate;
+                break;
+            }
+        }
+    }
+    if (!model) {
+        return ApiResult::failure("not_found", "no model '" + wanted + "' (or with that id)");
+    }
+
+    const auto rows = input.find("rows");
+    const auto dataset_path = input.find("dataset_path");
+    if (rows == input.end() && dataset_path == input.end()) {
+        return ApiResult::failure(
+            "invalid_input",
+            "give either `dataset_path` (score a whole dataset) or `rows` (score rows "
+            "that are not in it)");
+    }
+
+    const std::size_t top_k = input.value("top_k", std::size_t{0});
+    zetta::ml::TableScoreResult scored;
+    if (rows != input.end()) {
+        std::vector<std::int64_t> entities;
+        if (const auto given = input.find("entities"); given != input.end()) {
+            for (const nlohmann::json& entity : *given) {
+                if (!entity.is_number_integer()) {
+                    return ApiResult::failure("invalid_input",
+                                              "entities[]: must be integers");
+                }
+                entities.push_back(entity.get<std::int64_t>());
+            }
+        }
+        scored = zetta::ml::score_rows(*model, rows->get<std::vector<nlohmann::json>>(),
+                                       entities, top_k);
+    } else {
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
+        if (path.kind != zetta::data::DatasetPathKind::Table) {
+            return ApiResult::failure(
+                "invalid_input",
+                "score reads a `database.table` dataset; a dataset directory has no "
+                "partitions to score near");
+        }
+        zetta::data::DatasetContract overrides;
+        if (const auto given = input.find("dataset"); given != input.end()) {
+            std::string reason;
+            const std::optional<zetta::data::DatasetContract> parsed =
+                zetta::data::dataset_contract_from_json(*given, &reason);
+            if (!parsed) return ApiResult::failure("invalid_input", reason);
+            overrides = *parsed;
+        }
+        const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+            context.node, path, overrides,
+            zetta::data::default_dataset_sampler(context.node, context.cluster));
+        if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
+
+        compute::CpuDevice device;
+        scored = zetta::ml::score_table(context.node, *model, resolved.table_id,
+                                        resolved.contract, device, top_k);
+    }
+    if (!scored.ok()) return ApiResult::failure("engine_error", scored.error);
+
+    nlohmann::json ranked = nlohmann::json::array();
+    for (const zetta::ml::EntityScore& score : scored.ranked) {
+        ranked.push_back({{"entity", score.entity}, {"risk", score.risk}});
+    }
+    nlohmann::json drivers = nlohmann::json::array();
+    for (const zetta::ml::ModelDriver& driver : scored.drivers) {
+        drivers.push_back({{"feature", driver.feature}, {"importance", driver.importance}});
+    }
+    nlohmann::json output;
+    output["ranked"] = std::move(ranked);
+    output["feature_columns"] = scored.feature_columns;
+    output["drivers"] = std::move(drivers);
+    output["rows_scored"] = scored.rows_scored;
+    output["partitions_read"] = scored.partitions_read;
     return ApiResult::success(std::move(output));
 }
 
@@ -4720,6 +4871,21 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_set_training_schedule});
+    registry.add(Capability{
+        "score",
+        "Score a dataset or rows through a trained model",
+        "Run a registered model over a `database.table` dataset (compute-near-data, this "
+        "node's own partitions) or over rows you supply, and get the entities ranked by "
+        "risk plus what drives it. This is how the at-risk list is answerable after the "
+        "run that produced it has ended, and how an account that is not in the data at "
+        "all gets a score. Read-only.",
+        score_schema(),
+        score_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Data, "predict"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_score});
     registry.add(Capability{
         "delete_agent",
         "Delete an agent",
