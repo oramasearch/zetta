@@ -1,6 +1,15 @@
 # Churn model validation — 500-account synthetic set (2026-07-25)
 
 **Subject:** `churn_model` (native histogram-GBDT, `binary_logistic`), retrained for the Charles/Motive demo (#862).
+> **Correction (2026-08-04): the AUC below is IN-SAMPLE.** `GbdtTrainResult.metrics` is
+> computed over the rows the model trained on — each node scores its own local rows and the
+> pairs are gathered — so there is no holdout in it. This report replaced an implausible
+> 1.000 with a "credible" 0.880 and called that the realistic operating point; both numbers
+> were measured the same way, so the second is not evidence of the first being fixed.
+> A held-out measurement of the same pipeline on a comparable dataset came back at **0.62**
+> ([results report](results/motive-churn-results-2026-08-04.md)). Tracking:
+> [#953](https://github.com/oramasearch/zetta/issues/953).
+
 **Why:** the built-in 10-account fixture yields **AUC = 1.0 / accuracy = 1.0** — implausibly perfect on 10 rows, and a credibility risk in front of a technical buyer. This retrains on a realistically-sized, noisy set so the metric is believable.
 
 ## What was tested
