@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -52,14 +53,18 @@ public:
 private:
     static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);
     void load();
-    void persist_all();  // rewrite every chunk file from the in-memory rows
+    void persist_all();            // rewrite every chunk file from the in-memory rows
+    void persist_chunk(std::size_t chunk_index);  // rewrite ONE chunk
     std::size_t index_of(const std::string& id) const;
     std::filesystem::path chunk_path(std::size_t chunk_index) const;
 
     std::filesystem::path dir_;
     std::vector<nlohmann::json> records_;
     std::vector<std::string> ids_;             // parallel to records_
-    std::unordered_set<std::string> id_index_;  // for contains()
+    // id -> row index. A SET plus a linear scan was O(n) on every update, and
+    // `update` is the hot path when a multi-thousand-row table reconciles: the
+    // lookup alone made reconcile quadratic before a single byte was written.
+    std::unordered_map<std::string, std::size_t> id_index_;
 };
 
 }  // namespace zetta::storage
