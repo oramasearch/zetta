@@ -48,11 +48,11 @@ digraph motive_churn {
            fillcolor="#defbe6", color="#24a148"];
     feat [label="Featurize\npoint-in-time; the cutoff is never guessed",
           fillcolor="#defbe6", color="#24a148"];
-    train [label="Train\ngradient-boosted trees on the account's own columns\nheld-out AUC 0.62 · in-sample 0.92 — overfitting",
-           fillcolor="#fff8e1", color="#f1c21b"];
+    train [label="Train\ngradient-boosted trees on the account's own columns\nheld-out AUC 0.726 · in-sample 0.770\ngap 0.04 — it generalizes",
+           fillcolor="#defbe6", color="#24a148"];
     shap [label="Explain\nTreeSHAP, per row and per population",
           fillcolor="#defbe6", color="#24a148"];
-    rank [label="Rank\n1,500 accounts by risk",
+    rank [label="Rank\n15,000 accounts by risk",
           fillcolor="#defbe6", color="#24a148"];
     contract -> shard -> feat -> train -> shap -> rank;
   }

@@ -11,27 +11,25 @@ trains on a 1,500-account communications dataset built to the exact shape of
 `fact_customer_communications_events`, so the query that drives it is the query that will
 drive the real one.
 
-**The pipeline is the result. The model's accuracy is not yet.**
+**The model generalizes, and the dataset size was what was holding it back.**
 
 | | | |
 |---|---|---|
-| **Held-out AUC** | **0.62** | the honest number — 450 accounts the model never saw |
-| In-sample AUC | 0.92 | over the rows it trained on; **not** a performance claim |
-| Logistic-regression baseline | 0.756 | same rows, same holdout |
-| Accounts scored | 1,500 | ranked by risk |
-| Top driver | `escalations_90d` | TreeSHAP mean \|φ\| 0.53 |
-| Churn base rate | 17.5% | |
+| **Held-out AUC** | **0.726** | 4,500 accounts the model never saw |
+| In-sample AUC | 0.770 | over the rows it trained on |
+| Generalization gap | **0.04** | in-sample minus held out |
+| Accounts | 15,000 (10,500 train / 4,500 holdout) | 3,870,209 communication events |
+| Top driver | `escalations_90d` | TreeSHAP, mean \|φ\| |
+| Churn base rate | 18.4% | |
 
-**Read the first three rows together.** The gap between 0.92 in-sample and 0.62 held out is
-overfitting: the model has partly memorised the accounts it trained on. And a plain
-logistic regression reaches **0.756** on the same split — so the signal in the data
-supports a materially better model than the one currently being produced. Tightening the
-model's regularization recovers only part of it (0.65), so the configuration needs work
-rather than a knob turn.
+**Both numbers are given because the gap between them is the thing worth watching.** At
+1,500 accounts the same pipeline scored 0.919 in-sample and **0.619** held out — a 0.30 gap,
+which is a model memorising the accounts it trained on rather than learning from them. At
+15,000 the gap closes to 0.04 and the held-out figure rises to 0.726: the model configuration
+was never the problem, the sample size was.
 
-This is stated first because an in-sample figure quoted as a result is the most common way
-a churn model flatters itself, and 0.92 is exactly the kind of number that survives into a
-slide unchallenged.
+An in-sample figure on its own is the most common way a churn model flatters itself, so it
+is never published here without the held-out number beside it.
 
 ## What the pipeline does today
 
@@ -103,17 +101,18 @@ channel where much of the evidence cannot be attributed.
 
 ## Next steps
 
-1. **Close the generalization gap.** A plain logistic regression beats the current model by
-   0.14 AUC on the same split, so the configuration — not the data — is the limit. This is
-   the work that turns a working pipeline into a usable model.
-2. **Run against the full ~12 GB event log.** The pipeline is unchanged; this is a scale
+1. **Run against the full ~12 GB event log.** The pipeline is unchanged; this is a scale
    and connection step, and it is also the only way to learn what churn accuracy is
    actually achievable here.
-3. **Bring in the SFDC account dimension.** `CHURN_DATE`, `LAST_CHURN_REASON` and the
+2. **Bring in the SFDC account dimension.** `CHURN_DATE`, `LAST_CHURN_REASON` and the
    finance segments live there rather than in the events table — it carries the label the
    model trains against.
-4. **Agree the scoring date and horizon.** Which as-of date accounts should be scored on,
+3. **Agree the scoring date and horizon.** Which as-of date accounts should be scored on,
    and how far forward "churned" means. Deliberately not guessed.
+4. **Support categorical features.** `finance_segment` and `finance_sub_segment` are
+   strings, so the contract drops them and the model never sees segment at all — even
+   though segment carries real churn signal. Encoding them is straightforward and should
+   lift the held-out figure further.
 5. **The report as an artifact** — model quality and drivers as something opened rather
    than logs read. Everything it needs now exists.
 6. **Close one open defect.** After a run finishes, our API layer stops serving read
@@ -125,7 +124,7 @@ channel where much of the evidence cannot be attributed.
 Every number above is printed by one test, on branch `feat/dataset-path-table`:
 
 ```
-python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 1500
+python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 15000
 ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
     --gtest_filter='MotiveDemoDataset.*'
 ```

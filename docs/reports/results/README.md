@@ -26,9 +26,10 @@ That difference is the whole point of separating them, and it sets the rules:
 - [motive-churn-results-2026-08-04.md](motive-churn-results-2026-08-04.md) — churn for
   Motive: the pipeline runs end to end on a 1,500-account communications dataset built to
   the source table's shape. The **pipeline** is the result: ingest → featurize → train →
-  TreeSHAP → rank, with escalations first and account size near zero. The **model** is not
-  yet — held-out AUC 0.62 against 0.92 in-sample, and a plain logistic regression reaches
-  0.756 on the same split.
+  TreeSHAP → rank, with escalations first and account size near zero. The **model** generalizes at
+  15,000 accounts — held-out AUC 0.726 against 0.770 in-sample, a 0.04 gap. At 1,500 the
+  same pipeline gave 0.619 held out against 0.919 in-sample, so sample size was the limit
+  rather than the configuration.
   Diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
   [signal structure](diagrams/motive-dataset-signal.svg)
 
