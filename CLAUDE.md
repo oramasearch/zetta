@@ -617,6 +617,38 @@ a dataset card / model card** — see the **hf-ops** skill for the procedure and
 - **Never print or commit the token** (`HF_TOKEN` from the environment). If one surfaces anywhere
   durable — a card, a config, a transcript — redact and rotate it.
 
+### Every capability ships on the control surface — API + MCP, same change
+
+**A feature that cannot be called from the API and MCP is not shipped.** New engine
+capability = a new entry in the `zetta::api` registry, in the SAME change as the
+engine work — never a follow-up, never "the GUI can reach it for now". One
+registry entry renders everywhere: the REST route, the MCP tool, the OpenAPI
+spec, and the agent's tool surface. See
+[`docs/api/registry-design.md`](docs/api/registry-design.md) and the **api-dev**
+skill.
+
+This is not bureaucracy. Three failures it prevents, all of which have happened:
+
+- **A capability nobody can reach.** `partition_only` existed on
+  `AddDatasetOptions` for a whole release and was never on the `add_dataset`
+  schema, so no caller could set it — and its absence pegged a node's owner loop
+  at 100% CPU on a few thousand rows (#952). The fix was three lines of schema.
+- **A capability the agent cannot call.** `score` shipped, worked, and was
+  invisible to chat until it was added to the read-tool allowlist — so *"which
+  accounts are most at risk"* was unanswerable while the code to answer it was
+  already merged.
+- **A surface that drifts.** The GUI and web UI read the same registry; a
+  capability added to one by hand is a capability the other silently lacks.
+
+**Read capabilities are `GET`, actions are `POST`.** Worth stating because
+probing a read with POST returns an empty reply that looks exactly like a hung
+node, and a whole issue was filed on that misreading (#954).
+
+When a capability is added, the same change updates: the registry entry, the
+regenerated `schemas/openapi.json` (`ZETTA_WRITE_SCHEMAS=1`), the capability-count
+assertion in `tests/api/test_registry.cpp`, the permission vocabulary if it needs
+a new right, and the agent tool allowlist if an agent should be able to call it.
+
 ### Documentation — update it with EVERY change (not optional)
 
 Docs are **part of the change, in the same commit** — never a follow-up. After
