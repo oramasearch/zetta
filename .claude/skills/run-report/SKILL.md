@@ -39,7 +39,8 @@ Writes `data/demo/motive/run-report.json`. Full detail:
 
 The artifact carries `dataset`, `model` (both AUCs), `drivers`, and `at_risk` with per-entity
 `evidence`. **If a field you want is missing, that is a gap in the artifact to fix in the
-engine — not a number to work out yourself.**
+engine — not a number to work out yourself.** `majority_class_accuracy` exists for exactly
+that reason: the prose needed it, computing it was forbidden, so the artifact grew.
 
 ### 2 · Read the prompt
 
@@ -60,7 +61,11 @@ The four that are easiest to get wrong:
 - **A driver is a weight, not a cause.** "Carries the most weight in the model", never
   "causes churn".
 - **Do not editorialise quality.** "0.73 held out" is a fact; "excellent" is a comparison you
-  were not given.
+  were not given. Explaining a consequence is not editorialising; grading is.
+- **Every figure gets a sentence saying what it means.** A table of numbers is a lab result.
+  Translate the metric into something a reader can picture, give the in-sample/held-out gap a
+  counterexample, and put any rate-like metric beside its trivial baseline — accuracy without
+  `majority_class_accuracy` is misleading by omission.
 - **Do not recommend actions.** The report says what was found; a playbook is a separate
   artifact.
 

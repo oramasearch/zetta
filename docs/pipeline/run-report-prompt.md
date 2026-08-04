@@ -27,6 +27,7 @@ Written at the end of a run. Everything a report needs and nothing it would have
 ```jsonc
 {
   "dataset": { "accounts": 15000, "events": 3870209, "churn_rate": 0.1843,
+               "majority_class_accuracy": 0.8157,
                "features": ["escalations_90d", "..."] },
   "model":   { "id": "...", "held_out_auc": 0.7259, "in_sample_auc": 0.7697,
                "accuracy": 0.8231, "log_loss": 0.4081,
@@ -38,7 +39,7 @@ Written at the end of a run. Everything a report needs and nothing it would have
 }
 ```
 
-Two details in there are deliberate.
+Three details in there are deliberate.
 
 **`evidence` carries the top-ranked drivers' values, chosen by the driver ranking** — not
 hand-picked per entity. Otherwise a report could quietly showcase whichever numbers happen
@@ -47,6 +48,12 @@ to look worst for each account, which is a way of lying with true figures.
 **Both AUCs are present.** The gap between them is the overfitting signal, and it can only
 be read if both are there.
 
+**`majority_class_accuracy` is the accuracy a constant answer would achieve.** It exists
+because a report that prints accuracy without it is misleading by omission, and because the
+alternative — letting the writer work it out — is exactly the computation the rule forbids.
+**When the prose needs a number the artifact lacks, the artifact is what changes.** That is
+the general rule this field is the first instance of.
+
 ## The prompt
 
 > You are writing the report for a completed pipeline run. You are given a JSON facts
@@ -54,38 +61,103 @@ be read if both are there.
 >
 > **Absolute rule: every number in your output must appear verbatim in the facts object, or
 > be a direct restatement of one (a percentage of a given fraction, a count of a given
-> list). You may not compute, estimate, average, extrapolate, or infer any figure. If
-> something would be useful and is not in the facts, say it is not available — never supply
-> it.**
+> list). You may not compute, estimate, average, extrapolate, or infer any figure.**
 >
-> Structure:
+> **If a number would genuinely help and is not in the facts, say so and stop. Do not supply
+> it.** That is a gap in the artifact to be fixed at the source, not something to work out
+> while writing. This has already happened once: a report needed the accuracy a
+> constant answer would achieve, the writer computed it, and the number-tracing check
+> rejected it. The right repair was to emit it as a fact.
+>
+> ### Structure
 >
 > 1. **What this run produced** — one short paragraph. What was trained, on how much data,
->    and what came out.
-> 2. **How good the model is.** State the held-out figure first and say plainly what it was
->    measured on. State the in-sample figure beside it and say what the gap between them
->    means: a large gap is memorisation, a small one is generalisation. Never present the
->    in-sample number alone.
+>    what came out.
+> 2. **How good the model is.** The held-out figure first, saying plainly what it was
+>    measured on. The in-sample figure beside it. Never the in-sample number alone.
 > 3. **What drives the outcome** — the drivers as a table, strongest first, each with a
->    plain-language gloss of what the column measures. Say whether any single driver
->    dominates.
-> 4. **Who is most at risk** — the ranked entities with their risk and their evidence
->    values. Name the entity key exactly as given; do not invent business names for them.
+>    plain-language gloss of what the column measures.
+> 4. **Who is most at risk** — the ranked entities with their risk and their evidence values.
 > 5. **What to check before acting on this** — the limits that apply to this run.
 >
-> Rules of tone and judgement:
+> ### Every figure needs its meaning, not just its value
 >
-> - **Do not editorialise the quality.** Report the figures and what they mean structurally.
->   "0.73 held out" is a fact; "excellent performance" is a claim you cannot support without
->   a comparison you were not given.
-> - **A driver is not a cause.** Say a feature carries weight in the model, never that it
->   *causes* churn.
-> - **Do not recommend actions.** The report says what was found. What to do about it is the
->   reader's call, and a playbook is a separate artifact.
+> A number a reader cannot act on is decoration. For each headline figure, add a short
+> paragraph answering "so what". The chart or table answers *what*; the prose answers *so
+> what*; a reader who stops at the table has still got the fact right.
+>
+> **Translate the metric into an event the reader can picture.** For a ranking metric like
+> AUC: "draw one account that churned and one that did not; the model gives the churner the
+> higher score about N times in a hundred". State what chance is and what perfection is, and
+> say that nothing predicting human behavior from this kind of data approaches perfection.
+>
+> **Give the in-sample/held-out gap a counterexample.** A small gap means nothing to a reader
+> who has never seen a large one. Say what a bad gap would look like and what it would imply,
+> then say which of the two this run is.
+>
+> **Put every rate-like metric next to its trivial baseline.** Accuracy is the trap: on any
+> problem where one outcome is uncommon, a constant answer scores close to the model. Report
+> the majority-class figure from the facts beside it and say plainly that accuracy barely
+> separates a working model from a constant answer here. A report that prints accuracy alone
+> invites the reader to quote the flattering number.
+>
+> **Say what the drivers share, not just their order.** A ranked list of columns is data. The
+> reading is what the top few have in common, which systems they come from, and what a
+> single-source view would therefore miss.
+>
+> **Say how to read the ranked list.** Across the evidence columns rather than down any one:
+> an entity high on several is in a different situation from one carried by a single large
+> number, and the second is the likelier false positive. Note whether the list has a head
+> (the top scores well clear of the rest) or is flat, because that is what decides whether
+> working the top of it is worthwhile.
+>
+> ### Tone and judgment
+>
+> - **Do not editorialize quality.** "0.73 held out" is a fact; "excellent" is a comparison
+>   you were not given. Explaining a consequence is not editorializing; grading is.
+> - **A driver is a weight, not a cause.** Say the model leans on a column, never that the
+>   column causes the outcome. Where the causal arrow plausibly runs the other way, say so.
+> - **Do not recommend actions.** The report says what was found. A playbook is a separate
+>   artifact.
+> - **Set expectations honestly.** A ranked list is a way to spend attention where it pays
+>   best, not a prediction about any one entity. Some at the top will not convert; some
+>   further down will.
 > - If any expected field is missing from the facts, say so where it would have appeared.
 >
-> Length: under 800 words. A report someone reads before a meeting, not a document they
-> schedule time for.
+> ### Length
+>
+> As long as the explanation needs and no longer. Roughly 1,200 to 1,600 words for a run with
+> a dozen drivers and a ranked list. The earlier 800-word cap produced a report that listed
+> figures and explained none of them.
+
+## What writing these taught
+
+Each of these came from a report that was already written, reviewed, and wrong in a way
+nobody noticed until someone asked.
+
+**Figures without prose undersell the work.** The first version was a table of numbers and a
+chart. It was accurate and it read as a lab result. Everything a reader needs in order to
+act on a figure lives in the sentence after it.
+
+**The flattering number gets quoted.** An in-sample AUC went into a client-facing report as
+"model quality" and survived review. Accuracy is the same trap one step later: 82.3% sounds
+strong until you know a constant answer scores 81.6%. Both are cases of a true number
+carrying a false impression, which is why the prompt now requires the comparison that makes
+each one legible.
+
+**A small gap means nothing without a large one to compare it to.** "In sample 0.770, held
+out 0.726, gap 0.04" is three numbers. "A model that scored 0.92 and 0.62 would have
+memorized its training set and fallen apart in a week; this one behaves the same on both" is
+the same three numbers doing work.
+
+**The interesting reading is usually across the drivers, not down them.** The ranked list
+says escalations matter most. The insight is that the top three are three systems recording
+the same customer asking for help and not getting it, which is what a single-source dashboard
+structurally cannot see.
+
+**Say what the report cannot support.** Every honest limit stated up front is one a reader
+does not discover at the worst moment. Ranking is not prediction, weights are not causes, and
+an uncalibrated score is not a probability.
 
 ## Why the prompt is this restrictive
 
