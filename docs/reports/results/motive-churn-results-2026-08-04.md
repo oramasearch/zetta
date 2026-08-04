@@ -55,6 +55,20 @@ trains it.
 list; and the drivers below. Asked something the data cannot support, it declines rather
 than producing a number.
 
+## How the model gets there
+
+![signal structure](diagrams/motive-dataset-signal.svg)
+
+Four independent troubles — device reliability, billing friction, buyer disengagement,
+support backlog — each surface through a **different** channel, and the churn label is
+drawn from a probability computed on all four rather than switched on by a threshold. That
+is what makes the overlap real: some quiet accounts leave and some visibly struggling ones
+stay, as they do in life.
+
+**No single column carries it.** The strongest feature scores 0.631 AUC alone against 0.726
+for the model, and nothing exceeds it. A dataset where one column predicts the label teaches
+nothing, and a model trained on one falls over on the first account that breaks the pattern.
+
 ## What drives churn, on this data
 
 TreeSHAP over the trained model — mean |φ|, strongest first:
@@ -70,12 +84,7 @@ TreeSHAP over the trained model — mean |φ|, strongest first:
 | `nps_score` | 0.156 | |
 | `tenure_days` · `seats` | 0.056 · 0.046 | **size, near the bottom — as it should be** |
 
-Two things to read from that ordering.
-
-**No single column carries the model.** The strongest feature scores 0.642 AUC on its own,
-and no column exceeds it — so nothing here is a one-alarm dataset. A dataset where a single
-column predicts the label teaches nothing, and a model trained on one falls over on the
-first account that breaks the pattern.
+One thing to read from that ordering.
 
 **Size sits at the bottom.** `seats` and `tenure_days` are near-zero drivers. A large fleet
 generates more of everything, and a churn model that quietly ranks by account size is the

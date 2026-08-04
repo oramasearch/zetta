@@ -36,17 +36,17 @@ digraph motive_signal {
   subgraph cluster_feature {
     label="The column a model sees — and its solo predictive power";
     fontsize=11; color="#c6c6c6"; style="rounded"; margin=12;
-    fr [label="escalations_90d\nAUC 0.642", fillcolor="#defbe6", color="#24a148"];
-    fb [label="billing_disputes_180d\nAUC 0.600", fillcolor="#defbe6", color="#24a148"];
-    fq [label="days_since_last_sales_touch\nAUC 0.586", fillcolor="#defbe6", color="#24a148"];
-    fk [label="unresolved_contacts_90d\nAUC 0.583", fillcolor="#defbe6", color="#24a148"];
-    fs [label="seats · tenure_days\nAUC ~0.52 — the SIZE control,\nso volume is not mistaken for risk",
+    fr [label="escalations_90d\nalone: AUC 0.631", fillcolor="#defbe6", color="#24a148"];
+    fb [label="billing_disputes_180d\nalone: AUC 0.601", fillcolor="#defbe6", color="#24a148"];
+    fq [label="days_since_last_sales_touch\nalone: AUC 0.555", fillcolor="#defbe6", color="#24a148"];
+    fk [label="unresolved_contacts_90d\nalone: AUC 0.610", fillcolor="#defbe6", color="#24a148"];
+    fs [label="seats · tenure_days\nalone: ~0.52 — the SIZE control,\nso volume is not mistaken for risk",
         fillcolor="#f4f4f4", color="#a8a8a8"];
   }
 
   label_node [label="p(churn) = logistic(weighted sum)\nthe label is DRAWN from p —\nthe overlap is real, not injected",
               shape=box, fillcolor="#fff8e1", color="#f1c21b", fontsize=11];
-  outcome [label="Churn rate 17.5%\nTrained model, HELD OUT: AUC 0.62 (in-sample 0.92)\nLogistic baseline, same split: 0.756\nBest single column alone: 0.642",
+  outcome [label="15,000 accounts · churn rate 18.4%\nTrained model, HELD OUT: AUC 0.726\nin-sample 0.770 — a 0.04 gap, so it generalizes\nBest single column alone: 0.631",
            shape=box, fillcolor="#defbe6", color="#24a148", fontsize=11];
 
   r -> cr -> fr;
@@ -61,7 +61,7 @@ digraph motive_signal {
   fq -> outcome [style=dotted]; fk -> outcome [style=dotted];
   fs -> outcome [style=dotted];
 
-  note [label="Why it matters that no column is decisive:\na dataset where one column predicts the label teaches\nnothing, and a model trained on it falls over on the\nfirst real account that breaks the pattern.",
+  note [label="Why it matters that no column is decisive:\na dataset where one column predicts the label teaches\nnothing, and a model trained on it falls over on the\nfirst real account that breaks the pattern.\n\nSegment also shifts churn — but finance_segment is a\nSTRING, so the contract drops it and the model never\nsees it. Categorical support is a named next step.",
         shape=note, fillcolor="#f4f4f4", color="#a8a8a8", fontsize=9];
   outcome -> note [style=invis];
 }
