@@ -51,9 +51,13 @@ failure this class of system actually produces.
 ### 3 · Write the report
 
 Five sections: what the run produced · how good the model is · what drives the outcome · who
-is most at risk · what to check before acting. Under 800 words.
+is most at risk · what to check before acting.
 
-The four that are easiest to get wrong:
+As long as the explanation needs. Roughly 1,200 to 1,600 words for a run with a dozen drivers
+and a ranked list — an earlier 800-word cap produced a report that listed figures and
+explained none of them.
+
+The five that are easiest to get wrong:
 
 - **Held-out figure first, and say what it was measured on.** Never present the in-sample
   number alone — it is the standard way a model flatters itself. State both and say what the
@@ -106,5 +110,9 @@ Python 3 (stdlib only), a built `zetta-tests`, and `graphviz` if diagrams need r
 
 ## Version history
 
+- v1.1.0 (2026-08-04): prose is required, not optional. Every figure gets its meaning, rate
+  metrics get their trivial baseline, and the length cap that caused the first version to
+  explain nothing is gone. Records the rule for a missing number: the artifact changes, the
+  writer does not compute.
 - v1.0.0 (2026-08-04): initial — the facts artifact, the prompt, and the mechanical
   number-tracing check.
