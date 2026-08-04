@@ -6,20 +6,64 @@ diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
 
 ## Where we are
 
-**The churn pipeline runs end to end and produces a ranked at-risk list with reasons.**
-It trains on a 1,500-account communications dataset built to the exact shape of
+**The churn pipeline runs end to end and produces a ranked at-risk list with reasons.** It
+trains on a 1,500-account communications dataset built to the exact shape of
 `fact_customer_communications_events`, so the query that drives it is the query that will
 drive the real one.
 
-| | |
-|---|---|
-| **Model quality** | **AUC 0.868** · accuracy 0.865 · log-loss 0.331 |
-| **Accounts scored** | 1,500, ranked by risk, highest 0.886 |
-| **Top driver** | `escalations_90d` (TreeSHAP mean \|φ\| 0.527) |
-| **Churn base rate** | 17.5% |
+**The pipeline is the result. The model's accuracy is not yet.**
 
-**Next step: run it against the full ~12 GB event log.** Nothing about the pipeline
-changes — same query, same contract, same steps.
+| | | |
+|---|---|---|
+| **Held-out AUC** | **0.62** | the honest number — 450 accounts the model never saw |
+| In-sample AUC | 0.92 | over the rows it trained on; **not** a performance claim |
+| Logistic-regression baseline | 0.756 | same rows, same holdout |
+| Accounts scored | 1,500 | ranked by risk |
+| Top driver | `escalations_90d` | TreeSHAP mean \|φ\| 0.53 |
+| Churn base rate | 17.5% | |
+
+**Read the first three rows together.** The gap between 0.92 in-sample and 0.62 held out is
+overfitting: the model has partly memorised the accounts it trained on. And a plain
+logistic regression reaches **0.756** on the same split — so the signal in the data
+supports a materially better model than the one currently being produced. Tightening the
+model's regularization recovers only part of it (0.65), so the configuration needs work
+rather than a knob turn.
+
+This is stated first because an in-sample figure quoted as a result is the most common way
+a churn model flatters itself, and 0.92 is exactly the kind of number that survives into a
+slide unchallenged.
+
+## How that compares
+
+Published churn models — telecom and SaaS, the closest available comparators — report
+**held-out** AUC in these bands:
+
+| | Typical held-out AUC |
+|---|---|
+| Logistic regression | 0.72 – 0.76 |
+| Random forest | 0.76 – 0.80 |
+| Gradient boosting / XGBoost | 0.78 – 0.86 |
+| Outlier studies on curated public datasets | 0.90+ |
+
+**At 0.62 held out, the current configuration sits below all of them.** At the 0.756 the
+linear baseline reaches, it would sit at the top of the logistic-regression band and just
+below typical tree models — a credible but unremarkable place to be.
+
+Two caveats on the comparison, both of which cut against over-reading it:
+
+- **These are different datasets.** Published figures come from each study's own data. A
+  cross-dataset AUC comparison indicates a band to aim for, not a ranking.
+- **This dataset is synthetic, and its signal is deliberately additive.** Four independent
+  troubles combine linearly into a churn probability, which makes logistic regression close
+  to the *correct* model class by construction and costs a tree model some of its usual
+  advantage. Real communications data carries interactions and non-linearities where trees
+  earn their keep. So the 0.756-vs-0.62 gap overstates how far behind the tree model would
+  be on the real thing — and understates nothing.
+
+**What this does and does not tell you.** It says the pipeline ingests, featurizes, trains,
+explains and ranks correctly, and that the driver ordering is sane. It does **not** yet say
+how well churn can be predicted at Motive — that needs the real event log, and it is the
+first item under next steps.
 
 ## What the pipeline does today
 
@@ -62,10 +106,10 @@ TreeSHAP over the trained model — mean |φ|, strongest first:
 
 Two things to read from that ordering.
 
-**No single column carries the model.** The strongest feature scores 0.642 AUC on its own
-against 0.868 for the model — so the answer comes from combining evidence, not from one
-alarm. A dataset where one column predicts the label teaches nothing, and a model trained
-on one falls over on the first account that breaks the pattern.
+**No single column carries the model.** The strongest feature scores 0.642 AUC on its own,
+and no column exceeds it — so nothing here is a one-alarm dataset. A dataset where a single
+column predicts the label teaches nothing, and a model trained on one falls over on the
+first account that breaks the pattern.
 
 **Size sits at the bottom.** `seats` and `tenure_days` are near-zero drivers. A large fleet
 generates more of everything, and a churn model that quietly ranks by account size is the
@@ -91,16 +135,20 @@ channel where much of the evidence cannot be attributed.
 
 ## Next steps
 
-1. **Run against the full ~12 GB event log.** The pipeline is unchanged; this is a scale
-   and connection step.
-2. **Bring in the SFDC account dimension.** `CHURN_DATE`, `LAST_CHURN_REASON` and the
+1. **Close the generalization gap.** A plain logistic regression beats the current model by
+   0.14 AUC on the same split, so the configuration — not the data — is the limit. This is
+   the work that turns a working pipeline into a usable model.
+2. **Run against the full ~12 GB event log.** The pipeline is unchanged; this is a scale
+   and connection step, and it is also the only way to learn what churn accuracy is
+   actually achievable here.
+3. **Bring in the SFDC account dimension.** `CHURN_DATE`, `LAST_CHURN_REASON` and the
    finance segments live there rather than in the events table — it carries the label the
    model trains against.
-3. **Agree the scoring date and horizon.** Which as-of date accounts should be scored on,
+4. **Agree the scoring date and horizon.** Which as-of date accounts should be scored on,
    and how far forward "churned" means. Deliberately not guessed.
-4. **The report as an artifact** — model quality and drivers as something opened rather
+5. **The report as an artifact** — model quality and drivers as something opened rather
    than logs read. Everything it needs now exists.
-5. **Close one open defect.** After a run finishes, our API layer stops serving read
+6. **Close one open defect.** After a run finishes, our API layer stops serving read
    requests. The pipeline itself is verified; this blocks the live click-through and is a
    single characterised defect with a reproduction, not a design problem.
 

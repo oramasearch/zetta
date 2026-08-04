@@ -11,6 +11,9 @@ That difference is the whole point of separating them, and it sets the rules:
   here carries a "what is not working" section and a "what we still need from you" section.
 - **Separate verified from built.** "Works", "works in our test harness", and "built but
   unverified" are three different claims. Say which one applies.
+- **Never publish an in-sample metric as a result.** Held-out and in-sample go in the same
+  table, labelled, with the held-out figure first. An in-sample number quoted alone is the
+  most common way a model flatters itself, and it survives into a slide unchallenged.
 - **Every number carries its method and its date.** A number with no method is an
   assertion; the value of one decays.
 - **Diagrams are generated, not drawn.** Graphviz `.dot` sources live in
@@ -22,8 +25,10 @@ That difference is the whole point of separating them, and it sets the rules:
 
 - [motive-churn-results-2026-08-04.md](motive-churn-results-2026-08-04.md) — churn for
   Motive: the pipeline runs end to end on a 1,500-account communications dataset built to
-  the source table's shape — **AUC 0.868**, 1,500 accounts ranked, TreeSHAP putting repeat
-  escalations first and account size near zero. Next step is the full ~12 GB event log.
+  the source table's shape. The **pipeline** is the result: ingest → featurize → train →
+  TreeSHAP → rank, with escalations first and account size near zero. The **model** is not
+  yet — held-out AUC 0.62 against 0.92 in-sample, and a plain logistic regression reaches
+  0.756 on the same split.
   Diagrams: [pipeline](diagrams/motive-churn-flow.svg) ·
   [signal structure](diagrams/motive-dataset-signal.svg)
 

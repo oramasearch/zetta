@@ -18,6 +18,7 @@
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -155,9 +156,28 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     std::vector<Json> rows = read_csv(dir / "account_features.csv");
     ASSERT_FALSE(rows.empty()) << "could not read " << (dir / "account_features.csv");
 
-    const std::size_t accounts = rows.size();
+    const std::size_t accounts_total = rows.size();
+
+    // A GENUINE holdout. The engine's reported AUC is computed over the rows each node
+    // TRAINED on — every node scores its own local rows and the pairs are gathered — so it
+    // is an in-sample figure and must never be published as though it were held out. To
+    // get the number that predicts behaviour on unseen accounts, train on 70% and score
+    // the other 30% through the model afterwards.
+    //
+    // The split is every third account, not a random sample: deterministic, so the figure
+    // is reproducible, and stratified enough at a 17.5% base rate that both sides carry
+    // churners.
+    std::vector<Json> train_rows;
+    std::vector<Json> holdout_rows;
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        (index % 10 < 7 ? train_rows : holdout_rows).push_back(rows[index]);
+    }
+    ASSERT_FALSE(holdout_rows.empty());
+
     std::size_t churned = 0;
     for (const Json& row : rows) churned += row.value("churned", 0) == 1;
+    rows = train_rows;
+    const std::size_t accounts = rows.size();
 
     AttachedNode host(24730);
     zetta::data::AddDatasetOptions options;
@@ -201,12 +221,102 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
     const Json metrics = model->value().metrics;
 
     // ---- report the numbers ------------------------------------------------
+    // ---- the holdout figure -------------------------------------------------
+    // Score the 30% the model never saw, and compute AUC over it here. This is the
+    // number that says how the model behaves on an account it has not met.
+    std::vector<std::int64_t> holdout_entities;
+    std::vector<double> holdout_labels;
+    std::vector<Json> holdout_features;
+    for (const Json& row : holdout_rows) {
+        Json features = Json::object();
+        for (const std::string& column : resolved.contract.feature_columns) {
+            features[column] = row.at(column);
+        }
+        holdout_features.push_back(std::move(features));
+        holdout_entities.push_back(row.at("account_index").get<std::int64_t>());
+        holdout_labels.push_back(static_cast<double>(row.value("churned", 0)));
+    }
+    const zetta::ml::TableScoreResult holdout =
+        zetta::ml::score_rows(*model, holdout_features, holdout_entities);
+    ASSERT_TRUE(holdout.ok()) << holdout.error;
+    ASSERT_EQ(holdout.ranked.size(), holdout_rows.size());
+
+    // Mann-Whitney AUC over the held-out rows.
+    std::map<std::int64_t, double> risk_of;
+    for (const auto& score : holdout.ranked) risk_of[score.entity] = score.risk;
+    std::vector<double> positives;
+    std::vector<double> negatives;
+    for (std::size_t index = 0; index < holdout_entities.size(); ++index) {
+        (holdout_labels[index] > 0.5 ? positives : negatives)
+            .push_back(risk_of[holdout_entities[index]]);
+    }
+    ASSERT_FALSE(positives.empty());
+    ASSERT_FALSE(negatives.empty());
+    std::sort(negatives.begin(), negatives.end());
+    double concordant = 0.0;
+    for (const double positive : positives) {
+        const auto lower = std::lower_bound(negatives.begin(), negatives.end(), positive);
+        const auto upper = std::upper_bound(negatives.begin(), negatives.end(), positive);
+        concordant += static_cast<double>(lower - negatives.begin()) +
+                      0.5 * static_cast<double>(upper - lower);
+    }
+    const double holdout_auc =
+        concordant / (static_cast<double>(positives.size()) *
+                      static_cast<double>(negatives.size()));
+
+    // Sanity check on the AUC arithmetic above: score the TRAINING rows the same way
+    // and confirm the figure matches what the engine reported in-sample. If these two
+    // disagree, the holdout number is measuring the wrong thing.
+    std::vector<Json> train_features;
+    std::vector<std::int64_t> train_entities;
+    std::vector<double> train_labels;
+    for (const Json& row : train_rows) {
+        Json features = Json::object();
+        for (const std::string& column : resolved.contract.feature_columns) {
+            features[column] = row.at(column);
+        }
+        train_features.push_back(std::move(features));
+        train_entities.push_back(row.at("account_index").get<std::int64_t>());
+        train_labels.push_back(static_cast<double>(row.value("churned", 0)));
+    }
+    const zetta::ml::TableScoreResult in_sample =
+        zetta::ml::score_rows(*model, train_features, train_entities);
+    ASSERT_TRUE(in_sample.ok()) << in_sample.error;
+    std::map<std::int64_t, double> train_risk;
+    for (const auto& score : in_sample.ranked) train_risk[score.entity] = score.risk;
+    std::vector<double> train_pos;
+    std::vector<double> train_neg;
+    for (std::size_t index = 0; index < train_entities.size(); ++index) {
+        (train_labels[index] > 0.5 ? train_pos : train_neg)
+            .push_back(train_risk[train_entities[index]]);
+    }
+    std::sort(train_neg.begin(), train_neg.end());
+    double train_conc = 0.0;
+    for (const double positive : train_pos) {
+        const auto lower = std::lower_bound(train_neg.begin(), train_neg.end(), positive);
+        const auto upper = std::upper_bound(train_neg.begin(), train_neg.end(), positive);
+        train_conc += static_cast<double>(lower - train_neg.begin()) +
+                      0.5 * static_cast<double>(upper - lower);
+    }
+    const double recomputed_in_sample =
+        train_conc / (static_cast<double>(train_pos.size()) *
+                      static_cast<double>(train_neg.size()));
+
     std::cout << "\n=== Motive demo dataset · real GBDT + TreeSHAP ===\n";
-    std::cout << "accounts        " << accounts << "  (churned " << churned << ", "
-              << (100.0 * static_cast<double>(churned) / static_cast<double>(accounts))
+    std::cout << "in-sample AUC recomputed here " << recomputed_in_sample
+              << " (engine said " << metrics.at("auc").get<double>()
+              << ") — these must agree\n";
+    std::cout << "accounts        " << accounts_total << " total ("
+              << accounts << " train / " << holdout_rows.size() << " holdout), churned "
+              << churned << " ("
+              << (100.0 * static_cast<double>(churned) /
+                  static_cast<double>(accounts_total))
               << "%)\n";
+    std::cout << "HOLDOUT AUC     " << holdout_auc
+              << "   <-- the number to publish (rows the model never saw)\n";
     std::cout << "features        " << resolved.contract.feature_columns.size() << "\n";
-    std::cout << "metrics         " << metrics.dump() << "\n";
+    std::cout << "in-sample       " << metrics.dump()
+              << "   <-- computed over the TRAINING rows, not a holdout\n";
     std::cout << "top driver      " << result.top_driver << "\n";
     std::cout << "driver ranking (TreeSHAP, mean |phi|, strongest first):\n";
     for (const auto& [feature, weight] : result.drivers) {
@@ -222,6 +332,22 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
 
     // ---- the assertions that make it a test, not a print --------------------
     EXPECT_EQ(result.ranked.size(), accounts);
+    // The holdout figure is the honest one, and it must still show real discrimination
+    // without being suspiciously perfect.
+    // The bar is deliberately set at what the model ACTUALLY achieves, not at what we
+            // would like. It clears chance comfortably and is nowhere near the ~0.75 a plain
+            // logistic regression reaches on the same rows — that gap is the open question
+            // recorded in the results report, not something to paper over with a lower
+            // threshold and no comment.
+    EXPECT_GT(holdout_auc, 0.55) << "no discrimination on unseen accounts";
+    EXPECT_LT(holdout_auc, 0.95) << "suspiciously separable on unseen accounts";
+    // In-sample always flatters. If it did not exceed the holdout, something is wrong
+    // with how one of the two is being computed.
+    EXPECT_GE(metrics.at("auc").get<double>(), holdout_auc - 0.02);
+    // The AUC arithmetic used for the holdout must reproduce the engine's own in-sample
+    // figure when pointed at the training rows. Otherwise the holdout number is not
+    // comparable to anything.
+    EXPECT_NEAR(recomputed_in_sample, metrics.at("auc").get<double>(), 0.01);
     ASSERT_FALSE(result.drivers.empty()) << "TreeSHAP produced no drivers";
     EXPECT_EQ(result.drivers.size(), resolved.contract.feature_columns.size());
     EXPECT_FALSE(result.top_driver.empty());
