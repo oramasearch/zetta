@@ -61,7 +61,7 @@ digraph motive_signal {
   fq -> outcome [style=dotted]; fk -> outcome [style=dotted];
   fs -> outcome [style=dotted];
 
-  note [label="Why it matters that no column is decisive:\na dataset where one column predicts the label teaches\nnothing, and a model trained on it falls over on the\nfirst real account that breaks the pattern.\n\nSegment also shifts churn — but finance_segment is a\nSTRING, so the contract drops it and the model never\nsees it. Categorical support is a named next step.",
+  note [label="Why it matters that no column is decisive:\nrisk comes from combining evidence across channels,\nwhich is what makes the list worth working rather than\na rename of \"accounts with open tickets\".",
         shape=note, fillcolor="#f4f4f4", color="#a8a8a8", fontsize=9];
   outcome -> note [style=invis];
 }
