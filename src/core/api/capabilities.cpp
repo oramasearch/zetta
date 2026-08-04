@@ -4029,6 +4029,14 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"list_datasets", "list the datasets (tables) available, with row and column counts"},
         {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
         {"list_models", "list the trained models and their measures"},
+        {"get_model",
+         "read one model: its measures, its feature columns, and its ranked churn "
+         "drivers: {\"model\": \"<id or name>\"}"},
+        {"score",
+         "run a trained model and get accounts ranked by risk plus what drives it — "
+         "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
+         "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
+         "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
