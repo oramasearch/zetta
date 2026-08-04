@@ -33,38 +33,6 @@ This is stated first because an in-sample figure quoted as a result is the most 
 a churn model flatters itself, and 0.92 is exactly the kind of number that survives into a
 slide unchallenged.
 
-## How that compares
-
-Published churn models — telecom and SaaS, the closest available comparators — report
-**held-out** AUC in these bands:
-
-| | Typical held-out AUC |
-|---|---|
-| Logistic regression | 0.72 – 0.76 |
-| Random forest | 0.76 – 0.80 |
-| Gradient boosting / XGBoost | 0.78 – 0.86 |
-| Outlier studies on curated public datasets | 0.90+ |
-
-**At 0.62 held out, the current configuration sits below all of them.** At the 0.756 the
-linear baseline reaches, it would sit at the top of the logistic-regression band and just
-below typical tree models — a credible but unremarkable place to be.
-
-Two caveats on the comparison, both of which cut against over-reading it:
-
-- **These are different datasets.** Published figures come from each study's own data. A
-  cross-dataset AUC comparison indicates a band to aim for, not a ranking.
-- **This dataset is synthetic, and its signal is deliberately additive.** Four independent
-  troubles combine linearly into a churn probability, which makes logistic regression close
-  to the *correct* model class by construction and costs a tree model some of its usual
-  advantage. Real communications data carries interactions and non-linearities where trees
-  earn their keep. So the 0.756-vs-0.62 gap overstates how far behind the tree model would
-  be on the real thing — and understates nothing.
-
-**What this does and does not tell you.** It says the pipeline ingests, featurizes, trains,
-explains and ranks correctly, and that the driver ordering is sane. It does **not** yet say
-how well churn can be predicted at Motive — that needs the real event log, and it is the
-first item under next steps.
-
 ## What the pipeline does today
 
 ![pipeline](diagrams/motive-churn-flow.svg)
@@ -152,7 +120,9 @@ channel where much of the evidence cannot be attributed.
    requests. The pipeline itself is verified; this blocks the live click-through and is a
    single characterised defect with a reproduction, not a design problem.
 
-## Reproducing this
+## Where this comes from
+
+Every number above is printed by one test, on branch `feat/dataset-path-table`:
 
 ```
 python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 1500
@@ -160,8 +130,22 @@ ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
     --gtest_filter='MotiveDemoDataset.*'
 ```
 
-Every number above is printed by that run. The generator is deterministic — the same seed
-produces byte-identical rows.
+| What | Where |
+|---|---|
+| **The measurement** — 70/30 split, train, score the held-out rows, compute AUC | [`tests/usecases/churn/test_motive_demo_dataset.cpp:161`](../../../tests/usecases/churn/test_motive_demo_dataset.cpp) |
+| **Why the in-sample figure is in-sample** — each node scores its own training rows | [`src/core/ml/gbdt_train_job.cpp:307`](../../../src/core/ml/gbdt_train_job.cpp) |
+| **The dataset generator**, and the reasoning for every choice in it | [`scripts/gen_motive_demo_dataset.py`](../../../scripts/gen_motive_demo_dataset.py) |
+| **The pipeline run over a connector-landed table** | [`src/core/usecases/churn/churn_solution.cpp:453`](../../../src/core/usecases/churn/churn_solution.cpp) |
+| **Scoring rows the model never saw** | [`src/core/ml/score_table.cpp:127`](../../../src/core/ml/score_table.cpp) |
+| **The column contract** — what is inferred, and what is never inferred | [`src/core/data/dataset_path.cpp`](../../../src/core/data/dataset_path.cpp) · [docs](../../data/dataset-path.md) |
+| **Asking the results questions in chat** | [docs/agent/chatting-with-results.md](../../agent/chatting-with-results.md) |
+
+The generator is deterministic — the same seed produces byte-identical rows, so these
+numbers reproduce exactly rather than approximately.
+
+The test also recomputes the in-sample AUC with the same arithmetic it uses for the
+holdout and asserts the two agree with what the engine reports (0.919417 both). Without
+that check the held-out figure would not be comparable to anything.
 
 ---
 
