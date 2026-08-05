@@ -27,6 +27,35 @@ way a churn model flatters itself, and they are easy to produce. This is not one
 data than on new accounts has memorized rather than learned, and it collapses the first time
 it meets a real account. This one holds up.
 
+### What 0.726 means in practice
+
+Draw one account that churned and one that did not. The model gives the churner the higher
+risk score about 72.6 times in a hundred. Chance is 0.500, perfect separation is 1.000, and
+nothing that predicts human behavior from communication history gets close to 1.000.
+
+With a base rate of 18.4%, a list drawn at random would be right about 18.4% of the time.
+Working the top of a ranked list at 0.726 concentrates far more of the churn into the
+accounts a team actually reaches, which is the whole economic argument for ranking rather
+than alerting.
+
+### On accuracy, the figure most likely to be quoted and the least useful here
+
+| | |
+|---|---|
+| Accuracy | **82.3%** (in sample) |
+| Log loss | 0.408 (in sample) |
+| Predicting that no account ever churns | **81.6%** accurate |
+
+The model is 82.3% accurate. That sounds strong until you notice that 18.4% of accounts
+churn, so a model that simply predicted every account would stay would be right 81.6% of the
+time while being useless.
+
+Accuracy barely separates a working model from a constant answer on any problem where one
+outcome is uncommon. That is why AUC leads this report and accuracy is reported beside it
+rather than as the headline. Both accuracy and log loss are in-sample figures the training
+job reports; neither describes performance on a new account. The held-out AUC is the number
+for that.
+
 ## What drives churn
 
 Computed with TreeSHAP over the trained model — the same method that explains any single
@@ -46,6 +75,19 @@ account's score:
 **No single column carries the model** — the strongest scores 0.631 alone against 0.726 for
 the model. Risk comes from combining evidence across channels, which is what makes the list
 worth working rather than a rename of "accounts with open tickets".
+
+### Why the top three matter together
+
+Repeat escalations, contacts that went unanswered, and billing disputes are three separate
+records of a customer asking for help and not getting the resolution they wanted. They come
+from different systems and different teams, which is why no single one of them was ever going
+to be sufficient on its own, and why an account can look fine in any one system while being
+visibly in trouble across all three.
+
+That is the part a dashboard built on one source cannot reproduce. A support team looking
+only at ticket volume sees the first signal. A finance team looking at disputes sees the
+second. Neither sees the account where all three are moving together, and those are the
+accounts at the top of the list.
 
 **Fleet size is used as a denominator, not as risk.** `seats` barely separates churners on its
 own (0.53 AUC — near chance), yet the model gives it real weight. That is the model learning

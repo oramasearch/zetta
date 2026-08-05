@@ -19,6 +19,7 @@
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/score_table.hpp"
+#include <chrono>
 #include "zetta/node.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -380,6 +381,39 @@ TEST(MotiveDemoDataset, TrainsAndExplainsWithTreeShap) {
         at_risk.push_back(std::move(entry));
     }
     artifact["at_risk"] = std::move(at_risk);
+
+    // ---- where does scoring a whole table spend its time? (#956) ------------
+    // The run trains in seconds and a `score` over the same table did not return
+    // in ten minutes through the API. Two candidates: resolving the dataset,
+    // which samples via SELECT * because the SQL subset has no LIMIT, or the
+    // scoring itself. Timing them apart is the whole diagnosis.
+    {
+        const auto clock_now = [] { return std::chrono::steady_clock::now(); };
+        const auto ms = [](auto from, auto to) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+        };
+
+        const auto resolve_start = clock_now();
+        const zetta::data::ResolvedDataset again = zetta::data::resolve_dataset(
+            host.node, zetta::data::parse_dataset_path("motive_demo.account_features"),
+            overrides, zetta::data::default_dataset_sampler(host.node, &host.cluster));
+        const auto resolve_end = clock_now();
+        ASSERT_TRUE(again.ok()) << again.error;
+
+        CpuDevice score_device;
+        const auto score_start = clock_now();
+        const zetta::ml::TableScoreResult scored = zetta::ml::score_table(
+            host.node, *model, again.table_id, again.contract, score_device);
+        const auto score_end = clock_now();
+        ASSERT_TRUE(scored.ok()) << scored.error;
+
+        std::cout << "\n=== #956 · where scoring spends its time ===\n"
+                  << "resolve_dataset  " << ms(resolve_start, resolve_end) << " ms"
+                  << "   (samples via SELECT *)\n"
+                  << "score_table      " << ms(score_start, score_end) << " ms"
+                  << "   (" << scored.rows_scored << " rows scored)\n"
+                  << std::endl;
+    }
 
     const fs::path out = dir / "run-report.json";
     std::ofstream(out) << artifact.dump(2) << "\n";

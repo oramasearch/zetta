@@ -21,10 +21,23 @@ is the figure that describes how it behaves on an account it has not seen.
 **In sample: AUC 0.770**, over the 10,500 accounts it trained on. Accuracy 0.823, log-loss
 0.408.
 
+**Accuracy needs its base rate beside it.** 18.4% of accounts churn, so predicting that no
+account ever churns would be 81.6% accurate. The model's 82.3% is measured on the rows it
+trained on and sits barely above that constant answer, which is what accuracy does on any
+problem where one outcome is uncommon. It is reported because the training job produces it,
+not because it is the figure to judge the model by.
+
 **The gap between them is 0.04.** A model that scores far higher on its own training data
 than on new accounts has memorised those accounts rather than learned from them, and it
 degrades sharply on anything new. A gap this small means the training-set score is not
 carrying the result.
+
+## What the pipeline did
+
+![pipeline](diagrams/motive-churn-flow.svg)
+
+Connect, featurize, train, explain, rank. The model is a step inside the pipeline rather than
+something wrapped around it, so training happened because the pipeline ran.
 
 ## What drives the outcome
 
@@ -71,6 +84,18 @@ strongest drivers, shown at their values for that account.
 
 Accounts are identified by their entity key, which is the integer column the model was given.
 Business names are not part of this run's facts and are not supplied here.
+
+**Read the evidence columns across each other, not down any one of them.** An account near the
+top on all three is in a different situation from one carried by a single large number, and
+the second is the more likely false positive. The evidence is shown so that judgment stays
+with the person working the list rather than with the score.
+
+**The list has a head, and that is what makes it worth working.** The top account scores 0.766
+and the twentieth scores 0.709, so the first few names are meaningfully more exposed rather
+than simply first in an arbitrary order. None of them is near certainty: these are the highest
+scores in a population of 15,000, some accounts at the top will renew, and some further down
+will leave. A ranked list is a way to spend attention where it pays best, not a prediction
+about any one customer.
 
 ## What to check before acting on this
 

@@ -79,8 +79,16 @@ TableScoreResult score_table(Node& node, const Model& model, const std::string& 
             ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
     }
 
-    ddf::LocalShardResult shard =
-        ddf::load_local_partitions(node, table_id, schema, device);
+    // Gated onto the owner thread (#624, #956). This reads the partition catalog
+    // and the blob store off the Node tree, which is owner-thread only. In a test
+    // the caller IS the owner and it works; through the API it is not, and the
+    // call never returns — a `score` over 15,000 rows was killed at ten minutes
+    // while the same work takes 40 ms in process. Identical to the gate the churn
+    // executor's shard load needed, for identical reasons.
+    ddf::LocalShardResult shard;
+    node.run_on_owner([&] {
+        shard = ddf::load_local_partitions(node, table_id, schema, device);
+    });
     if (!shard.ok()) {
         // A column the model needs and the table does not have surfaces here. Say
         // which columns were expected: the remedy is a query that selects them.
