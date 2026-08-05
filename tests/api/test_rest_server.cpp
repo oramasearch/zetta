@@ -280,7 +280,7 @@ TEST_F(RestServerFixture, SpecIndexIsServed) {
     EXPECT_EQ(json_of(missing).at("error").at("code"), "not_found");
 }
 
-TEST(RestServerAuth, ConfiguredTokenIsRequired) {
+TEST(RestServerAuth, OpenApiIsAPublicDiscoveryDoc) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
@@ -312,8 +312,12 @@ TEST(RestServerAuth, ConfiguredTokenIsRequired) {
     }
     client.join();
 
-    EXPECT_EQ(denied.status, 401);
-    EXPECT_EQ(wrong.status, 401);
+    // /v1/openapi.json is a PUBLIC discovery doc — registered before the auth
+    // gate (like /llms.txt and /mcp.md): it serves with no token, and a wrong
+    // token doesn't matter on a public route. The gated /v1/* data routes keep
+    // their 401s (test_auth_gate.cpp).
+    EXPECT_EQ(denied.status, 200);
+    EXPECT_EQ(wrong.status, 200);
     EXPECT_EQ(allowed.status, 200);
 
     server.stop();
