@@ -85,6 +85,10 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "partition_only": {
+                    "description": "do NOT capture the rows into the replicated document (#833) — the data lives only in its partition bodies, which their owners hold. This is the right setting for connector-sized data: capturing rows replicates every one of them to every peer, and reconciling them back rewrites the whole local store per row, which saturates the node's owner loop. Reads go through the scatter-gather select. Default false, for back-compatibility with small replicated tables",
+                    "type": "boolean"
+                  },
                   "partitioned": {
                     "description": "shard + place the rows across the cluster (default true)",
                     "type": "boolean"
@@ -372,8 +376,39 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff: only rows with time_column <= as_of contribute",
+                        "type": "number"
+                      },
+                      "entity_column": {
+                        "description": "the integer key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "feature_columns": {
+                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "dataset_path": {
-                    "description": "a churn dataset dir on the node (default: the built-in demo)",
+                    "description": "`database.table` (a connection/query landed it) or a churn dataset dir on the node (default: the built-in demo)",
                     "type": "string"
                   },
                   "graph_name": {
@@ -7909,8 +7944,39 @@
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
                   },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff: only rows with time_column <= as_of contribute",
+                        "type": "number"
+                      },
+                      "entity_column": {
+                        "description": "the integer key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "feature_columns": {
+                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "dataset_path": {
-                    "description": "a churn dataset directory on the node's filesystem (default: the built-in demo dataset)",
+                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
                   "graph": {
@@ -7970,6 +8036,17 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "dataset": {
+                          "description": "table datasets only: the resolved column contract the run trained under",
+                          "type": "object"
+                        },
+                        "dataset_notes": {
+                          "description": "what was inferred rather than given — read these before trusting the model",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
                         "engine": {
                           "enum": [
                             "churn",
@@ -8193,6 +8270,241 @@
         "summary": "Save a graph",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/score": {
+      "get": {
+        "description": "Run a registered model over a `database.table` dataset (compute-near-data, this node's own partitions) or over rows you supply, and get the entities ranked by risk plus what drives it. This is how the at-risk list is answerable after the run that produced it has ended, and how an account that is not in the data at all gets a score. Read-only. Requires data:predict.",
+        "operationId": "score",
+        "parameters": [
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                  "properties": {
+                    "as_of": {
+                      "description": "the cutoff: only rows with time_column <= as_of contribute",
+                      "type": "number"
+                    },
+                    "entity_column": {
+                      "description": "the integer key of the thing being scored, one row per entity",
+                      "type": "string"
+                    },
+                    "feature_columns": {
+                      "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                      "items": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "label_column": {
+                      "description": "the {0,1} training target",
+                      "type": "string"
+                    },
+                    "time_column": {
+                      "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+            "in": "query",
+            "name": "dataset",
+            "required": false
+          },
+          {
+            "description": "`database.table` to score every row of; omit when supplying `rows`",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "`database.table` to score every row of; omit when supplying `rows`",
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "entity key per supplied row (default: the row's index)",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "entity key per supplied row (default: the row's index)",
+            "in": "query",
+            "name": "entities",
+            "required": false
+          },
+          {
+            "description": "the registered model's id, or its name",
+            "in": "query",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "description": "the registered model's id, or its name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+            "in": "query",
+            "name": "rows",
+            "required": false
+          },
+          {
+            "description": "cap the ranked list (0 = all)",
+            "in": "query",
+            "name": "top_k",
+            "required": false,
+            "schema": {
+              "description": "cap the ranked list (0 = all)",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "drivers": {
+                          "description": "population drivers, strongest first",
+                          "items": {
+                            "properties": {
+                              "feature": {
+                                "type": "string"
+                              },
+                              "importance": {
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "feature_columns": {
+                          "description": "what the model was trained on, in the order it expects",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "partitions_read": {
+                          "type": "integer"
+                        },
+                        "ranked": {
+                          "description": "entities by risk, highest first",
+                          "items": {
+                            "properties": {
+                              "entity": {
+                                "type": "integer"
+                              },
+                              "risk": {
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "rows_scored": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "ranked",
+                        "feature_columns",
+                        "rows_scored"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Score a dataset or rows through a trained model",
+        "tags": [
+          "read"
         ]
       }
     },

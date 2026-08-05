@@ -594,6 +594,7 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/add_dataset.cpp
+  src/core/data/dataset_path.cpp
   src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
   src/core/connect/postgres_runner.cpp
@@ -635,6 +636,7 @@ add_library(zetta-core STATIC
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
+  src/core/ml/score_table.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
   src/core/ml/local_featurize_train_job.cpp

@@ -238,6 +238,18 @@ level can be trusted — a stale card is worse than none.
 > answer is "none", the bug is in the calling code, not the model.** A model
 > whose card you have not read is a model you may not modify.
 
+> **NEVER publish an in-sample metric as a result.** `GbdtTrainResult.metrics` — AUC,
+> accuracy, log-loss — is computed over **the rows the model trained on**: `run_train_job`
+> has each node score its own local rows and gathers the pairs, and there is no train/
+> validation split anywhere in the training path (the one the engine knows about exists
+> only for *calibration*). Those metrics are written onto the Model record and surfaced as
+> "model quality" by `system.models`, `get_model`, the chat agent's grounding and the GUI —
+> so **every one of those is showing a training-set score.** A held-out figure must be
+> measured separately (see `tests/usecases/churn/test_motive_demo_dataset.cpp`), reported
+> beside the in-sample one, and quoted first; the GAP between them is the overfitting
+> signal and is only readable when both are present. This already reached a committed
+> report once ([#953](https://github.com/oramasearch/zetta/issues/953)).
+>
 > **Training / eval always produces a validation report.** Any training,
 > retraining, fine-tune, or evaluation run — of the base agent or a fork — MUST
 > write a dated validation report to [`docs/reports/`](docs/reports/README.md)
@@ -247,6 +259,8 @@ level can be trusted — a stale card is worse than none.
 > tracking issue. A number with no dated report is not evidence — the report is
 > the deliverable, the checkpoint is not. See the runbooks for the template.
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
+| **Feeding a customer's own data to a pipeline** — the ONE `dataset_path` grammar (a directory OR `database.table`) and the column contract that says which column is the entity, the label, the features | [`docs/data/dataset-path.md`](docs/data/dataset-path.md) — the cutoff is NEVER inferred; it decides whether the model is honest |
+| **The report a run produces**, and asking a finished run what it found | [`docs/pipeline/run-report-prompt.md`](docs/pipeline/run-report-prompt.md) + the **run-report** skill · [`docs/agent/chatting-with-results.md`](docs/agent/chatting-with-results.md) · regenerate: [`docs/runbooks/regenerating-the-run-report.md`](docs/runbooks/regenerating-the-run-report.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |
@@ -686,5 +700,10 @@ Project skills live in `.claude/skills/` (committed, shared):
   HuggingFace org: private-by-default (verified, never assumed), a corpus goes up with its
   canary, a checkpoint names the exact corpus it learned from, and every artifact carries an
   honest card that states its limitations rather than only its wins.
+- **run-report** — generate the report a pipeline run produces (model quality, drivers, the
+  ranked at-risk list) from the run's **facts artifact**. Enforces the rule that makes it
+  trustworthy — the engine computes every number and the narrator only arranges them — with a
+  script that traces every figure in the prose back to the artifact and fails on any that
+  cannot be found.
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.

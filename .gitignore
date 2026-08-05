@@ -77,3 +77,8 @@ __pycache__/
 # Publish a new version with `hf upload` (see docs/agent/training-agents-runbook.md).
 data/corpora/
 data/sft-logs/
+
+# Generated demo datasets — reproducible from scripts/gen_motive_demo_dataset.py
+# (the generator + manifest are tracked; the rows are not — 80 MB of CSV).
+data/demo/*
+!data/demo/README.md

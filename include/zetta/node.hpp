@@ -956,6 +956,9 @@ private:
 
     // Rebuild dataset_partitions_ by scanning config_.data_dir. Called from start().
     void load_dataset_partitions();
+    // Settle deferred storage writes after a reconcile pass (#952). Owner-thread
+    // only, like every other tree walk.
+    void flush_stores();
 
     // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
     // start(). Malformed event files are skipped at the boundary (schema).

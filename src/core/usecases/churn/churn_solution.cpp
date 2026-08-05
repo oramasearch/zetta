@@ -409,6 +409,113 @@ ChurnNumericShards encode_churn_dataset(const ChurnDataset& dataset) {
     return shards;
 }
 
+DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contract) {
+    DataFrameSchema schema;
+    // `field` is the JSON key read from the row, `name` the column in the frame.
+    // The entity is renamed to the canonical `entity` on the way in: everything
+    // downstream of featurize — the feature frame, the score job, the ranked list —
+    // names it that, and threading a per-customer spelling through all of them
+    // would be a second name for one concept.
+    schema.columns.push_back(ColumnSchema{.name = std::string(kTableEntityColumn),
+                                          .field = contract.entity_column,
+                                          .dtype = DataType::Int64});
+    for (const std::string& feature : contract.feature_columns) {
+        schema.columns.push_back(
+            ColumnSchema{.name = feature, .field = feature, .dtype = DataType::Float64});
+    }
+    if (!contract.label_column.empty()) {
+        schema.columns.push_back(ColumnSchema{.name = contract.label_column,
+                                              .field = contract.label_column,
+                                              .dtype = DataType::Int64});
+    }
+    if (!contract.time_column.empty()) {
+        schema.columns.push_back(ColumnSchema{.name = contract.time_column,
+                                              .field = contract.time_column,
+                                              .dtype = DataType::Float64});
+    }
+    return schema;
+}
+
+ddf::FeaturizeSpec table_featurize_spec(const zetta::data::DatasetContract& contract) {
+    ddf::FeaturizeSpec spec;
+    spec.entity_column = std::string(kTableEntityColumn);
+    spec.time_column = contract.time_column;
+    spec.as_of = contract.as_of;
+    // Static carry-through: no windowed event features. A connector query returns
+    // one already-featurized row per entity — the windowing happened in the
+    // warehouse SQL, and inventing event aggregates over rows that are not events
+    // would be arithmetic on a shape that does not exist.
+    spec.account_features = contract.feature_columns;
+    spec.label_column = contract.label_column;
+    return spec;
+}
+
+ChurnSolutionResult run_churn_solution_on_table(
+    Node& node, compute::ComputeDevice& device, const ir::ExecutionGraph& graph,
+    const ChurnTableInput& input, const ChurnSolutionOptions& options) {
+    const auto fail = [](std::string reason) {
+        ChurnSolutionResult result;
+        result.execution.ok = false;
+        result.execution.error = std::move(reason);
+        return result;
+    };
+    if (input.empty()) return fail("no dataset table given");
+    if (input.contract.entity_column.empty() || input.contract.label_column.empty()) {
+        return fail(
+            "the dataset contract needs an entity column and a label column — resolve "
+            "it with zetta::data::resolve_dataset");
+    }
+    if (input.contract.feature_columns.empty()) {
+        return fail("the dataset contract names no feature columns");
+    }
+
+    compute::JobCoordinator* coordinator = node.job_coordinator();
+    if (coordinator == nullptr) {
+        return fail(
+            "no compute plane attached to this node (attach_cluster first) — the churn "
+            "pipeline runs on the node's live JobCoordinator");
+    }
+
+    // The SPMD rounds need every participant co-running. The in-memory path fans a
+    // launch out over the signal plane; the table path's fan-out is not wired yet,
+    // so say so rather than train one node's shard and report it as the whole.
+    const std::vector<std::string> roster = coordinator->collectives().participants();
+    if (options.coordinate && roster.size() > 1) {
+        return fail(
+            "running a connector-landed table across " + std::to_string(roster.size()) +
+            " nodes is not wired yet — each node would train on its own partitions "
+            "with nothing combining them. Run it on a single-member cluster, or use "
+            "the in-memory dataset path.");
+    }
+
+    ChurnPipelineConfig pipeline;
+    pipeline.accounts_table = input.table_id;
+    pipeline.accounts_schema = table_accounts_schema(input.contract);
+    pipeline.events_schema = churn_events_schema();  // empty frame; static mode
+    pipeline.featurize = table_featurize_spec(input.contract);
+    pipeline.params = options.params;
+    pipeline.calibration = options.calibration;
+    pipeline.entity_column = std::string(kTableEntityColumn);
+    pipeline.top_k = options.top_k;
+    pipeline.model_name = options.model_name;
+    pipeline.project = options.project;
+    pipeline.graph = options.graph;
+
+    auto churn = std::make_shared<ChurnStepExecutor>(node, *coordinator, device,
+                                                     std::move(pipeline));
+    zetta::pipeline::GraphExecutor executor{churn};
+
+    ChurnSolutionResult result;
+    result.execution = executor.execute(node, graph, options.project, options.graph,
+                                        options.cancel);
+    result.model_id = churn->model_id();
+    result.ranked = churn->ranked();
+    result.drivers = churn->driver_ranking();
+    result.top_driver = churn->top_driver();
+    result.playbook = churn->playbook();
+    return result;
+}
+
 ChurnSolutionResult run_churn_solution_on_node(
     Node& node, compute::ComputeDevice& device,
     const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
@@ -547,14 +654,24 @@ std::shared_ptr<AsyncChurnRun> AsyncChurnRun::start(Node& node,
     // No make_shared: the constructor is private (start() is the one way in,
     // so a handle always has its worker running).
     return std::shared_ptr<AsyncChurnRun>(new AsyncChurnRun(
-        node, std::move(graph), std::move(dataset), std::move(options)));
+        node, std::move(graph), std::move(dataset), {}, std::move(options)));
+}
+
+std::shared_ptr<AsyncChurnRun> AsyncChurnRun::start(Node& node,
+                                                    ir::ExecutionGraph graph,
+                                                    ChurnTableInput table,
+                                                    ChurnSolutionOptions options) {
+    return std::shared_ptr<AsyncChurnRun>(new AsyncChurnRun(
+        node, std::move(graph), {}, std::move(table), std::move(options)));
 }
 
 AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
-                             ChurnDataset dataset, ChurnSolutionOptions options)
+                             ChurnDataset dataset, ChurnTableInput table,
+                             ChurnSolutionOptions options)
     : node_(node),
       graph_(std::move(graph)),
       dataset_(std::move(dataset)),
+      table_(std::move(table)),
       options_(std::move(options)),
       project_(options_.project),
       device_(std::make_unique<compute::CpuDevice>()),
@@ -564,8 +681,10 @@ AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
     worker_ = std::thread([this] {
         // Everything the worker reads it owns (the by-value snapshots above);
         // every node-tree write on this path gates through Node::run_on_owner.
-        result_ = run_churn_solution_on_node(node_, *device_, graph_, dataset_,
-                                             options_);
+        result_ = table_.empty() ? run_churn_solution_on_node(node_, *device_, graph_,
+                                                              dataset_, options_)
+                                 : run_churn_solution_on_table(node_, *device_, graph_,
+                                                               table_, options_);
         done_.store(true, std::memory_order_release);  // last act
     });
 }
