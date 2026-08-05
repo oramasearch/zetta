@@ -60,7 +60,7 @@ void render_model_card(const zetta::ml::Model& model);
 // completed search's scatter-gather from its per-node provenance, #643).
 //
 // Flow palette: near-data / local work reads GREEN (it stays home), wire /
-// collective movement reads INK (it crosses the network). Coral stays reserved
+// collective movement reads INK (it crosses the network). The accent stays reserved
 // for the selection accent (Orama discipline).
 inline constexpr ImU32 kFlowLocal = IM_COL32(29, 158, 117, 235);  // kDotActive — near data / placed
 inline constexpr ImU32 kFlowWire = IM_COL32(95, 95, 92, 220);     // kInkMuted — over the wire

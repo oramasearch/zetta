@@ -155,7 +155,7 @@ prefix for new tables (legacy ones await
 - GUI work follows the **Orama design system** and the thin-renderer rule —
   [../gui/design-system.md](../gui/design-system.md) +
   [../../src/gui/CLAUDE.md](../../src/gui/CLAUDE.md). Product copy: sentence
-  case, no em-dashes (use `·`/colons), coral used surgically.
+  case, no em-dashes (use `·`/colons), the accent blue used surgically.
 - Tests: one file per area under the domain's `tests/<d>/`, listed explicitly
   in `tests/CMakeLists.txt`; patient convergence loops for multi-node tests;
   no foreign runtime in build/CI — see

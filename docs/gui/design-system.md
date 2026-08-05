@@ -1,33 +1,35 @@
 # Design system (headed GUI)
 
-The headed app follows the **Orama design system** — the same visual language as
-the Orama Zetta marketing site and the product surfaces. This page is the
-zetta-GUI projection of it: the exact tokens, the typography and copy rules, the
-coral discipline, and the component grammar **as implemented in
+The headed app follows the **Orama Studio design system** — the visual language
+imported from the design repo (oramasearch/orama-design; the import ledger is
+docs/product/experience/design-sync.md, #875). This page is the zetta-GUI
+projection of it: the exact tokens, the typography and copy rules, the accent
+discipline, and the component grammar **as implemented in
 `src/gui/app_internal.hpp`** (the one shared grammar header). Follow it
 whenever you add or change GUI.
 
-> **Canonical source.** The full system lives in the `orama-work` repo
-> (`modules/orama_design_review/design-system/` — `DESIGN.md` +
-> `colors_and_type.css`), with the marketing site as the worked reference
-> (`modules/amaro-marketingsite`). When the canonical CSS and this page diverge
-> on a *token value*, the CSS wins; update it there, then here. This page is
+> **Canonical source.** The design system lives in the private
+> `oramasearch/orama-design` repo (`packages/design-system/` — Storybook is the
+> visual source of truth; DTCG tokens under `tokens/dtcg/`). When the design
+> system and this page diverge on a *token value*, the design system wins;
+> sync it via the studio-design-sync skill and record it in the ledger. This page is
 > self-contained on purpose (the tokens are baked into `app_internal.hpp`), so
 > the zetta repo never has to reach outside itself to render correctly.
 
 ## Foundations (the four that govern everything)
 
-1. **One coral, used surgically.** Coral `#E2545A` is the brand "this is Orama /
-   you are here" signal — the active-view checkmark, the selected graph-node
+1. **One action hue, used surgically.** The accent — Carbon Blue 60 `#0F62FE`
+   (the Studio design system's one action color) — is the "this is Orama /
+   you are here" signal: the active-view checkmark, the selected graph-node
    border, the tagline in the About dialog. **Never** for status, never
    on hover, at most a few per screen. If a second thing needs emphasis, use
-   charcoal/ink, not coral.
+   charcoal/ink, not the accent.
 2. **Density over decoration.** Practitioner tool: tight, typographic, no
    ornament. Visual interest comes from type + measure, not boxes/gradients.
 3. **Typographic hierarchy, not chrome.** Hierarchy from size, weight, colour,
-   and case — not shadows or borders-for-show. (Geist is a variable font; we
-   render its Regular instance, so there is effectively one weight — lean on size
-   and colour.)
+   and case — not shadows or borders-for-show. (IBM Plex Sans Regular carries
+   the body; the SemiBold face is reserved for the heading role — headings plus
+   the sidebar lockup.)
 4. **Architectural rigor.** Hairline rules, mono labels, dots as markers,
    deliberate negative space. Everything sits on a known plane.
 
@@ -43,8 +45,9 @@ first.
 
 | Role | Token | Hex | In code |
 |------|-------|-----|---------|
-| Brand accent ("you are here") | coral | `#E2545A` | `kCoral` |
-| Coral hover | coral-hover | `#D44349` | `kCoralHover` |
+| Brand accent ("you are here") | accent (Carbon Blue 60) | `#0F62FE` | `kAccent` |
+| Accent hover | accent-hover (Blue 70) | `#0043CE` | `kAccentHover` |
+| Accent wash (selected fill) | accent-wash (Blue 10) | `#EDF5FF` | `kAccentWash` |
 | Product text | ink-primary | `#1C1C1A` | `kInkPrimary` |
 | Body / secondary | ink-secondary | `#444441` | `kInkSecondary` |
 | Section labels / subtitles | ink-muted | `#5F5F5C` | `kInkMuted` |
@@ -54,7 +57,7 @@ first.
 | Cards / raised | white | `#FFFFFF` | `kWhite` (`ChildBg`) |
 | Hairline border | border | `#E0E0E0` | `kBorder` |
 
-**Semantic state palette — for status, never coral, never blue:**
+**Semantic state palette — for status, never the accent:**
 
 | State | Hex | In code |
 |-------|-----|---------|
@@ -67,14 +70,14 @@ Hover/selected washes and ghost-button fills are black at low alpha
 
 ## Typography
 
-- **Geist** (sans) is the UI face; **Geist Mono** is the label / count / metric /
+- **IBM Plex Sans** is the UI face (SemiBold for headings); **IBM Plex Mono** is the label / count / metric /
   code face. Both are embedded (see [build.md](../build.md) and
   `assets/fonts/README.md`); `App::mono_font_` holds the mono face, pushed via
   `ImGui::PushFont` where the mono role applies.
 - **Use mono for:** the node-status strip, eyebrow section labels (uppercase),
   counts/IDs/timestamps, and code (paths, CLI commands, SQL).
 - **Sentence case for everything.** "New project", "Cloud inspector",
-  "Correctness gate" — never Title Case. Proper nouns (Orama Zetta, AWS, SQL,
+  "Verification criteria" — never Title Case. Proper nouns (Orama Studio, AWS, SQL,
   ImGui) keep their casing.
 - **No em-dashes in product copy.** Use a colon, comma, or parentheses; use the
   middle dot `·` as the separator in metadata strips (`orama zetta · running ·
@@ -96,14 +99,14 @@ Hover/selected washes and ghost-button fills are black at low alpha
 
 - **Theme.** `apply_orama_theme()` paints the ImGui style: `StyleColorsLight`
   base, then the tokens above — ink text on canvas, white card child-panes,
-  hairline borders, radius-8 corners, soft-wash selection (never a coral/charcoal
-  fill), coral checkmark/nav-highlight.
+  hairline borders, radius-8 corners, soft-wash selection (never an accent/charcoal
+  fill), accent checkmark/nav-highlight.
 - **Buttons.** Ghost by default (faint wash + hairline border, ink text). A true
   primary "New …" action is **charcoal-filled, white text** (push `ImGuiCol_Button
   = kInkPrimary` + `Text = kWhite`); see `primary_button` / `empty_state` in
-  `app_internal.hpp`. Coral is never a button
+  `app_internal.hpp`. The accent is never a button
   fill (there is no "send" here).
-- **Selection.** Soft black wash (`ImGuiCol_Header`), never coral or charcoal
+- **Selection.** Soft black wash (`ImGuiCol_Header`), never accent or charcoal
   fill.
 - **Status dots + labels + pills.** `status_dot(tone)` draws the design
   system's small indicator dot inline (green = active/open, amber =
@@ -133,8 +136,8 @@ Hover/selected washes and ghost-button fills are black at low alpha
 ## Self-check before adding GUI
 
 - Sentence case; no Title Case, no em-dashes in copy.
-- Numbers/IDs/paths/labels in Geist Mono.
-- Coral only for "you are here" / one focal action — never status, never hover,
+- Numbers/IDs/paths/labels in IBM Plex Mono.
+- The accent only for "you are here" / one focal action — never status, never hover,
   at most a few per screen.
 - Status uses the semantic green/amber/red, with a dot **and** a word.
 - Flat: hairline borders + washes, no gradients, no decorative shadows.
@@ -142,6 +145,6 @@ Hover/selected washes and ghost-button fills are black at low alpha
 
 ## Related
 
-- [build.md](../build.md) — how the Geist fonts are embedded.
+- [build.md](../build.md) — how the IBM Plex fonts are embedded.
 - [cloud-inspector.md](../cloud/cloud-inspector.md) — a worked example of the grammar
   (dots, eyebrows, mono code, the consent callout).

@@ -78,9 +78,9 @@ owns which partition* two ways:
   entries — it lives in full on every node — so the panel says so plainly and
   shows nothing further.
 - **A partitioned dataset** gets a **node-box overlay** reusing the
-  [Cluster view](../cluster/cluster.md)'s spatial grammar (the same white-card / coral-accent
+  [Cluster view](../cluster/cluster.md)'s spatial grammar (the same white-card / accent
   box constants and short-id helper): one box per node in a wrapping grid. A node
-  that **owns a partition of this dataset** is highlighted (coral wash + border,
+  that **owns a partition of this dataset** is highlighted (accent wash + border,
   the owner accent); one that owns none is the plain card. Each box caption is the
   share that node holds — the partition count and the covered row total — so the
   placement reads at a glance. The **node universe** is the union of live cluster

@@ -73,17 +73,18 @@
 #include <vector>
 
 #include "zetta_font_sans.hpp"
+#include "zetta_font_heading.hpp"
 #include "zetta_font_mono.hpp"
 
 namespace zetta::gui {
 namespace {
 
 // Base logical font size; multiplied by the OS content scale and the user's
-// View → Text size multiplier. The Geist Mono face is built a touch smaller
+// View → Text size multiplier. The IBM Plex Mono face is built a touch smaller
 // (kMonoScale) for the design system's label / count / metric role.
 constexpr float kBaseFontPixels = 17.0f;
 constexpr float kMonoScale = 0.86f;
-// Larger Geist cut for page_header titles (the heading role).
+// Larger IBM Plex Sans SemiBold cut for page_header titles (the heading role).
 constexpr float kHeadingScale = 1.35f;
 
 float ui_content_scale(SDL_Window* window) {
@@ -99,9 +100,9 @@ float ui_pixel_density(SDL_Window* window) {
 }
 
 // Paint the ImGui style with the Orama design system (light). Flat surfaces,
-// hairline borders, modest radii, ink text on canvas. Coral is reserved for the
-// "you are here" accent (menu checkmarks, selected-graph node border, the one
-// focal action); status uses the semantic green/amber/red, never coral.
+// hairline borders, modest radii, ink text on canvas. The accent blue is reserved for
+// "you are here" (menu checkmarks, selected-graph node border, the one
+// focal action); status uses the semantic green/amber/red, never the accent.
 void apply_orama_theme(ImGuiStyle& style) {
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text] = kInkPrimary;
@@ -121,15 +122,15 @@ void apply_orama_theme(ImGuiStyle& style) {
     colors[ImGuiCol_ScrollbarGrab] = wash(0.16f);
     colors[ImGuiCol_ScrollbarGrabHovered] = wash(0.24f);
     colors[ImGuiCol_ScrollbarGrabActive] = wash(0.32f);
-    colors[ImGuiCol_CheckMark] = kCoral;        // "you are here" (active view)
+    colors[ImGuiCol_CheckMark] = kAccent;        // "you are here" (active view)
     colors[ImGuiCol_SliderGrab] = kInkMuted;
-    colors[ImGuiCol_SliderGrabActive] = kCoral;
+    colors[ImGuiCol_SliderGrabActive] = kAccent;
     // Ghost buttons: a faint wash + hairline border, ink text.
     colors[ImGuiCol_Button] = wash(0.03f);
     colors[ImGuiCol_ButtonHovered] = wash(0.06f);
     colors[ImGuiCol_ButtonActive] = wash(0.10f);
-    // Selection (Selectable / MenuItem / Header): a soft wash, never a coral or
-    // charcoal fill — coral stays reserved for the accent.
+    // Selection (Selectable / MenuItem / Header): a soft wash, never an accent or
+    // charcoal fill — the accent blue stays reserved for "you are here".
     colors[ImGuiCol_Header] = wash(0.05f);
     colors[ImGuiCol_HeaderHovered] = wash(0.04f);
     colors[ImGuiCol_HeaderActive] = wash(0.06f);
@@ -142,7 +143,7 @@ void apply_orama_theme(ImGuiStyle& style) {
     colors[ImGuiCol_PlotHistogram] = kInkSecondary;  // metric / confidence bars
     colors[ImGuiCol_PlotHistogramHovered] = kInkPrimary;
     colors[ImGuiCol_TextSelectedBg] = ImVec4(0.886f, 0.329f, 0.353f, 0.18f);
-    colors[ImGuiCol_NavHighlight] = kCoral;
+    colors[ImGuiCol_NavHighlight] = kAccent;
 
     // Flat + measured: hairline borders, modest radii (design radius-8), no
     // decorative rounding on the full-window root.
@@ -164,7 +165,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 
 }  // namespace
 
-// Ambient Geist Mono face for the file-local render_* helpers — declared
+// Ambient IBM Plex Mono face for the file-local render_* helpers — declared
 // extern in app_internal.hpp, defined here (and assigned once per frame at the
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
@@ -263,7 +264,7 @@ bool App::init() {
         if (win_h < 600) win_h = 600;
     }
 
-    const std::string title = std::string{"Orama Zetta "} + kVersion;
+    const std::string title = std::string{"Orama Studio "} + kVersion;
     window_ = SDL_CreateWindow(
         title.c_str(), win_w, win_h,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -332,7 +333,7 @@ void App::apply_display_scale() {
 
     // Glyph coverage beyond ImGui's default Latin-1: General Punctuation (so a
     // stray en/em-dash, bullet, or ellipsis renders instead of a "?" tofu) plus
-    // arrows. Geist covers these. Static so the pointer stays valid until Build.
+    // arrows. IBM Plex covers these. Static so the pointer stays valid until Build.
     static const ImWchar kRanges[] = {
         0x0020, 0x00FF,  // Basic Latin + Latin-1 Supplement
         0x2010, 0x205E,  // General Punctuation: – — ' ' " " • …
@@ -355,12 +356,12 @@ void App::apply_display_scale() {
                                               &cfg, kRanges);
     };
 
-    // Geist (sans) is the default UI face; Geist Mono (a touch smaller) is the
+    // IBM Plex Sans is the default UI face; IBM Plex Mono (a touch smaller) is the
     // design system's label / count / metric face, captured for PushFont.
-    add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * scale);
-    mono_font_ = add_font(kGeistMono, kGeistMono_len,
+    add_font(kPlexSans, kPlexSans_len, kBaseFontPixels * scale);
+    mono_font_ = add_font(kPlexMono, kPlexMono_len,
                           kBaseFontPixels * kMonoScale * scale);
-    heading_font_ = add_font(kGeistSans, kGeistSans_len,
+    heading_font_ = add_font(kPlexSansSemiBold, kPlexSansSemiBold_len,
                              kBaseFontPixels * kHeadingScale * scale);
 
     io.Fonts->Build();
@@ -451,7 +452,7 @@ void App::draw_menu_bar() {
             }
             ImGui::EndMenu();
         }
-        if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
+        if (ImGui::MenuItem("About Orama Studio")) about_requested_ = true;
         ImGui::EndMenu();
     }
 

@@ -463,7 +463,7 @@ void App::draw_search_cluster_strip(const zetta::index::SearchResult& result) {
                               7.0f, 0, 2.0f);
             }
             draw->AddRectFilled(top_left, bottom_right, kCanvasBoxFill, 6.0f);
-            // Coral border on the coordinating node — the "you are here"
+            // The accent border on the coordinating node — the "you are here"
             // accent; peers keep the hairline.
             draw->AddRect(top_left, bottom_right,
                           contribution.local ? kCanvasBoxBorderSelected

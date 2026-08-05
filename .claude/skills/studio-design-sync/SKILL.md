@@ -59,15 +59,13 @@ reduced-motion, impact previews).
 - The web app's **self-contained page rule** (`web_ui.hpp` header comment): no
   external assets, no framework — fonts are embedded/served by the node or
   fall back to the system stack.
-- **Rendering philosophy** (Steve, 2026-07-23). Web: **C++ server-rendered
-  stays** — the response time is part of the product; prefer CSS for motion;
-  hand-write minimal JavaScript only where interaction genuinely demands it
-  (avoiding a full-page flicker on an in-place update, streaming chat — the
-  Shell REPL/Notebooks pattern is the precedent), never a framework. Desktop:
-  **SDL3-first** — Dear ImGui is a temporary crutch, kept only where it
-  already gives a good experience; new design-led rendering goes custom SDL3
-  (pixel-perfect), so the desktop matches the web and the design's style
-  **and motion design** at the highest achievable parity.
+- **Rendering philosophy** (revised 2026-07-24). Web: **the React Studio app
+  from the design repo is the real web UI** — wired to /v1 JSON, bundle built
+  in the design repo, served by the node; the C++ SSR pages are the zero-JS
+  fallback until parity, then retire. Desktop: **SDL3-first** — Dear ImGui is
+  a temporary crutch, kept only where it already gives a good experience; new
+  design-led rendering goes custom SDL3 (pixel-perfect), matching the web and
+  the design's style **and motion design**.
 - Style convergence is a **recorded decision, not a side effect**: the design
   system (IBM Plex + Carbon Blue 60 `#0f62fe`) differs from zetta's current
   web palette (Geist + `#2563EB`) and from the GUI rules (Geist + coral). An
@@ -140,3 +138,22 @@ One issue per surface per sync wave on `oramasearch/zetta`: priority label
 (`p1`–`p4`), area label if present, body cites the pinned design ref, the
 design-index URL, and the scope table (tokens / IA / copy / states / icons).
 Never `fixes #N` — issues stay open through validation.
+
+## Conflicts stop the line — ask Steve
+
+Wiring a designed screen to the live engine (or building a designed view) will
+hit mismatches. A mismatch is a **decision, not an implementation detail**. A
+conflict is any of:
+
+- the design expects **data or a capability the engine does not have**;
+- the design introduced **scope beyond the recorded strategy** (a new object,
+  flow, role, or promise the product direction never confirmed);
+- **engine truth contradicts** the design's copy, states, or semantics.
+
+Never silently pick a side: don't quietly build backend support, don't quietly
+cut design scope, don't ship a mock to paper over the gap. Surface the
+conflict to Steve with the concrete options — typically **build the backend
+support** (file the zetta issue), **rescope the design** (file the design-repo
+issue), or **an honest degraded state** in the meantime — plus a
+recommendation. Batch related conflicts into one ask; record the ruling in the
+design-sync ledger so the next sync doesn't re-litigate it.

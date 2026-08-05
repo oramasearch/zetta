@@ -18,41 +18,47 @@
 namespace zetta::gui {
 
 std::span<const App::ViewInfo> App::view_registry() {
-    // Sidebar order: the product flow — your data → architect the pipeline →
-    // operate it → govern it. Sections group under mono eyebrow headers; the
-    // sectionless Home row leads.
+    // Sidebar order: the Orama Studio shell (#875, docs/product/experience/
+    // design-sync.md) — the project lifecycle leads (Workspace), then the data
+    // the work draws on (Data library), the operating surfaces (Operate), the
+    // technical tools (Developer), and Infrastructure demoted to Advanced.
+    // Sections group under mono eyebrow headers; the sectionless Home row
+    // leads. View enum names stay the engine's (View::Graph, View::Gate);
+    // labels speak the Studio vocabulary (Pipeline, Verification).
     static const ViewInfo kViews[] = {
         {View::Home, "", "Home", &App::draw_home, nullptr},
-        {View::Explorer, "Data", "Explorer", &App::draw_explorer, nullptr},
-        {View::Datasets, "Data", "Datasets", &App::draw_datasets, nullptr},
-        {View::Search, "Data", "Search", &App::draw_search, nullptr},
-        {View::Query, "Data", "SQL query", &App::draw_query, nullptr},
-        {View::Console, "Data", "Console", &App::draw_console, nullptr},
-        {View::Graph, "Pipeline", "Graph workspace", &App::draw_graph_workspace,
-         nullptr},
-        {View::Gate, "Pipeline", "Correctness gate", &App::draw_gate, nullptr},
-        {View::Deploy, "Pipeline", "Deploy", &App::draw_deploy, nullptr},
-        // Activity leads Operations: the feed is the first thing an operator
+        {View::Graph, "Workspace", "Pipeline workspace", &App::draw_graph_workspace,
+         &App::projects_badge},
+        {View::Gate, "Workspace", "Verification", &App::draw_gate, nullptr},
+        {View::Deploy, "Workspace", "Deploy", &App::draw_deploy, nullptr},
+        {View::Explorer, "Data library", "Explorer", &App::draw_explorer, nullptr},
+        {View::Datasets, "Data library", "Datasets", &App::draw_datasets, nullptr},
+        {View::Search, "Data library", "Search", &App::draw_search, nullptr},
+        // Activity leads Operate: the feed is the first thing an operator
         // looks at ("what has been happening on this cluster", #622).
-        {View::Activity, "Operations", "Activity", &App::draw_activity,
+        {View::Activity, "Operate", "Activity", &App::draw_activity,
          nullptr},
         // Traces sits beside it: the same "what happened", per operation —
         // every span's intent · plan · duration · result shape (#640).
-        {View::Traces, "Operations", "Traces", &App::draw_traces, nullptr},
-        {View::Runs, "Operations", "Runs", &App::draw_runs, nullptr},
-        {View::Models, "Operations", "Models", &App::draw_models, nullptr},
-        {View::Agents, "Operations", "Agents", &App::draw_agents, nullptr},
-        {View::Chat, "Operations", "Chat", &App::draw_chat, nullptr},
-        {View::DataGen, "Operations", "Data generators", &App::draw_datagen, nullptr},
-        {View::Jobs, "Operations", "Compute jobs", &App::draw_jobs,
+        {View::Traces, "Operate", "Traces", &App::draw_traces, nullptr},
+        {View::Runs, "Operate", "Runs", &App::draw_runs, nullptr},
+        {View::Jobs, "Operate", "Compute jobs", &App::draw_jobs,
          &App::jobs_badge},
-        {View::Cluster, "Operations", "Cluster", &App::draw_cluster,
+        {View::Tests, "Operate", "Test suite", &App::draw_test_suite,
+         nullptr},
+        // Developer mirrors the July 24 web IA: Models sits with the maker
+        // tools; governance and infrastructure demote to Advanced.
+        {View::Models, "Developer", "Models", &App::draw_models, nullptr},
+        {View::Query, "Developer", "SQL query", &App::draw_query, nullptr},
+        {View::Console, "Developer", "Console", &App::draw_console, nullptr},
+        {View::Agents, "Developer", "Agents", &App::draw_agents, nullptr},
+        {View::Chat, "Developer", "Chat", &App::draw_chat, nullptr},
+        {View::DataGen, "Developer", "Data generators", &App::draw_datagen, nullptr},
+        {View::Admin, "Advanced", "Governance", &App::draw_admin, nullptr},
+        {View::Cluster, "Advanced", "Infrastructure", &App::draw_cluster,
          &App::cluster_badge},
-        {View::Cloud, "Operations", "Cloud inspector", &App::draw_cloud,
+        {View::Cloud, "Advanced", "Cloud inspector", &App::draw_cloud,
          nullptr},
-        {View::Tests, "Operations", "Test suite", &App::draw_test_suite,
-         nullptr},
-        {View::Admin, "Governance", "Admin & audit", &App::draw_admin, nullptr},
     };
     return kViews;
 }
@@ -71,7 +77,7 @@ std::optional<std::string> App::take_pending_selection(View view) {
 }
 
 // Inline link text: ink that underlines under the cursor, navigating on click.
-// No coral (links are wayfinding, not the surface's focal action).
+// No accent (links are wayfinding, not the surface's focal action).
 void App::entity_link(const char* label, View view,
                       const std::string& entity_id) {
     if (g_mono_font) ImGui::PushFont(g_mono_font);
@@ -140,12 +146,34 @@ std::string App::cluster_badge() const {
     return std::to_string(cluster_.nodes().size());
 }
 
+std::string App::projects_badge() const {
+    const std::size_t count = node_.project_names().size();
+    return count == 0 ? std::string() : std::to_string(count);
+}
+
 void App::draw_sidebar() {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float width = ImGui::GetFontSize() * 11.0f;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, kSidebar);
     ImGui::BeginChild("##sidebar", ImVec2(width, 0.0f),
                       ImGuiChildFlags_AlwaysUseWindowPadding);
+
+    // The Studio lockup leads the rail (the design's brand row): the accent
+    // dot + the wordmark, in the heading weight when available.
+    {
+        const ImVec2 dot_pos = ImGui::GetCursorScreenPos();
+        const float dot_radius = ImGui::GetFontSize() * 0.18f;
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(dot_pos.x + dot_radius,
+                   dot_pos.y + ImGui::GetTextLineHeight() * 0.55f),
+            dot_radius, ImGui::GetColorU32(kAccent));
+        ImGui::Dummy(ImVec2(dot_radius * 2.0f + style.ItemSpacing.x, 0.0f));
+        ImGui::SameLine();
+        if (heading_font_) ImGui::PushFont(heading_font_);
+        ImGui::TextColored(kInkPrimary, "Orama Studio");
+        if (heading_font_) ImGui::PopFont();
+        ImGui::Spacing();
+    }
 
     bool first_row = true;
     std::string_view current_section;
@@ -161,19 +189,19 @@ void App::draw_sidebar() {
         }
 
         const bool active = view.id == active_view_;
-        if (active) ImGui::PushStyleColor(ImGuiCol_Text, kCoral);
+        if (active) ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
         if (ImGui::Selectable(view.name, active)) navigate_to(view.id);
         if (active) ImGui::PopStyleColor();
 
         const ImVec2 row_min = ImGui::GetItemRectMin();
         const ImVec2 row_max = ImGui::GetItemRectMax();
         if (active) {
-            // The coral "you are here" bar on the rail's edge — the design
-            // system's one surgical coral use in navigation.
+            // The accent "you are here" bar on the rail's edge — the design
+            // system's one surgical accent use in navigation.
             const float bar_x = row_min.x - style.WindowPadding.x;
             ImGui::GetWindowDrawList()->AddRectFilled(
                 ImVec2(bar_x, row_min.y), ImVec2(bar_x + 3.0f, row_max.y),
-                ImGui::GetColorU32(kCoral));
+                ImGui::GetColorU32(kAccent));
         }
         if (view.badge) {
             const std::string badge_text = (this->*view.badge)();

@@ -487,8 +487,8 @@ void App::draw_console() {
     ImGui::TextDisabled(
         "Run SQL or simulated-Python against this node, governed: every statement "
         "is capability-scoped against the acting key and recorded in the audit "
-        "trail; simulated-Python lowers to an execution graph and must pass the "
-        "correctness gate before it runs. Unqualified SQL names use the selected "
+        "trail; simulated-Python lowers to a Pipeline and must pass "
+        "Verification before it runs. Unqualified SQL names use the selected "
         "database (%s).",
         selected_db_.empty() ? "none" : selected_db_.c_str());
 

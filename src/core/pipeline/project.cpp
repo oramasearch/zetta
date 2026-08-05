@@ -23,22 +23,31 @@ namespace fs = std::filesystem;
 
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
-                 zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit)
+                 zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit,
+                 std::string description)
     : id_(std::move(id)),
       name_(std::move(name)),
       created_(std::move(created)),
       updated_(std::move(updated)),
       owner_(std::move(owner)),
+      description_(std::move(description)),
       dir_(std::move(dir)),
       replication_(replication),
       audit_(audit) {}
 
+void Project::set_description(std::string description) {
+    description_ = std::move(description);
+    persist_meta();
+}
+
 void Project::set_metadata(std::string name, std::string created,
-                           std::string updated, std::string owner) {
+                           std::string updated, std::string owner,
+                           std::string description) {
     name_ = std::move(name);
     created_ = std::move(created);
     updated_ = std::move(updated);
     owner_ = std::move(owner);
+    description_ = std::move(description);
     persist_meta();
 }
 
@@ -46,7 +55,8 @@ nlohmann::json Project::metadata() const {
     return nlohmann::json{{"name", name_},
                           {"created", created_},
                           {"updated", updated_},
-                          {"owner", owner_}};
+                          {"owner", owner_},
+                          {"description", description_}};
 }
 
 void Project::persist_meta() const {

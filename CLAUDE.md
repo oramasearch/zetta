@@ -118,16 +118,28 @@ contradict them): no Deployment without a Saved Version; nothing
 production-ready without a passed Verification; consequential actions get an
 impact preview with a cancel path.
 
-**Rendering philosophy for both Studio surfaces** (Steve, 2026-07-23): the web
-app stays **C++ server-rendered** — its response time is part of the product.
-Hand-write minimal JavaScript only where interaction genuinely demands it (an
-in-place update that would otherwise full-page flicker, streaming a chat
-reply); never a framework, never client rendering for something the server can
-emit. The desktop app is **SDL3-first**: Dear ImGui is a temporary crutch —
-keep it only where it already gives a good experience; new design-led rendering
-goes custom SDL3 (pixel-perfect control), because the desktop must match the
-web app and the design's style **and motion design** at the highest achievable
-parity.
+**Auth for Studio** (Steve, 2026-07-24): **Clerk is preferred; a native
+bearer/session token is the fallback for easy on-prem.** The node's auth gate
+accepts either — native token store / `zetta_session` cookie ([#884](https://github.com/oramasearch/zetta/issues/884)),
+**or** a Clerk JWT verified against Clerk's JWKS when `CLERK_ISSUER` is set
+([#889](https://github.com/oramasearch/zetta/issues/889)). **No `CLERK_ISSUER`
+→ bearer-only**, so air-gapped/on-prem installs need no Clerk egress — Clerk is
+never mandatory in the engine. Both sources resolve to the same default-deny
+principal model. Workflow: the `clerk-ops` skill in `oramasearch/orama-bridge`.
+
+**Rendering philosophy for both Studio surfaces** (revised by Steve,
+2026-07-24 — supersedes the 07-23 SSR-first rule): the web app is **the React
+Studio app from the design repo, wired to `/v1` JSON and served by the node**
+— the client-side app navigates faster for the full-page experience, and the
+design repo's real-code lanes now build production screens in it. The engine's
+role shifts to **data + serving**: the capability registry's `/v1` surface is
+the web app's only data source (no new behavior paths), the node serves the
+built bundle as an embedded/static asset (no npm in zetta's build; the bundle
+is built in the design repo), and the C++ SSR pages remain as the zero-JS
+fallback until screen parity, then retire. The desktop app is **SDL3-first**:
+Dear ImGui is a temporary crutch — keep it only where it already gives a good
+experience; new design-led rendering goes custom SDL3 (pixel-perfect control),
+matching the web and the design's style **and motion design**.
 
 **The design source is Daniel's repo `oramasearch/orama-design`**, reviewed
 through its **Orama Project Hub** (`/workspace/` on the Vercel preview — the
@@ -140,10 +152,12 @@ and **Roadmap and Design Documentation** (the planning surface: 16 core flows,
 7 journeys, a 14-screen plan, 24 confirmed decisions + 12 open implementation
 contracts). The
 prototype is React and **transfers as tokens, layout, copy, IA, and states —
-not code** (this repo's web UI stays no-framework SSR). Known open tension:
-the headed GUI's design system below (Geist, coral) and the Studio web system
-(IBM Plex, Carbon blue) have not been converged — flag it, don't silently pick
-one. The design's open contracts are questions about what *this engine*
+not code** (this repo's web UI stays no-framework SSR). Both surfaces are
+converged on the Studio system (#874 web, #875 GUI): accent = Carbon Blue 60,
+Studio shell IA, the vocabulary contract, and IBM Plex on both surfaces —
+the node serves the woff2 files itself (GET /fonts/*) and the GUI embeds the
+Plex TTFs (see the design-sync ledger). The design's open contracts are
+questions about what *this engine*
 actually does (real Project lifecycle, agent capabilities, roles, source
 connections, Verification/Deployment/recovery mechanics) — answer them from
 engine truth. Deep inventory + direction cross-reference:
@@ -465,9 +479,12 @@ search, aggregation, resolution, import.
 
 ### Design system — follow it for all GUI work
 
-The headed app follows the **Orama design system**: light surfaces, ink text,
-**Geist + Geist Mono**, coral used *surgically*, semantic green/amber/red for
-status, sentence case, no em-dashes in product copy (use `·`/colons).
+The headed app follows the **Orama Studio design system**: light surfaces, ink
+text, the one action hue **Carbon Blue 60** (`kAccent`) used *surgically*,
+semantic green/amber/red for status, sentence case, no em-dashes in product
+copy (use `·`/colons). The embedded faces are **IBM Plex Sans (+ SemiBold
+headings) and IBM Plex Mono** (`assets/fonts/`, embedded at build time; the
+import ledger is [`docs/product/experience/design-sync.md`](docs/product/experience/design-sync.md)).
 **Read [`docs/gui/design-system.md`](docs/gui/design-system.md) before adding
 or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,

@@ -8,7 +8,7 @@ possible. **[design-system.md](design-system.md) is the mandatory read before an
 Orama tokens, typography, copy rules, and component grammar it defines are enforced, not advisory.
 
 - [architecture.md](architecture.md) — **the structural design**: the view registry, the widget grammar (page_header/card/empty_state/banner/entity_link/tones), navigation + pending selection, and the adding-a-view recipe.
-- [design-system.md](design-system.md) — the Orama design system as applied to the headed GUI: colour tokens, Geist typography, copy rules, coral discipline, component grammar. **Read before touching the GUI.**
+- [design-system.md](design-system.md) — the Orama design system as applied to the headed GUI: colour tokens (accent = Carbon Blue 60), IBM Plex typography, copy rules, accent discipline, component grammar. **Read before touching the GUI.**
 - [master-detail.md](master-detail.md) — the master-detail scaffold: one split + row shape + selection model for every list panel (Runs / Models / Jobs / Datasets / Cloud / Admin swept onto it, #634).
 - [command-palette.md](command-palette.md) — the Cmd+K palette (#625): fuzzy view navigation + entity jump + the capability registry's actions rendered for humans, run through the one `Registry::call` path (consent gate included).
 - [status-tones.md](status-tones.md) — one status visual language: `Tone` + `tone_of(...)` in the single mapping site `tones.hpp`, rendered by `status_label` (rows) / `status_pill` (headers) (#636).
@@ -66,7 +66,7 @@ loop). `render_frame()` has a re-entrancy guard; it does **not** tick the node (
 The user multiplier is **View → Text size** (`ui_scale_`); changing it sets
 `font_rebuild_requested_`, and `run()` rebuilds the font atlas via `apply_display_scale()`
 **between** frames (never mid-frame, while the atlas is in use). The atlas also rebuilds on
-display-scale/DPI changes. Both Geist faces + the whole style scale together, so text-size is
-effectively a UI zoom. The fonts — **Geist** (UI sans) + **Geist Mono** (labels / counts / metrics /
+display-scale/DPI changes. All three Plex faces + the whole style scale together, so text-size is
+effectively a UI zoom. The fonts — **IBM Plex Sans** (UI sans, + SemiBold for headings) + **IBM Plex Mono** (labels / counts / metrics /
 code) — are embedded from `assets/fonts/` via `cmake/embed_font.cmake`, so the binary has no runtime
 asset dependency; `App::mono_font_` holds the mono face for `PushFont`.

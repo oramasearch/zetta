@@ -215,7 +215,8 @@ public:
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
     std::shared_ptr<zetta::pipeline::Project> create_project(std::string name,
-                                            std::string owner = {});
+                                            std::string owner = {},
+                                            std::string description = {});
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
@@ -986,7 +987,8 @@ private:
                                                  std::string name,
                                                  std::string created,
                                                  std::string updated,
-                                                 std::string owner);
+                                                 std::string owner,
+                                                 std::string description = {});
     bool materialize_drop_project(const std::string& id);
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,

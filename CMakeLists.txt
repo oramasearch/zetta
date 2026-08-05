@@ -729,7 +729,8 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(zetta-api STATIC
   src/core/api/http_server.cpp
-  src/core/api/native_http_transport.cpp)
+  src/core/api/native_http_transport.cpp
+  src/core/api/clerk_auth.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)
 target_link_libraries(zetta-api PRIVATE
@@ -783,42 +784,55 @@ target_link_libraries(zetta PRIVATE
   SDL3::SDL3-static
 )
 
-# Embed the Orama design-system typefaces — Geist (UI sans) + Geist Mono
-# (labels / counts / metrics) — so the GUI can rasterize real TTFs at
-# framebuffer-pixel density on HiDPI displays with no runtime font-file
-# dependency. ImGui's default ProggyClean is a 13px bitmap font that goes
-# blurry the moment SDL_SetRenderScale upscales it; AddFontFromMemoryTTF with
-# RasterizerDensity = pixel_density keeps text crisp. The TTFs live in
-# assets/fonts/ (SIL OFL 1.1; see assets/fonts/README.md).
-set(ZETTA_FONT_SANS_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/Geist.ttf")
-set(ZETTA_FONT_MONO_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/GeistMono.ttf")
-set(ZETTA_FONT_SANS_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_sans.hpp")
-set(ZETTA_FONT_MONO_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_mono.hpp")
+# Embed the Orama Studio typefaces — IBM Plex Sans (UI) + IBM Plex Sans
+# SemiBold (headings) + IBM Plex Mono (labels / counts / metrics) — so the GUI
+# can rasterize real TTFs at framebuffer-pixel density on HiDPI displays with
+# no runtime font-file dependency, and the web app can serve the matching
+# woff2 files from the node itself (GET /fonts/*, no external requests —
+# air-gapped nodes have no egress). ImGui's default ProggyClean is a 13px
+# bitmap font that goes blurry the moment SDL_SetRenderScale upscales it;
+# AddFontFromMemoryTTF with RasterizerDensity = pixel_density keeps text
+# crisp. The font files live in assets/fonts/ (SIL OFL 1.1; see
+# assets/fonts/README.md).
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
-add_custom_command(
-  OUTPUT  "${ZETTA_FONT_SANS_HPP}"
-  COMMAND ${CMAKE_COMMAND}
-          -DIN_FILE=${ZETTA_FONT_SANS_SRC}
-          -DOUT_FILE=${ZETTA_FONT_SANS_HPP}
-          -DSYMBOL=kGeistSans
-          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  DEPENDS ${ZETTA_FONT_SANS_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  COMMENT "Embedding Geist.ttf into zetta_font_sans.hpp"
-)
-add_custom_command(
-  OUTPUT  "${ZETTA_FONT_MONO_HPP}"
-  COMMAND ${CMAKE_COMMAND}
-          -DIN_FILE=${ZETTA_FONT_MONO_SRC}
-          -DOUT_FILE=${ZETTA_FONT_MONO_HPP}
-          -DSYMBOL=kGeistMono
-          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  DEPENDS ${ZETTA_FONT_MONO_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  COMMENT "Embedding GeistMono.ttf into zetta_font_mono.hpp"
-)
-add_custom_target(zetta-font-embed ALL
-  DEPENDS "${ZETTA_FONT_SANS_HPP}" "${ZETTA_FONT_MONO_HPP}")
+function(zetta_embed_font SRC_NAME HPP_NAME SYMBOL)
+  add_custom_command(
+    OUTPUT  "${CMAKE_BINARY_DIR}/generated/${HPP_NAME}"
+    COMMAND ${CMAKE_COMMAND}
+            -DIN_FILE=${CMAKE_SOURCE_DIR}/assets/fonts/${SRC_NAME}
+            -DOUT_FILE=${CMAKE_BINARY_DIR}/generated/${HPP_NAME}
+            -DSYMBOL=${SYMBOL}
+            -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/assets/fonts/${SRC_NAME}
+            ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+    COMMENT "Embedding ${SRC_NAME} into ${HPP_NAME}"
+  )
+endfunction()
+
+# The GUI faces (TTF, rasterized by ImGui).
+zetta_embed_font(IBMPlexSans-Regular.ttf  zetta_font_sans.hpp    kPlexSans)
+zetta_embed_font(IBMPlexSans-SemiBold.ttf zetta_font_heading.hpp kPlexSansSemiBold)
+zetta_embed_font(IBMPlexMono-Regular.ttf  zetta_font_mono.hpp    kPlexMono)
+add_custom_target(zetta-font-embed ALL DEPENDS
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_sans.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_heading.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_mono.hpp")
 add_dependencies(zetta zetta-font-embed)
 target_include_directories(zetta PRIVATE "${CMAKE_BINARY_DIR}/generated")
+
+# The web faces (woff2, served by the node at GET /fonts/* — latin subsets,
+# ~15-25 KB each).
+zetta_embed_font(IBMPlexSans-Regular.woff2  zetta_web_font_sans_400.hpp kPlexSansWoff400)
+zetta_embed_font(IBMPlexSans-Medium.woff2   zetta_web_font_sans_500.hpp kPlexSansWoff500)
+zetta_embed_font(IBMPlexSans-SemiBold.woff2 zetta_web_font_sans_600.hpp kPlexSansWoff600)
+zetta_embed_font(IBMPlexMono-Regular.woff2  zetta_web_font_mono_400.hpp kPlexMonoWoff400)
+add_custom_target(zetta-web-font-embed ALL DEPENDS
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_400.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_500.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_600.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_mono_400.hpp")
+add_dependencies(zetta-api zetta-web-font-embed)
+target_include_directories(zetta-api PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 set_target_properties(zetta PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

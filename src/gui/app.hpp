@@ -215,7 +215,7 @@ private:
     void link_line(const char* label, const std::string& display, View view,
                    const std::string& entity_id);
     // The sectioned left navigation rail (#628), grammar-rendered from the
-    // registry; coral marks the active row (the design system's "you are here").
+    // registry; the accent marks the active row (the design system's "you are here").
     void draw_sidebar();
     // The Cmd+K command palette (#625, app_palette.cpp): fuzzy view
     // navigation + entity jump + the capability registry's actions rendered
@@ -237,6 +237,7 @@ private:
     // Sidebar badges: cheap per-frame reads of live engine state.
     std::string jobs_badge() const;     // running compute jobs ("" when none)
     std::string cluster_badge() const;  // cluster member count
+    std::string projects_badge() const; // project count ("" when none)
 
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
@@ -274,7 +275,7 @@ private:
     static bool on_sdl_event(void* userdata, SDL_Event* event);
     void draw_menu_bar();     // selects the view; Quit toggles running_
     void draw_active_view();  // render whichever View is selected (the menu switcher)
-    void draw_about_modal();  // the Help → About Orama Zetta dialog
+    void draw_about_modal();  // the Help → About Orama Studio dialog
     void draw_home();         // the dashboard landing (SCR-1, #629): health strip,
                               // needs-attention, recent runs, projects, activity
     // First-run onboarding (#623, app_onboarding.cpp): the guided UC-1 churn

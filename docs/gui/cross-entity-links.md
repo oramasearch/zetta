@@ -31,33 +31,33 @@ stores a graph under that id or saved name.
 | From | Link | To (view + selection) |
 |---|---|---|
 | Run detail | `project:` | Explorer, project selected |
-| Run detail | `graph:` | Graph workspace, graph opened |
+| Run detail | `graph:` | Pipeline workspace, graph opened |
 | Run detail | `deploy:` | Deploy, deployment row highlighted |
 | Run detail | Compute jobs section (per job) | Jobs, job selected |
 | Run detail | model output ref · "open in models" per trained-model card | Models, model selected |
 | Model detail | `run:` (the producing run) | Runs, run selected |
 | Model detail | `project:` | Explorer, project selected |
 | Job detail | `run:` / `graph:` / `project:` | Runs / Graph / Explorer |
-| Deployments table | graph name | Graph workspace, graph opened |
+| Deployments table | graph name | Pipeline workspace, graph opened |
 | Deployments table | latest run (newest `run.deployment == id`) | Runs, run selected |
 | Dataset detail | partition owner nodes | Cluster, node box selected |
 | Audit log | target, routed by action (job → Jobs, graph → Graph, deploy → Deploy) | the owning panel |
 | Activity feed | targets (pre-existing #622, now carrying graph/deployment deep links) | the owning panel |
-| Graph workspace | `project:` | Explorer, project selected |
-| Graph workspace | "open in runs" / "open in models" (pre-existing #626) | Runs / Models |
+| Pipeline workspace | `project:` | Explorer, project selected |
+| Pipeline workspace | "open in runs" / "open in models" (pre-existing #626) | Runs / Models |
 
 ## New pending-selection consumers
 
 Master-detail panels already consumed their deep links through the scaffold.
 This slice added the two non-scaffold consumers:
 
-- **Graph workspace** (`draw_graph_workspace`): resolves the pending entity —
+- **Pipeline workspace** (`draw_graph_workspace`): resolves the pending entity —
   a stored-graph id (a run's `graph`) or a saved name (a deployment's
   `graph_name`, an audit target) — across **every** project (the sender
   doesn't know the owner), selects that project, and opens the graph.
 - **Deploy** (`draw_deploy`): the pending entity — a deployment id or a
   deployed graph's name — highlights its row in the deployments table with the
-  coral "you are here" wash (`kCoralWash`, now a shared palette token in
+  accent "you are here" wash (`kAccentWash`, now a shared palette token in
   `app_internal.hpp`).
 
 ## Boundaries

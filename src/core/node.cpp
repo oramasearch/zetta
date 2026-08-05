@@ -676,7 +676,7 @@ void Node::load_projects() {
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
             meta.value("owner", std::string{}), entry.path(), replication_,
-            this);
+            this, meta.value("description", std::string{}));
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -944,7 +944,8 @@ std::vector<std::string> Node::database_names() const {
 // ----- projects (mirror the database CRUD; replicated as project:<uuid>) -----
 
 std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
-                                              std::string owner) {
+                                              std::string owner,
+                                              std::string description) {
     if (name.empty() || find_project(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
@@ -953,16 +954,19 @@ std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
                           nlohmann::json{{"name", name},
                                          {"created", now},
                                          {"updated", now},
-                                         {"owner", owner}});
+                                         {"owner", owner},
+                                         {"description", description}});
     }
-    return materialize_project(id, std::move(name), now, now, std::move(owner));
+    return materialize_project(id, std::move(name), now, now, std::move(owner),
+                               std::move(description));
 }
 
 std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string id,
                                                    std::string name,
                                                    std::string created,
                                                    std::string updated,
-                                                   std::string owner) {
+                                                   std::string owner,
+                                                   std::string description) {
     if (auto existing = find_project_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
@@ -972,7 +976,7 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
-                                             replication_, this);
+                                             replication_, this, std::move(description));
     project->persist_meta();
     projects_.push_back(project);
     return project;
@@ -3400,6 +3404,7 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         std::string created;
         std::string updated;
         std::string owner;
+        std::string description;
     };
     std::map<std::string, ProjectEntry> projects;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -3411,7 +3416,8 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
                          ProjectEntry{value.value("name", std::string{}),
                                       value.value("created", std::string{}),
                                       value.value("updated", std::string{}),
-                                      value.value("owner", std::string{})});
+                                      value.value("owner", std::string{}),
+                                      value.value("description", std::string{})});
     }
     std::vector<std::string> local_project_ids;
     for (const auto& project : projects_) {
@@ -3424,12 +3430,13 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         auto project = find_project_by_id(id);
         if (!project) {
             materialize_project(id, entry.name, entry.created, entry.updated,
-                                entry.owner);
+                                entry.owner, entry.description);
         } else if (project->name() != entry.name ||
                    project->updated() != entry.updated ||
-                   project->owner() != entry.owner) {
+                   project->owner() != entry.owner ||
+                   project->description() != entry.description) {
             project->set_metadata(entry.name, entry.created, entry.updated,
-                                  entry.owner);  // a peer changed it (no re-capture)
+                                  entry.owner, entry.description);  // a peer changed it (no re-capture)
         }
     }
 }

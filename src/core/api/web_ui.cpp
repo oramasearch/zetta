@@ -8,6 +8,7 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,10 @@ namespace {
 // first: the top bar wraps, the nav scrolls horizontally, content is one full-width column, tables
 // scroll.
 constexpr std::string_view kCss = R"CSS(
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/plex-sans-400.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/plex-sans-500.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/plex-sans-600.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/plex-mono-400.woff2') format('woff2');}
 :root{
   color-scheme:light dark;
   --accent:#0F62FE; --accent-wash:rgba(15,98,254,.08); --accent-hover:#0043CE;
@@ -42,7 +47,24 @@ constexpr std::string_view kCss = R"CSS(
   --font-sans:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Arial,sans-serif;
   --font-mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
 }
-@media (prefers-color-scheme:dark){:root{
+/* The paired dark theme: the same overrides ride the OS preference (unless the
+   user pinned light) AND the explicit topbar toggle (data-theme on <html>). */
+:root[data-theme=dark]{
+  --accent:#78A9FF; --accent-wash:rgba(120,169,255,.14); --accent-hover:#A6C8FF;
+  --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
+  --ink-primary:#F4F4F4; --ink-secondary:#C6C6C6; --ink-muted:#A8A8A8; --ink-quiet:#8D8D8D;
+  --surface:#262626; --canvas:#161616; --sidebar:#212121; --border:#393939;
+  --rule-hair:rgba(255,255,255,.08); --rule-card:rgba(255,255,255,.10); --rule-emph:rgba(255,255,255,.16);
+  --wash-hover:rgba(255,255,255,.05); --wash-selected:rgba(255,255,255,.08);
+  --ok-fg:#42BE65; --ok-bg:rgba(66,190,101,.14); --warn-fg:#F1C21B; --warn-bg:rgba(241,194,27,.12);
+  --err-fg:#FA4D56; --err-bg:rgba(250,77,86,.12);
+  --info-fg:#78A9FF; --info-bg:rgba(120,169,255,.12);
+  --dot-active:#42BE65; --dot-inactive:#6F6F6F;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.5),0 1px 1px rgba(0,0,0,.4);
+  --shadow-md:0 6px 22px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.35);
+  --shadow-pop:0 12px 36px rgba(0,0,0,.6);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --accent:#78A9FF; --accent-wash:rgba(120,169,255,.14); --accent-hover:#A6C8FF;
   --accent-solid:#0F62FE; --accent-solid-hover:#0353E9;
   --ink-primary:#F4F4F4; --ink-secondary:#C6C6C6; --ink-muted:#A8A8A8; --ink-quiet:#8D8D8D;
@@ -73,6 +95,9 @@ a{color:var(--ink-secondary);text-decoration:none;}
 .spacer{flex:1;min-width:8px;}
 .meta{font:11px/1.3 var(--font-mono);color:var(--ink-quiet);}
 .user{font-size:12px;color:var(--ink-muted);}
+.util{width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-muted);transition:background .12s,color .12s;}
+.util:hover{background:var(--wash-hover);color:var(--ink-primary);}
+.util svg{width:17px;height:17px;}
 .connpill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;padding:4px 8px;border-radius:8px;background:var(--wash-hover);color:var(--ink-quiet);}
 .connpill.ok{color:var(--ok-fg);background:var(--ok-bg);}
@@ -80,7 +105,100 @@ form.inline{display:inline;margin:0;}
 
 .layout{display:grid;grid-template-columns:224px 1fr;align-items:start;}
 .side{background:var(--sidebar);border-right:1px solid var(--rule-hair);padding:14px 10px;
-  position:sticky;top:52px;align-self:stretch;min-height:calc(100vh - 52px);}
+  position:sticky;top:52px;align-self:stretch;min-height:calc(100vh - 52px);
+  display:flex;flex-direction:column;max-height:calc(100vh - 52px);overflow-y:auto;}
+.side .badge{margin-left:auto;font:10.5px/1 var(--font-mono);color:var(--ink-quiet);
+  background:var(--wash-hover);border-radius:12px;padding:3px 8px;flex:none;}
+.sideuser{margin-top:auto;display:flex;align-items:center;gap:10px;padding:12px 10px 4px;
+  border-top:1px solid var(--rule-hair);}
+.sideuser .avatar{width:30px;height:30px;border-radius:8px;background:var(--accent-solid);color:#fff;
+  display:inline-flex;align-items:center;justify-content:center;font:12px var(--font-mono);
+  font-weight:600;text-transform:uppercase;flex:none;}
+.sideuser .who{flex:1;min-width:0;}
+.sideuser .who b{display:block;font-size:12.5px;font-weight:600;color:var(--ink-primary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sideuser .who span{display:block;font:10.5px/1.4 var(--font-mono);color:var(--ink-quiet);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sideuser .btn.small{padding:5px 9px;font-size:11px;flex:none;}
+
+/* The Ask Orama rail (#874): the design's collaborator column — blue header,
+   context note, transcript, and the ask box pinned to the bottom. Renders as
+   a third grid column on wide screens; below that it collapses away (the Chat
+   view stays one click away). */
+.rail{background:var(--surface);border-left:1px solid var(--rule-hair);position:sticky;top:52px;
+  align-self:stretch;height:calc(100vh - 52px);display:flex;flex-direction:column;padding:14px;gap:12px;}
+.railhead{background:var(--accent-solid);color:#fff;border-radius:11px;padding:13px 15px;
+  display:flex;flex-direction:column;gap:3px;}
+.railhead .rl{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;opacity:.85;}
+.railhead b{font-size:15px;font-weight:600;}
+.railnote{border:1px solid var(--accent);color:var(--ink-secondary);border-radius:10px;
+  padding:10px 12px;font-size:12px;line-height:1.5;}
+.railbubble{background:var(--accent-wash);color:var(--ink-secondary);border-radius:10px;
+  padding:10px 12px;font-size:12.5px;line-height:1.5;}
+.railchat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:40px;}
+.railchat .rmsg{border-radius:10px;padding:9px 11px;font-size:12.5px;line-height:1.55;max-width:94%;
+  white-space:pre-wrap;word-break:break-word;}
+.railchat .rme{align-self:flex-end;background:var(--accent-wash);color:var(--ink-primary);}
+.railchat .ragent{align-self:flex-start;background:var(--wash-hover);color:var(--ink-secondary);}
+.railchat .rthinking{color:var(--ink-quiet);font:11.5px var(--font-mono);}
+.railask label{margin:0 0 6px;font:10.5px/1 var(--font-mono);text-transform:uppercase;
+  letter-spacing:.08em;color:var(--ink-quiet);}
+.railask .rrow{display:flex;gap:8px;align-items:flex-end;}
+.railask textarea{min-height:44px;font-family:var(--font-sans);font-size:13px;resize:none;}
+.railask .btn-primary{padding:10px 12px;}
+.railempty{color:var(--ink-quiet);font-size:12.5px;line-height:1.6;}
+.railempty a{color:var(--accent);}
+/* The rail is a toggleable drawer (July 24): closed by default, opened from
+   the topbar toggle; the choice persists locally (pre-paint pin on <html>). */
+.rail{display:none;}
+html[data-rail=open] .rail{display:flex;}
+@media (min-width:1280px){html[data-rail=open] .layout.withrail{grid-template-columns:224px 1fr 340px;}}
+@media (max-width:1279px){html[data-rail=open] .rail{display:none;}}
+.util.active{background:var(--accent-wash);color:var(--accent);}
+
+/* Status banners (July 24): live execution, needs-approval, unreachable. */
+.bannerrow{display:flex;align-items:center;gap:14px;border-radius:11px;padding:13px 16px;margin-bottom:16px;font-size:13px;}
+.bannerrow .bico{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex:none;}
+.bannerrow .bico svg{width:16px;height:16px;}
+.bannerrow .bbody{flex:1;min-width:0;}
+.bannerrow .bbody b{display:block;font-size:13.5px;color:var(--ink-primary);}
+.bannerrow .bbody span{font-size:12px;color:var(--ink-muted);}
+.bannerrow.live{background:var(--surface);border:1px solid var(--rule-card);}
+.bannerrow.live .bico{background:var(--accent-solid);color:#fff;}
+.bannerrow.warnb{background:var(--warn-bg);border:1px solid rgba(0,0,0,.05);}
+.bannerrow.warnb .bico{background:transparent;color:var(--warn-fg);}
+.bannerrow.errb{background:var(--err-bg);border:1px solid rgba(0,0,0,.05);}
+.bannerrow.errb .bico{background:transparent;color:var(--err-fg);}
+.bannerrow .bact{flex:none;}
+
+/* The stat-card row (Infrastructure / Data): big mono number, corner icon,
+   footer line + status pill. */
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px;}
+.statcard{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:16px 18px;}
+.statcard .schd{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.statcard .schd span{font-size:12px;color:var(--ink-muted);}
+.statcard .scico{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-solid);color:#fff;}
+.statcard .scico svg{width:16px;height:16px;}
+.statcard .num{font:30px/1.1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;}
+.statcard .scft{display:flex;align-items:center;justify-content:space-between;margin-top:8px;font-size:11.5px;color:var(--ink-quiet);}
+
+/* Topbar page title + Connected pill (July 24). */
+.pagetitle{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--ink-primary);
+  border-left:2px solid var(--accent);padding-left:12px;}
+
+/* Search + filter segments (Projects, July 24) and segmented page tabs
+   (Governance). */
+.filterrow{display:flex;gap:12px;align-items:center;margin-bottom:14px;}
+.filterrow input[type=search]{flex:1;max-width:340px;}
+.filterseg{display:inline-flex;background:var(--wash-hover);border-radius:9px;padding:3px;gap:2px;}
+.filterseg a{padding:6px 12px;border-radius:7px;font-size:12px;color:var(--ink-muted);white-space:nowrap;}
+.filterseg a:hover{color:var(--ink-primary);}
+.filterseg a.on{background:var(--accent-solid);color:#fff;}
+.fcount{margin-left:auto;font-size:11.5px;color:var(--ink-quiet);}
+.segtabs{display:flex;gap:4px;border-bottom:1px solid var(--rule-hair);margin-bottom:16px;}
+.segtabs a{padding:9px 14px;font-size:13px;color:var(--ink-muted);border-bottom:2px solid transparent;margin-bottom:-1px;}
+.segtabs a:hover{color:var(--ink-primary);}
+.segtabs a.on{color:var(--ink-primary);font-weight:600;border-bottom-color:var(--accent);}
 .side .group{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   padding:16px 10px 7px;}
 .side a{display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:2px;border-radius:9px;color:var(--ink-secondary);
@@ -89,7 +207,8 @@ form.inline{display:inline;margin:0;}
 .side a:hover{background:var(--wash-hover);color:var(--ink-primary);}
 .side a.active{background:var(--wash-selected);color:var(--ink-primary);font-weight:500;}
 .side a.active svg{opacity:1;color:var(--accent);}
-.main{padding:24px 28px 60px;min-width:0;}  /* fill all available width — no max cap */
+.main{padding:24px 32px 60px;min-width:0;width:100%;max-width:1360px;margin:0 auto;}
+/* Wide data surfaces still scroll inside their own containers (.twrap etc.). */
 
 /* Web shell — the console surface; rides the theme like everything else */
 .term{background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;font:14.5px/1.7 var(--font-mono);
@@ -135,9 +254,9 @@ form.inline{display:inline;margin:0;}
 
 @media (max-width:760px){
   .layout{grid-template-columns:1fr;}
-  .side{position:sticky;top:52px;min-height:0;display:flex;gap:2px;overflow-x:auto;
+  .side{position:sticky;top:52px;min-height:0;max-height:none;display:flex;flex-direction:row;gap:2px;overflow-x:auto;
     -webkit-overflow-scrolling:touch;border-right:none;border-bottom:1px solid var(--rule-hair);padding:6px 10px;z-index:9;}
-  .side .group{display:none;}
+  .side .group,.side .badge,.sideuser{display:none;}
   .main{padding:14px;}
   body{font-size:13.5px;}
   .card .num{font-size:23px;}
@@ -145,16 +264,19 @@ form.inline{display:inline;margin:0;}
   table{font-size:12px;} th,td{padding:8px 10px;}
   .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
-/* Studio home (#874 second pass): the design's create-first welcome — eyebrow,
-   hero headline, two entry-path cards, and the Continue-your-work list. */
-.hero{margin:18px 2px 26px;}
-.hero .heyebrow{display:flex;align-items:center;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin-bottom:14px;}
-.hero .hico{width:34px;height:34px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:var(--accent-solid);color:#fff;}
-.hero .hico svg{width:18px;height:18px;}
+/* The Studio page hero (every view, July 24 design): mono eyebrow, huge
+   title, one-line sub, and the mono meta strip with hairline separators.
+   Optional actions cluster floats top-right. */
+.hero{margin:26px 2px 30px;display:flex;gap:24px;align-items:flex-start;}
+.hero .hbody{flex:1;min-width:0;}
+.hero .heyebrow{font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.12em;color:var(--ink-quiet);margin-bottom:14px;}
 .hero h1{margin:0 0 10px;font-size:34px;line-height:1.15;font-weight:600;letter-spacing:-.02em;color:var(--ink-primary);}
-.hero .hsub{font-size:15px;color:var(--ink-muted);margin-bottom:14px;}
-.hero .hmeta{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px;color:var(--ink-quiet);border-top:1px solid var(--rule-hair);padding-top:12px;}
-.hero .hmeta b{font:12px var(--font-mono);color:var(--ink-secondary);font-weight:500;}
+.hero .hsub{font-size:14px;color:var(--ink-muted);margin-bottom:16px;max-width:640px;line-height:1.6;}
+.hero .hmeta{display:flex;flex-wrap:wrap;gap:8px 0;font-size:12px;color:var(--ink-quiet);align-items:center;}
+.hero .hmeta span{display:inline-flex;align-items:center;gap:7px;}
+.hero .hmeta span+span::before{content:'';width:1px;height:14px;background:var(--rule-emph);margin:0 16px;}
+.hero .hmeta b{font:12px var(--font-mono);color:var(--ink-primary);font-weight:500;}
+.hero .hactions{display:flex;gap:9px;flex:none;padding-top:34px;}
 .paths{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;}
 @media (max-width:900px){.paths{grid-template-columns:1fr;} .hero h1{font-size:26px;}}
 .path{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;}
@@ -165,7 +287,8 @@ form.inline{display:inline;margin:0;}
 .path .pbody{font-size:13.5px;line-height:1.6;color:var(--ink-muted);flex:1;}
 .path .pnote{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-quiet);background:var(--wash-hover);border-radius:8px;padding:6px 10px;margin-top:12px;}
 .path .pnote .dot{flex:none;}
-.path .pact{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule-hair);}
+.path .pact{margin-top:16px;padding-top:14px;border-top:1px solid var(--rule-hair);
+  display:flex;justify-content:flex-end;}
 .path .pact a{display:inline-flex;align-items:center;gap:7px;font-size:13.5px;font-weight:500;color:var(--accent);}
 .path .pact a svg{width:15px;height:15px;}
 .path.muted .pico{background:var(--wash-hover);color:var(--ink-quiet);}
@@ -174,18 +297,19 @@ form.inline{display:inline;margin:0;}
 .workrow{display:flex;align-items:center;gap:16px;padding:13px 4px;border-bottom:1px solid var(--rule-hair);color:inherit;}
 .workrow:last-child{border-bottom:none;}
 .workrow:hover{background:var(--wash-hover);}
-.workrow .wstat{flex:0 0 110px;display:flex;flex-direction:column;gap:4px;}
+.workrow .wstat{flex:0 0 118px;display:flex;flex-direction:column;gap:4px;align-items:flex-start;}
 .workrow .wage{font:11px var(--font-mono);color:var(--ink-quiet);}
 .workrow .wname{flex:1;font-size:14px;font-weight:600;color:var(--ink-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .workrow .wnext{font-size:13px;color:var(--ink-muted);flex:none;}
 .workrow .warr{color:var(--accent);flex:none;display:inline-flex;}
 .workrow .warr svg{width:16px;height:16px;}
 .panel{background:var(--surface);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
-.phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
-.phead .ico{width:27px;height:27px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--accent-wash);color:var(--accent);flex:none;}
-.phead .ico svg{width:15px;height:15px;}
-.phead h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.015em;color:var(--ink-primary);}
+/* Section header, July 24 design: the small accent square + bold title + quiet
+   sub. The icon tile is retired (kept in markup, hidden here). */
+.phead{display:flex;align-items:center;gap:10px;margin-bottom:15px;flex-wrap:wrap;}
+.phead::before{content:'';width:8px;height:8px;background:var(--accent);border-radius:2px;flex:none;}
+.phead .ico{display:none;}
+.phead h2{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--ink-primary);}
 .phead .psub{font-size:11.5px;color:var(--ink-muted);}
 .phead .hcount{margin-left:auto;font:11px/1 var(--font-mono);color:var(--ink-quiet);background:var(--wash-hover);
   padding:5px 10px;border-radius:20px;}
@@ -227,7 +351,7 @@ form.inline{display:inline;margin:0;}
 
 .twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--rule-hair);border-radius:11px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
-thead th{position:sticky;top:0;background:var(--canvas);z-index:1;}
+thead th{position:sticky;top:0;background:var(--info-bg);z-index:1;}
 th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule-hair);vertical-align:top;white-space:nowrap;}
 th{font:10.5px/1 var(--font-sans);font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 td{color:var(--ink-secondary);}
@@ -343,8 +467,9 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
 .gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}
 
-.pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
-  letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
+.pill{display:inline-flex;align-items:center;gap:6px;font:10px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
+  letter-spacing:.05em;border-radius:999px;padding:4px 9px;color:var(--ink-secondary);background:var(--wash-hover);}
+.pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
 .pill.err{color:var(--err-fg);background:var(--err-bg);}
 .status{display:inline-flex;align-items:center;gap:6px;color:var(--ink-secondary);}
@@ -432,6 +557,13 @@ std::string head(std::string_view title) {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
+        // Pre-paint theme pin: apply the stored choice before first paint so a
+        // pinned theme never flashes the other one. System preference needs no
+        // attribute (the media query handles it).
+        "<script>try{var t=localStorage.getItem('zetta-theme');"
+        "if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;"
+        "if(localStorage.getItem('zetta-rail')==='open')document.documentElement.dataset.rail='open';"
+        "}catch(e){}</script>"
         "<link rel=\"icon\" href=\"/favicon.svg?v=" + version + "\" type=\"image/svg+xml\">"
         "<link rel=\"stylesheet\" href=\"/style.css?v=" + version + "\">"
         "<title>";
@@ -668,6 +800,19 @@ std::string web_ui_icon(std::string_view name) {
                    "<path d='M12 16.5v4'/>");
     if (name == "api")
         return svg("<path d='m8 7.5-4.5 4.5L8 16.5M16 7.5l4.5 4.5L16 16.5'/><path d='m13.3 5-2.6 14'/>");
+    if (name == "bell")
+        return svg("<path d='M18 8.5a6 6 0 0 0-12 0c0 6-2.5 7.5-2.5 7.5h17S18 14.5 18 8.5'/>"
+                   "<path d='M10 19.5a2.2 2.2 0 0 0 4 0'/>");
+    if (name == "moon")
+        return svg("<path d='M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z'/>");
+    if (name == "chatbot")
+        return svg("<rect x='4' y='7' width='16' height='11' rx='2.5'/><path d='M12 7V4M9 4h6'/>"
+                   "<path d='M9 11.5v1.6M15 11.5v1.6'/><path d='M2 11v4M22 11v4'/>");
+    if (name == "connections") return web_ui_icon("api");
+    if (name == "agents") return web_ui_icon("chatbot");
+    if (name == "chat")
+        return svg("<path d='M4 5.5h16a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H9l-4.5 3.5V6.5a1 1 0 0 1 1-1z'/>"
+                   "<path d='M8 10h8M8 13h5'/>");
     if (name == "cluster")
         return svg("<circle cx='12' cy='5' r='2.3'/><circle cx='5' cy='19' r='2.3'/><circle cx='19' cy='19' r='2.3'/>"
                    "<path d='M11 6.9 6 16.9M13 6.9l5 10M7.3 19h9.4'/>");
@@ -752,7 +897,8 @@ std::string web_ui_login(std::string_view error) {
 }
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
-                         std::string_view content) {
+                         std::string_view content, long long project_count,
+                         std::string_view assist_agent) {
     // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
     // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
     // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
@@ -766,6 +912,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
         if (key == "datagen") return "Generate + gate training datasets natively (grounded in the solutions plan)";
+        if (key == "connections") return "Choose a connection path \xE2\x80\x94 API, MCP, or CLI \xE2\x80\x94 and the saved source connections";
         if (key == "pipeline") return "Runs and activity \xE2\x80\x94 Pipelines, deployments, runs, and jobs";
         if (key == "observability") return "Traces, spans, and crashes";
         if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
@@ -773,7 +920,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "notebooks") return "SQL / Python cells, saved in your browser";
         return "";
     };
-    auto link = [&](std::string_view key, std::string_view label) -> std::string {
+    auto link = [&](std::string_view key, std::string_view label,
+                    std::string_view badge = {}) -> std::string {
         std::string anchor = "<a title=\"";
         anchor += web_ui_escape(nav_title(key));
         anchor += "\" class=\"";
@@ -784,7 +932,13 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         anchor += web_ui_icon(key);  // nav keys map 1:1 to icon names
         anchor += "<span>";
         anchor += label;
-        anchor += "</span></a>";
+        anchor += "</span>";
+        if (!badge.empty()) {
+            anchor += "<span class=\"badge\">";
+            anchor += web_ui_escape(badge);
+            anchor += "</span>";
+        }
+        anchor += "</a>";
         return anchor;
     };
     // Server-rendered documentation pages (public discovery docs, real routes).
@@ -801,28 +955,130 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         anchor += "</span></a>";
         return anchor;
     };
+    // The topbar page title, per view (July 24): the lockup, then the current
+    // page name with the Connected pill.
+    auto page_title = [](std::string_view key) -> std::string_view {
+        if (key == "overview") return "Studio home";
+        if (key == "projects") return "Projects";
+        if (key == "data") return "Data";
+        if (key == "models") return "Models";
+        if (key == "pipeline") return "Operate";
+        if (key == "observability") return "Observability";
+        if (key == "governance") return "Governance";
+        if (key == "cluster") return "Infrastructure";
+        if (key == "connections") return "Connections";
+        if (key == "shell") return "Shell";
+        if (key == "notebooks") return "Notebooks";
+        if (key == "agents") return "Agents";
+        if (key == "chat") return "Chat";
+        if (key == "datagen") return "Data generators";
+        if (key == "console") return "Console";
+        return "Orama Studio";
+    };
     std::string out = head("Orama Studio");
     out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Studio</div>";
-    out += "<span class=\"connpill ok\">connected</span><span class=\"spacer\"></span>";
-    out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span>";
-    if (!user.empty()) out += "<span class=\"user\">" + web_ui_escape(user) + "</span>";
-    out += "<form class=\"inline\" method=\"post\" action=\"/logout\"><button class=\"btn small\">Sign out</button></form></div>";
-    out += "<div class=\"layout\"><nav class=\"side\">";
+    out += "<span class=\"pagetitle\">" + std::string(page_title(active)) +
+           "<span class=\"connpill ok\">connected</span></span><span class=\"spacer\"></span>";
+    out += "<a class=\"util\" title=\"Search\" href=\"/?view=data\">" + web_ui_icon("search") + "</a>";
+    out += "<a class=\"util\" title=\"Get help\" href=\"/llms.txt\">" + web_ui_icon("docs") + "</a>";
+    out += "<a class=\"util\" title=\"Runs and activity\" href=\"/?view=pipeline\">" +
+           web_ui_icon("bell") + "</a>";
+    // The theme toggle: light → dark → back to following the system. Pure
+    // presentation, stored locally; the pre-paint pin in head() applies it.
+    out += "<button class=\"util\" id=\"themetoggle\" title=\"Theme\" type=\"button\">" +
+           web_ui_icon("moon") + "</button>";
+    // The Ask Orama rail toggle (the drawer is closed by default, July 24).
+    out += "<button class=\"util\" id=\"railtoggle\" title=\"Ask Orama\" type=\"button\">" +
+           web_ui_icon("chatbot") + "</button></div>";
+    out += "<div class=\"layout withrail\"><nav class=\"side\">";
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
-           link("projects", "Projects") + link("data", "Data library") + link("models", "Models");
+           link("projects", "Projects",
+                project_count >= 0 ? std::to_string(project_count) : std::string()) +
+           link("data", "Data library");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
-           link("observability", "Observability") + link("governance", "Governance");
-    out += "<div class=\"group\">Developer</div>" + link("shell", "Shell") +
-           link("notebooks", "Notebooks") + link("agents", "Agents") + link("chat", "Chat") +
-           link("datagen", "Data generators");
+           link("observability", "Observability");
+    out += "<div class=\"group\">Developer</div>" + link("connections", "Connections") +
+           link("models", "Models") + link("shell", "Shell") + link("notebooks", "Notebooks") +
+           link("agents", "Agents") + link("chat", "Chat") + link("datagen", "Data generators");
     out += "<div class=\"group\">Documentation</div>" +
            doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
            doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
-    out += "<div class=\"group\">Advanced</div>" + link("cluster", "Infrastructure");
+    out += "<div class=\"group\">Advanced</div>" + link("governance", "Governance") +
+           link("cluster", "Infrastructure");
+    // The signed-in identity card pins to the sidebar's bottom (the design's
+    // profile row); sign-out lives here, not in the topbar. The second line
+    // carries the node meta the topbar gave up.
+    if (!user.empty()) {
+        const char initial = std::toupper(static_cast<unsigned char>(user.front()));
+        out += "<div class=\"sideuser\"><span class=\"avatar\">";
+        out += initial;
+        out += "</span><span class=\"who\"><b>" + web_ui_escape(user) + "</b><span>" +
+               web_ui_escape(meta) +
+               "</span></span>"
+               "<form class=\"inline\" method=\"post\" action=\"/logout\">"
+               "<button class=\"btn small\">Sign out</button></form></div>";
+    }
     out += "</nav><main class=\"main\">";
     out += content;
-    out += "</main></div></body></html>";
+    out += "</main>";
+    // The Ask Orama rail — the design's collaborator column, backed by the
+    // node's served agent through POST /assist → the `chat` capability. No
+    // agent → the honest empty state (never a mock conversation).
+    out += "<aside class=\"rail\"><div class=\"railhead\"><span class=\"rl\">Studio "
+           "collaborator</span><b>Ask Orama</b></div>";
+    if (assist_agent.empty()) {
+        out += "<div class=\"railnote\">Every reply comes from an agent served by this "
+               "node, and every call is audited.</div>";
+        out += "<div class=\"railempty\">No served agent on this node yet. Create one in "
+               "<a href=\"/?view=agents\">Agents</a> and Ask Orama comes to life here.</div>";
+    } else {
+        out += "<div class=\"railnote\">Replies come from this node's served agent \xC2\xB7 "
+               "every call is audited and traced.</div>";
+        out += "<div class=\"railbubble\">I can explain the current Studio state, or draft "
+               "the intent for a new Project \xE2\x80\x94 ask below.</div>";
+        out += "<div class=\"railchat\" id=\"railchat\"></div>";
+        out += "<div class=\"railask\"><label for=\"railq\">Ask in Studio</label>"
+               "<div class=\"rrow\"><textarea id=\"railq\" rows=\"1\" placeholder=\"Ask "
+               "about Studio\xE2\x80\xA6\"></textarea>"
+               "<button class=\"btn btn-primary\" id=\"railsend\" type=\"button\">" +
+               web_ui_icon("play") + "</button></div></div>";
+        out += "<script>(function(){var agent=" +
+               nlohmann::json(std::string(assist_agent)).dump() +
+               R"JS(;var chat=document.getElementById('railchat'),q=document.getElementById('railq'),send=document.getElementById('railsend');
+function esc(s){return String(s==null?'':s);}
+function bubble(cls,text){var d=document.createElement('div');d.className='rmsg '+cls;d.textContent=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d;}
+var busy=false;
+async function ask(){var m=q.value.trim();if(!m||busy)return;busy=true;q.value='';bubble('rme',m);
+  var t=bubble('ragent rthinking','thinking…');
+  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m})});
+    var j=await res.json();
+    var v=j&&j.value?j.value:{};
+    t.classList.remove('rthinking');
+    t.textContent=esc(j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed')));
+  }catch(e){t.classList.remove('rthinking');t.textContent='error: '+e;}
+  busy=false;chat.scrollTop=chat.scrollHeight;}
+send.onclick=ask;
+q.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();}});
+})();</script>)JS";
+    }
+    out += "</aside>";
+    // The theme toggle cycle (system → light → dark → system) and the rail
+    // drawer toggle; both persist locally.
+    out += R"JS(<script>(function(){var b=document.getElementById('themetoggle');if(b)
+b.onclick=function(){var cur;try{cur=localStorage.getItem('zetta-theme');}catch(e){}
+  var next=cur==='light'?'dark':(cur==='dark'?null:'light');
+  try{if(next)localStorage.setItem('zetta-theme',next);else localStorage.removeItem('zetta-theme');}catch(e){}
+  if(next)document.documentElement.dataset.theme=next;else delete document.documentElement.dataset.theme;};
+var r=document.getElementById('railtoggle');
+function railSync(){var open=document.documentElement.dataset.rail==='open';if(r)r.classList.toggle('active',open);}
+if(r)r.onclick=function(){var open=document.documentElement.dataset.rail==='open';
+  if(open){delete document.documentElement.dataset.rail;try{localStorage.removeItem('zetta-rail');}catch(e){}}
+  else{document.documentElement.dataset.rail='open';try{localStorage.setItem('zetta-rail','open');}catch(e){}}
+  railSync();};
+railSync();
+})();</script>)JS";
+    out += "</div></body></html>";
     return out;
 }
 
@@ -848,6 +1104,47 @@ std::string panel_icon_for(std::string_view title) {
     if (has("consent")) return web_ui_icon("consent");
     if (has("audit") || has("govern")) return web_ui_icon("audit");
     return web_ui_icon("grid");
+}
+
+std::optional<std::string> web_ui_webapp_path(std::string_view url_path) {
+    std::string rel(url_path);
+    while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+    if (rel.empty()) return std::string("index.html");
+    // Reject anything that could escape the bundle root. Encoded traversal is
+    // already decoded by the router; backslashes never appear in bundle paths.
+    if (rel.find("..") != std::string::npos) return std::nullopt;
+    if (rel.find('\\') != std::string::npos) return std::nullopt;
+    if (rel.find('\0') != std::string::npos) return std::nullopt;
+    return rel;
+}
+
+std::string_view web_ui_content_type(std::string_view path) {
+    const auto dot = path.rfind('.');
+    const std::string_view ext = dot == std::string_view::npos ? "" : path.substr(dot + 1);
+    if (ext == "html") return "text/html; charset=utf-8";
+    if (ext == "js" || ext == "mjs") return "text/javascript; charset=utf-8";
+    if (ext == "css") return "text/css; charset=utf-8";
+    if (ext == "json" || ext == "map") return "application/json";
+    if (ext == "svg") return "image/svg+xml";
+    if (ext == "png") return "image/png";
+    if (ext == "ico") return "image/x-icon";
+    if (ext == "woff2") return "font/woff2";
+    if (ext == "txt") return "text/plain; charset=utf-8";
+    return "text/html; charset=utf-8";
+}
+
+std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
+                             std::string_view sub, std::string_view meta_html,
+                             std::string_view actions_html) {
+    std::string out = "<div class=\"hero\"><div class=\"hbody\">";
+    out += "<div class=\"heyebrow\">" + web_ui_escape(eyebrow) + "</div>";
+    out += "<h1>" + web_ui_escape(title) + "</h1>";
+    if (!sub.empty()) out += "<div class=\"hsub\">" + web_ui_escape(sub) + "</div>";
+    if (!meta_html.empty()) out += "<div class=\"hmeta\">" + std::string(meta_html) + "</div>";
+    out += "</div>";
+    if (!actions_html.empty()) out += "<div class=\"hactions\">" + std::string(actions_html) + "</div>";
+    out += "</div>";
+    return out;
 }
 
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body) {

@@ -103,7 +103,7 @@ const char* cluster_node_state(const zetta::cluster::NodeStatus& node) {
 // kCanvasGaugeTrack / kCanvasGaugeSpark (app_internal.hpp, #630).
 
 // A load gauge's fill: the shared utilization thresholds (#636) on the
-// semantic status palette (never coral). The gauges keep their richer
+// semantic status palette (never the accent). The gauges keep their richer
 // treatment (eased bars, sparklines) but the colour breakpoints are the
 // system-wide ones. Network throughput is a flow, not a good/bad status, so
 // it uses a neutral ink fill instead of this.
@@ -579,7 +579,7 @@ void App::draw_cluster() {
     if (auto pending_entity = take_pending_selection(View::Cluster)) {
         selected_cluster_node_ = *pending_entity;
     }
-    ImGui::SeparatorText("Cluster");
+    ImGui::SeparatorText("Infrastructure");
     if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::TextColored(kInkSecondary, "node       %s", cluster_.node_id().c_str());
     for (const std::string& address : cluster_.listen_addresses()) {
