@@ -1,5 +1,7 @@
 #include "zetta/ddf/featurize_job.hpp"
 
+#include "zetta/cluster/collectives.hpp"
+
 #include <cstdint>
 #include <map>
 #include <string>
@@ -244,6 +246,19 @@ DistributedFeaturizeResult run_featurize_job(compute::JobCoordinator& coordinato
             table.labels = values != nullptr ? *values
                                              : std::vector<double>(universe.size(), 0.0);
         }
+
+        // The cluster-wide event count (#958). Every participant contributes
+        // unconditionally: a collective entered by some nodes and not others sits
+        // until the timeout with no error naming the cause, so this one is never
+        // guarded on anything a node could disagree about.
+        const std::optional<std::vector<double>> event_total =
+            round.allreduce(tag + ".events.count",
+                            {static_cast<double>(events.row_count())},
+                            zetta::cluster::CollectiveOp::Sum, timeout);
+        if (!event_total || event_total->empty()) {
+            return {.ok = false, .detail = "featurize: event-count allreduce failed"};
+        }
+        out.events_read = static_cast<std::uint64_t>((*event_total)[0]);
 
         return {.ok = true,
                 .detail = "featurize over " +

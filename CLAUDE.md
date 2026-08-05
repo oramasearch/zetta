@@ -265,7 +265,7 @@ level can be trusted — a stale card is worse than none.
 > the deliverable, the checkpoint is not. See the runbooks for the template.
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | **Feeding a customer's own data to a pipeline** — the ONE `dataset_path` grammar (a directory OR `database.table`) and the column contract that says which column is the entity, the label, the features | [`docs/data/dataset-path.md`](docs/data/dataset-path.md) — the cutoff is NEVER inferred; it decides whether the model is honest |
-| **The report a run produces**, and asking a finished run what it found | [`docs/pipeline/run-report-prompt.md`](docs/pipeline/run-report-prompt.md) + the **run-report** skill · [`docs/agent/chatting-with-results.md`](docs/agent/chatting-with-results.md) · regenerate: [`docs/runbooks/regenerating-the-run-report.md`](docs/runbooks/regenerating-the-run-report.md) |
+| **The report a run produces**, and asking a finished run what it found | [`docs/pipeline/run-report.md`](docs/pipeline/run-report.md) (the artifact + `get_run_report`) · [`docs/pipeline/run-report-prompt.md`](docs/pipeline/run-report-prompt.md) + the **run-report** skill · [`docs/agent/chatting-with-results.md`](docs/agent/chatting-with-results.md) · regenerate: [`docs/runbooks/regenerating-the-run-report.md`](docs/runbooks/regenerating-the-run-report.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |

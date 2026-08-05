@@ -69,7 +69,8 @@
             "enum": [
               "dataset",
               "model",
-              "index"
+              "index",
+              "report"
             ],
             "type": "string"
           },

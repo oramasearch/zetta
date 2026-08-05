@@ -23,6 +23,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/api/capabilities.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 
 // #398 acceptance: the catalog churn SolutionCatalog blueprint deploys + runs on the
@@ -211,6 +212,113 @@ TEST(ChurnSolution, DemoDatasetRunsEndToEnd) {
     EXPECT_FALSE(result.drivers.empty());
     // The demo's only class-separating signal is payment failures.
     EXPECT_EQ(result.top_driver, "failed_payments");
+}
+
+// =====================================================================
+// #958: the run emits a `report` output, and the facts behind it are readable
+// back through the control surface.
+// =====================================================================
+
+// A finished run has to be able to say what it FOUND, to someone who was not
+// there when it ran. Before this the numbers lived in the executor's memory and a
+// test measured its own; the report had no engine-side source.
+TEST(ChurnSolution, RunEmitsAReportOutputAndItsFactsReadBack) {
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24520);
+    CpuDevice device;
+    const zetta::usecases::churn::ChurnDataset demo =
+        zetta::usecases::churn::demo_churn_dataset();
+
+    zetta::usecases::churn::ChurnSolutionOptions options;
+    // Ask for a real holdout, so the report can lead with a figure measured on
+    // rows the model never saw (#953) rather than the flattering one.
+    options.params.holdout_fraction = 0.3;
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, solution->graph, demo, options);
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+    ASSERT_TRUE(result.execution.run);
+
+    // The run names a report among its outputs, and its ref is the run itself.
+    std::string report_ref;
+    for (const zetta::pipeline::RunOutput& output : result.execution.run->outputs()) {
+        if (output.kind == "report") report_ref = output.ref;
+    }
+    ASSERT_FALSE(report_ref.empty()) << "the run emitted no report output";
+    EXPECT_EQ(report_ref, result.execution.run->id());
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{host.node};
+    const zetta::api::ApiResult read = registry.call(
+        "get_run_report", {{"run_id", report_ref}, {"limit", 5}}, context);
+    ASSERT_TRUE(read.ok) << read.error.message;
+    const nlohmann::json& report = read.value;
+
+    // What the model was built FROM. These survive the run only because they are
+    // written onto the Model record; the feature table is long gone by now.
+    ASSERT_TRUE(report.contains("dataset")) << report.dump(2);
+    const nlohmann::json& dataset = report.at("dataset");
+    EXPECT_EQ(dataset.value("accounts", 0.0), static_cast<double>(demo.accounts.size()));
+    EXPECT_EQ(dataset.value("events", 0.0), static_cast<double>(demo.events.size()));
+    const double rate = dataset.value("churn_rate", -1.0);
+    EXPECT_GT(rate, 0.0);
+    EXPECT_LT(rate, 1.0);
+    // The accuracy a constant answer scores — emitted so a writer never has to
+    // work it out, which is the computation the report rule forbids.
+    EXPECT_DOUBLE_EQ(dataset.value("majority_class_accuracy", 0.0),
+                     std::max(rate, 1.0 - rate));
+    EXPECT_FALSE(dataset.at("features").empty());
+
+    // Both figures, and the held-out one present because the run asked for it.
+    const nlohmann::json& model = report.at("model");
+    EXPECT_EQ(model.value("id", std::string{}), result.model_id);
+    ASSERT_TRUE(model.contains("held_out_auc")) << model.dump(2);
+    EXPECT_TRUE(model.contains("in_sample_auc"));
+    EXPECT_GT(model.value("held_out_rows", 0.0), 0.0);
+
+    // The drivers, and the ranked list capped at what was asked for, each row
+    // carrying the evidence values a reader judges it by.
+    EXPECT_FALSE(report.at("drivers").empty());
+    const nlohmann::json& at_risk = report.at("at_risk");
+    ASSERT_FALSE(at_risk.empty());
+    EXPECT_LE(at_risk.size(), 5u);
+    EXPECT_EQ(at_risk[0].value("rank", 0), 1);
+    ASSERT_TRUE(at_risk[0].contains("evidence")) << at_risk[0].dump(2);
+    EXPECT_FALSE(at_risk[0].at("evidence").empty());
+}
+
+// A run that asked for no holdout must SAY so where the held-out figure would
+// have been. Left blank, a report leads with the in-sample number and calls it
+// quality — which is the failure #953 exists for.
+TEST(ChurnSolution, ReportNamesTheFiguresItCannotSupply) {
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24530);
+    CpuDevice device;
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, solution->graph, zetta::usecases::churn::demo_churn_dataset());
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{host.node};
+    const zetta::api::ApiResult read = registry.call(
+        "get_run_report", {{"run_id", result.execution.run->id()}}, context);
+    ASSERT_TRUE(read.ok) << read.error.message;
+
+    EXPECT_FALSE(read.value.at("model").contains("held_out_auc"));
+    ASSERT_TRUE(read.value.contains("missing")) << read.value.dump(2);
+    bool named = false;
+    for (const nlohmann::json& entry : read.value.at("missing")) {
+        if (entry.value("field", std::string{}) == "held_out_auc") {
+            named = true;
+            EXPECT_FALSE(entry.value("why", std::string{}).empty());
+        }
+    }
+    EXPECT_TRUE(named) << "the report did not say why it has no held-out figure";
 }
 
 // =====================================================================

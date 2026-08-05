@@ -5270,7 +5270,8 @@
                                 "enum": [
                                   "dataset",
                                   "model",
-                                  "index"
+                                  "index",
+                                  "report"
                                 ],
                                 "type": "string"
                               },
@@ -5350,6 +5351,136 @@
           }
         },
         "summary": "Get one run",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_run_report": {
+      "get": {
+        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. No side effects. (#958) Requires api:query.",
+        "operationId": "get_run_report",
+        "parameters": [
+          {
+            "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the run's uuid (system.runs.run_id, or the `report` output's ref)",
+            "in": "query",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "the run's uuid (system.runs.run_id, or the `report` output's ref)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "at_risk": {
+                          "description": "the ranked entities with their risk and their evidence values, capped by `limit`",
+                          "type": "array"
+                        },
+                        "dataset": {
+                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
+                          "type": "object"
+                        },
+                        "drivers": {
+                          "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
+                          "type": "array"
+                        },
+                        "missing": {
+                          "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
+                          "type": "array"
+                        },
+                        "model": {
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "type": "object"
+                        },
+                        "run": {
+                          "description": "run id, graph, status, and when it finished",
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "run",
+                        "model"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a run's report facts",
         "tags": [
           "read"
         ]

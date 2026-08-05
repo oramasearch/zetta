@@ -89,6 +89,46 @@ std::string connect_source(const ir::Node& step) {
     return step_label(step);
 }
 
+// How many of the population's strongest drivers each at-risk row carries values
+// for (#958). Three is what a reader can hold side by side; the full driver
+// ranking is on the Model for anyone who wants more.
+constexpr std::size_t kEvidenceColumns = 3;
+
+// The `count` heaviest-weighted feature names, heaviest first. Empty until the
+// explain step has run — evidence is only meaningful once there is a ranking to
+// choose it by.
+std::vector<std::string> heaviest_features(const std::vector<std::string>& names,
+                                           const std::vector<double>& weights,
+                                           std::size_t count) {
+    std::vector<std::size_t> order(std::min(names.size(), weights.size()));
+    for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
+    std::sort(order.begin(), order.end(), [&](std::size_t left, std::size_t right) {
+        return weights[left] > weights[right];
+    });
+    if (order.size() > count) order.resize(count);
+    std::vector<std::string> columns;
+    columns.reserve(order.size());
+    for (const std::size_t index : order) columns.push_back(names[index]);
+    return columns;
+}
+
+// One entity's value for one feature. Read from the GLOBAL feature table, never
+// the sliced one: a node holds scores for every entity but features for only its
+// own shard, so the sliced table would leave most rows' evidence blank on a
+// cluster and full on a single node — a difference nobody would notice locally.
+std::optional<double> entity_feature(const ddf::FeatureTable& table,
+                                     std::int64_t entity, const std::string& column) {
+    const std::vector<double>* values = table.feature(column);
+    if (values == nullptr) return std::nullopt;
+    // featurize builds `entities` ascending, so this is a binary search rather
+    // than a scan per cell — the at-risk list can be the whole population.
+    const auto found =
+        std::lower_bound(table.entities.begin(), table.entities.end(), entity);
+    if (found == table.entities.end() || *found != entity) return std::nullopt;
+    const std::size_t row = static_cast<std::size_t>(found - table.entities.begin());
+    return row < values->size() ? std::optional<double>{(*values)[row]} : std::nullopt;
+}
+
 }  // namespace
 
 // The cross-step pipeline state (pImpl). One ChurnStepExecutor drives one execution,
@@ -102,6 +142,14 @@ struct ChurnStepExecutor::State {
     bool features_ready = false;
     ddf::FeatureTable feature_table;
     ddf::DataFrame feature_frame;  // device-backed X+label, materialized once, reused
+
+    // The GLOBAL feature table, before it is sliced to this node's entities. The
+    // featurize job broadcasts it identically to every node, so keeping it costs
+    // the copy that `result` was going to destroy anyway — and it is the only
+    // place a node can read another shard's entity values, which the run report's
+    // per-entity evidence needs (#958).
+    ddf::FeatureTable global_table;
+    std::uint64_t dataset_events = 0;  // cluster-wide, from the featurize job
 
     bool model_ready = false;
     ml::GbdtModel model;
@@ -231,7 +279,7 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
     if (!job) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create featurize job", {}, {}};
     }
-    const ddf::DistributedFeaturizeResult result = ddf::run_featurize_job(
+    ddf::DistributedFeaturizeResult result = ddf::run_featurize_job(
         coordinator_, *job, state.events, state.accounts, config_.featurize);
     if (!result.ok()) {
         std::string detail;
@@ -269,7 +317,9 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
             }
         }
     }
-    state.feature_table = slice_feature_table(result.table, local_entities);
+    state.dataset_events = result.events_read;
+    state.global_table = std::move(result.table);
+    state.feature_table = slice_feature_table(state.global_table, local_entities);
 
     auto frame = state.feature_table.to_data_frame(device_);
     if (!frame.ok()) {
@@ -318,6 +368,47 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
     state.model = result.model;
     state.model_id = result.model_id;
     state.model_ready = true;
+
+    // Record what the model was built FROM alongside how well it scored (#958).
+    // A run report has to say "trained on N accounts drawn from M events, of which
+    // R% churned", and none of that survives the run otherwise — the feature table
+    // is in memory and gone. The Model record already replicates, already carries
+    // the metrics, and is already the thing a reader resolves a run's model to, so
+    // it is where these belong rather than in a second artifact to keep in sync.
+    //
+    // Every value must be a NUMBER: `model_schema()` declares metrics as
+    // `additionalProperties: {type: number}` and rejects anything else at the
+    // RECEIVING peer, so a non-number here registers on the root and then fails to
+    // materialize on the cluster (#953).
+    //
+    // Only the root touches it — it is the node that registered the model, and the
+    // update replicates from there.
+    if (result.is_root && !state.model_id.empty()) {
+        const std::vector<double>& labels = state.global_table.labels;
+        const std::size_t accounts = state.global_table.row_count();
+        node_.run_on_owner([&] {
+            const std::shared_ptr<ml::Model> model = node_.find_model(state.model_id);
+            if (!model) return;
+            nlohmann::json metrics = model->metrics();
+            metrics["dataset_accounts"] = accounts;
+            metrics["dataset_events"] = state.dataset_events;
+            if (!labels.empty()) {
+                std::size_t positives = 0;
+                for (const double label : labels) {
+                    if (label > 0.5) ++positives;
+                }
+                const double rate =
+                    static_cast<double>(positives) / static_cast<double>(labels.size());
+                metrics["dataset_churn_rate"] = rate;
+                // The accuracy a constant answer would score. Emitted rather than
+                // left to the reader because a report that prints accuracy without
+                // it is misleading by omission, and working it out while writing is
+                // exactly the computation the report rule forbids.
+                metrics["dataset_majority_class_accuracy"] = std::max(rate, 1.0 - rate);
+            }
+            model->set_metrics(std::move(metrics));
+        });
+    }
 
     zetta::pipeline::StepOutcome outcome;
     // The ref is the REAL registered Model id (resolvable via Node::find_model) —
@@ -484,14 +575,31 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         database->drop_table(name);  // replace the previous run's list
         std::shared_ptr<data::Table> table = database->create_table(name);
         if (!table) return;
+        // The evidence columns: each row also carries its values for the top
+        // drivers of the POPULATION ranking (#958). Chosen by that ranking rather
+        // than per entity on purpose — picking each account's worst-looking
+        // numbers individually is a way of lying with true figures, and it makes
+        // rows incomparable. Same columns, every row.
+        const std::vector<std::string> evidence = heaviest_features(
+            state.feature_names, state.mean_abs_shap, kEvidenceColumns);
         std::size_t position = 0;
         for (const RetentionAction& action : state.playbook) {
             ++position;
-            table->add_row({{"rank", position},
-                            {"account", action.entity},
-                            {"risk", action.risk},
-                            {"dominant_driver", action.dominant_driver},
-                            {"driver_effect", action.dominant_value}});
+            std::vector<std::pair<std::string, nlohmann::json>> cells = {
+                {"rank", position},
+                {"account", action.entity},
+                {"risk", action.risk},
+                {"dominant_driver", action.dominant_driver},
+                {"driver_effect", action.dominant_value}};
+            for (const std::string& column : evidence) {
+                if (const std::optional<double> value =
+                        entity_feature(state.global_table, action.entity, column)) {
+                    cells.emplace_back(column, *value);
+                }
+            }
+            nlohmann::json row = nlohmann::json::object();
+            for (auto& [key, value] : cells) row[key] = std::move(value);
+            table->add_row(std::move(row));
         }
         at_risk_table = kChurnResultsDatabase + std::string(".") + name;
     });
@@ -502,6 +610,14 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "dataset", step_label(step),
         at_risk_table.empty() ? ("playbook:" + step.id) : at_risk_table});
+    // What the run FOUND, as distinct from what it produced (#958). The ref is the
+    // run itself: the report is assembled at query time by `get_run_report` from
+    // the model record and the at-risk table, both of which already replicate, so
+    // there is no second copy of these numbers to drift from the first.
+    // The ref is left empty on purpose: GraphExecutor stamps the run id, which
+    // this executor does not have (the Run is created after it is constructed).
+    outcome.outputs.push_back(
+        zetta::pipeline::RunOutput{"report", "run report", ""});
     return outcome;
 }
 
