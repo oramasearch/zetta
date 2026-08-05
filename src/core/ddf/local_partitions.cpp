@@ -64,6 +64,27 @@ LocalShardResult load_local_partitions(Node& node, const std::string& table,
                                        compute::ComputeDevice& device,
                                        std::size_t chunk_rows) {
     LocalShardResult out;
+
+    // **This walks the Node tree, so it must run on the thread that owns it.**
+    // Calling it from a worker or an API handler does not crash and does not race
+    // visibly: it stops, and the caller waits forever. That has cost two debugging
+    // sessions, the churn executor's shard load (#952) and score_table (#956), each
+    // found by sampling a hung process rather than by a failing test. Both survived
+    // their tests because a test calls this from the owner thread, so the coverage
+    // that should catch it structurally cannot.
+    //
+    // A guard here was tried and removed. There is no way from inside to tell the
+    // bug from the sanctioned case: the testkit drives nodes from its own per-node
+    // SPMD threads and arranges exclusive access itself, which is the documented
+    // pre-gate contract on Node::run_on_owner, and it looks identical to an API
+    // handler on the wrong thread. Failing on both would break a legitimate caller
+    // to catch an illegitimate one.
+    //
+    // So the rule stays a convention rather than a check: **wrap this in
+    // Node::run_on_owner unless you are the owner.** If a third instance of this
+    // bug appears, the answer is probably a caller-supplied "I hold exclusive
+    // access" flag rather than another attempt at inference.
+
     const std::string& self = node.node_id();
 
     // Enumerate this node's owned partitions of `table`, ascending by row range so
