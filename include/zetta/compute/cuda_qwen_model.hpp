@@ -1,0 +1,145 @@
+#pragma once
+
+#include <cstddef>
+#include <vector>
+
+#include "zetta/compute/compute_device.hpp"
+#include "zetta/compute/cuda_resident.hpp"
+
+// A Qwen model whose weights LIVE on the GPU (#923).
+//
+// The autograd engine keeps parameters on the host and ships them across PCIe on every matmul, so a
+// 0.6B model holds 425 MiB of a 40 GB card and the GPU idles at ~11% (#928). This type inverts
+// that: the parameters are uploaded once, in the order `autograd::QwenModel` exposes them, and stay
+// for the model's lifetime. Forward, loss, backward and the optimizer step (rungs 3-7) then compose
+// the fused #922 kernels over resident storage, and only a scalar loss returns to the host.
+//
+// Deliberately built FROM a loaded `autograd::QwenModel` rather than from a checkpoint directory:
+// that model already owns config parsing, safetensors loading, BF16 widening and shape validation,
+// all of which are device-independent. Re-implementing them here would duplicate the one part of
+// the pipeline that is already correct on every backend.
+#include "zetta/autograd/qwen.hpp"  // QwenConfig (a value type; no device dependency)
+
+namespace zetta::autograd {
+class QwenModel;
+}
+
+namespace zetta::compute {
+
+#if defined(ZETTA_WITH_CUDA)
+
+class CudaQwenModel {
+public:
+    CudaQwenModel() = default;
+
+    // Upload every parameter of `host`, preserving its order and shapes. Returns an invalid model
+    // if any upload fails, rather than a partially-resident one — a model missing a weight would
+    // produce plausible-looking wrong numbers instead of an error.
+    static CudaQwenModel from_host(ComputeDevice& device, const zetta::autograd::QwenModel& host);
+
+    CudaQwenModel(CudaQwenModel&&) noexcept = default;
+    CudaQwenModel& operator=(CudaQwenModel&&) noexcept = default;
+    CudaQwenModel(const CudaQwenModel&) = delete;
+    CudaQwenModel& operator=(const CudaQwenModel&) = delete;
+
+    bool valid() const noexcept { return !parameters_.empty(); }
+    std::size_t parameter_count() const noexcept { return parameters_.size(); }
+
+    // Total device bytes held by the parameters. The number that was 425 MiB of 40,960 before this
+    // existed, and the one an acceptance run reports.
+    std::size_t resident_bytes() const noexcept;
+
+    const ResidentTensor& parameter(std::size_t index) const { return parameters_[index]; }
+    ResidentTensor& parameter(std::size_t index) { return parameters_[index]; }
+
+    // One decoder layer, entirely on-device (#923 rung 3): pre-norm residual attention, then
+    // pre-norm residual SwiGLU MLP, composing the fused #922 kernels with cuBLAS projections.
+    // `hidden` and `out` are [seq, d_model] resident tensors; nothing crosses PCIe in between.
+    ComputeStatus forward_layer(ComputeDevice& device, const ResidentTensor& hidden, int layer,
+                                int seq, ResidentTensor& out) const;
+
+    // Everything a layer's backward needs from its forward (#923 rung 6a). Kept because
+    // recomputing a layer's intermediates during the backward would double the forward cost, and
+    // these are small next to the parameters that are already resident.
+    struct LayerCache {
+        ResidentTensor input;        // the layer's input hidden state
+        ResidentTensor normed;       // after input_layernorm
+        ResidentTensor query;        // post QK-norm + RoPE
+        ResidentTensor key;          // post QK-norm + RoPE
+        // The RAW projections, before QK-norm. RMSNorm's backward needs the input it normalized,
+        // not its output — caching only the post-norm tensor would make the QK-norm gradient
+        // unrecoverable without recomputing the projection.
+        ResidentTensor query_pre;
+        ResidentTensor key_pre;
+        ResidentTensor query_normed;  // post QK-norm, pre-RoPE (RoPE's backward undoes into this)
+        ResidentTensor key_normed;
+        ResidentTensor value;
+        ResidentTensor softmax_lse;  // per (head, query), so the backward needs no max pass
+        // The softmax PROBABILITIES, [n_heads, seq, seq]. Retained so the backward's four products
+        // are batched GEMMs with nothing recomputed. ~96 MB per layer at seq 1229 with 16 heads;
+        // the trade that buys tensor cores on the backward, which is ~2x the forward's cost.
+        ResidentTensor probabilities;
+        ResidentTensor context;      // attention output before o_proj
+        ResidentTensor after_attention;
+        ResidentTensor mlp_normed;
+        ResidentTensor gate;
+        ResidentTensor up;
+        ResidentTensor activated;    // swiglu(gate, up)
+    };
+
+    // The whole forward (#923 rung 4): embed -> every layer -> final norm -> output projection.
+    // `ids` is the ONLY thing that crosses PCIe on the way in, and the logits the only thing on the
+    // way out. Result is [seq, vocab_size].
+    ComputeStatus forward(ComputeDevice& device, const std::vector<int>& ids,
+                          ResidentTensor& logits) const;
+
+    // Same layer as `forward_layer`, additionally retaining what the backward consumes. Separate
+    // rather than always-caching so inference pays nothing for training's bookkeeping.
+    ComputeStatus forward_layer_cached(ComputeDevice& device, ResidentTensor hidden, int layer,
+                                       int seq, LayerCache& cache, ResidentTensor& out) const;
+
+    // Gradients, one per parameter, in the same order. Allocated resident and ACCUMULATED into, so
+    // a step never ships a gradient across PCIe.
+    using Gradients = std::vector<ResidentTensor>;
+    Gradients make_gradients(ComputeDevice& device) const;
+    ComputeStatus zero_gradients(ComputeDevice& device, Gradients& gradients) const;
+
+    // One layer's backward (#923 rung 6b): consumes the cache, accumulates into `gradients`, and
+    // returns the gradient with respect to the layer's input so it can chain to the layer below.
+    ComputeStatus backward_layer(ComputeDevice& device, const LayerCache& cache,
+                                 const ResidentTensor& grad_out, int layer, int seq,
+                                 Gradients& gradients, ResidentTensor& grad_hidden) const;
+
+    // One full training step, entirely on-device (#923 rungs 6c + 7): forward with caches, loss,
+    // backward through every layer, AdamW update. Only the scalar loss returns to the host.
+    // `step` is 1-based (AdamW's bias correction requires it).
+    // `first_scored` masks the prompt out of the loss and its gradient (#932) — an index into
+    // `targets`, so for a prompt of P tokens it is P-1 (targets[i] predicts ids[i+1], so the first
+    // completion token is predicted at index P-1). Default 0 trains on every position.
+    ComputeStatus train_step(ComputeDevice& device, const std::vector<int>& ids,
+                             const std::vector<int>& targets, Gradients& gradients,
+                             Gradients& moment1, Gradients& moment2, int step,
+                             float learning_rate, float& loss, int first_scored = 0);
+
+    // Copy the resident weights back into a host model — how a trained checkpoint is saved, and
+    // how #926 compares backends. Not on any hot path.
+    ComputeStatus download_into(zetta::autograd::QwenModel& host) const;
+
+private:
+    // Parameters are registered by autograd::QwenModel in a fixed order: embed_tokens, then 11 per
+    // layer, then model.norm (then lm_head when embeddings are untied). Indexing arithmetically
+    // rather than by name keeps the hot path free of string lookups; `kPerLayer` is asserted
+    // against the actual count at load, so a change to that order fails loudly at construction
+    // instead of silently reading the wrong weight.
+    static constexpr std::size_t kPerLayer = 11;
+    std::size_t layer_base(int layer) const {
+        return 1 + static_cast<std::size_t>(layer) * kPerLayer;
+    }
+
+    std::vector<ResidentTensor> parameters_;
+    zetta::autograd::QwenConfig config_{};
+};
+
+#endif  // ZETTA_WITH_CUDA
+
+}  // namespace zetta::compute

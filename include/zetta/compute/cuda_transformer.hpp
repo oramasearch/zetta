@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include "zetta/compute/compute_device.hpp"
+#include "zetta/compute/cuda_device.hpp"
 
 // Fused transformer kernels for the CUDA backend (#922, part of #920).
 //
@@ -68,14 +69,20 @@ ComputeStatus cuda_rms_norm_backward(const DeviceBuffer& x, const DeviceBuffer& 
 // tensor is passed one head at a time, or with rows = seq and head_dim per head). Being a
 // rotation, it preserves each row's norm and is the identity at position 0 — two properties the
 // tests assert directly, because they catch a swapped sin/cos that a formula comparison can miss.
+// `rows_per_position` handles the packed multi-head layout. A projection is [seq, n_heads *
+// head_dim], which reshapes CONTIGUOUSLY to [seq * n_heads, head_dim] — but then the row index is
+// `s * n_heads + h`, not the position `s`. Passing rows_per_position = n_heads recovers it as
+// `row / rows_per_position`, so every head of a token rotates by that token's angle. Passing 1
+// (the default) is the plain [seq, head_dim] case where row IS the position.
 ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                        float base, int position_offset);
+                        float base, int position_offset, int rows_per_position = 1);
 
 // The inverse rotation, which is what the transpose of an orthogonal matrix gives:
 //   grad_x[p, i]        =  grad_out[p, i] * cos + grad_out[p, i + half] * sin
 //   grad_x[p, i + half] = -grad_out[p, i] * sin + grad_out[p, i + half] * cos
 ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
-                                 int head_dim, float base, int position_offset);
+                                 int head_dim, float base, int position_offset,
+                                 int rows_per_position = 1);
 
 // --- SwiGLU ----------------------------------------------------------------------------------
 // out = silu(gate) * up, elementwise, with silu(v) = v * sigmoid(v) — the Qwen MLP activation.
@@ -132,6 +139,95 @@ ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const Device
                                              DeviceBuffer& grad_q, DeviceBuffer& grad_k,
                                              DeviceBuffer& grad_v, int seq, int n_heads,
                                              int n_kv_heads, int head_dim);
+
+// --- Embedding lookup ------------------------------------------------------------------------
+// out[t, :] = table[ids[t], :]. `ids` is an Int32 device buffer of `seq` token ids.
+//
+// A gather rather than a matmul: the one-hot formulation would multiply a [seq, vocab] matrix by
+// the table, which for a 151k vocabulary is absurd. Ids live on the device so the whole forward
+// takes only the token list across PCIe, not the embedded rows.
+ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids, DeviceBuffer& out,
+                             int seq, int d_model, int vocab_size);
+
+// --- Cross-entropy (the language-model loss) ---------------------------------------------------
+// loss = mean_t( logsumexp(logits[t]) - logits[t, target[t]] ), matching autograd::cross_entropy.
+//
+// Fused: the softmax is never materialized. A [seq, vocab] softmax at a 151k vocabulary is ~600 MB
+// per forward, written once and read twice, for a scalar. Here each row's logsumexp is a block
+// reduction and only `row_loss[seq]` is kept — which the backward needs anyway.
+//
+// `row_loss` is an output of the forward and an input to the backward, the same
+// compute-once-share-it pattern `softmax_lse` uses in attention.
+//
+// `first_scored` masks the PROMPT out of the loss (#932): rows before it contribute nothing and the
+// mean is taken over the completion only. In SFT the prompt is near-identical across the corpus, so
+// the model memorizes it in a few steps and it then contributes ~0 error while occupying most of
+// the positions — measured at 87% of the loss on the base-agent corpus. Default 0 scores every row.
+ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                 DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
+                                 int vocab_size, int first_scored = 0);
+
+// grad_logits = (softmax(logits) - onehot(target)) / seq, recomputed from the logits rather than
+// from a saved softmax — recomputing an exp is far cheaper than storing and re-reading 600 MB.
+// Masked rows are ZEROED, not skipped — grad_logits is a reused pool buffer, so leaving a masked
+// row untouched would feed the previous step's gradient into this one.
+ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size,
+                                          int first_scored = 0);
+
+// grad_table[ids[t], :] += grad_out[t, :] — the embedding's backward, a scatter-add.
+//
+// Deterministic by construction: ONE THREAD PER DIMENSION, each looping the tokens in order. A
+// thread owns a whole column of the table, so repeated token ids accumulate serially inside that
+// thread and no two threads ever write the same cell. The obvious alternative — a thread per
+// (token, dim) with atomicAdd — is faster but accumulates in retire order, so a sequence with a
+// repeated token would give different last bits every run. #926 asserts exact reproducibility.
+ComputeStatus cuda_embedding_backward(const DeviceBuffer& grad_out, const DeviceBuffer& ids,
+                                      DeviceBuffer& grad_table, int seq, int d_model,
+                                      int vocab_size);
+
+// One AdamW step over a parameter, with its resident moments. Fused: read the gradient once, update
+// both moments and the weight, write once. Decoupled weight decay (the AdamW correction), so decay
+// is applied to the weight rather than folded into the gradient.
+ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradient,
+                              DeviceBuffer& moment1, DeviceBuffer& moment2, std::size_t elements,
+                              float learning_rate, float beta1, float beta2, float epsilon,
+                              float weight_decay, int step);
+
+// Causal attention via batched GEMM (#923). Same result as `cuda_causal_attention`, different
+// strategy — and on real sequence lengths, far faster.
+//
+// The streaming version walks the keys SERIALLY inside one block per (head, query): at seq 1229
+// that is 1,229 sequential block-wide reductions per query, with no tiling and no tensor cores. It
+// keeps memory at O(seq * head_dim), which is why it exists, but it leaves the hardware idle.
+//
+// Here QK^T and PV are what they actually are — matmuls — and run as batched GEMM on the tensor
+// cores, with a fused causal-mask + softmax kernel between them. The cost is materializing the
+// [n_heads, seq, seq] scores: ~96 MB per layer at seq 1229 with 16 heads, freed before the next
+// layer, against an A100's 40 GB. That is the right trade at these sizes; it is NOT the right trade
+// at long context, where the streaming kernel remains the correct choice.
+//
+// `scores` is caller-provided scratch of n_heads * seq * seq floats, reused as the probabilities.
+ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuffer& q,
+                                            const DeviceBuffer& k, const DeviceBuffer& v,
+                                            DeviceBuffer& scores, DeviceBuffer& out,
+                                            DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                            int n_kv_heads, int head_dim);
+
+// The batched backward. Takes the softmax PROBABILITIES the forward already wrote (its `scores`
+// buffer, overwritten in place), so nothing is recomputed and the four products are batched GEMMs:
+//
+//   grad_P = grad_out V^T ;  grad_S = P * (grad_P - rowsum(grad_P * P))   [softmax Jacobian]
+//   grad_Q = grad_S K   ;    grad_K = grad_S^T Q   ;    grad_V = P^T grad_out
+//
+// grad_K and grad_V are summed across each GQA group, which is where the streaming kernel avoided
+// an atomic by owning the key index; here the group reduction is an explicit fixed-order pass, same
+// determinism guarantee.
+ComputeStatus cuda_causal_attention_backward_batched(
+    CudaDevice& device, const DeviceBuffer& q, const DeviceBuffer& k, const DeviceBuffer& v,
+    const DeviceBuffer& probabilities, const DeviceBuffer& grad_out, DeviceBuffer& grad_scores,
+    DeviceBuffer& grad_q, DeviceBuffer& grad_k, DeviceBuffer& grad_v, int seq, int n_heads,
+    int n_kv_heads, int head_dim);
 
 #endif  // ZETTA_WITH_CUDA
 

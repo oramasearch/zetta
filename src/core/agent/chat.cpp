@@ -16,6 +16,8 @@
 #include "zetta/agent/base_prompt.hpp"
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/interaction.hpp"
+#include "zetta/agent/solution_graph.hpp"
+#include "zetta/ir/step_kind.hpp"
 #include "zetta/agent/model_cache.hpp"
 #include "zetta/agent/inference_runner.hpp"
 #include "zetta/autograd/qwen.hpp"
@@ -153,7 +155,8 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
 
 std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
                               const std::string& grounding,
-                              const std::vector<AgentToolSpec>& tool_specs) {
+                              const std::vector<AgentToolSpec>& tool_specs,
+                              const std::vector<PriorTurn>& history) {
     // The trained frame (#916/#918). `base_agent_system_prompt()` is baked into EVERY SFT example
     // by `render_action_example`, and `render_interaction_prompt` is the renderer they share — so
     // serving MUST frame the turn identically or the model is prompted off-distribution. It was
@@ -181,14 +184,15 @@ std::string build_chat_prompt(const AgentRecord& agent, const std::string& messa
             "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
     }
     ask += message;
-    return render_interaction_prompt(system_prompt, grounding, ask);
+    return render_interaction_prompt(system_prompt, grounding, ask, history);
 }
 
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
                      int max_new_tokens, int max_rounds,
                      const AgentToolRunner& tools,
                      const std::vector<AgentToolSpec>& tool_specs,
-                     const std::string& grounding) {
+                     const std::string& grounding,
+                     const std::vector<PriorTurn>& history) {
     ChatResponse response;
     std::string error;
     // The tokenizer is cheap and always needed (encode/decode); load it from a small
@@ -207,26 +211,23 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
     // each records that it ran so the tool-calling loop closes end to end.
     Sandbox sandbox;
+    // The agent is a tool-calling HARNESS: the model decides which steps to call and with what
+    // configuration, and these tools turn each call into a real pipeline node. The harness mints
+    // the node id and wires the edge from the previous step, so the graph is valid by
+    // construction.
+    //
+    // This is the fix for a failure that looked like a model problem and was not. Asked to emit an
+    // execution_graph directly, the model reproduces the placeholder ids it saw in training
+    // (`11111111-…`, `21111111-…`) — so two steps collide on one id, an edge points at itself, and
+    // the graph is rejected. Minting unique ids is mechanical work the harness does correctly every
+    // time; it was never the model's job.
     for (const std::string& tool : agent.tools) {
+        // Steps are executed by the shared builder after the turn (see below); here they only
+        // record that they ran, so a tool the model calls is never reported as unknown.
         sandbox.register_tool(tool, [tool](EndState& world, const nlohmann::json&) {
             world.set("ran_" + tool, true);
             return ToolResult::success();
         });
-    }
-    // Live tools (#904): each runs through the embedding's runner, which the API
-    // layer binds to the capability registry under the CALLER's identity. These
-    // are registered after the recorded tools, so a live tool of the same name
-    // wins — a real result beats a marker.
-    if (tools) {
-        for (const AgentToolSpec& spec : tool_specs) {
-            const std::string name = spec.name;
-            sandbox.register_tool(name, [name, &tools](EndState& world,
-                                                       const nlohmann::json& arguments) {
-                ToolResult result = tools(name, arguments);
-                world.set("ran_" + name, true);
-                return result;
-            });
-        }
     }
 
     // The model's EOS id, so generation STOPS when an EOS-trained model emits it (a model
@@ -272,7 +273,7 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // prompt it trained on.
     const std::string prompt =
         build_chat_prompt(agent, message, grounding,
-                          tools ? tool_specs : std::vector<AgentToolSpec>{});
+                          tools ? tool_specs : std::vector<AgentToolSpec>{}, history);
 
     response.result = run_chat_turn(generate, sandbox, prompt, max_rounds);
 
@@ -306,7 +307,26 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // fallback below, so the envelope is never what a user sees.
     if (std::optional<StudioAction> action = parse_studio_action(reply)) {
         reply = action->message;
+        // Execute the action's tool calls through the sandbox — THIS is what makes the agent a
+        // tool-calling harness rather than a graph generator. The calls live nested inside the
+        // envelope (`{"tool_calls":[…]}`), not in `<tool_call>` tags, so `parse_tool_calls` never
+        // saw them and they were silently discarded: the model asked for a pipeline to be built
+        // and nothing built it. Running them here turns each call into a real node with a minted
+        // id, so the resulting graph is valid by construction no matter what ids the model
+        // imagined.
+        for (const ToolCall& call : action->tool_calls) {
+            const ApplyOutcome outcome = sandbox.apply(call);
+            response.result.invocations.push_back({call, outcome.status, outcome.reason});
+        }
+        // THE pipeline: built by the harness from the model's calls, with ids it mints itself.
+        response.built_pipeline = build_pipeline_from_tool_calls(action->tool_calls);
         response.action = std::move(action);
+    }
+    // Prefer the pipeline the HARNESS built over the one the model drew. The model's own
+    // execution_graph reproduces the placeholder ids it saw in training, so its steps collide on
+    // one id and it will not compile; the built graph has the same steps with unique ids.
+    if (!response.built_pipeline.nodes().empty() && response.action) {
+        response.action->execution_graph = response.built_pipeline;
     }
     const std::size_t last = reply.find_last_not_of(" \t\r\n");
     reply.erase(last == std::string::npos ? 0 : last + 1);

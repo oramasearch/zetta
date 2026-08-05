@@ -1,0 +1,11 @@
+digraph RLVRIntegration {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+
+  TrainingRegimen -> RewardPolicyDesign [label="if RL-based"];
+  RewardPolicyDesign -> VerifierRegistry [label="selects verifiers as reward fns"];
+  VerifierRegistry -> EvalSuite [label="also used for"];
+  VerifierRegistry -> Run [label="reward signal during"];
+  Run -> RunReport [label="scored by"];
+  RunReport -> EvalSuite [style=dashed, label="graded against"];
+}

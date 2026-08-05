@@ -227,14 +227,20 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                           context.acting_key, name, /*allowed=*/false,
                           "challenge " + challenge->id + " issued: " +
                               challenge->action.summary);
+            // Say where to go, not just what happened. A refusal that names a challenge id and
+            // leaves the reader to find the surface that decides it is a dead end — the id is
+            // useless without the page. The web console's Consent requests tab lists it with
+            // Approve/Deny, and the headed app's approval surface is the trusted path when the
+            // requester has no second principal to approve with.
             ApiResult refusal = ApiResult::failure(
                 "consent_required",
-                "'" + name + "' touches a cloud provider and did NOT execute; "
-                "consent challenge " + challenge->id + " was issued and must "
-                "be approved by a different, approval-capable principal (an "
-                "approver key via approve_consent, or a human in the headed "
-                "app's approval surface). Approvals are per-action and never "
-                "remembered.");
+                "'" + name + "' touches a cloud provider and did NOT execute; consent challenge " +
+                    challenge->id +
+                    " was issued and is waiting for approval at /governance (Consent requests). "
+                    "It must be approved by a DIFFERENT principal than the one that requested it: "
+                    "an approver key via approve_consent, or a human in the headed (desktop) app's "
+                    "approval surface \u2014 approving from the same session that made the request "
+                    "is refused by design. Approvals are per-action and never remembered.");
             refusal.error.details = zetta::governance::to_json(*challenge);
             return finish(std::move(refusal));
         }

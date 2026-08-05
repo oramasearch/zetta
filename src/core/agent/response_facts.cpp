@@ -22,12 +22,34 @@ std::vector<std::string> numeric_literals(std::string_view text) {
     std::vector<std::string> found;
     std::size_t index = 0;
     while (index < text.size()) {
+        // Skip backticked code spans wholesale. Digits inside one are part of an IDENTIFIER —
+        // a column like `precision_at_10`, a step like `top_20_accounts` — not a figure the
+        // answer is claiming. Counting them made a correct reply naming a real column read as a
+        // fabrication, which is the opposite of what this check is for.
+        if (text[index] == '`') {
+            const std::size_t close = text.find('`', index + 1);
+            if (close == std::string_view::npos) {
+                ++index;  // a lone backtick is prose; keep checking the figures after it
+                continue;
+            }
+            index = close + 1;
+            continue;
+        }
         if (!is_number_char(text[index])) {
             ++index;
             continue;
         }
         const std::size_t begin = index;
         while (index < text.size() && is_number_char(text[index])) ++index;
+        // A digit run touching a letter is part of an IDENTIFIER — BM25F, GPT-4, S-2, gpt4o — not
+        // a figure the answer is claiming. Same reasoning as the code-span skip above: this check
+        // exists to catch invented MEASURES, and flagging an algorithm's name as a fabricated
+        // number inverts it.
+        const bool letter_before = begin > 0 && (std::isalpha(static_cast<unsigned char>(
+                                                     text[begin - 1])) != 0);
+        const bool letter_after =
+            index < text.size() && (std::isalpha(static_cast<unsigned char>(text[index])) != 0);
+        if (letter_before || letter_after) continue;
         std::string literal(text.substr(begin, index - begin));
         // Trim a trailing '.' that was sentence punctuation rather than a decimal point.
         while (!literal.empty() && literal.back() == '.') literal.pop_back();
@@ -38,6 +60,40 @@ std::vector<std::string> numeric_literals(std::string_view text) {
 
 bool contains(std::string_view haystack, std::string_view needle) {
     return !needle.empty() && haystack.find(needle) != std::string_view::npos;
+}
+
+// Does `haystack` state `literal` as a WHOLE number — not merely contain its digits?
+//
+// Plain substring matching silently defeated the rounding rule this file exists to enforce: the
+// context states "AUC: 0.880", and "0.88" is a substring of it, so a rounded figure the engine
+// never retrieved was accepted as grounded. "120" inside "1200" is the same failure. Requiring the
+// neighbouring characters not to be part of a number makes the comparison what it always claimed
+// to be — as written, exactly.
+bool states_literal(std::string_view haystack, std::string_view literal) {
+    if (literal.empty()) return false;
+    const auto is_digit = [](char character) { return character >= '0' && character <= '9'; };
+    for (std::size_t at = haystack.find(literal); at != std::string_view::npos;
+         at = haystack.find(literal, at + 1)) {
+        // The number continues to the left only through a digit, or through a decimal point that
+        // itself follows a digit. A bare '.' is sentence punctuation: "accuracy 0.660." states
+        // 0.660, not 0.660-followed-by-more-number.
+        bool left_open = true;
+        if (at >= 1) {
+            if (is_digit(haystack[at - 1])) left_open = false;
+            else if (haystack[at - 1] == '.' && at >= 2 && is_digit(haystack[at - 2]))
+                left_open = false;
+        }
+        bool right_open = true;
+        const std::size_t after = at + literal.size();
+        if (after < haystack.size()) {
+            if (is_digit(haystack[after])) right_open = false;
+            else if (haystack[after] == '.' && after + 1 < haystack.size() &&
+                     is_digit(haystack[after + 1]))
+                right_open = false;
+        }
+        if (left_open && right_open) return true;
+    }
+    return false;
 }
 
 // The value following `label` on its own line in the context, trimmed. Empty when absent.
@@ -86,7 +142,18 @@ std::string first_ranked_name(std::string_view grounding, std::string_view secti
 
 EndState response_solution_facts(const StudioAction& action, const std::string& grounding) {
     // Start from the pipeline's own facts so an `action` turn grades exactly as it always has.
-    EndState state = graph_solution_facts(action.execution_graph);
+    //
+    // A MODEL's response carries tool calls and no graph — the agent is a tool-calling harness, so
+    // the model decides which steps to call and the harness builds the Pipeline by running them.
+    // Reading only `execution_graph` therefore graded every real response as having built nothing:
+    // a checkpoint emitting correct calls on 100% of action cases scored 47%, with `connect` and
+    // `serve` reported missing from responses that plainly called them. Build the pipeline the same
+    // way the harness does when the model supplied no graph, so grading measures what the turn
+    // actually produces. A response that carries a graph is unchanged.
+    EndState state = graph_solution_facts(action.execution_graph.nodes().empty() &&
+                                                  !action.tool_calls.empty()
+                                              ? build_pipeline_from_tool_calls(action.tool_calls)
+                                              : action.execution_graph);
 
     state.set("kind", std::string(to_string(action.kind)));
     const bool built_nothing =
@@ -142,7 +209,7 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
     bool numbers_from_context = true;
     for (const std::string& literal : numeric_literals(action.message)) {
         if (literal.size() < 2) continue;  // a bare digit is prose ("one of 3 drivers"), not a claim
-        if (!contains(grounding, literal)) {
+        if (!states_literal(grounding, literal)) {
             numbers_from_context = false;
             break;
         }

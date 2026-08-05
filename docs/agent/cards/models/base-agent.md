@@ -3,11 +3,43 @@
 **Model.** The Orama Studio auto-AI **base agent** (#555) — turns a plain-language ask into a
 production pipeline. **Base weights.** Qwen3-0.6B (permissively licensed open-weights start),
 pulled natively (`zetta pull`, ADR-17). **Status.** SFT driver, the #873 action reshape, and
-the #918 interaction contract + corpus are built; the acceptance eval on the v2 corpus is the
-open item. **The checkpoint currently installed predates the action reshape** and emits the older
-facts format — aligning it with the shipped protocol is what the v2 retrain is for. **Owner.**
+the #918 interaction contract + corpus are built. **Current checkpoint:
+`base-agent-0.6b-interaction-v3`** — trained 2026-07-27 on corpus v3 with the prompt masked out of
+the loss. On 100 held-out canary cases it parses 100%, picks the right mode 100% (action 53/53 ·
+answer 40/40 · clarify 4/4 · abstain 3/3), emits tool calls and builds a compiling Pipeline on
+100% of action cases, and never writes a node id. **Grader pass rate is 47%** — structure is right,
+case-specific facts often are not, because it has learned ONE pipeline shape and emits it for every
+ask (https://github.com/oramasearch/zetta/issues/937). Full numbers:
+[`docs/reports/base-agent-v3-validation-2026-07-27.md`](../../../reports/base-agent-v3-validation-2026-07-27.md).
+It supersedes `base-agent-0.6b-interaction-v1`, which was trained on the withdrawn v2 corpus and
+built nothing at all. **Owner.**
 agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per-customer fork) ·
 #873 (reshape) · #248 (eval).
+
+## Where it lives
+
+**Published, privately, to the Hub** —
+[`OramaSearch/base-agent-0.6b`](https://huggingface.co/OramaSearch/base-agent-0.6b), one folder per
+version (`v9/`, `v10/`), each naming the exact corpus it learned from. Procedure: the **hf-ops**
+skill.
+
+| version | corpus | canary grader | note |
+|---|---|---|---|
+| v3 | v3 (6,102) | **47%** | first to emit tool calls; one pipeline shape for every ask |
+| v7 | v7 (12,744) | **98%** | use-case-coherent corpus; a Project's name predicts its pipeline |
+| v9 | v9 (14,889) | 97.5% | ungrounded coverage — the turns a demo opens with |
+| v10 | v10 (15,069) | *pending* | multi-turn follow-ups; teacher-authored objection answers |
+
+**The v3 → v7 jump was not a model change.** The corpus had been teaching noise: a Project called
+"Lifetime value forecast" required a gbdt classifier, so the only learnable lesson was that the
+Project name predicts nothing.
+
+**A canary score does not predict demo behaviour.** v7 scored 98% held-out and still failed three
+demo beats, because the canary carries retrieved context and a conversation's opening turns do not.
+Run both `EvaluateBaseAgentOnCanary` and `scripts/demo-smoke.sh`.
+
+This card is the in-repo datasheet; the Hub card is the same content for a reader outside the repo.
+**When one changes, change both.**
 
 ## Intended use
 
@@ -81,6 +113,21 @@ agent domain. **Related:** #863 (fine-tune) · #858 (RLVR campaign) · #853 (per
 
 ## Limitations
 
+- **One pipeline shape for every ask.** The most consequential limitation. Asked to build for
+  churn, lead scoring, and collections, v3 produces the identical five-step Pipeline and the
+  identical message. It passes any grader whose required facts that shape happens to satisfy and
+  fails the rest, which is the whole of the 47% grader gap. Root cause is the corpus, not capacity
+  (https://github.com/oramasearch/zetta/issues/937) — so **more parameters will not fix it**.
+- **It over-generates.** The CUDA driver that trained it appended no stop token, so it writes one
+  action and starts another. The serving parser absorbs this by taking the first balanced object;
+  the driver is fixed for the next run.
+- **Product-knowledge answers need their grounding.** 95.8% parse / 70.8% grader pass on product
+  cases WITH the capability listing they were trained against; without it the model blends
+  memorized answers. Serving does not supply that listing, and injecting it unconditionally
+  regressed pipeline building from `action` to `clarify` — retrieval here needs routing.
+- **The corpus behind any future checkpoint contains ~354 distinct asks.** Row count (6,102) is a
+  cross product, so a model can score well by memorizing far fewer mappings than the size suggests
+  (https://github.com/oramasearch/zetta/issues/937). Weigh the canary, not the training loss.
 - **0.6B is the demo/immediate path (#863).** It must emit valid nested-JSON pipelines — harder
   than flat facts, so **parse rate is a first-class metric**, and it is the metric that decides
   whether to scale.

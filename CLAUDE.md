@@ -215,6 +215,8 @@ level can be trusted — a stale card is worse than none.
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
 | **Generating RLVR training data / a task corpus** (from the solutions plan or a customer's data) | **native, in-Zetta**: the `DatasetGenerator` seam + factory (`generate_dataset` / `list_dataset_generators`; base-agent + Auto-Suggest; plan-grounded + admission-gated) → [`docs/dataset/`](docs/dataset/README.md) · the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
 | **The models + their corpora** — honest datasheets + model cards | [`docs/agent/cards/`](docs/agent/cards/README.md) — `models/` (base agent #555, Auto-Suggest #554) + `datasets/`; coverage: [`docs/agent/training-coverage-checklist.md`](docs/agent/training-coverage-checklist.md). **READ the card BEFORE changing or diagnosing a model** (see the rule below); **update it in the same change as a data/model change.** |
+| **A corpus that trains to ~0 loss but generalizes badly** (mode collapse: same answer to different asks) | [`docs/agent/corpus-diversity-runbook.md`](docs/agent/corpus-diversity-runbook.md) — measure target entropy + dominant shape FIRST; more epochs and more parameters both make it worse |
+| **Training an agent end to end** (corpus → train → evaluate → install → schedule retraining) | [`docs/agent/training-agents-runbook.md`](docs/agent/training-agents-runbook.md) — the current loop and the future state, kept separate |
 | **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill · **every run writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
 | **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill · **every eval writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
 
@@ -580,6 +582,27 @@ the load-bearing rules:
   closing comment on what changed, and **leave the PR open for review** — solved
   work must not clutter the tracker (umbrella `CLAUDE.md` → "Close shipped tickets").
 
+### Datasets and models are published to HuggingFace, with cards
+
+**Every corpus version and every checkpoint goes to the private `OramaSearch` org on the Hub, with
+a dataset card / model card** — see the **hf-ops** skill for the procedure and the card rules.
+
+- `OramaSearch/base-agent-interaction-corpus` (datasets) · `OramaSearch/base-agent-0.6b` (models).
+- **Private, always, and verified private before any upload.** These carry product detail, the
+  solution catalogue's correctness profiles, and models trained on them. A public repo cannot be
+  made private after the content has existed publicly.
+- **Not in git.** They were once gitignored as "reproducible from the native generator", which is
+  false the moment the generator changes — regenerating from a later commit yields a *different*
+  corpus, so a checkpoint whose corpus was not published cannot be reproduced or audited. **The
+  corpus is the provenance of the model.**
+- **A corpus publishes with its canary**; a checkpoint publishes naming its exact corpus version
+  and carrying its tokenizer.
+- **A card states its limitations plainly**, not only its wins, and cites the dated report in
+  [`docs/reports/`](docs/reports/README.md) behind any number. A card that only lists wins is
+  marketing, and the next person rediscovers the weakness expensively.
+- **Never print or commit the token** (`HF_TOKEN` from the environment). If one surfaces anywhere
+  durable — a card, a config, a transcript — redact and rotate it.
+
 ### Documentation — update it with EVERY change (not optional)
 
 Docs are **part of the change, in the same commit** — never a follow-up. After
@@ -659,5 +682,9 @@ Project skills live in `.claude/skills/` (committed, shared):
   API into a partitioned dataset; the read-only guard, the injected transport,
   typed cells, no vendor SDK).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).
+- **hf-ops** — publish + version datasets and models on the **private** `OramaSearch`
+  HuggingFace org: private-by-default (verified, never assumed), a corpus goes up with its
+  canary, a checkpoint names the exact corpus it learned from, and every artifact carries an
+  honest card that states its limitations rather than only its wins.
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.

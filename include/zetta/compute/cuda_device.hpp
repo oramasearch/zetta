@@ -73,6 +73,15 @@ public:
     ComputeStatus scatter(const DeviceBuffer& input, const DeviceBuffer& indices,
                           DeviceBuffer& output) override;
 
+    // Strided-batched GEMM: `batch` independent matmuls of identical shape, each operand advanced
+    // by its own stride. This is what attention needs — QK^T and PV are one matmul per head, and
+    // issuing them as a batch keeps the tensor cores fed instead of paying a launch per head.
+    //
+    // Row-major in, like `gemm`: the column-major transpose trick applies identically.
+    ComputeStatus gemm_batched(const GemmParams& params, const DeviceBuffer& a,
+                               std::size_t stride_a, const DeviceBuffer& b, std::size_t stride_b,
+                               DeviceBuffer& c, std::size_t stride_c, int batch);
+
     // --- allocation pool -------------------------------------------------------------------
     // How many bytes of freed device memory to keep for reuse instead of returning to CUDA.
     // Default 2 GiB; 0 disables pooling entirely (every release goes straight to cudaFree).

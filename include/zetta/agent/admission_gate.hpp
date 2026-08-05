@@ -7,6 +7,7 @@
 
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/interaction.hpp"
 #include "zetta/agent/task.hpp"
 
 // The admission gate (#555, #248; docs/agent/README.md). Before a task corpus is
@@ -35,6 +36,10 @@ struct AdmissionCase {
     // pipeline from intent). This is where grounded-QA volume comes from: hold the question
     // fixed and vary this, and the example becomes unanswerable without reading it.
     std::string grounding;
+    // The exchanges BEFORE this ask, oldest first (interaction.hpp). A follow-up case is only a
+    // follow-up if the model can see what it follows — without this, "list all of those options"
+    // trains as a standalone question with no referent, which is what it looked like at serving.
+    std::vector<PriorTurn> history;
 };
 
 enum class AdmissionFailureKind {

@@ -78,19 +78,60 @@ std::optional<StudioAction> action_from_json(const nlohmann::json& document,
     return action;
 }
 
-std::optional<StudioAction> parse_studio_action(const std::string& generation) {
-    // The action is the JSON object the model emitted; take the first `{` to the last `}` (the
-    // model is trained to emit one object). A balanced scan isn't needed for a single object,
-    // and non-JSON preamble/suffix is tolerated.
-    const std::size_t begin = generation.find('{');
-    const std::size_t end = generation.rfind('}');
-    if (begin == std::string::npos || end == std::string::npos || begin >= end) {
-        return std::nullopt;
+// The first BALANCED JSON object in `text` — depth-counted and string-aware, so a quote or brace
+// inside a message never ends the scan early. Empty when there is none.
+//
+// Spanning first-`{` to last-`}` instead was wrong in the one case that matters: a model that does
+// not emit a stop token keeps going and writes a SECOND action after the first. That span then
+// covers `{...}{...}`, which is not valid JSON, so a perfectly good first action was thrown away
+// and the turn reported as unparsed. Taking the first complete object also makes trailing junk of
+// any kind — a repeated action, a truncated tail, stray prose — harmless.
+std::string first_balanced_object(const std::string& text) {
+    const std::size_t begin = text.find('{');
+    if (begin == std::string::npos) return {};
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t index = begin; index < text.size(); ++index) {
+        const char character = text[index];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (character == '\\') {
+                escaped = true;
+            } else if (character == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (character == '"') {
+            in_string = true;
+        } else if (character == '{') {
+            ++depth;
+        } else if (character == '}') {
+            if (--depth == 0) return text.substr(begin, index - begin + 1);
+        }
     }
-    const nlohmann::json document = nlohmann::json::parse(
-        generation.substr(begin, end - begin + 1), nullptr, /*allow_exceptions=*/false);
+    return {};  // unterminated — a truncated generation
+}
+
+std::optional<StudioAction> parse_studio_action(const std::string& generation) {
+    const std::string object = first_balanced_object(generation);
+    if (object.empty()) return std::nullopt;
+    nlohmann::json document = nlohmann::json::parse(object, nullptr, /*allow_exceptions=*/false);
     if (document.is_discarded()) return std::nullopt;
-    return action_from_json(document);
+    if (std::optional<StudioAction> action = action_from_json(document)) return action;
+    // Retry without the graph. The harness builds the Pipeline itself by running the model's tool
+    // calls, so the model's own graph is advisory — and a checkpoint that writes colliding node
+    // ids would otherwise take the whole action down with it, discarding tool calls that were
+    // perfectly good. Dropping a graph we were never going to use beats losing the turn.
+    // `action_from_json` stays strict: it is a boundary validator, and a bad graph is a real
+    // error there.
+    if (document.is_object() && document.contains("execution_graph")) {
+        document.erase("execution_graph");
+        return action_from_json(document);
+    }
+    return std::nullopt;
 }
 
 const nlohmann::json& studio_action_schema() {

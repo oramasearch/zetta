@@ -248,6 +248,55 @@ TEST(Autograd, CrossEntropyForwardAndGradient) {
                    });
 }
 
+// Prompt masking (#932). In SFT the sequence is prompt + completion; the prompt is near-identical
+// across the corpus, so the model memorizes it within a few steps and it then contributes ~0 error
+// while still occupying most of the positions — 87% of the loss on the base-agent corpus. Scoring
+// only the completion is what makes the reported loss mean "how well did it answer".
+TEST(Autograd, CrossEntropyCanMaskThePrompt) {
+    const std::vector<float> values = {0.5F, -1.0F, 2.0F, 1.0F, 0.0F, -0.5F, -2.0F, 0.25F, 1.5F};
+    const std::vector<int> targets = {2, 0, 1};
+
+    // Masking the first two rows must give exactly the loss of scoring the last row alone.
+    const Tensor all = Tensor::leaf(values, {3, 3}, false);
+    const Tensor masked = cross_entropy(all, targets, /*first_scored=*/2);
+    const Tensor tail = Tensor::leaf({-2.0F, 0.25F, 1.5F}, {1, 3}, false);
+    const Tensor tail_only = cross_entropy(tail, {1});
+    EXPECT_NEAR(masked.data()[0], tail_only.data()[0], 1e-5F);
+
+    // ...and it must NOT be the unmasked loss, or the mask is doing nothing.
+    const Tensor unmasked = cross_entropy(all, targets);
+    EXPECT_GT(std::abs(unmasked.data()[0] - masked.data()[0]), 1e-3F);
+
+    // Masked rows receive EXACTLY zero gradient — the whole point is that the gradient goes to the
+    // completion instead of being diluted across tokens already predicted perfectly.
+    Tensor logits = Tensor::leaf(values, {3, 3}, true);
+    Tensor loss = cross_entropy(logits, targets, /*first_scored=*/2);
+    loss.backward();
+    for (int row = 0; row < 2; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            EXPECT_FLOAT_EQ(logits.node()->grad[row * 3 + column], 0.0F)
+                << "masked row " << row << " column " << column << " received gradient";
+        }
+    }
+    bool scored_row_has_gradient = false;
+    for (int column = 0; column < 3; ++column) {
+        if (std::abs(logits.node()->grad[2 * 3 + column]) > 1e-6F) scored_row_has_gradient = true;
+    }
+    EXPECT_TRUE(scored_row_has_gradient) << "the scored row must actually receive gradient";
+
+    // The masked objective is still differentiable end to end.
+    check_gradient(values, {3, 3}, [&](const Tensor& t) {
+        return cross_entropy(t, targets, /*first_scored=*/1);
+    });
+}
+
+// A boundary at or past the end must not divide by zero.
+TEST(Autograd, CrossEntropyMaskClampsAtTheLastRow) {
+    const Tensor logits = Tensor::leaf({0.5F, -1.0F, 2.0F, 1.0F}, {2, 2}, false);
+    const Tensor loss = cross_entropy(logits, {1, 0}, /*first_scored=*/99);
+    EXPECT_TRUE(std::isfinite(loss.data()[0]));
+}
+
 TEST(Autograd, PolicyGradientLossGradient) {
     const std::vector<int> actions = {1, 3, 0};
     const std::vector<double> advantages = {0.5, -0.3, 0.8};

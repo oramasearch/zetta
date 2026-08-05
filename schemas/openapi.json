@@ -523,6 +523,107 @@
         ]
       }
     },
+    "/v1/agent_training_status": {
+      "get": {
+        "description": "Whether an agent is stale (its tools or goals changed since its newest Saved Version was trained), whether its schedule says it is due, every version it has produced, and any goals that resolve to no verifiable check. Read-only. Requires orchestration:agent_training_status.",
+        "operationId": "agent_training_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "due": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        },
+                        "versions": {
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Should this agent be retrained?",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/approve_consent": {
       "post": {
         "description": "Approve one pending consent challenge and execute exactly the named action once. Requires a named approver key of a DIFFERENT principal than the requester — a key can never approve its own cloud action. Requires orchestration:approve_consent.",
@@ -911,6 +1012,23 @@
               "minLength": 1,
               "type": "string"
             }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+            "in": "query",
+            "name": "history",
+            "required": false
           },
           {
             "in": "query",
@@ -1616,6 +1734,12 @@
                 "properties": {
                   "description": {
                     "type": "string"
+                  },
+                  "goals": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
@@ -8395,6 +8519,158 @@
         ]
       }
     },
+    "/v1/set_training_schedule": {
+      "post": {
+        "description": "Set an agent's training spec: the corpus, the base checkpoint, the step count, and the cadence (manual, on_change, daily, weekly, monthly). Manual is the default - an agent never retrains behind your back. Requires orchestration:set_training_schedule.",
+        "operationId": "set_training_schedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "description": "the agent's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "training": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "base_checkpoint": {
+                        "description": "what to start from; empty = the agent's current model",
+                        "type": "string"
+                      },
+                      "cadence": {
+                        "description": "when this agent retrains on its own; manual never does",
+                        "enum": [
+                          "manual",
+                          "on_change",
+                          "daily",
+                          "weekly",
+                          "monthly"
+                        ],
+                        "type": "string"
+                      },
+                      "corpus": {
+                        "description": "corpus to train on; empty = the built-in corpus",
+                        "type": "string"
+                      },
+                      "steps": {
+                        "description": "0 = one epoch",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "id",
+                  "training"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "system_prompt": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Set when an agent retrains",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/sql": {
       "get": {
         "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. DDL/INSERT mutate the database. Requires api:query.",
@@ -9161,6 +9437,12 @@
                 "properties": {
                   "description": {
                     "type": "string"
+                  },
+                  "goals": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
                   },
                   "id": {
                     "minLength": 1,

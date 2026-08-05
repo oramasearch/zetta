@@ -134,7 +134,18 @@ Tensor embedding(const Tensor& table, const std::vector<int>& ids);
 // Mean cross-entropy of `logits` [rows, vocab] against integer `targets` [rows] —
 // the language-model loss. Numerically stable (log-sum-exp), returns a scalar.
 // Backward: dLogits[row, j] = (softmax[row, j] − 1[j == target]) / rows.
-Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets);
+// Mean cross-entropy over rows [first_scored, rows).
+//
+// `first_scored` masks the PROMPT out of the loss (#932). In SFT the sequence is prompt +
+// completion, and the prompt is near-identical across a corpus, so a model memorizes it in a few
+// steps and it then contributes ~0 error while still occupying most of the positions: measured on
+// the base-agent corpus, 87% of the loss — and of the gradient — was spent on tokens already
+// predicted perfectly. Scoring only the completion makes the reported number mean "how well did it
+// answer" and puts the whole gradient there.
+//
+// Rows before `first_scored` contribute nothing to the loss and receive EXACTLY zero gradient.
+// Default 0 scores every row, which is the plain language-model objective.
+Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets, int first_scored = 0);
 
 // Select `count` contiguous rows starting at `start` from a [rows, cols] tensor ->
 // [count, cols]. Used to align next-token predictions (logits[0..seq-2]) with their

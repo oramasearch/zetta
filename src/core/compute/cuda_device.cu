@@ -1071,6 +1071,44 @@ void CudaDevice::release_buffer(void* handle) noexcept {
     cudaFree(handle);
 }
 
+ComputeStatus CudaDevice::gemm_batched(const GemmParams& params, const DeviceBuffer& a,
+                                       std::size_t stride_a, const DeviceBuffer& b,
+                                       std::size_t stride_b, DeviceBuffer& c, std::size_t stride_c,
+                                       int batch) {
+    if (batch <= 0) return ComputeStatus::invalid_argument("gemm_batched: batch must be positive");
+    if (a.dtype() != DataType::Float32 || b.dtype() != DataType::Float32 ||
+        c.dtype() != DataType::Float32) {
+        return ComputeStatus::unsupported("gemm_batched: float32 only");
+    }
+    if (cudaSetDevice(device_index_) != cudaSuccess) {
+        return ComputeStatus::backend_error("gemm_batched: cudaSetDevice failed");
+    }
+    if (!pool_) return ComputeStatus::backend_error("gemm_batched: no device pool");
+    cublasHandle_t blas = pool_->blas_handle();
+    if (blas == nullptr) return ComputeStatus::backend_error("gemm_batched: no cuBLAS handle");
+
+    // Same column-major inversion as `gemm`: compute C^T = op_b(B)^T * op_a(A)^T, so the operands
+    // are passed in the opposite order and the layout reinterpretation supplies the transpose.
+    const int m = static_cast<int>(params.rows);
+    const int n = static_cast<int>(params.cols);
+    const int k = static_cast<int>(params.inner);
+    const float alpha = static_cast<float>(params.alpha);
+    const float beta = static_cast<float>(params.beta);
+    const cublasOperation_t op_a = params.transpose_a ? CUBLAS_OP_T : CUBLAS_OP_N;
+    const cublasOperation_t op_b = params.transpose_b ? CUBLAS_OP_T : CUBLAS_OP_N;
+    const int lda = params.transpose_a ? m : k;
+    const int ldb = params.transpose_b ? k : n;
+    const cublasStatus_t status = cublasSgemmStridedBatched(
+        blas, op_b, op_a, n, m, k, &alpha, static_cast<const float*>(b.handle()), ldb,
+        static_cast<long long>(stride_b), static_cast<const float*>(a.handle()), lda,
+        static_cast<long long>(stride_a), &beta, static_cast<float*>(c.handle()), n,
+        static_cast<long long>(stride_c), batch);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        return ComputeStatus::backend_error("gemm_batched: cublasSgemmStridedBatched failed");
+    }
+    return after_kernel("gemm_batched");
+}
+
 void CudaDevice::set_pool_limit(std::size_t bytes) {
     if (!pool_) return;
     {

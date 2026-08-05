@@ -118,4 +118,22 @@ TEST(CorpusIo, TrainingAndHeldOutSplit) {
     EXPECT_EQ(held_out_cases(corpus).size(), 1U);
 }
 
+// History must survive the round trip. Dropping `grounding` on the trip once trained "answer from
+// these facts" with no facts; a dropped history is the same failure — a follow-up that trains as a
+// standalone question, silently, looking exactly like a well-formed case.
+TEST(CorpusIo, HistorySurvivesTheRoundTrip) {
+    zetta::agent::AdmissionCase with_history =
+        zetta::agent::churn_solution_case();
+    with_history.history = {{"What can I do here?", "I can build churn or lead scoring."}};
+
+    std::string error;
+    const auto restored = zetta::agent::load_corpus_jsonl(
+        zetta::agent::dump_corpus_jsonl({with_history}), &error);
+    ASSERT_TRUE(restored.has_value()) << error;
+    ASSERT_EQ(restored->size(), 1U);
+    ASSERT_EQ((*restored)[0].history.size(), 1U);
+    EXPECT_EQ((*restored)[0].history[0].ask, "What can I do here?");
+    EXPECT_EQ((*restored)[0].history[0].reply, "I can build churn or lead scoring.");
+}
+
 }  // namespace

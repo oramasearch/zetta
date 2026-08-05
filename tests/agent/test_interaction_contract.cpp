@@ -10,6 +10,7 @@
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/base_prompt.hpp"
+#include "zetta/tokenizer/bpe.hpp"
 #include "zetta/agent/chat.hpp"
 #include "zetta/agent/corpus_io.hpp"
 #include "zetta/agent/interaction.hpp"
@@ -48,8 +49,12 @@ TEST(InteractionContract, TrainingPromptIsByteIdenticalToServedPrompt) {
     for (const AdmissionCase& admission_case : dataset.cases) {
         const auto [training_prompt, target] = zetta::agent::render_action_example(admission_case);
         // What the SERVING harness would build for the same ask + retrieved context.
+        // Including the conversation so far: a multi-turn case must be byte-identical too, or
+        // follow-ups train under one frame and serve under another — the exact skew this test
+        // exists to catch, and it did catch it when history was added to the renderer.
         const std::string served_prompt = zetta::agent::build_chat_prompt(
-            base_agent(), admission_case.task.description(), admission_case.grounding);
+            base_agent(), admission_case.task.description(), admission_case.grounding,
+            /*tool_specs=*/{}, admission_case.history);
         EXPECT_EQ(training_prompt, served_prompt)
             << "train/serve prompt skew on case " << admission_case.task.id();
         EXPECT_FALSE(target.empty());
@@ -236,6 +241,84 @@ TEST(InteractionContract, WriteCorpusJsonl) {
     std::ofstream(std::string(out) + ".canary") << zetta::agent::dump_corpus_jsonl(canary);
     std::cout << "\n  wrote " << train.size() << " training cases to " << out << "\n"
               << "  wrote " << canary.size() << " canary cases to " << out << ".canary\n";
+}
+
+
+// Diagnostic: how much of a training example is the PROMPT? The SFT driver concatenates prompt and
+// target and scores cross-entropy over every position, so a constant system prompt shared by all
+// 6,030 examples gets memorized in a few steps and then dominates the reported loss. If the prompt
+// is most of the sequence, the headline loss says far more about template memorization than about
+// whether the model learned to answer.
+TEST(InteractionContract, ReportPromptToTargetTokenSplit) {
+    const char* model_dir = std::getenv("ZETTA_QWEN_DIR");
+    if (model_dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR for the tokenizer";
+    std::string error;
+    const std::optional<zetta::tokenizer::BpeTokenizer> tokenizer =
+        zetta::tokenizer::BpeTokenizer::from_directory(model_dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+
+    const zetta::dataset::BaseAgentDatasetGenerator generator;
+    const zetta::dataset::GeneratedDataset dataset = generator.generate({});
+
+    std::size_t prompt_total = 0, target_total = 0, counted = 0;
+    std::size_t system_prompt_tokens =
+        tokenizer->encode(std::string(zetta::agent::base_agent_system_prompt())).size();
+    for (const zetta::agent::AdmissionCase& c : dataset.cases) {
+        if (counted >= 400) break;
+        const auto [prompt, target] = zetta::agent::render_action_example(c);
+        prompt_total += tokenizer->encode(prompt).size();
+        target_total += tokenizer->encode(target).size();
+        ++counted;
+    }
+    const double prompt_mean = static_cast<double>(prompt_total) / counted;
+    const double target_mean = static_cast<double>(target_total) / counted;
+    std::cout << "\n  system prompt alone: " << system_prompt_tokens << " tokens\n"
+              << "  mean prompt: " << prompt_mean << "  mean target: " << target_mean << "\n"
+              << "  PROMPT SHARE OF LOSS: "
+              << 100.0 * prompt_mean / (prompt_mean + target_mean) << "%\n";
+}
+
+// A follow-up must resolve against what was actually said. Without history every turn is a FIRST
+// turn: "list all of those options" has no referent, and three different follow-ups produce the
+// same reply because the model sees three unrelated opening messages.
+TEST(InteractionContract, HistoryAppearsInThePromptAndServingMatchesTraining) {
+    const std::vector<zetta::agent::PriorTurn> history = {
+        {"What can I do with Orama Studio?", "I can build churn, lead scoring, or forecasting."}};
+
+    const std::string trained = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), /*grounding=*/"",
+        "List all of those options.", history);
+
+    EXPECT_NE(trained.find("What can I do with Orama Studio?"), std::string::npos)
+        << "the earlier ask must be visible";
+    EXPECT_NE(trained.find("I can build churn, lead scoring, or forecasting."), std::string::npos)
+        << "the earlier reply must be visible";
+    // The reply shown is the MESSAGE, never the envelope — re-showing JSON would teach the model
+    // that the envelope is part of the dialogue. Checked on the history BLOCK, because the system
+    // prompt legitimately names tool_calls when it describes the response shape.
+    const std::size_t block = trained.find("Earlier in this conversation");
+    ASSERT_NE(block, std::string::npos);
+    const std::string history_block = trained.substr(block, trained.find("List all of those") - block);
+    EXPECT_EQ(history_block.find("\"tool_calls\""), std::string::npos);
+
+    // THE contract: what serving sends is byte-identical to what training rendered.
+    zetta::agent::AgentRecord agent;
+    agent.name = "test";
+    agent.model = "/checkpoints/base";
+    const std::string served =
+        zetta::agent::build_chat_prompt(agent, "List all of those options.", /*grounding=*/"",
+                                        /*tool_specs=*/{}, history);
+    EXPECT_EQ(served, trained) << "a multi-turn prompt must not differ between training and serving";
+}
+
+// No history renders exactly as before, so every single-turn case is unchanged.
+TEST(InteractionContract, NoHistoryRendersIdenticallyToBefore) {
+    const std::string without = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), "", "Set up churn.");
+    const std::string empty = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), "", "Set up churn.", {});
+    EXPECT_EQ(without, empty);
+    EXPECT_EQ(without.find("Earlier in this conversation"), std::string::npos);
 }
 
 }  // namespace

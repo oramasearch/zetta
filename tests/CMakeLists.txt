@@ -144,6 +144,8 @@ add_executable(zetta-tests
   compute/test_cpu_device.cpp
   compute/test_cuda_device.cpp
   compute/test_cuda_transformer.cpp
+  compute/test_cuda_resident.cpp
+  compute/test_cuda_qwen_model.cpp
   compute/test_device_registry.cpp
   data/test_large_object.cpp
   data/test_import.cpp
@@ -188,6 +190,7 @@ add_executable(zetta-tests
   agent/test_sft_device_agnostic.cpp
   agent/test_solution_graph.cpp
   dataset/test_dataset_generator.cpp
+  dataset/test_corpus_invariants.cpp
   agent/test_agent_record.cpp
   agent/test_agent_store.cpp
   agent/test_base_prompt.cpp
@@ -200,6 +203,10 @@ add_executable(zetta-tests
   agent/test_admission_gate.cpp
   agent/test_curriculum.cpp
   agent/test_corpus_io.cpp
+  agent/test_response_facts.cpp
+  agent/test_goal.cpp
+  agent/test_conversation.cpp
+  agent/test_training_policy.cpp
   agent/test_corpus_native_gate.cpp
   agent/test_softmax_policy.cpp
   agent/test_advantage.cpp

@@ -561,6 +561,250 @@ TEST(CudaAllocationPool, DifferentSizesDoNotAliasEachOther) {
     EXPECT_GE(large.element_count(), 8192U);
 }
 
+
+// The packed multi-head layout: a projection is [seq, n_heads * head_dim], which reshapes
+// contiguously to [seq * n_heads, head_dim]. Every head of a token must rotate by THAT TOKEN's
+// angle — getting this wrong rotates head h of token s by the angle of token s*n_heads+h, which
+// still "looks like RoPE" and quietly destroys positional information.
+TEST(CudaTransformer, RopeSharesOneAnglePerTokenAcrossHeads) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 4;
+    const int n_heads = 3;
+    const int head_dim = 8;
+    const int rows = seq * n_heads;
+    // Give every head of a token identical content, so after RoPE they must STILL be identical:
+    // any per-head angle difference shows up immediately as a divergence between them.
+    std::vector<float> x(static_cast<std::size_t>(rows) * head_dim, 0.0F);
+    const std::vector<float> pattern = random_values(static_cast<std::size_t>(head_dim), 1234U);
+    for (int token = 0; token < seq; ++token) {
+        for (int head = 0; head < n_heads; ++head) {
+            const std::size_t base =
+                (static_cast<std::size_t>(token) * n_heads + head) * head_dim;
+            for (int d = 0; d < head_dim; ++d) x[base + d] = pattern[static_cast<std::size_t>(d)];
+        }
+    }
+
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer out = device.allocate(DataType::Float32, x.size());
+    ASSERT_TRUE(zetta::compute::cuda_rope(device_x, out, rows, head_dim, 10000.0F, 0, n_heads).ok());
+    std::vector<float> rotated(x.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(out, std::span<float>(rotated)).ok());
+
+    for (int token = 0; token < seq; ++token) {
+        const std::size_t first = static_cast<std::size_t>(token) * n_heads * head_dim;
+        for (int head = 1; head < n_heads; ++head) {
+            const std::size_t other =
+                (static_cast<std::size_t>(token) * n_heads + head) * head_dim;
+            for (int d = 0; d < head_dim; ++d) {
+                EXPECT_NEAR(rotated[other + d], rotated[first + d], 1e-6F)
+                    << "token " << token << " head " << head << " dim " << d
+                    << " rotated by a different angle than head 0";
+            }
+        }
+    }
+    // Token 0 is position 0: still the identity.
+    for (int d = 0; d < head_dim; ++d) {
+        EXPECT_NEAR(rotated[static_cast<std::size_t>(d)], pattern[static_cast<std::size_t>(d)],
+                    1e-6F);
+    }
+    // A later token must actually differ, or the grouping silently pinned everything to position 0.
+    bool differs = false;
+    for (int d = 0; d < head_dim; ++d) {
+        const std::size_t late = static_cast<std::size_t>(seq - 1) * n_heads * head_dim + d;
+        if (std::abs(rotated[late] - pattern[static_cast<std::size_t>(d)]) > 1e-4F) differs = true;
+    }
+    EXPECT_TRUE(differs) << "the last token must be rotated away from the identity";
+}
+
+TEST(CudaTransformer, RopeRejectsARaggedHeadGrouping) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+    const std::vector<float> x(7 * 8, 0.5F);
+    DeviceBuffer device_x = device.upload<float>(std::span<const float>(x));
+    DeviceBuffer out = device.allocate(DataType::Float32, x.size());
+    // 7 rows cannot be grouped 3-per-token; some heads would take another token's angle.
+    EXPECT_FALSE(zetta::compute::cuda_rope(device_x, out, 7, 8, 10000.0F, 0, 3).ok());
+}
+
+
+// --- Cross-entropy ---------------------------------------------------------------------------
+TEST(CudaTransformer, CrossEntropyMatchesTheHostAndItsGradient) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 5;
+    const int vocab = 300;  // not a multiple of the block, so ragged rows are exercised
+    const std::vector<float> logits =
+        random_values(static_cast<std::size_t>(seq) * vocab, 4242U);
+    const std::vector<int> targets = {7, 299, 0, 128, 41};  // includes both boundary indices
+
+    DeviceBuffer device_logits = device.upload<float>(std::span<const float>(logits));
+    DeviceBuffer device_targets = device.upload<int>(std::span<const int>(targets));
+    DeviceBuffer row_loss = device.allocate(DataType::Float32, seq);
+    DeviceBuffer total = device.allocate(DataType::Float32, 1);
+    ASSERT_TRUE(zetta::compute::cuda_cross_entropy(device_logits, device_targets, row_loss, total,
+                                                   seq, vocab)
+                    .ok());
+
+    // Host reference, in double, exactly as autograd::cross_entropy computes it.
+    double expected = 0.0;
+    for (int row = 0; row < seq; ++row) {
+        const float* x = logits.data() + static_cast<std::size_t>(row) * vocab;
+        double max_value = x[0];
+        for (int c = 1; c < vocab; ++c) max_value = std::max(max_value, static_cast<double>(x[c]));
+        double sum_exp = 0.0;
+        for (int c = 0; c < vocab; ++c) sum_exp += std::exp(x[c] - max_value);
+        expected += std::log(sum_exp) + max_value - x[targets[static_cast<std::size_t>(row)]];
+    }
+    expected /= seq;
+
+    std::vector<float> actual(1, 0.0F);
+    ASSERT_TRUE(device.download<float>(total, std::span<float>(actual)).ok());
+    EXPECT_NEAR(actual[0], static_cast<float>(expected), 1e-3F);
+
+    // Gradient: (softmax - onehot) / seq.
+    DeviceBuffer grad = device.allocate(DataType::Float32,
+                                        static_cast<std::size_t>(seq) * vocab);
+    ASSERT_TRUE(zetta::compute::cuda_cross_entropy_backward(device_logits, device_targets, grad,
+                                                            seq, vocab)
+                    .ok());
+    std::vector<float> grad_host(static_cast<std::size_t>(seq) * vocab, 0.0F);
+    ASSERT_TRUE(device.download<float>(grad, std::span<float>(grad_host)).ok());
+
+    for (int row = 0; row < seq; ++row) {
+        const float* x = logits.data() + static_cast<std::size_t>(row) * vocab;
+        double max_value = x[0];
+        for (int c = 1; c < vocab; ++c) max_value = std::max(max_value, static_cast<double>(x[c]));
+        double sum_exp = 0.0;
+        for (int c = 0; c < vocab; ++c) sum_exp += std::exp(x[c] - max_value);
+        double row_sum = 0.0;
+        for (int c = 0; c < vocab; ++c) {
+            const double probability = std::exp(x[c] - max_value) / sum_exp;
+            const double want =
+                (probability - (c == targets[static_cast<std::size_t>(row)] ? 1.0 : 0.0)) / seq;
+            EXPECT_NEAR(grad_host[static_cast<std::size_t>(row) * vocab + c], want, 1e-6)
+                << "row " << row << " col " << c;
+            row_sum += grad_host[static_cast<std::size_t>(row) * vocab + c];
+        }
+        // A softmax gradient sums to zero per row; a broken onehot subtraction breaks this even
+        // when individual entries look plausible.
+        EXPECT_NEAR(row_sum, 0.0, 1e-4) << "row " << row << " gradient must sum to zero";
+    }
+}
+
+
+// Batched GEMM: `batch` independent matmuls of one shape. Attention needs it — QK^T and PV are one
+// matmul per head, and batching keeps the tensor cores fed instead of paying a launch per head.
+TEST(CudaTransformer, BatchedGemmMatchesPerBatchGemm) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int batch = 3;
+    const int m = 5, k = 7, n = 4;
+    const std::size_t a_elements = static_cast<std::size_t>(m) * k;
+    const std::size_t b_elements = static_cast<std::size_t>(k) * n;
+    const std::size_t c_elements = static_cast<std::size_t>(m) * n;
+    const std::vector<float> a = random_values(a_elements * batch, 5150U);
+    const std::vector<float> b = random_values(b_elements * batch, 5151U);
+
+    DeviceBuffer device_a = device.upload<float>(std::span<const float>(a));
+    DeviceBuffer device_b = device.upload<float>(std::span<const float>(b));
+    DeviceBuffer device_c = device.allocate(DataType::Float32, c_elements * batch);
+
+    zetta::compute::GemmParams params;
+    params.rows = m; params.inner = k; params.cols = n;
+    params.alpha = 1.0; params.beta = 0.0;
+    params.transpose_a = false; params.transpose_b = false;
+    ASSERT_TRUE(device.gemm_batched(params, device_a, a_elements, device_b, b_elements, device_c,
+                                    c_elements, batch)
+                    .ok());
+    std::vector<float> batched(c_elements * batch, 0.0F);
+    ASSERT_TRUE(device.download<float>(device_c, std::span<float>(batched)).ok());
+
+    // Each slice must equal what the single-matrix gemm produces for that slice — the check that
+    // catches a wrong stride, which otherwise silently mixes one head's data into another's.
+    for (int item = 0; item < batch; ++item) {
+        const std::vector<float> slice_a(a.begin() + item * a_elements,
+                                         a.begin() + (item + 1) * a_elements);
+        const std::vector<float> slice_b(b.begin() + item * b_elements,
+                                         b.begin() + (item + 1) * b_elements);
+        DeviceBuffer one_a = device.upload<float>(std::span<const float>(slice_a));
+        DeviceBuffer one_b = device.upload<float>(std::span<const float>(slice_b));
+        DeviceBuffer one_c = device.allocate(DataType::Float32, c_elements);
+        ASSERT_TRUE(device.gemm(params, one_a, one_b, one_c).ok());
+        std::vector<float> expected(c_elements, 0.0F);
+        ASSERT_TRUE(device.download<float>(one_c, std::span<float>(expected)).ok());
+        for (std::size_t i = 0; i < c_elements; ++i) {
+            // 2e-3, not 1e-4: TF32 tensor cores carry 10 mantissa bits, so ~1e-3 relative error is
+            // the arithmetic's actual precision, and cuBLAS picks a different kernel for the
+            // batched path than the single one — they round differently by design. Demanding
+            // tighter agreement would be demanding two tensor-core kernels round identically,
+            // which is not a correctness property. #926 must compare against the ACTIVE math mode
+            // for the same reason.
+            EXPECT_NEAR(batched[item * c_elements + i], expected[i], 2e-3F)
+                << "batch " << item << " element " << i;
+        }
+    }
+}
+
+
+// The batched attention must agree with the streaming one it replaces — that is the whole safety
+// argument for swapping strategies. Checked under GQA, where a broadcast error would show up.
+TEST(CudaTransformer, BatchedAttentionMatchesTheStreamingKernel) {
+    CudaDevice device;
+    if (!cuda_present(device)) GTEST_SKIP() << "no CUDA device present";
+
+    const int seq = 24;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 16;
+    const std::size_t q_elements = static_cast<std::size_t>(seq) * n_heads * head_dim;
+    const std::size_t kv_elements = static_cast<std::size_t>(seq) * n_kv_heads * head_dim;
+    const std::vector<float> q = random_values(q_elements, 6001U);
+    const std::vector<float> k = random_values(kv_elements, 6002U);
+    const std::vector<float> v = random_values(kv_elements, 6003U);
+
+    DeviceBuffer dq = device.upload<float>(std::span<const float>(q));
+    DeviceBuffer dk = device.upload<float>(std::span<const float>(k));
+    DeviceBuffer dv = device.upload<float>(std::span<const float>(v));
+
+    DeviceBuffer streaming_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer streaming_lse = device.allocate(DataType::Float32,
+                                                 static_cast<std::size_t>(n_heads) * seq);
+    ASSERT_TRUE(zetta::compute::cuda_causal_attention(dq, dk, dv, streaming_out, streaming_lse, seq,
+                                                      n_heads, n_kv_heads, head_dim)
+                    .ok());
+
+    DeviceBuffer scores = device.allocate(
+        DataType::Float32, static_cast<std::size_t>(n_heads) * seq * seq);
+    DeviceBuffer batched_out = device.allocate(DataType::Float32, q_elements);
+    DeviceBuffer batched_lse = device.allocate(DataType::Float32,
+                                               static_cast<std::size_t>(n_heads) * seq);
+    const auto status = zetta::compute::cuda_causal_attention_batched(
+        device, dq, dk, dv, scores, batched_out, batched_lse, seq, n_heads, n_kv_heads, head_dim);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<float> a(q_elements, 0.0F);
+    std::vector<float> b(q_elements, 0.0F);
+    ASSERT_TRUE(device.download<float>(streaming_out, std::span<float>(a)).ok());
+    ASSERT_TRUE(device.download<float>(batched_out, std::span<float>(b)).ok());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        EXPECT_NEAR(b[i], a[i], 3e-3F) << "output differs at " << i;  // TF32 precision
+    }
+
+    std::vector<float> lse_a(static_cast<std::size_t>(n_heads) * seq, 0.0F);
+    std::vector<float> lse_b(lse_a.size(), 0.0F);
+    ASSERT_TRUE(device.download<float>(streaming_lse, std::span<float>(lse_a)).ok());
+    ASSERT_TRUE(device.download<float>(batched_lse, std::span<float>(lse_b)).ok());
+    for (std::size_t i = 0; i < lse_a.size(); ++i) {
+        // The backward consumes the lse, so the two strategies must agree on it too, not just on
+        // the output they happen to produce.
+        EXPECT_NEAR(lse_b[i], lse_a[i], 3e-3F) << "lse differs at " << i;
+    }
+}
+
 #endif  // ZETTA_WITH_CUDA
 
 }  // namespace

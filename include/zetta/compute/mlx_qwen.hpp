@@ -95,8 +95,15 @@ public:
 
     // Next-token cross-entropy over `token_ids` (a scalar), differentiable through
     // `params` — hand this to mx::value_and_grad, then AdamW::update the result.
+    //
+    // `first_scored` masks the PROMPT out of the loss (#932): an index into the predicted
+    // positions, so for a prompt of P tokens it is P-1. In SFT the prompt is near-identical across
+    // the corpus and is memorized within a few steps, after which it contributes ~0 error while
+    // still occupying most of the positions — 87% of the loss on the base-agent corpus. Default 0
+    // scores every position, the plain language-model objective.
     mlx::core::array next_token_loss(const std::vector<mlx::core::array>& params,
-                                     const mlx::core::array& token_ids) const;
+                                     const mlx::core::array& token_ids,
+                                     int first_scored = 0) const;
 
     // KV-cached sampling generation over the CURRENT parameters (fast GPU rollouts):
     // each next token is drawn from softmax(logits / temperature) with `rng`

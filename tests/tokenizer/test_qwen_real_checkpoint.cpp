@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <optional>
+#include <regex>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,8 @@
 #include "zetta/agent/admission_gate.hpp"  // admit_corpus (native re-gate)
 #include "zetta/agent/base_prompt.hpp"     // base_agent_system_prompt, agent_prompt_format
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
+#include "zetta/agent/goal.hpp"            // goal-anchored RLVR reward (#941)
+#include "zetta/agent/sandbox.hpp"         // the world a rollout acts in (#941)
 #include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/response_facts.hpp"
@@ -544,17 +548,23 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     // Render SFT examples: prompt (the intent) + target (the required-facts solution) + EOS.
     const int max_examples =
         std::getenv("ZETTA_SFT_EXAMPLES") ? std::atoi(std::getenv("ZETTA_SFT_EXAMPLES")) : 64;
-    std::vector<std::vector<int>> examples;
+    // The prompt boundary rides along with the tokens: the loss scores the COMPLETION only (#932).
+    struct MlxSftExample {
+        std::vector<int> tokens;
+        int prompt_tokens = 0;
+    };
+    std::vector<MlxSftExample> examples;
     for (const zetta::agent::AdmissionCase& admission_case : *corpus) {
         if (static_cast<int>(examples.size()) >= max_examples) break;
         // #873: train on the ACTION, not the facts — prompt is the Studio system prompt + the
-        // ask, target is the reference {message, tool_calls, execution_graph} JSON.
+        // ask, target is the reference {message, tool_calls} JSON.
         const auto [prompt, target] = zetta::agent::render_action_example(admission_case);
         std::vector<int> tokens = tokenizer->encode(prompt);
+        const int prompt_tokens = static_cast<int>(tokens.size());
         const std::vector<int> target_tokens = tokenizer->encode(target);
         tokens.insert(tokens.end(), target_tokens.begin(), target_tokens.end());
         tokens.push_back(eos_id);  // teach the model to stop after the solution
-        if (tokens.size() >= 4) examples.push_back(std::move(tokens));
+        if (tokens.size() >= 4) examples.push_back({std::move(tokens), prompt_tokens});
     }
     ASSERT_FALSE(examples.empty());
 
@@ -623,11 +633,13 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         if (position == 0 && step > 0) {
             std::shuffle(order.begin(), order.end(), order_rng);  // reshuffle each epoch
         }
-        const std::vector<int>& example = examples[order[position]];
-        const mx::array tokens(example.data(),
-                               mx::Shape{static_cast<int>(example.size())}, mx::int32);
+        const MlxSftExample& example = examples[order[position]];
+        const mx::array tokens(example.tokens.data(),
+                               mx::Shape{static_cast<int>(example.tokens.size())}, mx::int32);
+        // targets[i] predicts tokens[i+1], so the first completion token is predicted at prompt-1.
+        const int first_scored = example.prompt_tokens > 0 ? example.prompt_tokens - 1 : 0;
         const auto loss_fn = [&](const std::vector<mx::array>& params) {
-            return model->next_token_loss(params, tokens);
+            return model->next_token_loss(params, tokens, first_scored);
         };
         auto [loss, gradients] = mx::value_and_grad(loss_fn, argnums)(model->parameters());
         optimizer.update(model->parameters(), gradients);
@@ -641,6 +653,9 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
         // from a panic report afterwards (#919: instrument, do not guess).
         constexpr double kToMib = 1024.0 * 1024.0;
         metrics << R"({"step":)" << step << R"(,"loss":)" << value
+                << R"(,"prompt_tokens":)" << example.prompt_tokens
+                << R"(,"completion_tokens":)"
+                << static_cast<int>(example.tokens.size()) - example.prompt_tokens
                 << R"(,"active_mib":)" << static_cast<double>(mx::get_active_memory()) / kToMib
                 << R"(,"cache_mib":)" << static_cast<double>(mx::get_cache_memory()) / kToMib
                 << R"(,"peak_mib":)" << static_cast<double>(mx::get_peak_memory()) / kToMib
@@ -684,6 +699,425 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
 // Judge the trained base agent: feed it realistic user inputs (varied phrasings, a pasted
 // current state, a vague ask) and print the greedy generations. Inspection only — point
 // ZETTA_QWEN_DIR at the TRAINED checkpoint (or the base weights, to compare). No asserts.
+// Evaluate a trained checkpoint on the HELD-OUT canary and report numbers, not vibes (#936).
+//
+// Everything before this point measures training. This measures whether the thing learned, on
+// cases it has never seen — which is the only number worth reporting, and which is only meaningful
+// because the canary is now verifiably disjoint from training (it previously shared 105 cases).
+//
+// Generation goes through `render_interaction_prompt`, the SAME renderer the corpus and
+// agent::respond use, so an eval number is a number about what serving will actually do.
+//
+// ZETTA_QWEN_DIR = the checkpoint · ZETTA_CANARY = the canary JSONL.
+// Knobs: ZETTA_EVAL_CASES (default 200), ZETTA_EVAL_TOKENS (default 200), ZETTA_EVAL_OUT.
+// Grow the corpus from the model's OWN verified rollouts — RLVR's "grow by generation, gate by
+// verification", applied to the dataset rather than only to the weights.
+//
+// Why this beats writing more cases by hand. Hand-authored text is off-distribution for the policy:
+// I can write what a good answer looks like, but not in the model's own voice, and a 0.6B asked to
+// reproduce someone else's phrasing blends memorized fragments instead. Its own sampled output is
+// on-distribution by construction — the only question is whether it is CORRECT, and that is exactly
+// what the grader already decides. Sample K, keep what verifies, train on it.
+//
+// The asymmetry that makes this work: THE VERIFIER MAY SEE WHAT THE POLICY DID NOT. A product
+// question is served with no capability listing, so the model answers from weights alone — but the
+// grader scores that answer AGAINST the listing, and can tell whether it named a capability that
+// exists. That turns the ungrounded turns (the ones a demo opens with, and the ones no projectable
+// fact could previously verify) into gradeable training data.
+//
+// Volume without gating poisons the reward signal, so nothing is kept that does not pass, and
+// duplicates are dropped — K samples of one memorized answer are one example, not K.
+//
+// ZETTA_QWEN_DIR = the policy · ZETTA_CORPUS = the tasks to roll out on · ZETTA_HARVEST_OUT = where
+// verified cases are written. Knobs: ZETTA_HARVEST_K (default 8), ZETTA_HARVEST_TEMP (default 0.9),
+// ZETTA_HARVEST_CASES (default 200), ZETTA_HARVEST_TOKENS (default 220).
+// RLVR anchored to an agent's GOALS (#941) — the loop closed end to end on real weights.
+//
+// Everything else in the RLVR path scores against a rubric fixed in code. Here the reward is the
+// agent's own goals and their importances: the policy is rolled out, each completion parsed as an
+// action, projected through `response_solution_facts`, and scored by `goal_reward`. Change the
+// record and you change what training optimizes — which is the whole point of putting goals on the
+// agent rather than in the engine.
+//
+// What this proves is narrow and deliberate: that the reward is WIRED and moves the policy. It is
+// a handful of steps on one prompt, not a training run, and it asserts the mean reward rises rather
+// than that the agent got good.
+//
+// ZETTA_QWEN_DIR = the policy. Knobs: ZETTA_GOAL_RLVR_STEPS (default 8).
+TEST(QwenRealCheckpoint, GoalAnchoredRlvrMovesThePolicy) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    // The agent's goals ARE the reward. Weighted, so the one this deployment cares about dominates.
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Never state a number we cannot evidence.", 6.0, {"numbers_from_context"}},
+        {"Only offer capabilities that exist.", 2.0, {"capability_exists"}}};
+
+    const std::string grounding =
+        "Capabilities:\n  train a gradient-boosted model\n  deploy to AWS\n"
+        "Measure: AUC 0.880\n";
+    const std::string prompt = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), grounding, "How good is this model?");
+    const std::vector<int> prompt_ids = tokenizer->encode(prompt);
+
+    // The CompletionReward grpo_step takes — built from the agent record, not from code.
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& completion) {
+        return zetta::agent::goal_reward_for_generation(goals, tokenizer->decode(completion),
+                                                        grounding);
+    };
+
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
+    std::mt19937 rng(11);
+    const int steps = std::getenv("ZETTA_GOAL_RLVR_STEPS")
+                          ? std::atoi(std::getenv("ZETTA_GOAL_RLVR_STEPS")) : 8;
+
+    double first = -1.0, best = 0.0, last = 0.0;
+    for (int step = 0; step < steps; ++step) {
+        const double mean = model->grpo_step(optimizer, prompt_ids, reward, /*group=*/6,
+                                             /*max_new=*/64, /*temperature=*/1.0F, rng);
+        if (first < 0.0) first = mean;
+        last = mean;
+        best = std::max(best, mean);
+        std::cerr << "[goal-rlvr] step " << step << " mean goal reward " << mean << "\n";
+    }
+    std::cerr << "[goal-rlvr] first " << first << " -> last " << last << " (best " << best << ")\n";
+
+    // The reward must be REACHABLE — a reward that is always 0 trains nothing and would make the
+    // rise below vacuous.
+    EXPECT_GT(best, 0.0) << "no rollout ever satisfied the goals; the reward is not reachable";
+    EXPECT_GE(last, first) << "goal-anchored reward did not move the policy";
+}
+
+// --- Bite 5: RLVR on a reward the ENVIRONMENT produces (#941) ----------------------------------
+//
+// GoalAnchoredRlvrMovesThePolicy trains against a reward read off the response. This trains
+// against a reward read off what happened when the response RAN: each rollout's tool calls are
+// applied to a sandbox and the sandbox's verdict is the reward.
+//
+// The difference is not cosmetic. A reward on text can be earned by text — emit a beautiful action
+// and never succeed at anything. A reward on execution cannot: the sandbox does not care how the
+// action reads.
+//
+// ZETTA_QWEN_DIR = the policy. Knobs: ZETTA_EXEC_RLVR_STEPS (default 8).
+TEST(QwenRealCheckpoint, ExecutionBackedRlvrMovesThePolicy) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Every step of the Pipeline must actually run.", 5.0, {"tools_ran"}}};
+
+    // The world the agent acts in: the six pipeline steps, and nothing else. A call to anything
+    // else is UnknownTool — the environment's answer to an invented capability.
+    const auto fresh_sandbox = [] {
+        zetta::agent::Sandbox sandbox;
+        for (const char* tool : {"connect", "clean", "model", "index", "serve", "act"}) {
+            const std::string name = tool;
+            sandbox.register_tool(name, [name](zetta::agent::EndState& world,
+                                               const nlohmann::json&) {
+                world.set(name, true);
+                return zetta::agent::ToolResult::success();
+            });
+        }
+        return sandbox;
+    };
+
+    const std::string prompt = zetta::agent::render_interaction_prompt(
+        zetta::agent::base_agent_system_prompt(), /*grounding=*/"",
+        "Set up a churn prediction pipeline on our accounts data.");
+    const std::vector<int> prompt_ids = tokenizer->encode(prompt);
+
+    // A FRESH sandbox per rollout: rollouts in a group must not see each other's effects, or the
+    // reward measures the order they were sampled in.
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& completion) {
+        zetta::agent::Sandbox sandbox = fresh_sandbox();
+        return zetta::agent::goal_reward_for_rollout(goals, tokenizer->decode(completion),
+                                                     /*grounding=*/"", sandbox);
+    };
+
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-5F);
+    std::mt19937 rng(23);
+    const int steps = std::getenv("ZETTA_EXEC_RLVR_STEPS")
+                          ? std::atoi(std::getenv("ZETTA_EXEC_RLVR_STEPS")) : 8;
+
+    double first = -1.0, best = 0.0, last = 0.0;
+    for (int step = 0; step < steps; ++step) {
+        // Long enough for a COMPLETE action. A truncated generation does not parse, is never
+        // executed, and scores 0 — at 96 tokens every rollout in a group scored zero and the
+        // reward was unreachable, which the guard below caught. The action envelope with its tool
+        // calls runs to a couple of hundred tokens.
+        const double mean = model->grpo_step(optimizer, prompt_ids, reward, /*group=*/6,
+                                             /*max_new=*/280, /*temperature=*/1.0F, rng);
+        if (first < 0.0) first = mean;
+        last = mean;
+        best = std::max(best, mean);
+        std::cerr << "[exec-rlvr] step " << step << " mean execution reward " << mean << "\n";
+    }
+    std::cerr << "[exec-rlvr] first " << first << " -> last " << last << " (best " << best << ")\n";
+
+    // Reachable first — a reward that is always 0 trains nothing and would make any rise vacuous.
+    EXPECT_GT(best, 0.0) << "no rollout's calls ever ran; the reward is not reachable";
+    EXPECT_GE(last, first) << "the execution-backed reward did not move the policy";
+}
+
+TEST(QwenRealCheckpoint, HarvestVerifiedRollouts) {
+    namespace mx = mlx::core;
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the policy) to run";
+    const char* corpus_path = std::getenv("ZETTA_CORPUS");
+    if (corpus_path == nullptr) GTEST_SKIP() << "set ZETTA_CORPUS to the tasks to roll out on";
+    const char* out_path = std::getenv("ZETTA_HARVEST_OUT");
+    if (out_path == nullptr) GTEST_SKIP() << "set ZETTA_HARVEST_OUT to write verified cases";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    std::ifstream file(corpus_path);
+    ASSERT_TRUE(file.good()) << "cannot open " << corpus_path;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const auto corpus = zetta::agent::load_corpus_jsonl(buffer.str(), &error);
+    ASSERT_TRUE(corpus.has_value()) << error;
+    ASSERT_FALSE(corpus->empty());
+
+    const int group = std::getenv("ZETTA_HARVEST_K")
+                          ? std::atoi(std::getenv("ZETTA_HARVEST_K")) : 8;
+    const float temperature = std::getenv("ZETTA_HARVEST_TEMP")
+                                  ? std::strtof(std::getenv("ZETTA_HARVEST_TEMP"), nullptr) : 0.9F;
+    const int limit = std::getenv("ZETTA_HARVEST_CASES")
+                          ? std::atoi(std::getenv("ZETTA_HARVEST_CASES")) : 200;
+    const int max_new = std::getenv("ZETTA_HARVEST_TOKENS")
+                            ? std::atoi(std::getenv("ZETTA_HARVEST_TOKENS")) : 220;
+
+    std::mt19937 rng(20260727U);  // fixed: a harvest must reproduce
+    std::vector<zetta::agent::AdmissionCase> harvested;
+    int rolled = 0, verified = 0, distinct_kept = 0;
+
+    const std::size_t total = corpus->size();
+    const std::size_t stride =
+        static_cast<std::size_t>(limit) >= total ? 1 : total / static_cast<std::size_t>(limit);
+    int seen = 0;
+    for (std::size_t index = 0; index < total && seen < limit; index += stride) {
+        const zetta::agent::AdmissionCase& admission_case = (*corpus)[index];
+        ++seen;
+        // The prompt the POLICY sees — exactly what serving would send.
+        const std::string prompt = zetta::agent::render_interaction_prompt(
+            zetta::agent::base_agent_system_prompt(), admission_case.grounding,
+            admission_case.task.description());
+        const std::vector<int> prompt_ids = tokenizer->encode(prompt);
+
+        std::set<std::string> kept_here;  // K samples of one memorized answer are ONE example
+        for (int sample = 0; sample < group; ++sample) {
+            ++rolled;
+            const std::vector<int> completion =
+                model->generate(prompt_ids, max_new, temperature, rng, /*eos_id=*/151645);
+            const std::optional<zetta::agent::StudioAction> action =
+                zetta::agent::parse_studio_action(tokenizer->decode(completion));
+            if (!action) continue;
+
+            // Verified against the case's OWN grader, with the verifier's grounding — which may be
+            // richer than what the policy was given.
+            if (!admission_case.task.grader()
+                     .grade(zetta::agent::response_solution_facts(*action,
+                                                                  admission_case.grounding))
+                     .passed) {
+                continue;
+            }
+            ++verified;
+            const std::string signature = zetta::agent::to_json(*action).dump();
+            if (!kept_here.insert(signature).second) continue;
+
+            // The harvested case trains: what the model SAW -> what it PRODUCED and got right.
+            zetta::agent::AdmissionCase grown = admission_case;
+            grown.reference_action = *action;
+            harvested.push_back(std::move(grown));
+            ++distinct_kept;
+        }
+    }
+
+    std::cerr << "\n===== harvest — " << dir << " =====\n"
+              << "tasks rolled out : " << seen << "\n"
+              << "rollouts         : " << rolled << " (K=" << group << ", T=" << temperature
+              << ")\n"
+              << "verified         : " << verified << " ("
+              << (rolled ? 100.0 * verified / rolled : 0.0) << "% of rollouts)\n"
+              << "kept (distinct)  : " << distinct_kept << "\n";
+
+    // A harvest that admits nothing is a harvest that taught nothing — and one that admits
+    // everything is not gating. Both are worth failing on.
+    ASSERT_GT(distinct_kept, 0) << "no rollout verified — the policy cannot yet solve these tasks";
+    EXPECT_LT(distinct_kept, rolled) << "everything verified — check the grader is discriminating";
+
+    // The grown corpus must still pass the gate it grew from.
+    const zetta::agent::AdmissionResult admitted = zetta::agent::admit_corpus(harvested);
+    EXPECT_TRUE(admitted.admitted) << "harvested cases must admit";
+    std::ofstream out(out_path);
+    out << zetta::agent::dump_corpus_jsonl(harvested);
+    std::cerr << "wrote " << harvested.size() << " verified cases to " << out_path << "\n";
+}
+
+TEST(QwenRealCheckpoint, EvaluateBaseAgentOnCanary) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the checkpoint) to run";
+    const char* canary_path = std::getenv("ZETTA_CANARY");
+    if (canary_path == nullptr) GTEST_SKIP() << "set ZETTA_CANARY to the held-out JSONL to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenInference> model =
+        zetta::compute::model::MlxQwenInference::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    std::ifstream file(canary_path);
+    ASSERT_TRUE(file.good()) << "cannot open " << canary_path;
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const auto canary = zetta::agent::load_corpus_jsonl(buffer.str(), &error);
+    ASSERT_TRUE(canary.has_value()) << error;
+    ASSERT_FALSE(canary->empty());
+
+    const int limit = std::getenv("ZETTA_EVAL_CASES")
+                          ? std::atoi(std::getenv("ZETTA_EVAL_CASES")) : 200;
+    const int max_new = std::getenv("ZETTA_EVAL_TOKENS")
+                            ? std::atoi(std::getenv("ZETTA_EVAL_TOKENS")) : 200;
+    const std::regex uuid(
+        "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+
+    int seen = 0, parsed = 0, kind_right = 0, graded = 0, passed = 0;
+    int action_cases = 0, actions_with_calls = 0, actions_building = 0, emitted_uuid = 0;
+    std::map<std::string, int> missing_fact;  // required but not projectable from the response
+    std::map<std::string, int> wrong_fact;    // present with the wrong value
+    std::map<std::string, std::pair<int, int>> by_kind;  // reference kind -> {seen, kind_right}
+
+    // Stride across the canary rather than taking the first N. The corpus is grouped by family, so
+    // a prefix is a sample of ONE family — an 80-case prefix drew 77 `answer` cases from a canary
+    // that is 53% `action`, which would have reported a pipeline-building rate computed from three
+    // governance cases. A representative sample is the difference between a measurement and an
+    // anecdote.
+    const std::size_t total = canary->size();
+    const std::size_t stride =
+        static_cast<std::size_t>(limit) >= total ? 1 : total / static_cast<std::size_t>(limit);
+    for (std::size_t index = 0; index < total; index += stride) {
+        const zetta::agent::AdmissionCase& admission_case = (*canary)[index];
+        if (seen >= limit) break;
+        ++seen;
+        const std::string prompt = zetta::agent::render_interaction_prompt(
+            zetta::agent::base_agent_system_prompt(), admission_case.grounding,
+            admission_case.task.description());
+        model->reset();
+        const std::vector<int> generated =
+            model->generate_greedy(tokenizer->encode(prompt), max_new, /*eos_id=*/151645);
+        const std::string text = tokenizer->decode(generated);
+        if (std::regex_search(text, uuid)) ++emitted_uuid;
+
+        const std::string reference_kind =
+            admission_case.reference_action
+                ? std::string(zetta::agent::to_string(admission_case.reference_action->kind))
+                : "action";
+        by_kind[reference_kind].first++;
+
+        const std::optional<zetta::agent::StudioAction> action =
+            zetta::agent::parse_studio_action(text);
+        if (!action) continue;
+        ++parsed;
+        if (std::string(zetta::agent::to_string(action->kind)) == reference_kind) {
+            ++kind_right;
+            by_kind[reference_kind].second++;
+        }
+        if (reference_kind == "action") {
+            ++action_cases;
+            if (!action->tool_calls.empty()) ++actions_with_calls;
+            if (!zetta::agent::build_pipeline_from_tool_calls(action->tool_calls).nodes().empty()) {
+                ++actions_building;
+            }
+        }
+        // The real question: does what it produced satisfy the task's own grader?
+        ++graded;
+        const zetta::agent::EndState produced =
+            zetta::agent::response_solution_facts(*action, admission_case.grounding);
+        if (admission_case.task.grader().grade(produced).passed) {
+            ++passed;
+        } else {
+            // Tally WHICH required facts were missing or wrong. A bare pass rate says the model is
+            // wrong; this says what it is wrong ABOUT, which is the difference between a number and
+            // a next step.
+            for (const auto& [key, value] : admission_case.reference.facts()) {
+                const auto found = produced.facts().find(key);
+                if (found == produced.facts().end()) {
+                    missing_fact[key]++;
+                } else if (found->second != value) {
+                    wrong_fact[key]++;
+                }
+            }
+        }
+    }
+    ASSERT_GT(seen, 0);
+
+    const auto percent = [&](int numerator, int denominator) {
+        return denominator == 0 ? 0.0 : 100.0 * numerator / denominator;
+    };
+    std::cerr << "\n===== canary eval — " << dir << " =====\n"
+              << "cases                : " << seen << "\n"
+              << "parse rate           : " << percent(parsed, seen) << "% (" << parsed << ")\n"
+              << "kind accuracy        : " << percent(kind_right, seen) << "% (" << kind_right
+              << ")\n"
+              << "grader pass rate     : " << percent(passed, seen) << "% (" << passed << ")\n"
+              << "action cases parsed  : " << action_cases << "\n"
+              << "  ...with tool calls : " << percent(actions_with_calls, action_cases) << "%\n"
+              << "  ...building a Pipe : " << percent(actions_building, action_cases) << "%\n"
+              << "emitted a UUID       : " << emitted_uuid << " (must be 0)\n";
+    for (const auto& [kind, counts] : by_kind) {
+        std::cerr << "  kind " << kind << ": " << counts.second << "/" << counts.first << " ("
+                  << percent(counts.second, counts.first) << "%)\n";
+    }
+    const auto report_facts = [](const char* label, const std::map<std::string, int>& tally) {
+        std::vector<std::pair<std::string, int>> ranked(tally.begin(), tally.end());
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const auto& left, const auto& right) { return left.second > right.second; });
+        std::cerr << label << "\n";
+        for (std::size_t index = 0; index < ranked.size() && index < 12; ++index) {
+            std::cerr << "    " << ranked[index].second << "x  " << ranked[index].first << "\n";
+        }
+    };
+    report_facts("required facts MISSING from the response (top):", missing_fact);
+    report_facts("required facts WRONG in the response (top):", wrong_fact);
+
+    if (const char* out = std::getenv("ZETTA_EVAL_OUT")) {
+        std::ofstream report(out);
+        report << R"({"checkpoint":")" << dir << R"(","cases":)" << seen << R"(,"parse_rate":)"
+               << percent(parsed, seen) << R"(,"kind_accuracy":)" << percent(kind_right, seen)
+               << R"(,"grader_pass_rate":)" << percent(passed, seen) << R"(,"action_cases":)"
+               << action_cases << R"(,"actions_with_tool_calls_pct":)"
+               << percent(actions_with_calls, action_cases) << R"(,"actions_building_pct":)"
+               << percent(actions_building, action_cases) << R"(,"emitted_uuid":)" << emitted_uuid
+               << "}\n";
+    }
+
+    // The floor that makes the checkpoint usable at all: if it cannot be parsed, the harness has
+    // nothing to execute and every other number is meaningless. Deliberately the ONLY assertion —
+    // the rest are reported so a run produces evidence rather than a pass/fail with no detail.
+    EXPECT_GT(percent(parsed, seen), 50.0) << "fewer than half the generations parse";
+    EXPECT_EQ(emitted_uuid, 0) << "the model is writing node ids again — the harness mints those";
+}
+
 TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     const char* dir = qwen_dir();
     if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the trained checkpoint) to run";

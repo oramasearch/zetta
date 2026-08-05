@@ -64,6 +64,40 @@ TEST(DatasetGenerator, BaseAgentProducesAGatedCorpus) {
     EXPECT_TRUE(zetta::agent::admit_corpus(dataset.cases).admitted);
 }
 
+// A case that carries a pipeline MUST carry the tool calls that build it. The agent is a
+// tool-calling harness: the model emits calls and the harness builds the pipeline from them, so a
+// case with a graph and no calls trains the agent to produce a pipeline by doing nothing. That is
+// not hypothetical — 91% of the v1 corpus's action cases were shaped exactly that way, and the
+// checkpoint trained on it emitted an empty `tool_calls` for every request.
+TEST(DatasetGenerator, EveryCaseWithAPipelineCarriesTheCallsThatBuildIt) {
+    const auto generator = zetta::dataset::DatasetGeneratorFactory::builtin().create("base-agent");
+    ASSERT_NE(generator, nullptr);
+
+    zetta::dataset::DatasetGenSpec spec;
+    spec.variants_per_subject = 2;
+    const zetta::dataset::GeneratedDataset dataset = generator->generate(spec);
+
+    int with_pipeline = 0;
+    for (const zetta::agent::AdmissionCase& admission_case : dataset.cases) {
+        ASSERT_TRUE(admission_case.reference_action.has_value());
+        const zetta::agent::StudioAction& action = *admission_case.reference_action;
+        // Scoped to `action`. An abstain deliberately carries a graph the gate scores while
+        // building nothing — its graph is a grading artifact, not a pipeline — and answer /
+        // clarify build nothing either. Only an action is a promise to construct something.
+        if (action.kind != zetta::agent::InteractionKind::Action) continue;
+        if (action.execution_graph.nodes().empty()) continue;
+        ++with_pipeline;
+        ASSERT_FALSE(action.tool_calls.empty())
+            << "case " << admission_case.task.id()
+            << " has a pipeline but no tool calls to build it";
+        // And the calls must actually rebuild that pipeline — the harness's own path.
+        EXPECT_EQ(zetta::agent::build_pipeline_from_tool_calls(action.tool_calls).nodes().size(),
+                  action.execution_graph.nodes().size())
+            << "case " << admission_case.task.id() << " calls must rebuild its pipeline";
+    }
+    EXPECT_GT(with_pipeline, 0) << "the fixture must contain pipeline-building cases";
+}
+
 TEST(DatasetGenerator, AutoSuggestProducesAGatedCorpus) {
     const auto generator =
         zetta::dataset::DatasetGeneratorFactory::builtin().create("auto-suggest");

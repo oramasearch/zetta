@@ -4,10 +4,10 @@
 agent to handle the interactions a user actually has with Studio: turning a plain-language ask
 into a production **pipeline**, answering about a Project from retrieved facts, changing a
 Pipeline, writing code inside a node, declining, and asking for clarification.
-**Version.** v2 — the **interaction corpus** (#918), 2026-07-25. **6,793 gated cases across 10
-families, 763 held out as canary.** Supersedes v1 (native generator, 2026-07-23, ~40 subjects at
-one case each) and the offline `data/base-agent-training-set.jsonl` (565 tasks) — see
-[Sourcing](#sourcing--provenance).
+**Version.** v4 — **every Project is a use case**, 2026-07-27. **10,026 gated cases across 11
+families**, 1,094 canary. Supersedes v3 (6,102 cases), which trained a checkpoint to a loss of
+0.0001 and **47% grader pass on held-out cases** — see [Limitations](#limitations--biases).
+Supersedes v2 (withdrawn) and v1 — see [Sourcing](#sourcing--provenance).
 **Owner.** The agent domain (#555). **Related:** #866 (synthesis) · #873 (the reshape epic) ·
 #878 (full-plan coverage) · #863 (the fine-tune that consumes it).
 
@@ -67,6 +67,18 @@ Grounded in the **solutions-discovery plan** (`solutions-designs/docs/plan/` —
   + `base-agent-test-set.jsonl` (117). Retained as reference until the native generator fully
   replaces it.
 
+## Where it lives
+
+**Published, privately, to the Hub** —
+[`OramaSearch/base-agent-interaction-corpus`](https://huggingface.co/datasets/OramaSearch/base-agent-interaction-corpus).
+Every version and its canary. Not in git: they were once ignored as "reproducible from the native
+generator", which is false the moment the generator changes — regenerating from a later commit
+yields a *different* corpus, so a checkpoint whose corpus was not published cannot be reproduced or
+audited. **The corpus is the provenance of the model.** Procedure: the **hf-ops** skill.
+
+This card is the in-repo datasheet; the Hub card is the same content for a reader outside the repo.
+**When one changes, change both.**
+
 ## Composition
 
 Each case is `{task {id, description, initial_state, tool_names, required}, reference,
@@ -93,6 +105,7 @@ the interactions the harness runs. Full contract:
 | `code_in_node` | action | 1,200 | **executing** the generated Python/SQL |
 | `modify` | action | 900 | the gate; changed only what was asked |
 | `governance` | action + answer | 720 | the capability actually requested |
+| `product_knowledge` | answer | 72 | the named capability exists in the supplied listing |
 
 Plus the plan subjects (churn, search, S-2…S-12, M-10…M-21, UC-13…24, DSC, AC, ABSTAIN).
 
@@ -101,6 +114,90 @@ Plus the plan subjects (churn, search, S-2…S-12, M-10…M-21, UC-13…24, DSC,
 hold the question fixed and vary the retrieved facts, and the example becomes *unanswerable
 without reading them*. Trailing contexts are the canary, so a model that memorized answers rather
 than reading the supplied facts fails outright.
+
+### What changed in v4 (2026-07-27) — the corpus stopped teaching one pipeline
+
+v3 trained cleanly and generalized badly: loss 0.0001, **47% grader pass on the canary**, and the
+same five-step pipeline emitted for churn, lead scoring and collections alike. The corpus explains
+it exactly — 3,139 action cases carried only **10 pipeline shapes, 92% of them two**, and the whole
+target set held **8.74 bits of entropy**, roughly 430 effective outcomes for a 600M-parameter model
+to memorize. Low loss was never evidence of learning; there was very little to learn. Procedure:
+[`../../corpus-diversity-runbook.md`](../../corpus-diversity-runbook.md).
+
+**Every synthetic Project now IS a use case.** `ProjectContext` carries the solution template it
+represents, and the feature, modify and code families build on that Project's real pipeline instead
+of a shared supervised skeleton. A code step requested on a forecasting Project lands inside the
+forecasting pipeline — backtested, uncalibrated — rather than collapsing it to
+`connect→clean→serve`, which alone had been 34% of all action cases.
+
+**The templates were corrected against their own descriptions**, which found real defects rather
+than just adding variety: S-12 promised to "route the risky ones for review" and had no `act` step;
+S-10 promised to "flag likely fraud for review" and had none either. S-8, M-13, M-21, UC-18, UC-19,
+UC-21 and UC-24 shared the error. Each now carries the action step its description requires,
+**approval-gated** — a fraud model that auto-blocks loses good customers. M-11 and UC-24 index what
+they extract, because fields nobody can find are not touchless.
+
+**Replies say what they did.** Action messages describe the pipeline built rather than repeating one
+constant across 1,802 cases; governance, abstain and run-status answers name the Project and the
+capability. A confirmation that does not say what was queued is not one a user can check.
+
+**Contexts 30 → 50.** At 30 they could not reach all 40 templates, so a quarter of the catalogue
+never appeared as a Project.
+
+| | v3 | v4 |
+|---|---|---|
+| cases | 6,102 | 10,026 |
+| distinct targets | 715 | **2,111** |
+| **target entropy** | 8.74 bits | **10.65 bits** |
+| distinct pipeline shapes | 10 | 12 |
+| dominant shape share | 57.4% | **34.8%** |
+| distinct messages | 681 | 1,360 |
+
+Guarded by two new rules: no pipeline shape may exceed 45% of action cases, and target entropy must
+clear 9.5 bits. **Both thresholds are locally calibrated, not published standards** — the
+tool-calling corpus literature (ToolBench, APIGen, ToolMind, xLAM, τ-bench) argues for diversity
+consistently but reports no entropy figure to compare against.
+
+### What changed in v3 (2026-07-26)
+
+**Every `action` carries the tool calls that build its Pipeline.** The agent is a tool-calling
+harness — the model decides which steps to call, the harness executes them and mints node ids —
+and the corpus did not encode that. `make_case` took `graph` and `tool_calls` as independent
+defaults, so families passed a graph and silently omitted the calls: **2,862 of 3,139 action cases
+(91%) declared a real Pipeline and called nothing.** Every case was individually valid and the
+corpus admitted cleanly; the *distribution* was the defect, and the checkpoint trained on it
+returned a fluent message with `tool_calls: []` and built no Pipeline. The calls are now derived
+from the graph (`tool_calls_from_graph`, the exact inverse of `build_pipeline_from_tool_calls`),
+so the two encodings cannot disagree. Zero action cases now lack calls
+(https://github.com/oramasearch/zetta/issues/933).
+
+**Targets no longer contain node ids.** `render_action_example` strips `execution_graph`. Node ids
+are random UUIDs; a model asked to write them can only learn what one looks like, which is exactly
+what happened — the checkpoint emitted `11111111-…` for every node, colliding two steps on one id.
+Mean target: 103 → 44 tokens.
+
+**Replies vary with the input.** Two families answered every case with one constant sentence —
+`feature_engineering` across 1,080 cases and `modify` across 900. A constant is the cheapest target
+to memorize, and the checkpoint memorized it, replaying corpus messages verbatim for unrelated
+asks. Both now name the actual change and the actual table. Distinct messages: **281 → 681**
+(4.1% → 11.2% of cases).
+
+**The canary is genuinely held out.** Families that do not vary with a `ProjectContext` were
+generated identically for both splits, putting **105 duplicate cases** in the canary, where they
+measured memorization and reported it as generalization. The canary is now deduplicated against
+training.
+
+**New: `product_knowledge`.** 72 cases covering what Studio is, the languages, the sources, the
+models, the deploy targets, Verification and Saved Versions, MCP and REST, and the use cases —
+turns that carry no Pipeline and call no tools. Grounded in a capability listing so that naming a
+feature which does not exist is a graded failure; overselling is this family's specific
+fabrication risk. Every entry is verified against source
+(https://github.com/oramasearch/zetta/issues/935).
+
+**The corpus is now guarded by 27 rules** over the distribution as a whole
+(`tests/dataset/test_corpus_invariants.cpp`) — shape, learnability, anti-fabrication,
+verifiability, balance, and split hygiene. Per-case validation could not catch any of the above
+(https://github.com/oramasearch/zetta/issues/934).
 
 **A required fact must be projectable.** `response_solution_facts` defines what a family may
 require — you cannot verify what you cannot check, and a corpus requiring unverifiable facts
@@ -127,6 +224,29 @@ on prose claiming an approval happened.
 
 ## Limitations & biases
 
+- **v2 is WITHDRAWN for training.** 91% of its `action` cases carried a Pipeline with an empty
+  `tool_calls`, so it taught the agent that an action calls nothing; it also serialized random node
+  ids first in the target, burning the token budget on unlearnable hex. Any checkpoint trained on
+  v2 exhibits both and should not be read as evidence about the model
+  (https://github.com/oramasearch/zetta/issues/933). v3 fixes both.
+- **v3 is superseded and should not be trained on.** It taught 10 pipeline shapes across 3,139
+  action cases and produced a checkpoint that emitted one pipeline for every ask (47% grader pass).
+- **Techniques from the literature not yet applied.** No distractor tools (tools present but wrong
+  for the ask, so the model must select rather than recall), no parallel/multi-call query styles, no
+  multi-turn tool results, and the emitted code is graded structurally rather than by executing it.
+  These are the next diversity axes, recorded in the runbook.
+- **Corpus size overstates corpus information.** 6,102 cases contain **354 distinct asks** and
+  **184 distinct grounding blocks** — the cross product presents roughly 354 problems about 19
+  ways each. Repetition against *varying* context is the design and is load-bearing (it is the
+  anti-fabrication signal, asserted by `RepeatedAsksAppearAgainstDifferentContext`), but a model
+  that memorizes 354 mappings will score well on training while having learned much less than the
+  row count suggests. Deciding whether to grow the ask vocabulary, raise the context count, or cut
+  phrasings is https://github.com/oramasearch/zetta/issues/937 — and it should be settled before
+  any decision to scale the model.
+- **The `product_knowledge` entry list is hand-maintained** and will drift from what the platform
+  actually does. Every entry was verified against source when written, but nothing enforces that
+  over time; deriving the list from the capability/connector/provisioner registries is the fix.
+  An entry added without the code to back it trains the agent to lie about the product.
 - **Generated reference actions are structural.** `build_solution_graph` carries a subject's
   facts as node attributes — correct + gradeable, but the pipeline is a skeleton, not a
   hand-tuned graph (churn + search are the hand-built exemplars). Messages are currently generic

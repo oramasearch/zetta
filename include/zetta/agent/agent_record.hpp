@@ -6,6 +6,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/goal.hpp"
+#include "zetta/agent/training_policy.hpp"
+
 // A served, named AGENT: the first-class entity a user lists, selects, and chats with.
 // It binds a MODEL (a local checkpoint dir, a `model:<uuid>`, or a HuggingFace repo id
 // `zetta pull` can fetch) to an optional SYSTEM PROMPT and the TOOLS it may call, so the
@@ -24,6 +27,20 @@ struct AgentRecord {
     std::string model;          // required: checkpoint dir, `model:<uuid>`, or HF repo id
     std::string system_prompt;  // optional, prepended to the conversation
     std::vector<std::string> tools;  // tool names the agent may call (the sandbox subset)
+    // What this agent is trained to be good at, and how much each matters (goal.hpp).
+    //
+    // The reward RLVR optimizes comes from HERE, not from code: a regulated lender weights "state
+    // nothing we cannot evidence" highest, an ops team weights "nothing acts without approval",
+    // and both are the same engine with different records. Empty = the built-in rubric, which is
+    // what every agent used before goals existed.
+    std::vector<Goal> goals;
+    // How and when this agent retrains, and every checkpoint it has produced (training_policy.hpp).
+    //
+    // Versions are kept rather than replaced because retraining is the operation most likely to
+    // make an agent worse: a corpus change lands, the new checkpoint regresses on the thing the
+    // customer cared about, and the only acceptable answer is pointing back at the one that worked.
+    TrainingSpec training;
+    std::vector<AgentVersion> versions;  // oldest first; the last is what `model` should point at
     std::string created_at;     // ISO-8601, set by the caller (no clock in the core)
     std::string updated_at;
 

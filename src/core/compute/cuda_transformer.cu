@@ -1,5 +1,6 @@
 #include "zetta/compute/cuda_transformer.hpp"
 
+#include <cmath>
 #include <string_view>
 
 #include <cuda_runtime.h>
@@ -151,7 +152,8 @@ __global__ void rms_norm_row_scale_kernel(const float* __restrict__ x, float* __
 // single read-modify-write of both halves with no synchronization. Writing per-element instead
 // would make each thread recompute the same sin/cos its partner needs.
 __global__ void rope_kernel(const float* __restrict__ x, float* __restrict__ out, int rows,
-                            int head_dim, float base, int position_offset, bool inverse) {
+                            int head_dim, float base, int position_offset, bool inverse,
+                            int rows_per_position) {
     const int half = head_dim / 2;
     const int pair = static_cast<int>(blockIdx.x) * kThreadsPerBlock + static_cast<int>(threadIdx.x);
     const int total = rows * half;
@@ -161,8 +163,10 @@ __global__ void rope_kernel(const float* __restrict__ x, float* __restrict__ out
 
     const float exponent = -2.0F * static_cast<float>(index) / static_cast<float>(head_dim);
     const float inverse_frequency = powf(base, exponent);
-    const float angle =
-        static_cast<float>(row + position_offset) * inverse_frequency;
+    // Every head of a token shares that token's angle: with the packed [seq * n_heads, head_dim]
+    // layout the row is `s * n_heads + h`, so the position is row / rows_per_position.
+    const int position = row / rows_per_position + position_offset;
+    const float angle = static_cast<float>(position) * inverse_frequency;
     const float cosine = cosf(angle);
     const float sine = sinf(angle);
 
@@ -417,6 +421,283 @@ __global__ void attention_grad_kv_kernel(const float* __restrict__ q, const floa
     }
 }
 
+// One thread per output element. An out-of-range id writes zeros rather than reading out of
+// bounds: a corrupt token id should not become a segfault or, worse, silently valid garbage.
+__global__ void embedding_kernel(const float* __restrict__ table, const int* __restrict__ ids,
+                                 float* __restrict__ out, int seq, int d_model, int vocab_size) {
+    const long long index = static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(seq) * d_model;
+    if (index >= total) return;
+    const int token = static_cast<int>(index / d_model);
+    const int dim = static_cast<int>(index % d_model);
+    const int id = ids[token];
+    out[index] = (id < 0 || id >= vocab_size)
+                     ? 0.0F
+                     : table[static_cast<long long>(id) * d_model + dim];
+}
+
+// One block per row: max, then sum of exp, both block reductions, so the [seq, vocab] softmax is
+// never written to memory.
+__global__ void cross_entropy_row_kernel(const float* __restrict__ logits,
+                                         const int* __restrict__ targets,
+                                         float* __restrict__ row_loss, int seq, int vocab_size,
+                                         int first_scored) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    if (row >= seq) return;
+    // Prompt masking (#932): a row before the completion contributes no loss. Written as an
+    // explicit zero rather than an early return so the mean below reads a defined value.
+    if (row < first_scored) {
+        if (threadIdx.x == 0) row_loss[row] = 0.0F;
+        return;
+    }
+    const float* x = logits + static_cast<long long>(row) * vocab_size;
+
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, x[c]);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_sum += __expf(x[c] - max_value);
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    if (threadIdx.x == 0) {
+        const int target = targets[row];
+        const float target_logit = (target >= 0 && target < vocab_size) ? x[target] : 0.0F;
+        row_loss[row] = __logf(sum_exp) + max_value - target_logit;
+    }
+}
+
+// Mean over rows in ONE block, in a fixed tree order. Deterministic by construction — an atomic
+// accumulation would vary in its last bits between runs, and the loss is the number every training
+// comparison is judged on.
+__global__ void mean_kernel(const float* __restrict__ values, float* __restrict__ out, int count) {
+    __shared__ float scratch[kThreadsPerBlock];
+    float local = 0.0F;
+    for (int i = static_cast<int>(threadIdx.x); i < count; i += kThreadsPerBlock) local += values[i];
+    const float total = block_sum(local, scratch);
+    if (threadIdx.x == 0) out[0] = total / static_cast<float>(count);
+}
+
+// grad = (softmax - onehot) / seq, recomputing the softmax from the logits.
+__global__ void cross_entropy_backward_kernel(const float* __restrict__ logits,
+                                              const int* __restrict__ targets,
+                                              float* __restrict__ grad, int seq, int vocab_size,
+                                              int first_scored) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    if (row >= seq) return;
+    const float* x = logits + static_cast<long long>(row) * vocab_size;
+    float* g = grad + static_cast<long long>(row) * vocab_size;
+    // A masked row must be zeroed, not skipped: grad_logits is a reused pool buffer, so leaving it
+    // untouched would feed the previous step's gradient back into this one.
+    if (row < first_scored) {
+        for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+            g[c] = 0.0F;
+        }
+        return;
+    }
+
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, x[c]);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        local_sum += __expf(x[c] - max_value);
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    const float inverse_rows = 1.0F / static_cast<float>(seq - first_scored);
+    const int target = targets[row];
+    for (int c = static_cast<int>(threadIdx.x); c < vocab_size; c += kThreadsPerBlock) {
+        const float probability = __expf(x[c] - max_value) / sum_exp;
+        g[c] = (probability - (c == target ? 1.0F : 0.0F)) * inverse_rows;
+    }
+}
+
+__global__ void embedding_backward_kernel(const float* __restrict__ grad_out,
+                                          const int* __restrict__ ids,
+                                          float* __restrict__ grad_table, int seq, int d_model,
+                                          int vocab_size) {
+    const int dim = static_cast<int>(blockIdx.x) * kThreadsPerBlock + static_cast<int>(threadIdx.x);
+    if (dim >= d_model) return;
+    // This thread owns column `dim` of the whole table, so every accumulation into it is serial
+    // and ordered — no atomics, no run-to-run variation even with repeated token ids.
+    for (int token = 0; token < seq; ++token) {
+        const int id = ids[token];
+        if (id < 0 || id >= vocab_size) continue;
+        grad_table[static_cast<long long>(id) * d_model + dim] +=
+            grad_out[static_cast<long long>(token) * d_model + dim];
+    }
+}
+
+__global__ void adamw_kernel(float* __restrict__ parameter, const float* __restrict__ gradient,
+                             float* __restrict__ moment1, float* __restrict__ moment2,
+                             long long elements, float learning_rate, float beta1, float beta2,
+                             float epsilon, float weight_decay, float bias_correction1,
+                             float bias_correction2) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    if (index >= elements) return;
+    const float g = gradient[index];
+    const float m = beta1 * moment1[index] + (1.0F - beta1) * g;
+    const float v = beta2 * moment2[index] + (1.0F - beta2) * g * g;
+    moment1[index] = m;
+    moment2[index] = v;
+    const float m_hat = m / bias_correction1;
+    const float v_hat = v / bias_correction2;
+    // Decoupled weight decay: applied to the weight, NOT folded into the gradient. That is the
+    // whole difference between AdamW and Adam-with-L2, and folding it in would change what the
+    // adaptive term normalizes.
+    parameter[index] -= learning_rate * (m_hat / (sqrtf(v_hat) + epsilon) +
+                                         weight_decay * parameter[index]);
+}
+
+// In-place causal mask + row softmax over [n_heads * seq, seq], one block per row. Fused so the
+// masked scores are never written before being exponentiated, and the log-sum-exp is emitted for
+// the backward in the same pass.
+__global__ void causal_softmax_kernel(float* __restrict__ scores, float* __restrict__ lse, int seq,
+                                      float scale) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    const int query = row % seq;
+    float* line = scores + static_cast<long long>(row) * seq;
+
+    // Causal: only keys <= query are visible. Masking by bounding the loop beats writing -inf and
+    // reading it back.
+    const int visible = query + 1;
+    float local_max = -INFINITY;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        local_max = fmaxf(local_max, line[c] * scale);
+    }
+    scratch[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = kThreadsPerBlock / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            scratch[threadIdx.x] = fmaxf(scratch[threadIdx.x], scratch[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    const float max_value = scratch[0];
+    __syncthreads();
+
+    float local_sum = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        const float e = __expf(line[c] * scale - max_value);
+        line[c] = e;
+        local_sum += e;
+    }
+    const float sum_exp = block_sum(local_sum, scratch);
+    const float inverse = 1.0F / sum_exp;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        line[c] *= inverse;
+    }
+    // Masked-out positions must be ZERO, not stale: the PV matmul reads the whole row.
+    for (int c = visible + static_cast<int>(threadIdx.x); c < seq; c += kThreadsPerBlock) {
+        line[c] = 0.0F;
+    }
+    if (threadIdx.x == 0) lse[row] = max_value + __logf(sum_exp);
+}
+
+// [seq, source_heads * head_dim] -> [n_heads, seq, head_dim]. When source_heads < n_heads the head
+// is BROADCAST across its GQA group, so the batched GEMM sees a uniform batch and K/V need no
+// special casing downstream.
+__global__ void pack_heads_kernel(const float* __restrict__ in, float* __restrict__ out, int seq,
+                                  int n_heads, int source_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(n_heads) * seq * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int token = static_cast<int>((index / head_dim) % seq);
+    const int head = static_cast<int>(index / (static_cast<long long>(head_dim) * seq));
+    const int source_head = head / (n_heads / source_heads);
+    out[index] = in[static_cast<long long>(token) * source_heads * head_dim +
+                    static_cast<long long>(source_head) * head_dim + dim];
+}
+
+// The inverse, back to the interleaved [seq, n_heads * head_dim] the o_proj expects.
+__global__ void unpack_heads_kernel(const float* __restrict__ in, float* __restrict__ out, int seq,
+                                    int n_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(n_heads) * seq * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int token = static_cast<int>((index / head_dim) % seq);
+    const int head = static_cast<int>(index / (static_cast<long long>(head_dim) * seq));
+    out[static_cast<long long>(token) * n_heads * head_dim +
+        static_cast<long long>(head) * head_dim + dim] = in[index];
+}
+
+// The softmax Jacobian, in place over [n_heads * seq, seq]: dS = P * (dP - sum_j dP_j P_j).
+// One block per row, so the row reduction is shared memory and nothing spills to global.
+__global__ void softmax_jacobian_kernel(const float* __restrict__ probabilities,
+                                        float* __restrict__ grad, int seq, float scale) {
+    __shared__ float scratch[kThreadsPerBlock];
+    const int row = static_cast<int>(blockIdx.x);
+    const int query = row % seq;
+    const long long base = static_cast<long long>(row) * seq;
+    const int visible = query + 1;  // causal
+
+    float local = 0.0F;
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        local += grad[base + c] * probabilities[base + c];
+    }
+    const float dot = block_sum(local, scratch);
+    for (int c = static_cast<int>(threadIdx.x); c < visible; c += kThreadsPerBlock) {
+        grad[base + c] = probabilities[base + c] * (grad[base + c] - dot) * scale;
+    }
+    // Masked positions contribute nothing; the following GEMMs read the whole row.
+    for (int c = visible + static_cast<int>(threadIdx.x); c < seq; c += kThreadsPerBlock) {
+        grad[base + c] = 0.0F;
+    }
+}
+
+// Sum a packed [n_heads, seq, head_dim] gradient down onto [seq, n_kv_heads * head_dim], adding
+// each GQA group's members in a FIXED order — the determinism the streaming kernel got from owning
+// the key index.
+__global__ void unpack_kv_sum_kernel(const float* __restrict__ packed, float* __restrict__ out,
+                                     int seq, int n_heads, int n_kv_heads, int head_dim) {
+    const long long index =
+        static_cast<long long>(blockIdx.x) * kThreadsPerBlock + threadIdx.x;
+    const long long total = static_cast<long long>(seq) * n_kv_heads * head_dim;
+    if (index >= total) return;
+    const int dim = static_cast<int>(index % head_dim);
+    const int kv_head = static_cast<int>((index / head_dim) % n_kv_heads);
+    const int token = static_cast<int>(index / (static_cast<long long>(head_dim) * n_kv_heads));
+    const int group = n_heads / n_kv_heads;
+    float total_value = 0.0F;
+    for (int member = 0; member < group; ++member) {
+        const int head = kv_head * group + member;
+        total_value += packed[(static_cast<long long>(head) * seq + token) * head_dim + dim];
+    }
+    out[index] = total_value;
+}
+
 // Shapes are validated at the boundary: a kernel launched with mismatched extents reads out of
 // bounds, which shows up much later as corrupt numbers rather than as an error.
 ComputeStatus validate(const DeviceBuffer& x, const DeviceBuffer& weight, int rows, int cols) {
@@ -515,12 +796,18 @@ ComputeStatus validate_rope(const DeviceBuffer& in, const DeviceBuffer& out, int
 }
 
 ComputeStatus launch_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                          float base, int position_offset, bool inverse, const char* context) {
+                          float base, int position_offset, bool inverse, int rows_per_position,
+                          const char* context) {
     if (const ComputeStatus valid = validate_rope(x, out, rows, head_dim); !valid.ok()) return valid;
+    if (rows_per_position <= 0 || rows % rows_per_position != 0) {
+        // A ragged grouping would silently assign some heads to the wrong token's angle.
+        return ComputeStatus::invalid_argument(
+            "rope: rows must be a positive multiple of rows_per_position");
+    }
     const int pairs = rows * (head_dim / 2);
     const int blocks = (pairs + kThreadsPerBlock - 1) / kThreadsPerBlock;
     rope_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(x), as_float(out), rows, head_dim,
-                                              base, position_offset, inverse);
+                                              base, position_offset, inverse, rows_per_position);
     return check_launch(context);
 }
 
@@ -538,14 +825,16 @@ ComputeStatus validate_elementwise(const DeviceBuffer& a, const DeviceBuffer& b,
 }  // namespace
 
 ComputeStatus cuda_rope(const DeviceBuffer& x, DeviceBuffer& out, int rows, int head_dim,
-                        float base, int position_offset) {
-    return launch_rope(x, out, rows, head_dim, base, position_offset, /*inverse=*/false, "rope");
+                        float base, int position_offset, int rows_per_position) {
+    return launch_rope(x, out, rows, head_dim, base, position_offset, /*inverse=*/false,
+                       rows_per_position, "rope");
 }
 
 ComputeStatus cuda_rope_backward(const DeviceBuffer& grad_out, DeviceBuffer& grad_x, int rows,
-                                 int head_dim, float base, int position_offset) {
+                                 int head_dim, float base, int position_offset,
+                                 int rows_per_position) {
     return launch_rope(grad_out, grad_x, rows, head_dim, base, position_offset, /*inverse=*/true,
-                       "rope_backward");
+                       rows_per_position, "rope_backward");
 }
 
 ComputeStatus cuda_swiglu(const DeviceBuffer& gate, const DeviceBuffer& up, DeviceBuffer& out,
@@ -664,6 +953,286 @@ ComputeStatus cuda_causal_attention_backward(const DeviceBuffer& q, const Device
         as_const_float(softmax_lse), as_const_float(row_dot), as_float(grad_k), as_float(grad_v),
         seq, n_heads, n_kv_heads, head_dim);
     return check_launch("attention_backward.grad_kv");
+}
+
+ComputeStatus cuda_embedding(const DeviceBuffer& table, const DeviceBuffer& ids, DeviceBuffer& out,
+                             int seq, int d_model, int vocab_size) {
+    if (seq <= 0 || d_model <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("embedding: extents must be positive");
+    }
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(d_model);
+    if (table.element_count() <
+            static_cast<std::size_t>(vocab_size) * static_cast<std::size_t>(d_model) ||
+        ids.element_count() < static_cast<std::size_t>(seq) || out.element_count() < elements) {
+        return ComputeStatus::invalid_argument("embedding: buffers do not match the extents");
+    }
+    const int blocks = static_cast<int>((elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    embedding_kernel<<<blocks, kThreadsPerBlock>>>(
+        as_const_float(table), static_cast<const int*>(ids.handle()), as_float(out), seq, d_model,
+        vocab_size);
+    return check_launch("embedding");
+}
+
+ComputeStatus cuda_cross_entropy(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                 DeviceBuffer& row_loss, DeviceBuffer& total, int seq,
+                                 int vocab_size, int first_scored) {
+    if (seq <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("cross_entropy: extents must be positive");
+    }
+    // Clamp rather than reject: a prompt that filled the window should score its last position
+    // rather than divide by zero.
+    const int begin = first_scored < 0 ? 0 : (first_scored >= seq ? seq - 1 : first_scored);
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
+    if (logits.element_count() < elements ||
+        targets.element_count() < static_cast<std::size_t>(seq) ||
+        row_loss.element_count() < static_cast<std::size_t>(seq) || total.element_count() < 1) {
+        return ComputeStatus::invalid_argument("cross_entropy: buffers do not match the extents");
+    }
+    cross_entropy_row_kernel<<<seq, kThreadsPerBlock>>>(
+        as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(row_loss), seq,
+        vocab_size, begin);
+    if (const auto status = check_launch("cross_entropy.rows"); !status.ok()) return status;
+    // Mean over the SCORED rows only — the masked prefix is skipped by offsetting the pointer, so
+    // the divisor is the number of completion tokens rather than the sequence length.
+    mean_kernel<<<1, kThreadsPerBlock>>>(as_const_float(row_loss) + begin, as_float(total),
+                                         seq - begin);
+    return check_launch("cross_entropy.mean");
+}
+
+ComputeStatus cuda_cross_entropy_backward(const DeviceBuffer& logits, const DeviceBuffer& targets,
+                                          DeviceBuffer& grad_logits, int seq, int vocab_size,
+                                          int first_scored) {
+    if (seq <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("cross_entropy_backward: extents must be positive");
+    }
+    const int begin = first_scored < 0 ? 0 : (first_scored >= seq ? seq - 1 : first_scored);
+    const std::size_t elements =
+        static_cast<std::size_t>(seq) * static_cast<std::size_t>(vocab_size);
+    if (logits.element_count() < elements || grad_logits.element_count() < elements) {
+        return ComputeStatus::invalid_argument("cross_entropy_backward: buffers are too small");
+    }
+    cross_entropy_backward_kernel<<<seq, kThreadsPerBlock>>>(
+        as_const_float(logits), static_cast<const int*>(targets.handle()), as_float(grad_logits),
+        seq, vocab_size, begin);
+    return check_launch("cross_entropy_backward");
+}
+
+ComputeStatus cuda_embedding_backward(const DeviceBuffer& grad_out, const DeviceBuffer& ids,
+                                      DeviceBuffer& grad_table, int seq, int d_model,
+                                      int vocab_size) {
+    if (seq <= 0 || d_model <= 0 || vocab_size <= 0) {
+        return ComputeStatus::invalid_argument("embedding_backward: extents must be positive");
+    }
+    if (grad_table.element_count() <
+        static_cast<std::size_t>(vocab_size) * static_cast<std::size_t>(d_model)) {
+        return ComputeStatus::invalid_argument("embedding_backward: grad_table too small");
+    }
+    const int blocks = (d_model + kThreadsPerBlock - 1) / kThreadsPerBlock;
+    embedding_backward_kernel<<<blocks, kThreadsPerBlock>>>(
+        as_const_float(grad_out), static_cast<const int*>(ids.handle()), as_float(grad_table), seq,
+        d_model, vocab_size);
+    return check_launch("embedding_backward");
+}
+
+ComputeStatus cuda_adamw_step(DeviceBuffer& parameter, const DeviceBuffer& gradient,
+                              DeviceBuffer& moment1, DeviceBuffer& moment2, std::size_t elements,
+                              float learning_rate, float beta1, float beta2, float epsilon,
+                              float weight_decay, int step) {
+    if (elements == 0) return ComputeStatus::success();
+    if (parameter.element_count() < elements || gradient.element_count() < elements ||
+        moment1.element_count() < elements || moment2.element_count() < elements) {
+        return ComputeStatus::invalid_argument("adamw: buffers are too small");
+    }
+    if (step < 1) return ComputeStatus::invalid_argument("adamw: step is 1-based");
+    const float bias_correction1 = 1.0F - powf(beta1, static_cast<float>(step));
+    const float bias_correction2 = 1.0F - powf(beta2, static_cast<float>(step));
+    const long long count = static_cast<long long>(elements);
+    const int blocks = static_cast<int>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    adamw_kernel<<<blocks, kThreadsPerBlock>>>(as_float(parameter), as_const_float(gradient),
+                                               as_float(moment1), as_float(moment2), count,
+                                               learning_rate, beta1, beta2, epsilon, weight_decay,
+                                               bias_correction1, bias_correction2);
+    return check_launch("adamw");
+}
+
+ComputeStatus cuda_causal_attention_batched(CudaDevice& device, const DeviceBuffer& q,
+                                            const DeviceBuffer& k, const DeviceBuffer& v,
+                                            DeviceBuffer& scores, DeviceBuffer& out,
+                                            DeviceBuffer& softmax_lse, int seq, int n_heads,
+                                            int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    const std::size_t per_head = static_cast<std::size_t>(seq) * static_cast<std::size_t>(head_dim);
+    const std::size_t packed_elements = per_head * static_cast<std::size_t>(n_heads);
+    const std::size_t score_elements =
+        static_cast<std::size_t>(n_heads) * static_cast<std::size_t>(seq) *
+        static_cast<std::size_t>(seq);
+    if (scores.element_count() < score_elements) {
+        return ComputeStatus::invalid_argument("attention_batched: scores scratch too small");
+    }
+
+    // A batched GEMM needs each head to be a contiguous [seq, head_dim] matrix, but the projections
+    // interleave heads: head h occupies columns [h*head_dim, (h+1)*head_dim) of a
+    // [seq, n_heads*head_dim] tensor. Permute once into [n_heads, seq, head_dim]. The permute is
+    // O(seq * d) against attention's O(seq^2 * head_dim), so it is noise — and it lets K and V be
+    // BROADCAST across their GQA group in the same pass, which makes the batch uniform and removes
+    // the per-head launch entirely.
+    DeviceBuffer q_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer k_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer v_packed = device.allocate(DataType::Float32, packed_elements);
+    DeviceBuffer context_packed = device.allocate(DataType::Float32, packed_elements);
+    if (q_packed.empty() || k_packed.empty() || v_packed.empty() || context_packed.empty()) {
+        return ComputeStatus::out_of_memory("attention_batched: packing buffers");
+    }
+    const int blocks = static_cast<int>((packed_elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(q), as_float(q_packed), seq,
+                                                    n_heads, n_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(k), as_float(k_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(v), as_float(v_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    if (const auto status = check_launch("attention_batched.pack"); !status.ok()) return status;
+
+    // scores = Q K^T, one matmul per head, batched.
+    GemmParams qk;
+    qk.rows = static_cast<std::size_t>(seq);
+    qk.inner = static_cast<std::size_t>(head_dim);
+    qk.cols = static_cast<std::size_t>(seq);
+    qk.alpha = 1.0;
+    qk.beta = 0.0;
+    qk.transpose_a = false;
+    qk.transpose_b = true;
+    if (const auto status = device.gemm_batched(qk, q_packed, per_head, k_packed, per_head, scores,
+                                                static_cast<std::size_t>(seq) * seq, n_heads);
+        !status.ok()) {
+        return status;
+    }
+
+    // Scale, causal-mask and softmax in place, emitting the log-sum-exp the backward needs.
+    const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+    causal_softmax_kernel<<<n_heads * seq, kThreadsPerBlock>>>(as_float(scores),
+                                                               as_float(softmax_lse), seq, scale);
+    if (const auto status = check_launch("attention_batched.softmax"); !status.ok()) return status;
+
+    // context = P V, batched again.
+    GemmParams pv;
+    pv.rows = static_cast<std::size_t>(seq);
+    pv.inner = static_cast<std::size_t>(seq);
+    pv.cols = static_cast<std::size_t>(head_dim);
+    pv.alpha = 1.0;
+    pv.beta = 0.0;
+    pv.transpose_a = false;
+    pv.transpose_b = false;
+    if (const auto status =
+            device.gemm_batched(pv, scores, static_cast<std::size_t>(seq) * seq, v_packed, per_head,
+                                context_packed, per_head, n_heads);
+        !status.ok()) {
+        return status;
+    }
+
+    unpack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(context_packed), as_float(out),
+                                                      seq, n_heads, head_dim);
+    return check_launch("attention_batched.unpack");
+}
+
+ComputeStatus cuda_causal_attention_backward_batched(
+    CudaDevice& device, const DeviceBuffer& q, const DeviceBuffer& k, const DeviceBuffer& v,
+    const DeviceBuffer& probabilities, const DeviceBuffer& grad_out, DeviceBuffer& grad_scores,
+    DeviceBuffer& grad_q, DeviceBuffer& grad_k, DeviceBuffer& grad_v, int seq, int n_heads,
+    int n_kv_heads, int head_dim) {
+    if (const ComputeStatus valid = validate_attention(seq, n_heads, n_kv_heads, head_dim);
+        !valid.ok()) {
+        return valid;
+    }
+    const std::size_t per_head = static_cast<std::size_t>(seq) * static_cast<std::size_t>(head_dim);
+    const std::size_t packed = per_head * static_cast<std::size_t>(n_heads);
+    const std::size_t score_stride = static_cast<std::size_t>(seq) * static_cast<std::size_t>(seq);
+
+    DeviceBuffer q_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer k_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer v_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_out_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_q_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_k_packed = device.allocate(DataType::Float32, packed);
+    DeviceBuffer grad_v_packed = device.allocate(DataType::Float32, packed);
+    if (q_packed.empty() || k_packed.empty() || v_packed.empty() || grad_out_packed.empty() ||
+        grad_q_packed.empty() || grad_k_packed.empty() || grad_v_packed.empty()) {
+        return ComputeStatus::out_of_memory("attention_backward_batched: packing");
+    }
+    const int blocks = static_cast<int>((packed + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(q), as_float(q_packed), seq,
+                                                    n_heads, n_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(k), as_float(k_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(v), as_float(v_packed), seq,
+                                                    n_heads, n_kv_heads, head_dim);
+    pack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(grad_out),
+                                                    as_float(grad_out_packed), seq, n_heads,
+                                                    n_heads, head_dim);
+    if (const auto s = check_launch("attention_backward_batched.pack"); !s.ok()) return s;
+
+    // grad_P = grad_out * V^T
+    GemmParams dp;
+    dp.rows = static_cast<std::size_t>(seq);
+    dp.inner = static_cast<std::size_t>(head_dim);
+    dp.cols = static_cast<std::size_t>(seq);
+    dp.alpha = 1.0; dp.beta = 0.0; dp.transpose_a = false; dp.transpose_b = true;
+    if (const auto s = device.gemm_batched(dp, grad_out_packed, per_head, v_packed, per_head,
+                                           grad_scores, score_stride, n_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    // Softmax Jacobian, folding in the 1/sqrt(head_dim) the forward applied to the scores.
+    const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+    softmax_jacobian_kernel<<<n_heads * seq, kThreadsPerBlock>>>(as_const_float(probabilities),
+                                                                 as_float(grad_scores), seq, scale);
+    if (const auto s = check_launch("attention_backward_batched.jacobian"); !s.ok()) return s;
+
+    // grad_Q = grad_S * K
+    GemmParams dq;
+    dq.rows = static_cast<std::size_t>(seq);
+    dq.inner = static_cast<std::size_t>(seq);
+    dq.cols = static_cast<std::size_t>(head_dim);
+    dq.alpha = 1.0; dq.beta = 0.0; dq.transpose_a = false; dq.transpose_b = false;
+    if (const auto s = device.gemm_batched(dq, grad_scores, score_stride, k_packed, per_head,
+                                           grad_q_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+    // grad_K = grad_S^T * Q
+    GemmParams dk = dq;
+    dk.transpose_a = true;
+    if (const auto s = device.gemm_batched(dk, grad_scores, score_stride, q_packed, per_head,
+                                           grad_k_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+    // grad_V = P^T * grad_out
+    GemmParams dv = dq;
+    dv.transpose_a = true;
+    if (const auto s = device.gemm_batched(dv, probabilities, score_stride, grad_out_packed,
+                                           per_head, grad_v_packed, per_head, n_heads);
+        !s.ok()) {
+        return s;
+    }
+
+    unpack_heads_kernel<<<blocks, kThreadsPerBlock>>>(as_const_float(grad_q_packed),
+                                                      as_float(grad_q), seq, n_heads, head_dim);
+    const std::size_t kv_elements =
+        static_cast<std::size_t>(seq) * n_kv_heads * static_cast<std::size_t>(head_dim);
+    const int kv_blocks = static_cast<int>((kv_elements + kThreadsPerBlock - 1) / kThreadsPerBlock);
+    unpack_kv_sum_kernel<<<kv_blocks, kThreadsPerBlock>>>(as_const_float(grad_k_packed),
+                                                          as_float(grad_k), seq, n_heads,
+                                                          n_kv_heads, head_dim);
+    unpack_kv_sum_kernel<<<kv_blocks, kThreadsPerBlock>>>(as_const_float(grad_v_packed),
+                                                          as_float(grad_v), seq, n_heads,
+                                                          n_kv_heads, head_dim);
+    return check_launch("attention_backward_batched.unpack");
 }
 
 }  // namespace zetta::compute

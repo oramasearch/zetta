@@ -184,7 +184,15 @@ std::string serialize_qwen_config(const QwenConfig& config);
 // directory can't be created or a file can't be written. The inverse of
 // load_qwen_model — how a post-trained base-agent checkpoint is shipped (load a
 // base -> RLVR post-train -> save the improved checkpoint).
+//
+// `source_directory` is the checkpoint the weights were loaded from; when given, its TOKENIZER
+// files are copied alongside the weights so the result is a checkpoint that loads on its own.
+// Without them the directory holds weights that nothing can tokenize for, and every consumer has
+// to know to go find the base model and copy three files by hand — which has silently produced an
+// unloadable checkpoint more than once. Copy, don't reference: a checkpoint that depends on a path
+// on the training machine is not a checkpoint you can ship.
 bool save_qwen_model(const QwenModel& model, const std::string& directory,
-                     std::string* error = nullptr);
+                     std::string* error = nullptr,
+                     const std::string& source_directory = {});
 
 }  // namespace zetta::autograd

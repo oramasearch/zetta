@@ -452,16 +452,21 @@ mx::array MlxQwenModel::forward(const std::vector<mx::array>& params,
 }
 
 mx::array MlxQwenModel::next_token_loss(const std::vector<mx::array>& params,
-                                        const mx::array& token_ids) const {
+                                        const mx::array& token_ids, int first_scored) const {
     const int len = token_ids.shape(0);
+    // Clamp: a prompt that filled the window scores its last position rather than nothing.
+    const int begin = first_scored < 0 ? 0 : (first_scored >= len - 1 ? len - 2 : first_scored);
     const mx::array logits = forward(params, token_ids);
+    // Slice the masked prefix away entirely rather than zeroing it. The gradient of a slice is
+    // zero outside it by construction, so the prompt cannot contribute to either the loss or the
+    // update, and the mean divides by the number of completion tokens.
     const mx::array predicted =
-        mx::slice(logits, mx::Shape{0, 0}, mx::Shape{len - 1, config_.vocab_size});
-    const mx::array targets = mx::slice(token_ids, mx::Shape{1}, mx::Shape{len});
+        mx::slice(logits, mx::Shape{begin, 0}, mx::Shape{len - 1, config_.vocab_size});
+    const mx::array targets = mx::slice(token_ids, mx::Shape{begin + 1}, mx::Shape{len});
     const mx::array log_probs =
         predicted - mx::logsumexp(predicted, std::vector<int>{-1}, true);
     const mx::array chosen =
-        mx::take_along_axis(log_probs, mx::reshape(targets, mx::Shape{len - 1, 1}), 1);
+        mx::take_along_axis(log_probs, mx::reshape(targets, mx::Shape{len - 1 - begin, 1}), 1);
     return -mx::mean(chosen, /*keepdims=*/false);
 }
 
