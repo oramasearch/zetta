@@ -76,6 +76,18 @@ std::size_t parallel_grain(std::size_t count, std::size_t work_per_item) {
 }
 }  // namespace
 
+// Run `body(index)` over [0, count) across workers, with the same grain heuristic the matmul paths
+// use so small tensors stay inline. Elementwise ops are per-index independent, so this is
+// bit-identical to the serial loop — there is no cross-element reduction to reorder, which is what
+// keeps the CUDA equivalence gate's exact-equality assertions valid.
+template <class Body>
+void parallel_elementwise(std::size_t count, Body body) {
+    runtime::parallel_for(count, parallel_grain(count, 4),
+                          [&](std::size_t, std::size_t begin, std::size_t end) {
+                              for (std::size_t i = begin; i < end; ++i) body(i);
+                          });
+}
+
 std::shared_ptr<Node> make_node(std::vector<float> data,
                                 std::vector<int> shape) {
     auto node = std::make_shared<Node>();
@@ -362,18 +374,22 @@ Tensor sum(const Tensor& a) {
 
 Tensor add(const Tensor& a, const Tensor& b) {
     std::vector<float> out(a.data().size(), 0.0F);
-    for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = a.data()[i] + b.data()[i];
+    {
+        const float* left = a.data().data();
+        const float* right = b.data().data();
+        float* destination = out.data();
+        parallel_elementwise(out.size(),
+                             [&](std::size_t i) { destination[i] = left[i] + right[i]; });
     }
     auto node = make_node(std::move(out), a.shape());
     node->parents = {a.node(), b.node()};
     const std::shared_ptr<Node> a_node = a.node();
     const std::shared_ptr<Node> b_node = b.node();
     node->backward = [a_node, b_node](const std::vector<float>& g) {
-        for (std::size_t i = 0; i < g.size(); ++i) {
+        parallel_elementwise(g.size(), [&](std::size_t i) {
             a_node->grad[i] += g[i];
             b_node->grad[i] += g[i];
-        }
+        });
     };
     return Tensor{node};
 }
@@ -398,16 +414,17 @@ Tensor mul(const Tensor& a, const Tensor& b) {
 
 Tensor scale(const Tensor& a, float factor) {
     std::vector<float> out(a.data().size(), 0.0F);
-    for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i] = a.data()[i] * factor;
+    {
+        const float* input = a.data().data();
+        float* destination = out.data();
+        parallel_elementwise(out.size(),
+                             [&](std::size_t i) { destination[i] = input[i] * factor; });
     }
     auto node = make_node(std::move(out), a.shape());
     node->parents = {a.node()};
     const std::shared_ptr<Node> a_node = a.node();
     node->backward = [a_node, factor](const std::vector<float>& g) {
-        for (std::size_t i = 0; i < g.size(); ++i) {
-            a_node->grad[i] += g[i] * factor;
-        }
+        parallel_elementwise(g.size(), [&](std::size_t i) { a_node->grad[i] += g[i] * factor; });
     };
     return Tensor{node};
 }
@@ -456,22 +473,37 @@ Tensor row_softmax(const Tensor& a) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];
     std::vector<float> out(static_cast<std::size_t>(rows) * cols, 0.0F);
-    for (int row = 0; row < rows; ++row) {
-        const float* x = a.data().data() + row * cols;
-        float max_value = x[0];
-        for (int col = 1; col < cols; ++col) {
-            if (x[col] > max_value) max_value = x[col];
-        }
-        float total = 0.0F;
-        for (int col = 0; col < cols; ++col) {
-            const float e = std::exp(x[col] - max_value);
-            out[row * cols + col] = e;
-            total += e;
-        }
-        for (int col = 0; col < cols; ++col) {
-            out[row * cols + col] /= total;
-        }
-    }
+    // Rows are independent, so this threads with no reduction-order concern at all: each row's
+    // max, sum and division touch only that row. That independence matters — a parallel reduction
+    // ACROSS rows would combine in a nondeterministic order and break the exact-equality
+    // assertions the CUDA equivalence gate relies on. Here there is nothing to combine.
+    //
+    // This is the hottest scalar loop in training. row_softmax runs on the [seq, seq] score matrix
+    // once per head per layer, so a 28-layer Qwen3-0.6B at seq~1000 with 16 heads evaluates
+    // ~448M std::exp calls per forward pass — and until now every one of them ran on a single core
+    // while the other 29 sat idle.
+    const float* input = a.data().data();
+    runtime::parallel_for(
+        static_cast<std::size_t>(rows),
+        parallel_grain(static_cast<std::size_t>(rows), static_cast<std::size_t>(cols) * 4),
+        [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+            for (std::size_t row = row_begin; row < row_end; ++row) {
+                const float* x = input + row * static_cast<std::size_t>(cols);
+                float* destination = out.data() + row * static_cast<std::size_t>(cols);
+                float max_value = x[0];
+                for (int col = 1; col < cols; ++col) {
+                    if (x[col] > max_value) max_value = x[col];
+                }
+                float total = 0.0F;
+                for (int col = 0; col < cols; ++col) {
+                    const float e = std::exp(x[col] - max_value);
+                    destination[col] = e;
+                    total += e;
+                }
+                const float inverse = 1.0F / total;  // one divide, then multiply
+                for (int col = 0; col < cols; ++col) destination[col] *= inverse;
+            }
+        });
 
     auto node = make_node(std::move(out), a.shape());
     node->parents = {a.node()};
@@ -480,16 +512,21 @@ Tensor row_softmax(const Tensor& a) {
     // per row: dX_j = Y_j * (dOut_j - sum_k dOut_k * Y_k).
     const std::vector<float> y = node->data;
     node->backward = [a_node, y, rows, cols](const std::vector<float>& g) {
-        for (int row = 0; row < rows; ++row) {
-            float dot = 0.0F;
-            for (int col = 0; col < cols; ++col) {
-                dot += g[row * cols + col] * y[row * cols + col];
-            }
-            for (int col = 0; col < cols; ++col) {
-                a_node->grad[row * cols + col] +=
-                    y[row * cols + col] * (g[row * cols + col] - dot);
-            }
-        }
+        // Same row independence as the forward, and the same size — the backward is on the
+        // [seq, seq] score matrix too, so leaving it serial would cap the win at half.
+        runtime::parallel_for(
+            static_cast<std::size_t>(rows),
+            parallel_grain(static_cast<std::size_t>(rows), static_cast<std::size_t>(cols) * 4),
+            [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                for (std::size_t row = row_begin; row < row_end; ++row) {
+                    const std::size_t base = row * static_cast<std::size_t>(cols);
+                    float dot = 0.0F;
+                    for (int col = 0; col < cols; ++col) dot += g[base + col] * y[base + col];
+                    for (int col = 0; col < cols; ++col) {
+                        a_node->grad[base + col] += y[base + col] * (g[base + col] - dot);
+                    }
+                }
+            });
     };
     return Tensor{node};
 }

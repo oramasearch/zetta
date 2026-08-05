@@ -28,6 +28,19 @@ to grow its own corpus from its own data.
   corpus (#554): a data state → suggest the present use cases / withhold the absent (distractors),
   gated on the same discipline.
 
+## The held-out canary
+
+`DatasetGenSpec::held_out_fraction` reserves a fraction of **whole subjects** — not
+resampled variants of a subject the model already saw — so the canary tests
+generalization rather than recall. `held_out_subject_count` picks the **trailing**
+subjects (deterministic, no RNG, per the reproducibility rule), a non-zero fraction
+always reserves at least one subject, and it never reserves them all.
+
+**The convention:** held-out cases are the **last `held_out` entries of `cases`**, and
+their subjects are the last entries of `subjects`. Train on `cases[0 .. size()-held_out)`;
+evaluate on the rest. Every generator must honor this — a corpus that returns
+`held_out == 0` for a non-zero fraction is silently training without a memorization check.
+
 ## Related
 
 - The action + solution-graph bridge it builds on: `zetta::agent::action` /

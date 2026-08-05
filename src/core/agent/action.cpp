@@ -11,7 +11,8 @@ nlohmann::json to_json(const StudioAction& action) {
     for (const ToolCall& call : action.tool_calls) {
         tool_calls.push_back({{"tool", call.tool}, {"arguments", call.arguments}});
     }
-    return nlohmann::json{{"message", action.message},
+    return nlohmann::json{{"kind", to_string(action.kind)},
+                          {"message", action.message},
                           {"tool_calls", std::move(tool_calls)},
                           {"execution_graph", zetta::ir::to_json(action.execution_graph)}};
 }
@@ -25,6 +26,20 @@ std::optional<StudioAction> action_from_json(const nlohmann::json& document,
     if (!document.is_object()) return fail("action: not a JSON object");
 
     StudioAction action;
+
+    // The declared mode (#918). Optional and defaulting to Action, so every pre-#918 document
+    // parses exactly as it did before; an unknown value is a boundary error, not a silent Action
+    // — the harness switches on this, so guessing here would defeat the point of declaring it.
+    if (const auto kind = document.find("kind"); kind != document.end()) {
+        if (!kind->is_string()) return fail("action.kind: must be a string");
+        const std::optional<InteractionKind> parsed =
+            interaction_kind_from_string(kind->get<std::string>());
+        if (!parsed) {
+            return fail("action.kind: unknown mode '" + kind->get<std::string>() +
+                        "' (expected action, answer, clarify, or abstain)");
+        }
+        action.kind = *parsed;
+    }
 
     if (const auto message = document.find("message"); message != document.end()) {
         if (!message->is_string()) return fail("action.message: must be a string");
@@ -95,9 +110,16 @@ const nlohmann::json& studio_action_schema() {
         nlohmann::json document;
         document["type"] = "object";
         document["additionalProperties"] = false;
+        document["properties"]["kind"] = {
+            {"type", "string"},
+            {"enum", nlohmann::json::array({"action", "answer", "clarify", "abstain"})},
+            {"description",
+             "the mode this response declares: action builds or changes a Pipeline; answer "
+             "answers from the supplied context; clarify asks one question back; abstain "
+             "declines and builds nothing"}};
         document["properties"]["message"] = {
             {"type", "string"},
-            {"description", "what the agent shows the user (plain language, no jargon)"}};
+            {"description", "what the agent shows the user (markdown, plain language, no jargon)"}};
         document["properties"]["tool_calls"] = {
             {"type", "array"},
             {"description", "pipeline-setup actions; each may call other models"},

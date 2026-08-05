@@ -39,6 +39,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::GraphCreated:       return "graph created";
         case AuditAction::GraphDropped:       return "graph dropped";
         case AuditAction::GraphDeployed:      return "graph deployed";
+        case AuditAction::GraphApproved:      return "plan approved";
         case AuditAction::DataAccess:         return "data access";
         case AuditAction::JobCreated:         return "job queued";
         case AuditAction::JobFinished:        return "job finished";
@@ -47,6 +48,8 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::ProvisionRequested: return "provision requested";
         case AuditAction::CloudInspected:     return "cloud inspected";
         case AuditAction::DatasetAdded:       return "dataset added";
+        case AuditAction::ConsentRequested:   return "consent requested";
+        case AuditAction::ConsentDecided:     return "consent decided";
     }
     return "data access";
 }

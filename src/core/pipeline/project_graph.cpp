@@ -24,9 +24,26 @@ void ProjectGraph::set_contents(std::string name, ir::ExecutionGraph graph) {
     persist();
 }
 
+void ProjectGraph::set_approved(std::string approver, std::string at) {
+    approved_ = true;
+    approved_by_ = std::move(approver);
+    approved_at_ = std::move(at);
+    persist();
+}
+
+void ProjectGraph::set_approval(bool approved, std::string approver,
+                                std::string at) {
+    approved_ = approved;
+    approved_by_ = std::move(approver);
+    approved_at_ = std::move(at);
+}
+
 nlohmann::json ProjectGraph::record() const {
     return nlohmann::json{{"project", project_id_},
                           {"name", name_},
+                          {"approval", approval_status()},
+                          {"approved_by", approved_by_},
+                          {"approved_at", approved_at_},
                           {"graph", ir::to_json(graph_)}};
 }
 

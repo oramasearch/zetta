@@ -642,6 +642,133 @@
         ]
       }
     },
+    "/v1/approve_plan": {
+      "post": {
+        "description": "Approve a stored, proposed Pipeline for build (#885, the design's review-before-build flow): records the approving principal + time, replicates, and audits it (graph_approved). gate and deploy require an approved plan; editing a plan re-proposes it. Requires orchestration:approve_plan.",
+        "operationId": "approve_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the stored plan's name or uuid to approve",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "the owning project's name or uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
+                        "graph": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "project",
+                        "graph",
+                        "approval",
+                        "approved_by",
+                        "approved_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve a proposed plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/capture_intent": {
       "post": {
         "description": "Capture a natural-language intent as a replicated project input with provenance; compile it into a graph with compile_intent. Requires orchestration:capture_intent.",
@@ -815,6 +942,17 @@
             }
           },
           {
+            "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
             "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
             "in": "query",
             "name": "intent",
@@ -845,6 +983,29 @@
                     },
                     "value": {
                       "properties": {
+                        "grounded": {
+                          "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
+                          "type": "boolean"
+                        },
+                        "grounding_warning": {
+                          "description": "why the reply is ungrounded, when it is",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope",
+                          "enum": [
+                            "action",
+                            "answer",
+                            "clarify",
+                            "abstain",
+                            "unparsed"
+                          ],
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "the proposed Pipeline, when the turn built one",
+                          "type": "object"
+                        },
                         "reply": {
                           "type": "string"
                         },
@@ -872,7 +1033,9 @@
                       "required": [
                         "reply",
                         "tool_calls",
-                        "rounds"
+                        "rounds",
+                        "grounded",
+                        "kind"
                       ],
                       "type": "object"
                     }
@@ -1097,6 +1260,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1224,6 +1395,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1351,6 +1530,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1567,16 +1754,15 @@
                 "properties": {
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1584,7 +1770,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1592,30 +1786,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"
@@ -1739,16 +1939,15 @@
                   },
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1756,7 +1955,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1764,30 +1971,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"
@@ -2115,6 +2328,148 @@
         ]
       }
     },
+    "/v1/create_plan": {
+      "post": {
+        "description": "Create a Plan — the quota/tier config the Billing/Usage surface measures live consumption against (Conflict D). Replicates to every node. Requires orchestration:create_plan.",
+        "operationId": "create_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the plan's display name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "period_start": {
+                    "description": "ISO-8601 start of the current period",
+                    "type": "string"
+                  },
+                  "quotas": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "description": "numeric limits, e.g. {max_runs, max_storage_bytes}",
+                    "type": "object"
+                  },
+                  "tier": {
+                    "description": "display tier (free / pro / enterprise)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",
@@ -2125,6 +2480,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "description": {
+                    "description": "a one-line human description of the project's intent (optional)",
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -2218,6 +2577,140 @@
           }
         },
         "summary": "Create project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_workspace_profile": {
+      "post": {
+        "description": "Create the calling user's Workspace Profile — the input to the Discover Opportunities pathway (#886). Owner is the caller; replicates to every node. Role, daily work, and approved source refs are the editable body. Requires orchestration:create_workspace_profile.",
+        "operationId": "create_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "description": "plain-language daily-work description",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "the user's workspace role",
+                    "type": "string"
+                  },
+                  "sources": {
+                    "description": "approved source refs, each {id,name,kind}",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a workspace profile",
         "tags": [
           "action"
         ]
@@ -3687,6 +4180,20 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885)",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
                         "edges": {
                           "items": {
                             "description": "a connection: { from, to, kind }",
@@ -4191,6 +4698,130 @@
         ]
       }
     },
+    "/v1/get_plan": {
+      "get": {
+        "description": "Read one Plan's full validated record (name, tier, quota limits) by its uuid. Metered usage is read live from system.usage. (Conflict D) Requires api:query.",
+        "operationId": "get_plan",
+        "parameters": [
+          {
+            "description": "the plan's uuid (system.plans.plan_id)",
+            "in": "query",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "description": "the plan's uuid (system.plans.plan_id)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one plan",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_project": {
       "get": {
         "description": "Read one AI project's full detail — metadata plus its inputs and graphs — by name or uuid. No side effects. Requires api:query.",
@@ -4242,10 +4873,27 @@
                         "created": {
                           "type": "string"
                         },
+                        "description": {
+                          "type": "string"
+                        },
                         "graphs": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "approval": {
+                                "description": "plan-approval state (#885)",
+                                "enum": [
+                                  "proposed",
+                                  "approved"
+                                ],
+                                "type": "string"
+                              },
+                              "approved_at": {
+                                "type": "string"
+                              },
+                              "approved_by": {
+                                "type": "string"
+                              },
                               "id": {
                                 "type": "string"
                               },
@@ -4299,6 +4947,7 @@
                         "created",
                         "updated",
                         "owner",
+                        "description",
                         "inputs",
                         "graphs"
                       ],
@@ -4795,6 +5444,130 @@
           }
         },
         "summary": "Get one trace",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_workspace_profile": {
+      "get": {
+        "description": "Read one Workspace Profile's full validated record (owner, role, daily work, approved source refs) by its uuid. No side effects. (#886) Requires api:query.",
+        "operationId": "get_workspace_profile",
+        "parameters": [
+          {
+            "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+            "in": "query",
+            "name": "workspace_profile_id",
+            "required": true,
+            "schema": {
+              "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one workspace profile",
         "tags": [
           "read"
         ]
@@ -7225,6 +7998,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -8503,6 +9284,288 @@
           }
         },
         "summary": "Update an agent",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_plan": {
+      "post": {
+        "description": "Update a Plan's name, tier, quotas, or period by its uuid (Conflict D); the created stamp stays fixed. Replicates. Requires orchestration:update_plan.",
+        "operationId": "update_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "period_start": {
+                    "type": "string"
+                  },
+                  "plan_id": {
+                    "description": "the plan's uuid to update",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "quotas": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "tier": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "plan_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_workspace_profile": {
+      "post": {
+        "description": "Update a Workspace Profile's role, daily work, or approved source refs by its uuid (#886); the owner and created stamp stay fixed. Replicates. Requires orchestration:update_workspace_profile.",
+        "operationId": "update_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "workspace_profile_id": {
+                    "description": "the profile's uuid to update",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "workspace_profile_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a workspace profile",
         "tags": [
           "action"
         ]

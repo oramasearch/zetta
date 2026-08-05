@@ -28,6 +28,13 @@ struct AdmissionCase {
     // generator fills it); the SFT render uses it as the training target when set. The
     // `reference` facts above stay as the gate's checks on the run pipeline.
     std::optional<StudioAction> reference_action;
+    // The context the HARNESS would have retrieved before this ask (#918) — a model's measure
+    // and ranked drivers, an at-risk list, a schema, cluster state. Rendered into the prompt by
+    // `render_interaction_prompt`, the same function serving uses, so a training example is
+    // byte-identical to the served turn. Empty for asks that need no retrieval (build a
+    // pipeline from intent). This is where grounded-QA volume comes from: hold the question
+    // fixed and vary this, and the example becomes unanswerable without reading it.
+    std::string grounding;
 };
 
 enum class AdmissionFailureKind {

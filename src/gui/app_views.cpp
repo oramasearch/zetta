@@ -27,10 +27,13 @@ std::span<const App::ViewInfo> App::view_registry() {
     // labels speak the Studio vocabulary (Pipeline, Verification).
     static const ViewInfo kViews[] = {
         {View::Home, "", "Home", &App::draw_home, nullptr},
-        {View::Graph, "Workspace", "Pipeline workspace", &App::draw_graph_workspace,
+        // The pipeline is the central object of Studio (#891) — the Pipeline
+        // group leads the nav, its editor first, then the lifecycle it drives
+        // (Verification · Deploy). All roads lead to the pipeline.
+        {View::Graph, "Pipeline", "Pipeline editor", &App::draw_graph_workspace,
          &App::projects_badge},
-        {View::Gate, "Workspace", "Verification", &App::draw_gate, nullptr},
-        {View::Deploy, "Workspace", "Deploy", &App::draw_deploy, nullptr},
+        {View::Gate, "Pipeline", "Verification", &App::draw_gate, nullptr},
+        {View::Deploy, "Pipeline", "Deploy", &App::draw_deploy, nullptr},
         {View::Explorer, "Data library", "Explorer", &App::draw_explorer, nullptr},
         {View::Datasets, "Data library", "Datasets", &App::draw_datasets, nullptr},
         {View::Search, "Data library", "Search", &App::draw_search, nullptr},

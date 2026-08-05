@@ -304,6 +304,43 @@ else()
                  "`git submodule update --init modules/oramacore-cpp` to enable)")
 endif()
 
+# libpqxx — the Postgres source connector (#892). A public-upstream submodule
+# (modules/libpqxx, jtv/libpqxx) on **libpq**. Guarded on presence so a checkout
+# without it still configures + builds + runs green (ZETTA_WITH_POSTGRES) — the
+# same discipline as oramacore-cpp above. The blocking libpq calls are wrapped in
+# runtime::offload so zetta's threading is never disturbed; the adapter
+# (src/core/api/postgres_protocol.cpp) is the one TU that names libpqxx and links
+# into zetta-api, so **zetta-core links no libpq** (the outbound-transport
+# boundary). ADR-17 exception (vendor driver) — a deliberate, documented decision.
+set(ZETTA_LIBPQXX_DIR "${CMAKE_SOURCE_DIR}/modules/libpqxx")
+if(EXISTS "${ZETTA_LIBPQXX_DIR}/CMakeLists.txt")
+  # libpqxx's src/CMakeLists.txt does find_package(PostgreSQL REQUIRED). On macOS
+  # Homebrew keeps libpq keg-only, so add the hint prefixes; on Ubuntu/the build
+  # box libpq-dev is found without help.
+  if(APPLE)
+    foreach(pg_prefix /opt/homebrew/opt/libpq /usr/local/opt/libpq
+                      /opt/homebrew/opt/postgresql@17)
+      if(EXISTS "${pg_prefix}")
+        list(APPEND CMAKE_PREFIX_PATH "${pg_prefix}")
+      endif()
+    endforeach()
+  endif()
+  set(SKIP_BUILD_TEST ON CACHE BOOL "" FORCE)  # don't build libpqxx's own tests
+  add_subdirectory("${ZETTA_LIBPQXX_DIR}" EXCLUDE_FROM_ALL)
+  # Match zetta-core's libc++ ABI (std containers cross the link boundary), same
+  # as the oramacore + json-schema-validator guards above.
+  if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+    target_compile_options(pqxx PRIVATE -fexperimental-library)
+  endif()
+  set(ZETTA_WITH_POSTGRES ON)
+  message(STATUS "Postgres source connector (libpqxx): ENABLED")
+else()
+  set(ZETTA_WITH_POSTGRES OFF)
+  message(STATUS "Postgres source connector: disabled "
+                 "(modules/libpqxx not initialized — "
+                 "`git submodule update --init modules/libpqxx` to enable)")
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
@@ -330,7 +367,8 @@ if(ZETTA_ENABLE_CUDA)
   # absent, rather than silently dropping the backend.
   find_package(CUDAToolkit REQUIRED)
   enable_language(CUDA)
-  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu)
+  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu
+                                    src/core/compute/cuda_transformer.cu)
   message(STATUS "CUDA compute backend: ENABLED (CUDAToolkit ${CUDAToolkit_VERSION})")
 else()
   message(STATUS "CUDA compute backend: disabled (CPU-only build). "
@@ -347,6 +385,7 @@ if(ZETTA_ENABLE_MLX)
     src/core/compute/mlx_device.cpp
     src/core/compute/mlx_transformer.cpp
     src/core/compute/mlx_qwen.cpp
+    src/core/compute/mlx_qwen_inference_install.cpp
     src/core/compute/safetensors.cpp)
   message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
 else()
@@ -374,7 +413,15 @@ if(ZETTA_ENABLE_CUDA)
   set_target_properties(zetta-compute PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON)
-  if(NOT CMAKE_CUDA_HOST_COMPILER)
+  # Only nvcc has a separate host compiler. It also enforces a version whitelist that
+  # our toolchain outruns: CUDA 12.8's nvcc rejects host Clang >= 20 outright
+  # ("unsupported clang version! clang version must be less than 20"), so pairing it
+  # with the Clang 22 the rest of the build uses is not possible. Two ways out, and
+  # CMAKE_CUDA_COMPILER decides which:
+  #   * nvcc  -> pin an older host Clang (-DCMAKE_CUDA_HOST_COMPILER=clang++-19), or
+  #   * Clang -> let Clang compile the .cu itself (-DCMAKE_CUDA_COMPILER=clang++-22),
+  #     which needs no host compiler at all and keeps ONE compiler across the build.
+  if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND NOT CMAKE_CUDA_HOST_COMPILER)
     set_target_properties(zetta-compute PROPERTIES
       CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
   endif()
@@ -383,12 +430,23 @@ if(ZETTA_ENABLE_CUDA)
   # binary without leaking the CUDA include directories into zetta-core (a static-
   # library PRIVATE dependency propagates to consumers as link-only).
   target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_CUDA=1)
-  target_link_libraries(zetta-compute PRIVATE CUDA::cudart)
-  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation when
-  # the host compiler is Clang (the toolchain zetta selects).
+  # cuBLAS provides the tuned GEMM (#929). The hand-written kernel stays as the fallback for
+  # dtypes cuBLAS does not cover and as the conformance reference.
+  target_link_libraries(zetta-compute PRIVATE CUDA::cudart CUDA::cublas)
+  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation. How the
+  # flag is spelled depends on which compiler owns the .cu: nvcc forwards to its host
+  # compiler via -Xcompiler, whereas Clang IS the host compiler and takes the flag
+  # directly. Getting this wrong is not a subtle failure -- an unguarded -Xcompiler
+  # reaches nvcc's DEFAULT host compiler (gcc), which rejects the clang-only flag with
+  # "unrecognized command-line option '-fexperimental-library'".
   if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
-    target_compile_options(zetta-compute PRIVATE
-      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    elseif(CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-fexperimental-library>)
+    endif()
   endif()
 endif()
 
@@ -475,6 +533,8 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
   src/core/ml/model.cpp
+  src/core/workspace/workspace_profile.cpp
+  src/core/billing/plan.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp
@@ -534,6 +594,7 @@ add_library(zetta-core STATIC
   src/core/data/add_dataset.cpp
   src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
+  src/core/connect/postgres_runner.cpp
   src/core/connect/distributed_fetch.cpp
   src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
@@ -581,13 +642,17 @@ add_library(zetta-core STATIC
   src/core/agent/agent_record.cpp
   src/core/agent/agent_store.cpp
   src/core/agent/base_prompt.cpp
+  src/core/agent/interaction.cpp
+  src/core/agent/response_facts.cpp
   src/core/agent/solution_graph.cpp
   src/core/dataset/auto_suggest_generator.cpp
   src/core/dataset/base_agent_generator.cpp
   src/core/dataset/dataset_generator_factory.cpp
+  src/core/dataset/interaction_families.cpp
   src/core/dataset/plan_templates.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
+  src/core/agent/inference_runner.cpp
   src/core/agent/grader.cpp
   src/core/agent/sandbox.cpp
   src/core/agent/rollout.cpp
@@ -739,6 +804,16 @@ target_link_libraries(zetta-api PRIVATE
   Boost::json
   Boost::corosio
   Boost::corosio_openssl)
+
+# The Postgres connector adapter (#892) — the one TU that names libpqxx, compiled
+# into zetta-api only when the submodule is present, so zetta-core links no libpq.
+if(ZETTA_WITH_POSTGRES)
+  target_sources(zetta-api PRIVATE src/core/api/postgres_protocol.cpp)
+  target_link_libraries(zetta-api PRIVATE pqxx)
+  # PUBLIC so consumers (the executable's main.cpp, tests) can guard the install
+  # call the same way — the CUDA/MLX pattern.
+  target_compile_definitions(zetta-api PUBLIC ZETTA_WITH_POSTGRES=1)
+endif()
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

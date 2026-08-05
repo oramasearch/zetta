@@ -19,7 +19,8 @@ the GUI calls**, so RULE-1/RULE-3 cannot be bypassed by construction:
 | `compile_intent` | `Project::compile_intent_to_graph` | one-shot compile + store; audits `graph_created` |
 | `compile_n8n` | `pipeline::compile_n8n_workflow` → `Project::create_graph` | engine reasons verbatim (`nodes[2]: unsupported…`) |
 | `compile_python` | `input::PythonFrontend::compile` → `Project::create_graph` | lowers sim-Python; never runs Python |
-| `gate` | `pipeline::default_gate().run` | returns the whole `ValidationReport` (checks + verdict + block_deploy); evaluation only, `mutates=false` |
+| `approve_plan` | `Project::approve_graph` | review-before-build (#885): flips a proposed plan → approved; audits `graph_approved`; `gate`/`deploy` require it |
+| `gate` | `pipeline::default_gate().run` | returns the whole `ValidationReport` (checks + verdict + block_deploy); evaluation only, `mutates=false`; refuses a `proposed` plan with `not_approved` |
 | `deploy` | `Node::deploy_graph` | the engine self-gates (RULE-1) + self-audits both outcomes; the handler pre-runs the gate only to surface the failing check's reason verbatim |
 | `run` | `usecases::churn::run_churn_solution_on_node` (#637) via `AsyncChurnRun` · `Node::run_graph` | see below |
 | `add_dataset` | `data::add_dataset_file` | placement over the live `cluster_members()`; audits `dataset_added` |

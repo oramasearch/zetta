@@ -139,6 +139,94 @@ driving `Sandbox` → `ir::ExecutionGraph` graded by `grpo_step` — is
 **enhancement** (a more autonomous agent), not a prerequisite: the base agent builds + runs
 graphs today via `agent_run`.
 
+## Serving performance — Metal decode, off-tick, BF16 cold load
+
+Chat/`agent_run` decode on Apple Silicon serves on the **Metal GPU** via
+`MlxQwenInference` (the fused Qwen decode, #555), installed at startup behind the
+`QwenInferenceRunner` injection point (`agent/inference_runner.hpp`) so `zetta-core`
+links no MLX; the CPU `autograd::QwenInference` is the fallback when the runner is
+absent or a checkpoint fails to load on the MLX path. Two properties matter for
+interactive serving:
+
+- **Off the tick loop.** The `chat` capability is marked `offloadable` — it runs on a
+  pool worker via `runtime::offload`, not marshaled onto the owning tick thread, so a
+  long decode never pins the 10 Hz loop (#731). Node stays responsive (single-digit ms)
+  during a multi-second generation. Only the tokenizer + the thread-safe `AgentStore`
+  read touch shared state; the decode is pure compute.
+- **Single load, not double.** `respond()` loads only the tokenizer eagerly (cheap); the
+  multi-GB model is loaded **lazily** and only on the path that serves — the MLX runner
+  keeps a per-path `MlxQwenInference` cache, and the autograd `ModelCache` is touched only
+  on fallback. No more loading both a CPU and a Metal copy on the first turn.
+- **BF16 checkpoint halves the cold load.** Weights are read F32 by default. Converting a
+  checkpoint to BF16 (`scripts/convert_checkpoint_to_bf16.py`) halves the file (0.6B:
+  2.38 GB → 1.19 GB) and the weight-read part of the cold load (~7.9 s → ~5.2 s);
+  point an agent at it with `update_agent(id, model=<dir>-bf16)`. Warm **tokens/sec is
+  unchanged** (~77 tok/s marginal, 0.6B greedy on Metal): decode runs on F32 weights
+  in memory, so BF16 only shrinks the file and the load, not generation. BF16 here is a
+  high-16-bit truncation, exactly what both `safetensors.cpp` readers reconstruct, so
+  greedy decode quality is unaffected. The `data/checkpoints/` dir is gitignored — the
+  converter script is the reproducible part.
+
+## Live tools — letting the agent read the node (#904)
+
+`respond()` takes an optional **`AgentToolRunner`** + the tool specs it may call. The
+`chat` capability binds the runner to the capability registry through
+`ApiContext::registry`, so a tool the agent calls runs as a normal registry call **under
+the caller's identity** — the caller's permissions and the audit trail apply to the inner
+call exactly as to a direct one. The allowlist is **read-only introspection**
+(`list_projects`, `get_project`, `list_datasets`, `get_dataset`, `list_models`,
+`list_indexes`, `list_connections`, `server_info`); a mutating capability is never
+reachable this way, so a chat can describe the node but never change it.
+
+The loop is the existing one: the model emits `<tool_call>{"tool": …, "arguments": {…}}`,
+`Sandbox::apply` runs it, and the result is fed back as `<tool_result>` — now including
+the capability's **value** under `result`, because a read tool has to answer with data,
+not just "ok" (`ToolResult::success(json)` / `ApplyOutcome::data`).
+
+**Tools are opt-in per agent.** An agent only gets a live tool it names in its own
+`tools` list. This is deliberate: naming tools in the prompt changes what the model
+writes, and the churn-trained base agent (#555) answers **worse** when told about tools
+it was never trained to use — it starts folding tool vocabulary into its answers. So the
+default agent is untouched, and enabling introspection is a data change
+(`update_agent {tools: [...]}`), not a code change.
+
+**Teaching a model to actually use them is separate.** The corpus today trains a
+**single-shot JSON action** (`{message, tool_calls, execution_graph}`, where `tool_calls`
+are pipeline-setup steps), while the chat loop parses **conversational `<tool_call>`
+blocks** with `<tool_result>` feedback — two different formats. Closing that gap needs a
+tool-use task family in the generator plus a grader for it; tracked separately.
+
+## Grounding an answer in what the pipeline produced (#914)
+
+`chat` takes an optional **`project`**. When given, the capability reads that Project's
+newest trained model and puts its **real measure and ranked drivers** into the
+conversation ahead of the question, so the answer is about what the pipeline computed
+rather than what the checkpoint remembers. Zero-importance features are dropped (the
+model did not use them), and the block states that importances are relative weights,
+not percentages.
+
+The response carries **`grounded`** — true only when a Project was named *and* it has a
+trained model — plus a **`grounding_warning`** when it is false. Callers must not
+present an ungrounded reply as a measured result.
+
+**Measured limits of the current checkpoint** (base agent 0.6B, #555) — these are why
+`grounded` exists rather than a prompt instruction:
+
+- Given real drivers it **does** use them: it reported `failed_payments` and
+  `total_events` with the model's actual importances.
+- It **mislabels** them anyway — "failed_payments (26.4%)" — despite the block stating
+  explicitly that importances are not percentages. It pattern-matches; it does not
+  follow prompt instructions it was never trained on.
+- Told plainly that a Project has **no** model and not to estimate, it **fabricated**
+  a result: *"the churn rate dropped from 42% to 38% over 30 days"*. A prompt-level
+  refusal does not hold.
+- Its output format is unstable: the same grounded question sometimes returns prose,
+  sometimes bare training-format JSON.
+
+So grounding raises the ceiling on a good answer but cannot enforce a floor. The floor
+needs the retrain in #910 (a tool-use/refusal task family), and until then the caller —
+not the model — is responsible for how an ungrounded reply is shown.
+
 ## Related
 
 - [training-runbook.md](training-runbook.md) — produce the checkpoint this runbook loads.

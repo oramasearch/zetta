@@ -98,7 +98,7 @@ void App::draw_graph_workspace() {
         }
     }
 
-    ImGui::SeparatorText("Pipeline workspace");
+    ImGui::SeparatorText("Pipeline editor");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each
@@ -407,7 +407,12 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
     const float pad = font * 0.6f;
     const float rounding = font * 0.3f;
 
-    if (ImGui::BeginChild("##graph_canvas", ImVec2(0, font * 18.0f),
+    // The pipeline canvas is the workbench — the central object of Studio, so it
+    // takes the room. Fill most of the available height (leaving space for the
+    // step editor + the cluster-placement plan below), with a generous floor.
+    const float avail = ImGui::GetContentRegionAvail().y;
+    const float canvas_h = std::max(font * 26.0f, avail * 0.58f);
+    if (ImGui::BeginChild("##graph_canvas", ImVec2(0, canvas_h),
                           ImGuiChildFlags_Borders,
                           ImGuiWindowFlags_HorizontalScrollbar)) {
         if (graph.empty()) {

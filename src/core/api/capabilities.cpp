@@ -1,4 +1,7 @@
 #include "zetta/api/capabilities.hpp"
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 
 #include <chrono>
 #include <fstream>
@@ -310,7 +313,12 @@ const nlohmann::json& get_project_output_schema() {
               {"additionalProperties", false},
               {"properties",
                {{"id", {{"type", "string"}}},
-                {"name", {{"type", "string"}}}}}}}}}}}};
+                {"name", {{"type", "string"}}},
+                {"approval",
+                 {{"type", "string"}, {"enum", {"proposed", "approved"}},
+                  {"description", "plan-approval state (#885)"}}},
+                {"approved_by", {{"type", "string"}}},
+                {"approved_at", {{"type", "string"}}}}}}}}}}}};
     return schema;
 }
 
@@ -343,7 +351,11 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     output["inputs"] = std::move(inputs);
     nlohmann::json graphs = nlohmann::json::array();
     for (const auto& graph : project->graphs()) {
-        graphs.push_back({{"id", graph->id()}, {"name", graph->name()}});
+        graphs.push_back({{"id", graph->id()},
+                          {"name", graph->name()},
+                          {"approval", graph->approval_status()},
+                          {"approved_by", graph->approved_by()},
+                          {"approved_at", graph->approved_at()}});
     }
     output["graphs"] = std::move(graphs);
     return ApiResult::success(std::move(output));
@@ -1363,7 +1375,8 @@ nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
     return nlohmann::json{{"graph_id", graph.id()},
                           {"name", graph.name()},
                           {"steps", graph.graph().node_count()},
-                          {"edges", graph.graph().edge_count()}};
+                          {"edges", graph.graph().edge_count()},
+                          {"approval", graph.approval_status()}};
 }
 
 // --- get_graph / save_graph: the visual graph workspace's read + write path ---
@@ -1392,6 +1405,11 @@ const nlohmann::json& graph_structure_output_schema() {
          {{"graph_id", {{"type", "string"}}},
           {"name", {{"type", "string"}}},
           {"project", {{"type", "string"}}},
+          {"approval",
+           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+            {"description", "plan-approval state (#885)"}}},
+          {"approved_by", {{"type", "string"}}},
+          {"approved_at", {{"type", "string"}}},
           {"nodes",
            {{"type", "array"},
             {"items",
@@ -1423,6 +1441,11 @@ ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
     output["graph_id"] = graph->id();
     output["name"] = graph->name();
     output["project"] = project->name();
+    // Plan-approval state (#885) so the Graph Workspace / Proposed Solution
+    // screen shows proposed vs approved and enables the approve action.
+    output["approval"] = graph->approval_status();
+    output["approved_by"] = graph->approved_by();
+    output["approved_at"] = graph->approved_at();
     return ApiResult::success(std::move(output));
 }
 
@@ -1485,6 +1508,67 @@ ApiResult handle_save_graph(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- approve_plan (#885, review-before-build) -----------------------------------
+
+const nlohmann::json& approve_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the stored plan's name or uuid to approve"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& approve_plan_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph", "approval", "approved_by", "approved_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project", {{"type", "string"}}},
+          {"graph", {{"type", "string"}}},
+          {"approval", {{"type", "string"}, {"enum", {"proposed", "approved"}}}},
+          {"approved_by", {{"type", "string"}}},
+          {"approved_at", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_approve_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const auto existing = resolve_graph(*project, graph_name);
+    if (!existing) {
+        return ApiResult::failure("not_found",
+                                  "no graph named '" + graph_name +
+                                      "' on project '" + project->name() + "'");
+    }
+    // Governed + audited inside the engine (Project::approve_graph): captures the
+    // approval into the CRDT (peers reconcile it) and records the audit event.
+    const auto approved = project->approve_graph(
+        existing->name(), actor_of(context), zetta::util::now_iso8601());
+    if (!approved) {
+        return ApiResult::failure("engine_error", "could not approve the plan");
+    }
+    nlohmann::json output;
+    output["project"] = project->name();
+    output["graph"] = approved->name();
+    output["approval"] = approved->approval_status();
+    output["approved_by"] = approved->approved_by();
+    output["approved_at"] = approved->approved_at();
+    return ApiResult::success(std::move(output));
+}
+
 // The schema of input_json + the owning project — the output of the two
 // input-producing actions (capture_intent, import_n8n).
 const nlohmann::json& project_input_output_schema() {
@@ -1515,6 +1599,9 @@ const nlohmann::json& project_graph_output_schema() {
           {"name", {{"type", "string"}}},
           {"steps", {{"type", "integer"}}},
           {"edges", {{"type", "integer"}}},
+          {"approval",
+           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+            {"description", "plan-approval state (#885); a fresh plan is proposed"}}},
           {"project", {{"type", "string"}}}}}};
     return schema;
 }
@@ -1843,6 +1930,15 @@ ApiResult handle_gate(const nlohmann::json& input, ApiContext& context) {
                                                    "' on project '" +
                                                    project->name() + "'");
     }
+    // Review-before-build (#885): a proposed plan must be approved before it can
+    // be verified. Approval is the human "yes, build this" the design's Proposed
+    // Solution screen collects; approve_plan flips it.
+    if (!graph->approved()) {
+        return ApiResult::failure(
+            "not_approved",
+            "the plan '" + graph->name() +
+                "' is proposed — approve it (approve_plan) before verification");
+    }
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     // A blocked graph is a successful gate *evaluation* — the report carries
@@ -1904,6 +2000,15 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::failure("not_found", "no graph named '" + graph_name +
                                                    "' on project '" +
                                                    project->name() + "'");
+    }
+    // Review-before-build (#885): no deploy of a plan the human hasn't approved.
+    // (This is orthogonal to the correctness gate below — approval is the human
+    // sign-off; the gate is the machine verification. Both must pass.)
+    if (!graph->approved()) {
+        return ApiResult::failure(
+            "not_approved",
+            "the plan '" + graph->name() +
+                "' is proposed — approve it (approve_plan) before deploy");
     }
     const auto kind = zetta::pipeline::deployment_kind_from_name(
         input.value("target", "local"));
@@ -3188,6 +3293,197 @@ ApiResult handle_delete_agent(const nlohmann::json& input, ApiContext& context) 
     return ApiResult::success(std::move(output));
 }
 
+// --- workspace profiles (#886, the create-a-data-profile pathway) ------------
+
+const nlohmann::json& get_workspace_profile_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "workspace_profile_id",
+        "the profile's uuid (system.workspace_profiles.workspace_profile_id)");
+    return schema;
+}
+
+const nlohmann::json& workspace_profile_output_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::workspace::workspace_profile_value_schema());
+    return schema;
+}
+
+const nlohmann::json& create_workspace_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"role",
+           {{"type", "string"}, {"description", "the user's workspace role"}}},
+          {"daily_work",
+           {{"type", "string"},
+            {"description", "plain-language daily-work description"}}},
+          {"sources",
+           {{"type", "array"}, {"items", {{"type", "object"}}},
+            {"description", "approved source refs, each {id,name,kind}"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_workspace_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"workspace_profile_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"workspace_profile_id",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the profile's uuid to update"}}},
+          {"role", {{"type", "string"}}},
+          {"daily_work", {{"type", "string"}}},
+          {"sources", {{"type", "array"}, {"items", {{"type", "object"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_workspace_profile(const nlohmann::json& input,
+                                       ApiContext& context) {
+    const std::string id = input.at("workspace_profile_id").get<std::string>();
+    const auto profile = context.node.find_workspace_profile(id);
+    if (!profile) {
+        return ApiResult::failure("not_found",
+                                  "no workspace profile with id '" + id + "'");
+    }
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_create_workspace_profile(const nlohmann::json& input,
+                                          ApiContext& context) {
+    // The profile belongs to the calling principal (server-set, not client-set).
+    zetta::workspace::WorkspaceProfileValue value;
+    value.owner = actor_of(context);
+    value.role = input.value("role", std::string{});
+    value.daily_work = input.value("daily_work", std::string{});
+    if (const auto it = input.find("sources"); it != input.end()) {
+        value.sources = *it;
+    }
+    const auto profile = context.node.create_workspace_profile(std::move(value));
+    if (!profile) {
+        return ApiResult::failure("engine_error",
+                                  "could not create the workspace profile");
+    }
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_update_workspace_profile(const nlohmann::json& input,
+                                          ApiContext& context) {
+    const std::string id = input.at("workspace_profile_id").get<std::string>();
+    const auto profile = context.node.find_workspace_profile(id);
+    if (!profile) {
+        return ApiResult::failure("not_found",
+                                  "no workspace profile with id '" + id + "'");
+    }
+    // Apply present fields, defaulting to the profile's current values; the owner
+    // and created stamp stay fixed.
+    const std::string role = input.value("role", profile->role());
+    const std::string daily_work = input.value("daily_work", profile->daily_work());
+    nlohmann::json sources = profile->sources();
+    if (const auto it = input.find("sources"); it != input.end()) sources = *it;
+    profile->set_content(role, daily_work, std::move(sources),
+                         zetta::util::now_iso8601());
+    nlohmann::json output = profile->metadata();
+    output["id"] = profile->id();
+    return ApiResult::success(std::move(output));
+}
+
+// --- plans (Conflict D: metered usage + plan) --------------------------------
+
+const nlohmann::json& get_plan_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("plan_id", "the plan's uuid (system.plans.plan_id)");
+    return schema;
+}
+
+const nlohmann::json& plan_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::billing::plan_value_schema());
+    return schema;
+}
+
+const nlohmann::json& create_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1},
+                    {"description", "the plan's display name"}}},
+          {"tier", {{"type", "string"},
+                    {"description", "display tier (free / pro / enterprise)"}}},
+          {"quotas", {{"type", "object"},
+                      {"additionalProperties", {{"type", "number"}}},
+                      {"description", "numeric limits, e.g. {max_runs, max_storage_bytes}"}}},
+          {"period_start", {{"type", "string"},
+                            {"description", "ISO-8601 start of the current period"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& update_plan_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"plan_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"plan_id", {{"type", "string"}, {"minLength", 1},
+                       {"description", "the plan's uuid to update"}}},
+          {"name", {{"type", "string"}, {"minLength", 1}}},
+          {"tier", {{"type", "string"}}},
+          {"quotas", {{"type", "object"}, {"additionalProperties", {{"type", "number"}}}}},
+          {"period_start", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("plan_id").get<std::string>();
+    const auto plan = context.node.find_plan(id);
+    if (!plan) {
+        return ApiResult::failure("not_found", "no plan with id '" + id + "'");
+    }
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_create_plan(const nlohmann::json& input, ApiContext& context) {
+    zetta::billing::PlanValue value;
+    value.name = input.at("name").get<std::string>();
+    value.tier = input.value("tier", std::string{});
+    if (const auto it = input.find("quotas"); it != input.end()) value.quotas = *it;
+    value.period_start = input.value("period_start", std::string{});
+    const auto plan = context.node.create_plan(std::move(value));
+    if (!plan) {
+        return ApiResult::failure("engine_error", "could not create the plan");
+    }
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_update_plan(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("plan_id").get<std::string>();
+    const auto plan = context.node.find_plan(id);
+    if (!plan) {
+        return ApiResult::failure("not_found", "no plan with id '" + id + "'");
+    }
+    const std::string name = input.value("name", plan->name());
+    const std::string tier = input.value("tier", plan->tier());
+    nlohmann::json quotas = plan->quotas();
+    if (const auto it = input.find("quotas"); it != input.end()) quotas = *it;
+    const std::string period_start = input.value("period_start", plan->period_start());
+    plan->set_content(name, tier, std::move(quotas), period_start,
+                      zetta::util::now_iso8601());
+    nlohmann::json output = plan->metadata();
+    output["id"] = plan->id();
+    return ApiResult::success(std::move(output));
+}
+
 // --- chat: talk to an agent, with tool-calling (#849) -------------------------
 
 const nlohmann::json& chat_schema() {
@@ -3198,6 +3494,13 @@ const nlohmann::json& chat_schema() {
         {"properties",
          {{"agent", {{"type", "string"}, {"minLength", 1}, {"description", "the agent's id"}}},
           {"message", {{"type", "string"}, {"minLength", 1}}},
+          {"project",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "scope the answer to this project (name or uuid): its trained model's "
+             "measure and ranked drivers are given to the agent, so it answers from "
+             "what the pipeline actually produced instead of from priors (#914)"}}},
           {"max_new_tokens", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2048}}},
           {"max_rounds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 8}}}}}};
     return schema;
@@ -3206,10 +3509,31 @@ const nlohmann::json& chat_schema() {
 const nlohmann::json& chat_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"reply", "tool_calls", "rounds"}},
+        {"required", {"reply", "tool_calls", "rounds", "grounded", "kind"}},
         {"properties",
          {{"reply", {{"type", "string"}}},
           {"rounds", {{"type", "integer"}}},
+          {"grounded",
+           {{"type", "boolean"},
+            {"description",
+             "true only when a project was named AND it has a trained model whose real "
+             "measure + ranked drivers were given to the agent. False means the reply "
+             "rests on the model's priors — present it as such, never as a measured "
+             "result (#914)"}}},
+          {"grounding_warning",
+           {{"type", "string"},
+            {"description", "why the reply is ungrounded, when it is"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", nlohmann::json::array({"action", "answer", "clarify", "abstain",
+                                            "unparsed"})},
+            {"description",
+             "the mode the agent declared for this turn: answer renders as prose, clarify is a "
+             "question awaiting a reply, abstain is a refusal to present as such, action carries "
+             "a proposed Pipeline. `unparsed` means the generation was not a valid envelope"}}},
+          {"pipeline",
+           {{"type", "object"},
+            {"description", "the proposed Pipeline, when the turn built one"}}},
           {"tool_calls",
            {{"type", "array"},
             {"items",
@@ -3219,6 +3543,136 @@ const nlohmann::json& chat_output_schema() {
                 {"status", {{"type", "string"}}},
                 {"detail", {{"type", "string"}}}}}}}}}}}};
     return schema;
+}
+
+// Render a trained model's real numbers as the plain lines the agent reads before
+// answering (#914): the measure it scored and its drivers, ranked, strongest first.
+// Drivers with zero importance are dropped — the model did not use them, and listing
+// them invites the agent to talk about features that contributed nothing.
+std::string model_grounding_text(const nlohmann::json& metadata, const std::string& model_name,
+                                 const std::string& project_name) {
+    std::string text = "Project: " + project_name + "\nTrained model: " + model_name;
+    if (const auto kind = metadata.find("kind");
+        kind != metadata.end() && kind->is_string()) {
+        text += " (" + kind->get<std::string>() + ")";
+    }
+    text += "\n";
+
+    if (const auto metrics = metadata.find("metrics");
+        metrics != metadata.end() && metrics->is_object()) {
+        const auto number = [&](const char* key) -> std::string {
+            const auto found = metrics->find(key);
+            if (found == metrics->end() || !found->is_number()) return {};
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(3) << found->get<double>();
+            return out.str();
+        };
+        const std::string auc = number("auc");
+        const std::string accuracy = number("accuracy");
+        if (!auc.empty()) text += "Measure: AUC " + auc;
+        if (!accuracy.empty()) text += (auc.empty() ? "Measure: " : ", ") + std::string("accuracy ") + accuracy;
+        if (!auc.empty() || !accuracy.empty()) text += "\n";
+    }
+
+    const auto schema = metadata.find("feature_schema");
+    if (schema != metadata.end() && schema->is_object()) {
+        const auto drivers = schema->find("drivers");
+        if (drivers != schema->end() && drivers->is_array()) {
+            std::vector<std::pair<std::string, double>> ranked;
+            for (const nlohmann::json& driver : *drivers) {
+                if (!driver.is_object()) continue;
+                const auto feature = driver.find("feature");
+                const auto importance = driver.find("importance");
+                if (feature == driver.end() || !feature->is_string()) continue;
+                const double weight =
+                    (importance != driver.end() && importance->is_number())
+                        ? importance->get<double>() : 0.0;
+                if (weight <= 0.0) continue;  // the model did not use it
+                ranked.emplace_back(feature->get<std::string>(), weight);
+            }
+            std::sort(ranked.begin(), ranked.end(),
+                      [](const auto& left, const auto& right) { return left.second > right.second; });
+            if (ranked.empty()) {
+                text += "Drivers: the model reported no feature with non-zero importance.\n";
+            } else {
+                // Present importances as a SHARE OF TOTAL importance, which is both a
+                // standard way to report feature importance and — crucially — a number
+                // the agent's instinct to write "%" is correct about. Telling it "these
+                // are not percentages" did not work: it wrote "failed_payments (26.4%)"
+                // anyway, turning a raw weight into a false claim. Giving it real
+                // percentages makes the sentence it wants to write a true one.
+                double total = 0.0;
+                for (const auto& [feature, weight] : ranked) total += weight;
+                text +=
+                    "Drivers, strongest first — each shown as its share of the model's "
+                    "total feature importance (they sum to 100%):\n";
+                for (const auto& [feature, weight] : ranked) {
+                    std::ostringstream line;
+                    line << "- " << feature << ": " << std::fixed << std::setprecision(1)
+                         << (total > 0.0 ? (weight / total) * 100.0 : 0.0)
+                         << "% of the model's importance\n";
+                    text += line.str();
+                }
+            }
+        }
+    }
+    return text;
+}
+
+// The ranked at-risk list this Project's pipeline published (#915), as lines the
+// agent reads before answering "which accounts are most at risk". Matched to the
+// Project's OWN pipelines by table name — never a "newest table on the node" guess,
+// which would hand one Project another's accounts. Capped: the question is about the
+// top of the list, and a long tail only crowds the context out.
+std::string at_risk_grounding_text(Node& node,
+                                   const std::vector<std::shared_ptr<zetta::pipeline::ProjectGraph>>& graphs) {
+    constexpr std::size_t kMaxRows = 10;
+    const std::shared_ptr<zetta::data::Database> database = node.find_database("churn_results");
+    if (!database) return {};
+
+    std::shared_ptr<zetta::data::Table> table;
+    for (const auto& graph : graphs) {
+        if (!graph || graph->id().size() < 8) continue;
+        if (auto found = database->find_table("at_risk_" + graph->id().substr(0, 8))) {
+            table = std::move(found);  // last writer wins: the newest run of this Project
+        }
+    }
+    if (!table) return {};
+
+    std::vector<nlohmann::json> rows;
+    const zetta::storage::StorageEngine& store = table->store();
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        const auto row = store.at(index);
+        if (!row) continue;  // row.error() says why; a hole is not an answer
+        rows.push_back(*row);
+    }
+    if (rows.empty()) return {};
+    std::sort(rows.begin(), rows.end(), [](const nlohmann::json& left, const nlohmann::json& right) {
+        return left.value("rank", 0.0) < right.value("rank", 0.0);
+    });
+
+    std::string text =
+        "\nThe accounts this pipeline ranked most at risk. These are the ONLY accounts "
+        "you may name — do not invent others — and risk is the model's calibrated "
+        "probability of churn:\n";
+    std::size_t shown = 0;
+    for (const nlohmann::json& row : rows) {
+        if (shown++ >= kMaxRows) break;
+        std::ostringstream line;
+        line << "- account " << row.value("account", 0) << ": risk " << std::fixed
+             << std::setprecision(3) << row.value("risk", 0.0);
+        if (const std::string driver = row.value("dominant_driver", std::string{});
+            !driver.empty()) {
+            line << ", driven by " << driver;
+        }
+        line << "\n";
+        text += line.str();
+    }
+    if (rows.size() > kMaxRows) {
+        text += "(and " + std::to_string(rows.size() - kMaxRows) + " more below the top " +
+                std::to_string(kMaxRows) + ")\n";
+    }
+    return text;
 }
 
 ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
@@ -3234,11 +3688,100 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
 
+    // The tools the agent may call while answering (#904): READ-ONLY introspection,
+    // an explicit allowlist — never a mutating capability, so a chat can describe
+    // the node but never change it. Each call goes back through
+    // `registry.call(...)` with the SAME ApiContext, so the caller's own
+    // permissions and the audit trail apply exactly as if they had made the call.
+    static const std::vector<zetta::agent::AgentToolSpec> kAgentTools = {
+        {"list_projects", "list the Projects on this node"},
+        {"get_project", "read one Project: {\"name\": \"<project>\"}"},
+        {"list_datasets", "list the datasets (tables) available, with row and column counts"},
+        {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
+        {"list_models", "list the trained models and their measures"},
+        {"list_indexes", "list the search indexes and the fields they cover"},
+        {"list_connections", "list the configured source connections"},
+        {"server_info", "read this node's version and cluster membership"},
+    };
+    // OPT-IN per agent: an agent only gets live tools it explicitly declares in its
+    // record. This matters — naming tools in the prompt changes what the model
+    // writes, and the churn-trained base agent (#555) answers WORSE when told about
+    // tools it was never trained to use. So the default agent is untouched, and
+    // enabling introspection is a data change (`update_agent` tools), not a code
+    // change. Teaching a model to actually use them is #904's training half.
+    std::vector<zetta::agent::AgentToolSpec> enabled_tools;
+    for (const zetta::agent::AgentToolSpec& spec : kAgentTools) {
+        if (std::find(agent->tools.begin(), agent->tools.end(), spec.name) !=
+            agent->tools.end()) {
+            enabled_tools.push_back(spec);
+        }
+    }
+    const zetta::agent::AgentToolRunner agent_tools =
+        [&context](const std::string& tool,
+                   const nlohmann::json& arguments) -> zetta::agent::ToolResult {
+        const bool allowed = std::any_of(
+            kAgentTools.begin(), kAgentTools.end(),
+            [&tool](const zetta::agent::AgentToolSpec& spec) { return spec.name == tool; });
+        if (!allowed) {
+            return zetta::agent::ToolResult::failure("'" + tool +
+                                                     "' is not a tool this agent may call");
+        }
+        if (context.registry == nullptr) {
+            return zetta::agent::ToolResult::failure("no capability registry for this call");
+        }
+        const ApiResult called = context.registry->call(
+            tool, arguments.is_object() ? arguments : nlohmann::json::object(), context);
+        if (!called.ok) return zetta::agent::ToolResult::failure(called.error.message);
+        return zetta::agent::ToolResult::success(called.value);
+    };
+
     // Run the agent (loads its model, runs the tool-calling loop) — the shared path the GUI
     // chat panel also uses, so both behave identically. agent.model must be a local
     // checkpoint dir; pull it first with `zetta pull` if it isn't present.
+    // Ground the answer in what this Project's pipeline actually produced (#914).
+    // The two questions a churn buyer asks — "what's driving churn" and "which are
+    // most at risk" — are answerable from the trained model's ranked drivers and its
+    // measure, which the run already wrote. Without this the agent answers from
+    // training priors and cites nothing real.
+    std::string grounding;
+    bool grounded = false;
+    std::string grounding_warning;
+    if (input.contains("project")) {
+        const std::string project_name = input.at("project").get<std::string>();
+        if (auto project = resolve_project(context, project_name)) {
+            std::shared_ptr<zetta::ml::Model> newest;
+            for (const auto& candidate : context.node.models()) {
+                if (candidate->project() != project->id()) continue;
+                if (!newest || candidate->created() > newest->created()) newest = candidate;
+            }
+            if (newest) {
+                grounding = model_grounding_text(newest->metadata(), newest->name(),
+                                                 project->name());
+                // …and the accounts it actually ranked, so "which are most at risk"
+                // is answered with real accounts rather than invented ones (#915).
+                grounding += at_risk_grounding_text(context.node, project->graphs());
+                grounded = true;
+            } else {
+                // Deliberately NOT a prompt instruction. Measured behavior: told plainly
+                // that a Project has no model and not to estimate, the base agent ignored
+                // it and invented a churn rate ("dropped from 42% to 38%"). It pattern-
+                // matches a churn answer rather than following an instruction it was never
+                // trained on. So the refusal cannot live in the prompt — the caller is told
+                // the reply is ungrounded and must present it as such (#914 / #910).
+                grounding_warning =
+                    "Project \"" + project->name() +
+                    "\" has no trained model — its pipeline has not been run, so this reply "
+                    "is not grounded in any measured result. Any figure in it is invented.";
+            }
+        }
+    }
+
     const zetta::agent::ChatResponse chat =
-        zetta::agent::respond(*agent, message, max_new_tokens, max_rounds);
+        enabled_tools.empty()
+            ? zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, {}, {},
+                                    grounding)
+            : zetta::agent::respond(*agent, message, max_new_tokens, max_rounds, agent_tools,
+                                    enabled_tools, grounding);
     if (!chat.ok) return ApiResult::failure("engine_error", chat.error);
 
     nlohmann::json tool_calls = nlohmann::json::array();
@@ -3256,6 +3799,27 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     output["reply"] = chat.result.reply;
     output["tool_calls"] = std::move(tool_calls);
     output["rounds"] = chat.result.rounds;
+    // Whether the reply stands on measured results, so a caller never presents a
+    // generated number as a fact (#914). `grounded` is true only when a Project was
+    // named AND it has a trained model whose real measure + drivers were supplied.
+    output["grounded"] = grounded;
+    if (!grounding_warning.empty()) output["grounding_warning"] = grounding_warning;
+    // The mode the agent DECLARED for this turn (#918), so a caller switches on an explicit
+    // value instead of inferring intent from the payload's shape. `answer` renders as prose,
+    // `clarify` is a question awaiting a reply, `abstain` is a refusal the surface must present
+    // as such rather than dressing up, and `action` carries a proposed Pipeline to review.
+    if (chat.action) {
+        output["kind"] = std::string(zetta::agent::to_string(chat.action->kind));
+        // A proposed Pipeline is returned only when one was actually built — never an empty
+        // graph, which a caller could mistake for "the agent built nothing on purpose".
+        if (!chat.action->execution_graph.nodes().empty()) {
+            output["pipeline"] = zetta::ir::to_json(chat.action->execution_graph);
+        }
+    } else {
+        // The generation did not parse as a response envelope. Say so explicitly: an unparsed
+        // turn is an error state, not an `action` that happened to carry no pipeline.
+        output["kind"] = "unparsed";
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -3627,6 +4191,21 @@ void register_core_capabilities(Registry& registry) {
         handle_save_graph});
 
     registry.add(Capability{
+        "approve_plan",
+        "Approve a proposed plan",
+        "Approve a stored, proposed Pipeline for build (#885, the design's "
+        "review-before-build flow): records the approving principal + time, "
+        "replicates, and audits it (graph_approved). gate and deploy require an "
+        "approved plan; editing a plan re-proposes it.",
+        approve_plan_schema(),
+        approve_plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "approve_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_approve_plan});
+
+    registry.add(Capability{
         "get_run",
         "Get one run",
         "Read one run's full validated record — status, logs, outputs, "
@@ -3651,6 +4230,85 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_model});
+
+    registry.add(Capability{
+        "get_workspace_profile",
+        "Get one workspace profile",
+        "Read one Workspace Profile's full validated record (owner, role, daily "
+        "work, approved source refs) by its uuid. No side effects. (#886)",
+        get_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_workspace_profile});
+
+    registry.add(Capability{
+        "create_workspace_profile",
+        "Create a workspace profile",
+        "Create the calling user's Workspace Profile — the input to the Discover "
+        "Opportunities pathway (#886). Owner is the caller; replicates to every "
+        "node. Role, daily work, and approved source refs are the editable body.",
+        create_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_workspace_profile"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_workspace_profile});
+
+    registry.add(Capability{
+        "update_workspace_profile",
+        "Update a workspace profile",
+        "Update a Workspace Profile's role, daily work, or approved source refs "
+        "by its uuid (#886); the owner and created stamp stay fixed. Replicates.",
+        update_workspace_profile_schema(),
+        workspace_profile_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_workspace_profile"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_workspace_profile});
+
+    registry.add(Capability{
+        "get_plan",
+        "Get one plan",
+        "Read one Plan's full validated record (name, tier, quota limits) by its "
+        "uuid. Metered usage is read live from system.usage. (Conflict D)",
+        get_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_plan});
+
+    registry.add(Capability{
+        "create_plan",
+        "Create a plan",
+        "Create a Plan — the quota/tier config the Billing/Usage surface measures "
+        "live consumption against (Conflict D). Replicates to every node.",
+        create_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_plan});
+
+    registry.add(Capability{
+        "update_plan",
+        "Update a plan",
+        "Update a Plan's name, tier, quotas, or period by its uuid (Conflict D); "
+        "the created stamp stays fixed. Replicates.",
+        update_plan_schema(),
+        plan_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "update_plan"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_update_plan});
 
     registry.add(Capability{
         "get_job",
@@ -3845,7 +4503,7 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_delete_agent});
-    registry.add(Capability{
+    Capability chat_capability{
         "chat",
         "Chat with an agent",
         "Send a message to an agent and get its reply, with tool-calling: the agent's model "
@@ -3858,7 +4516,16 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
         /*requires_consent=*/false,
-        handle_chat});
+        handle_chat};
+    // Model decode is CPU/GPU-bound and touches only the thread-safe replication
+    // store, so in principle it can run off the owner/tick thread. But the current
+    // runtime::offload path does not resume the REST request coroutine back on the
+    // connection's executor, so route.send() after it never completes and the HTTP
+    // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
+    // offload/executor resumption is fixed, serve chat on the owner loop — correct,
+    // at the cost of briefly occupying the tick during a decode. See #731.
+    chat_capability.offloadable = false;
+    registry.add(std::move(chat_capability));
     registry.add(Capability{
         "agent_run",
         "Agent builds + runs a graph",

@@ -19,14 +19,21 @@
 // deterministic effects with no external system.
 namespace zetta::agent {
 
-// The result of running one tool's effect: did it succeed, and if not, why.
+// The result of running one tool's effect: did it succeed, if not why, and any
+// value the tool produced. `data` is what a READ tool answers with — the agent
+// needs the rows/schema back, not just "ok" — and it rides into the
+// <tool_result> the next generation round reads (#904).
 struct ToolResult {
     bool ok = false;
-    std::string reason;  // why it failed; empty on success
+    std::string reason;   // why it failed; empty on success
+    nlohmann::json data;  // what the tool returned; null when it produced no value
 
-    static ToolResult success() { return ToolResult{true, {}}; }
+    static ToolResult success() { return ToolResult{true, {}, nlohmann::json()}; }
+    static ToolResult success(nlohmann::json value) {
+        return ToolResult{true, {}, std::move(value)};
+    }
     static ToolResult failure(std::string why) {
-        return ToolResult{false, std::move(why)};
+        return ToolResult{false, std::move(why), nlohmann::json()};
     }
 };
 
@@ -45,7 +52,8 @@ enum class ApplyStatus {
 
 struct ApplyOutcome {
     ApplyStatus status = ApplyStatus::UnknownTool;
-    std::string reason;  // detail for UnknownTool / ToolFailed; empty on Ok
+    std::string reason;   // detail for UnknownTool / ToolFailed; empty on Ok
+    nlohmann::json data;  // what a read tool returned; null when none (#904)
 
     bool ok() const noexcept { return status == ApplyStatus::Ok; }
 };

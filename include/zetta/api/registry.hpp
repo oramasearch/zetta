@@ -96,6 +96,8 @@ class BackgroundActions;
 using ProvisionerResolver =
     std::function<zetta::cloud::Provisioner*(const std::string& target_id)>;
 
+class Registry;
+
 // What a handler sees. `acting_key` is the acting identity the auth gate
 // resolved: under the default-deny gate (#745) it is a USER id (see
 // `acting_is_user`); otherwise it is the AccessKey id the bearer token mapped
@@ -139,6 +141,14 @@ struct ApiContext {
     // its executing state instead of recording the immediate return value.
     std::string consent_challenge_id;
     bool consent_outcome_deferred = false;
+
+    // The registry executing this call, set by Registry::call before it invokes
+    // the handler. A handler that must run ANOTHER capability on the caller's
+    // behalf — `chat`, which lets the agent read the node through an allowlist of
+    // read-only capabilities (#904) — calls back through this, so the caller's
+    // permissions and the audit trail apply to the inner call exactly as they
+    // would to a direct one. Null outside a registry call.
+    const Registry* registry = nullptr;
 };
 
 using CapabilityHandler =
@@ -174,6 +184,12 @@ struct Capability {
     // read/run (the challenge body). Missing describer = a generic challenge
     // built from `description`. See ConsentDescriber above.
     ConsentDescriber describe_consent;
+    // Run this capability off the owner/tick thread, on a pool worker
+    // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
+    // for a handler that touches no main-thread-only Node state — just the
+    // thread-safe ReplicationManager + pure compute (e.g. chat: model inference).
+    // Keeps a long CPU/GPU decode from pinning the tick loop (#731).
+    bool offloadable = false;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh

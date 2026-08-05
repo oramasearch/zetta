@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,11 +29,31 @@ struct DatasetGenSpec {
 
 // The result: the gated corpus + the plan subjects it covered (so a caller can see coverage
 // against the plan, and mark held-out subjects).
+//
+// **Canary convention:** the held-out cases are the LAST `held_out` entries of `cases`, and
+// the subjects they came from are the last entries of `subjects`. Training reads
+// `cases[0 .. size()-held_out)`; the canary is the remainder. Holding out WHOLE subjects
+// (not resampled variants of a seen one) is what makes it a real memorization check — the
+// canary is a combination the model never saw.
 struct GeneratedDataset {
     std::vector<zetta::agent::AdmissionCase> cases;  // the admission-gated tasks
     std::vector<std::string> subjects;               // plan subject ids covered (e.g. "UC-1", "search")
     std::size_t held_out = 0;                         // how many cases are canary (held out of train)
 };
+
+// How many trailing subjects to reserve as the canary for `fraction`. Deterministic — the
+// trailing subjects, no RNG — so the same spec yields the same split (#873 reproducibility).
+// A non-zero fraction always reserves at least one subject (when there are ≥2), and never
+// reserves them all, so training is never left with nothing.
+inline std::size_t held_out_subject_count(std::size_t subject_count, double fraction) {
+    if (fraction <= 0.0 || subject_count < 2) return 0;
+    const double clamped = fraction > 1.0 ? 1.0 : fraction;
+    std::size_t reserved =
+        static_cast<std::size_t>(static_cast<double>(subject_count) * clamped);
+    if (reserved == 0) reserved = 1;
+    if (reserved >= subject_count) reserved = subject_count - 1;
+    return reserved;
+}
 
 // A native generator for one dataset kind. Implementations live in src/core/dataset/ and are
 // registered with the DatasetGeneratorFactory.

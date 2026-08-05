@@ -1,9 +1,13 @@
 # Data card — the base-agent training corpus
 
 **Dataset.** The Orama Studio auto-AI **base agent's** training corpus — the tasks that teach the
-agent to turn a plain-language ask into a production **pipeline**.
-**Version.** Native generator, `feat/agent-rlvr-base` (2026-07-23). Supersedes the offline
-`data/base-agent-training-set.jsonl` (565 tasks) — see [Sourcing](#sourcing--provenance).
+agent to handle the interactions a user actually has with Studio: turning a plain-language ask
+into a production **pipeline**, answering about a Project from retrieved facts, changing a
+Pipeline, writing code inside a node, declining, and asking for clarification.
+**Version.** v2 — the **interaction corpus** (#918), 2026-07-25. **6,793 gated cases across 10
+families, 763 held out as canary.** Supersedes v1 (native generator, 2026-07-23, ~40 subjects at
+one case each) and the offline `data/base-agent-training-set.jsonl` (565 tasks) — see
+[Sourcing](#sourcing--provenance).
 **Owner.** The agent domain (#555). **Related:** #866 (synthesis) · #873 (the reshape epic) ·
 #878 (full-plan coverage) · #863 (the fine-tune that consumes it).
 
@@ -65,8 +69,44 @@ Grounded in the **solutions-discovery plan** (`solutions-designs/docs/plan/` —
 
 ## Composition
 
-One admission-gated case per subject: `{task {id, description, initial_state, tool_names,
-required}, reference, negative_controls}`, plus the derived reference `action` (#873).
+Each case is `{task {id, description, initial_state, tool_names, required}, reference,
+negative_controls}`, plus the reference `action` (#873) and the **`grounding`** the harness would
+have retrieved before that ask (#918). The grounding is half of a grounded-QA example: a corpus
+that dropped it would present "answer using ONLY these facts" followed by no facts, training the
+model to answer from priors — the exact fabrication this corpus exists to remove.
+
+### v2 — the interaction corpus (#918)
+
+The agent is harness code with a model attached, so the corpus is the recorded input/output of
+the interactions the harness runs. Full contract:
+[`../../interaction-contracts.md`](../../interaction-contracts.md).
+
+| Family | Mode | Cases | Graded on |
+|---|---|---|---|
+| `qa_results` | answer | 960 | numbers/entities ⊆ context, rank order |
+| `qa_data` | answer | 540 | same |
+| `platform` | answer | 720 | same (cluster, jobs, run failures) |
+| `capability_discovery` | answer | 102 | the capability exists in the supplied registry listing |
+| `abstain` | abstain | 186 | declined and built nothing |
+| `clarify` | clarify | 240 | exactly one question, built nothing |
+| `feature_engineering` | action | 1,080 | the gate; leakage-free + point-in-time preserved |
+| `code_in_node` | action | 1,200 | **executing** the generated Python/SQL |
+| `modify` | action | 900 | the gate; changed only what was asked |
+| `governance` | action + answer | 720 | the capability actually requested |
+
+Plus the plan subjects (churn, search, S-2…S-12, M-10…M-21, UC-13…24, DSC, AC, ABSTAIN).
+
+**Where the volume comes from.** A deterministic cross product of subjects × contexts × phrasings
+— no RNG, so the corpus is reproducible. The multiplier that matters is **context variation**:
+hold the question fixed and vary the retrieved facts, and the example becomes *unanswerable
+without reading them*. Trailing contexts are the canary, so a model that memorized answers rather
+than reading the supplied facts fails outright.
+
+**A required fact must be projectable.** `response_solution_facts` defines what a family may
+require — you cannot verify what you cannot check, and a corpus requiring unverifiable facts
+silently stops measuring anything. This is why abstention does not require `in_scope` (a property
+of the ask, not of the answer), and why governance is graded on the capability called rather than
+on prose claiming an approval happened.
 
 - **Coverage (native generator, verified via `generate_dataset base-agent`): 40 gated subjects,
   all admitted** — churn + search (hand-built rich graphs), the supervised solutions S-2…S-12,
@@ -94,8 +134,19 @@ required}, reference, negative_controls}`, plus the derived reference `action` (
 - **Fact vocabulary is a modeling choice.** The gate checks are our encoding of the plan's
   correctness profiles, not an external standard; they will evolve (a rubric change is a breaking
   dataset change — bump + re-report).
-- **Coverage is broad, not deep.** One-to-a-few variants per subject today; even variant counts +
-  the canary are the next polish (#878).
+- **Coverage is broad, and now deep on interactions but not on phrasing.** v2 (#918) fixed the
+  "one case per subject" problem — 6,793 cases across 10 interaction families with a real canary.
+  The remaining thinness is **paraphrase diversity**: asks are drawn from fixed template banks
+  (3–4 phrasings each), so the corpus teaches the interaction well and natural-language variety
+  less well. Deterministic template paraphrase is the ADR-17-clean way to widen it; the
+  LLM-assist mode (#877) is the alternative and needs credentials.
+- **Synthetic contexts, not customer data.** The grounded-QA contexts are generated Projects with
+  believable measures, drivers, and accounts — deliberately never a perfect measure, since AUC
+  1.000 reads as leakage to the technical buyer. They exercise the *shape* of real retrieval; a
+  per-customer fork (#853) regenerates them from the customer's own node.
+- **Code cases are graded on execution, but the executor is not yet wired into generation.** The
+  `code_in_node` family carries the language and the expected output column as facts; running the
+  emitted code as the reward is the RLVR step, not the SFT step.
 - **Historical offline corpus** was LLM-generated (OpenRouter) with heterogeneous fact tags (993
   distinct) — the native generator is deterministic + uniform by contrast.
 

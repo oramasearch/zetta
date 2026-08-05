@@ -214,9 +214,27 @@ level can be trusted — a stale card is worse than none.
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
 | **Generating RLVR training data / a task corpus** (from the solutions plan or a customer's data) | **native, in-Zetta**: the `DatasetGenerator` seam + factory (`generate_dataset` / `list_dataset_generators`; base-agent + Auto-Suggest; plan-grounded + admission-gated) → [`docs/dataset/`](docs/dataset/README.md) · the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
-| **The models + their corpora** — honest datasheets + model cards | [`docs/agent/cards/`](docs/agent/cards/README.md) — `models/` (base agent #555, Auto-Suggest #554) + `datasets/`; coverage: [`docs/agent/training-coverage-checklist.md`](docs/agent/training-coverage-checklist.md). **Update the card in the same change as a data/model change.** |
+| **The models + their corpora** — honest datasheets + model cards | [`docs/agent/cards/`](docs/agent/cards/README.md) — `models/` (base agent #555, Auto-Suggest #554) + `datasets/`; coverage: [`docs/agent/training-coverage-checklist.md`](docs/agent/training-coverage-checklist.md). **READ the card BEFORE changing or diagnosing a model** (see the rule below); **update it in the same change as a data/model change.** |
 | **Running the training** — generate the corpus, then fine-tune the base agent | the corpus: [`docs/agent/training-data-runbook.md`](docs/agent/training-data-runbook.md) → the fine-tune: [`docs/agent/training-runbook.md`](docs/agent/training-runbook.md) · the **native-ai-dev** skill · **every run writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
 | **Running the trained agent** — generate from user inputs + judge/grade the output | [`docs/agent/inference-runbook.md`](docs/agent/inference-runbook.md) · the **native-ai-dev** skill · **every eval writes a dated validation report to [`docs/reports/`](docs/reports/README.md)** |
+
+> **Read the model card + data card FIRST — before you change *or diagnose* a
+> model.** Any work that touches a model, its corpus, its prompts, its decode
+> path, or its serving surface — and any claim that the model "is broken",
+> "should be retrained", or "outputs the wrong thing" — starts by reading
+> [`docs/agent/cards/models/<model>.md`](docs/agent/cards/README.md) **and**
+> [`docs/agent/cards/datasets/<corpus>.md`](docs/agent/cards/README.md). The
+> cards state the **intended use, the out-of-scope uses, the trained output
+> shape, the known limitations, and the acceptance metrics**. Skipping them
+> produces confident, wrong diagnoses: **designed behavior gets reported as a
+> defect, and the fix proposed is a retrain that was never needed.** Concretely,
+> the base agent's card says it emits a `{message, tool_calls, execution_graph}`
+> **action** and is explicitly **"not a general chatbot"** — so raw JSON from it
+> is the contract being honored, not a bug, and the prose answer is already the
+> `message` field (`parse_studio_action`). Before proposing a corpus or weight
+> change, state which card section makes the current behavior wrong. **If the
+> answer is "none", the bug is in the calling code, not the model.** A model
+> whose card you have not read is a model you may not modify.
 
 > **Training / eval always produces a validation report.** Any training,
 > retraining, fine-tune, or evaluation run — of the base agent or a fork — MUST
@@ -556,8 +574,11 @@ the load-bearing rules:
   `docs/domain-restructure`, `feat/provisioner-detection-from-cli`). Commit and
   push the branch after any major, verified unit of work — don't leave finished
   work unpushed.
-- Reference issues by number (`#NNN`) within this repo, full URLs across repos;
-  don't auto-close (`fixes #N`) — issues stay open through validation.
+- Reference issues by number (`#NNN`) within this repo, full URLs across repos.
+  Never auto-close via keywords (`fixes #N` / `closes #N`). But **once you ship an
+  issue's code (landed/pushed to its PR), manually close that issue** with a
+  closing comment on what changed, and **leave the PR open for review** — solved
+  work must not clutter the tracker (umbrella `CLAUDE.md` → "Close shipped tickets").
 
 ### Documentation — update it with EVERY change (not optional)
 

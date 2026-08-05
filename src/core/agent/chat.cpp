@@ -1,6 +1,9 @@
 #include "zetta/agent/chat.hpp"
 
 #include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -9,8 +12,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/agent/action.hpp"
+#include "zetta/agent/base_prompt.hpp"
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/interaction.hpp"
 #include "zetta/agent/model_cache.hpp"
+#include "zetta/agent/inference_runner.hpp"
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 
@@ -19,6 +26,27 @@ namespace {
 
 constexpr std::string_view kOpen = "<tool_call>";
 constexpr std::string_view kClose = "</tool_call>";
+
+// A small process-wide tokenizer cache. Encode/decode need the tokenizer every
+// turn, but it is cheap next to the model — loading it separately lets the fast MLX
+// serving path skip loading the CPU autograd model entirely, avoiding a wasted second
+// full-checkpoint load on the first turn.
+std::shared_ptr<const zetta::tokenizer::BpeTokenizer> cached_tokenizer(
+    const std::string& path, std::string* error) {
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<const zetta::tokenizer::BpeTokenizer>> cache;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto found = cache.find(path);
+    if (found == cache.end()) {
+        std::optional<zetta::tokenizer::BpeTokenizer> loaded =
+            zetta::tokenizer::BpeTokenizer::from_directory(path, error);
+        if (!loaded) return nullptr;
+        found = cache.emplace(path, std::make_shared<const zetta::tokenizer::BpeTokenizer>(
+                                        std::move(*loaded)))
+                    .first;
+    }
+    return found->second;
+}
 
 std::optional<ToolCall> tool_call_from_json(const nlohmann::json& value) {
     if (!value.is_object()) return std::nullopt;
@@ -111,6 +139,9 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
             feedback["tool"] = call.tool;
             feedback["status"] = apply_status_word(outcome.status);
             if (!outcome.reason.empty()) feedback["detail"] = outcome.reason;
+            // A read tool answers with a value; give it back so the next round can
+            // reason over the node's real state instead of guessing (#904).
+            if (!outcome.data.is_null()) feedback["result"] = outcome.data;
             conversation += "<tool_result>" + feedback.dump() + "</tool_result>\n";
         }
     }
@@ -120,20 +151,58 @@ ChatResult run_chat_turn(const GenerateFn& generate, Sandbox& sandbox,
     return result;
 }
 
+std::string build_chat_prompt(const AgentRecord& agent, const std::string& message,
+                              const std::string& grounding,
+                              const std::vector<AgentToolSpec>& tool_specs) {
+    // The trained frame (#916/#918). `base_agent_system_prompt()` is baked into EVERY SFT example
+    // by `render_action_example`, and `render_interaction_prompt` is the renderer they share — so
+    // serving MUST frame the turn identically or the model is prompted off-distribution. It was
+    // not: this path prepended the record's own prompt (nothing in the serving path referenced
+    // the trained one at all) and appended "User:"/"Assistant:" turn labels that appear in ZERO
+    // training examples. That skew is a sufficient explanation for the raw-JSON replies, the
+    // ignored instructions, and the invented numbers, each of which had been getting patched as
+    // a separate defect.
+    const std::string_view system_prompt = agent.system_prompt.empty()
+                                               ? base_agent_system_prompt()
+                                               : std::string_view(agent.system_prompt);
+    // Everything the model needs rides INSIDE the ask, within the frame — never as foreign
+    // blocks wrapped around it. `grounding` is placed by the shared renderer itself.
+    std::string ask;
+    // Name the live tools and the call format, so the model can ask the node about its real
+    // state instead of guessing (#904). Omitted when none are wired, so a plain chat keeps the
+    // exact prompt it trained on.
+    if (!tool_specs.empty()) {
+        ask += "You can call these tools to read this node's real state:\n";
+        for (const AgentToolSpec& spec : tool_specs) {
+            ask += "- " + spec.name + ": " + spec.description + "\n";
+        }
+        ask +=
+            "To call one, emit <tool_call>{\"tool\": \"<name>\", \"arguments\": {…}}</tool_call> "
+            "and stop. The result comes back as <tool_result>; use it to answer.\n\n";
+    }
+    ask += message;
+    return render_interaction_prompt(system_prompt, grounding, ask);
+}
+
 ChatResponse respond(const AgentRecord& agent, const std::string& message,
-                     int max_new_tokens, int max_rounds) {
+                     int max_new_tokens, int max_rounds,
+                     const AgentToolRunner& tools,
+                     const std::vector<AgentToolSpec>& tool_specs,
+                     const std::string& grounding) {
     ChatResponse response;
     std::string error;
-    // The model is served from the process-wide cache, so a warm agent doesn't reload the
-    // multi-GB checkpoint on every turn (the #849 latency fix). First turn pays the load.
-    const std::shared_ptr<const LoadedModel> loaded =
-        ModelCache::instance().get(agent.model, &error);
-    if (!loaded) {
+    // The tokenizer is cheap and always needed (encode/decode); load it from a small
+    // process-wide cache. The multi-GB autograd model is NOT loaded here: when the fast
+    // MLX serving runner is installed it decodes without the CPU model, so we load that
+    // model lazily in `generate` below only as the fallback — avoiding a wasted second
+    // full-checkpoint load on the first turn.
+    const std::shared_ptr<const zetta::tokenizer::BpeTokenizer> tokenizer_handle =
+        cached_tokenizer(agent.model, &error);
+    if (!tokenizer_handle) {
         response.error = error;
         return response;
     }
-    const zetta::tokenizer::BpeTokenizer& tokenizer = loaded->tokenizer;
-    const zetta::autograd::QwenModel& model = loaded->model;
+    const zetta::tokenizer::BpeTokenizer& tokenizer = *tokenizer_handle;
 
     // The agent's tools, wired into a sandbox. Real graph-building effects are #859; for now
     // each records that it ran so the tool-calling loop closes end to end.
@@ -143,6 +212,21 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
             world.set("ran_" + tool, true);
             return ToolResult::success();
         });
+    }
+    // Live tools (#904): each runs through the embedding's runner, which the API
+    // layer binds to the capability registry under the CALLER's identity. These
+    // are registered after the recorded tools, so a live tool of the same name
+    // wins — a real result beats a marker.
+    if (tools) {
+        for (const AgentToolSpec& spec : tool_specs) {
+            const std::string name = spec.name;
+            sandbox.register_tool(name, [name, &tools](EndState& world,
+                                                       const nlohmann::json& arguments) {
+                ToolResult result = tools(name, arguments);
+                world.set("ran_" + name, true);
+                return result;
+            });
+        }
     }
 
     // The model's EOS id, so generation STOPS when an EOS-trained model emits it (a model
@@ -160,19 +244,37 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
         }
     }
 
-    // A fresh KV-cached inference per generation (independent decode), returning new text.
-    const auto generate = [&tokenizer, &model, max_new_tokens, eos_id](
+    // Decode: prefer the installed fast Metal-GPU runner (MlxQwenInference, #555) when
+    // the MLX build wired one in; fall back to the native autograd CPU inference. The
+    // fast path is gated to the same logits, so it returns the same greedy tokens —
+    // just ~6x faster on Apple Silicon (no per-op host<->device sync).
+    const std::string model_path = agent.model;
+    const auto generate = [&tokenizer, model_path, max_new_tokens, eos_id](
                               const std::string& prompt) -> std::string {
-        zetta::autograd::QwenInference inference(model);
-        return tokenizer.decode(
-            inference.generate_greedy(tokenizer.encode(prompt), max_new_tokens, eos_id));
+        const std::vector<int> prompt_tokens = tokenizer.encode(prompt);
+        if (has_qwen_inference_runner()) {
+            if (auto tokens = qwen_inference_runner()(model_path, prompt_tokens,
+                                                      max_new_tokens, eos_id)) {
+                return tokenizer.decode(*tokens);
+            }
+        }
+        // Fallback: load the CPU autograd model lazily (only when MLX didn't serve).
+        std::string load_error;
+        const std::shared_ptr<const LoadedModel> loaded =
+            ModelCache::instance().get(model_path, &load_error);
+        if (!loaded) return std::string();
+        return tokenizer.decode(zetta::autograd::QwenInference(loaded->model)
+                                    .generate_greedy(prompt_tokens, max_new_tokens, eos_id));
     };
 
-    std::string conversation;
-    if (!agent.system_prompt.empty()) conversation += agent.system_prompt + "\n\n";
-    conversation += "User: " + message + "\nAssistant:";
+    // One builder, shared with the contract test — see build_chat_prompt above. Live tool specs
+    // only enter the prompt when a runner is actually wired, so a plain chat keeps the exact
+    // prompt it trained on.
+    const std::string prompt =
+        build_chat_prompt(agent, message, grounding,
+                          tools ? tool_specs : std::vector<AgentToolSpec>{});
 
-    response.result = run_chat_turn(generate, sandbox, conversation, max_rounds);
+    response.result = run_chat_turn(generate, sandbox, prompt, max_rounds);
 
     std::string& reply = response.result.reply;
     // Strip the special stop/turn markers the decoder emits as literal text.
@@ -185,14 +287,39 @@ ChatResponse respond(const AgentRecord& agent, const std::string& message,
     // A pre-EOS checkpoint (no trained stop token) repeats the "Correct solution (facts): {...}"
     // block; keep only the first. (An EOS-trained checkpoint stops on its own — this is a
     // no-op there.)
+    // The "Correct solution (facts): {…}" block is the TRAINING target format, not an
+    // answer — nothing at serving time parses it, and it leaked verbatim through every
+    // surface (MCP, agent_run, and any client that did not know to trim it). Strip it
+    // here, once, so no caller has to know about it.
     constexpr std::string_view marker = "Correct solution (facts):";
-    const std::size_t first = reply.find(marker);
-    if (first != std::string::npos) {
-        const std::size_t second = reply.find(marker, first + marker.size());
-        if (second != std::string::npos) reply.erase(second);
+    if (const std::size_t first = reply.find(marker); first != std::string::npos) {
+        reply.erase(first);
+    }
+    // The model is TRAINED to emit exactly one action — {message, tool_calls, execution_graph}
+    // (render_action_example is the SFT target) — so the prose a user should read is
+    // `action.message` and the proposed Pipeline is `action.execution_graph`.
+    // `parse_studio_action`'s own header says it is "Used by agent::respond". It was not: the
+    // harness looked for <tool_call> tags, found none, concluded "the model answered", and
+    // assigned the raw envelope as the reply — which is exactly the JSON blob that reached the
+    // web app, MCP, and agent_run. Open the envelope instead of rendering it (#916). Assign
+    // unconditionally on a parse: an action with an empty message falls through to the
+    // fallback below, so the envelope is never what a user sees.
+    if (std::optional<StudioAction> action = parse_studio_action(reply)) {
+        reply = action->message;
+        response.action = std::move(action);
     }
     const std::size_t last = reply.find_last_not_of(" \t\r\n");
     reply.erase(last == std::string::npos ? 0 : last + 1);
+    // A generation that was ONLY the facts block leaves nothing behind. Say that
+    // plainly rather than returning a blank the caller has to guess at — an empty
+    // reply reads as a broken endpoint, which is the wrong diagnosis.
+    if (reply.empty()) {
+        reply = response.action
+                    ? "I put together a pipeline for that but didn't describe it. Open the "
+                      "Build tab to review the proposed Pipeline."
+                    : "The agent produced no readable answer to that. Try rephrasing, or ask "
+                      "about the Project's data, pipeline, or model.";
+    }
 
     response.ok = true;
     return response;

@@ -9,6 +9,16 @@
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/host_stub_device.hpp"
 
+// At FILE scope, not inside the anonymous namespace below: an #include inside a
+// namespace block nests the header's own `namespace zetta::compute` one level
+// deeper, so its unqualified references to ComputeDevice/DeviceInfo/ComputeStatus
+// stop resolving ("unknown class name 'ComputeDevice'; did you mean
+// '::zetta::compute::ComputeDevice'?"). Only a -DZETTA_ENABLE_CUDA=ON build
+// compiles this header, which is why the mistake stayed latent.
+#if defined(ZETTA_WITH_CUDA)
+#include "zetta/compute/cuda_device.hpp"
+#endif
+
 namespace {
 
 using zetta::compute::ComputeStatusCode;
@@ -182,8 +192,6 @@ TEST(ComputeDevice, StubReportsOperatorsUnsupported) {
 // host still passes; it exercises the real memory round-trip + one operator when
 // a GPU is available.
 #if defined(ZETTA_WITH_CUDA)
-
-#include "zetta/compute/cuda_device.hpp"
 
 TEST(CudaDevice, RoundTripAndOperatorsWhenPresent) {
     zetta::compute::CudaDevice device;

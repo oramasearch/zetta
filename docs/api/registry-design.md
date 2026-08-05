@@ -32,6 +32,17 @@ derives `GET /v1/<name>` (reads) and `POST /v1/<name>` (actions) plus the
 OpenAPI document from the same schemas; the command palette (#625) is the same
 list rendered for humans. **A capability added once appears everywhere.**
 
+**MCP ↔ REST parity is mandatory (Steve, 2026-07-25).** Every capability
+surfaces on **both** MCP (`tools/list` / `tools/call`) **and** REST (`/v1/<name>`)
+— there is **no** REST-only or MCP-only capability, and no per-capability
+"exclude from MCP" flag. This is by construction (both are thin renderings of the
+one registry) and it is a **requirement**, not just a consequence: when you add a
+capability for one surface (e.g. a UI's REST need), it is *intended* to be an MCP
+tool too. Do **not** add a mechanism to hold a capability back from MCP. (The
+`system.*` read views are reached through the `sql` capability, which is itself on
+both surfaces — same parity.) Per-**principal** scope still applies (a token only
+sees the tools it may call, #747); parity is about the *surface*, not authz.
+
 Naming: `snake_case`, verb-first for actions (`create_project`), noun-ish for
 reads (`server_info`, `list_runs`, `get_run`). No `zetta_` prefix — the server
 provides the namespace; MCP clients that aggregate servers already qualify by

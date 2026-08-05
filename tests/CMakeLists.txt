@@ -75,6 +75,8 @@ add_executable(zetta-tests
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
   ml/test_model.cpp
+  workspace/test_workspace_profile.cpp
+  billing/test_plan.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
@@ -141,11 +143,13 @@ add_executable(zetta-tests
   compute/test_compute_device.cpp
   compute/test_cpu_device.cpp
   compute/test_cuda_device.cpp
+  compute/test_cuda_transformer.cpp
   compute/test_device_registry.cpp
   data/test_large_object.cpp
   data/test_import.cpp
   data/test_add_dataset.cpp
   connect/test_connector.cpp
+  connect/test_postgres_connector.cpp
   connect/test_connection_store.cpp
   connect/test_distributed_fetch.cpp
   connect/test_distributed_ingest.cpp
@@ -180,6 +184,8 @@ add_executable(zetta-tests
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
   agent/test_action.cpp
+  agent/test_interaction_contract.cpp
+  agent/test_sft_device_agnostic.cpp
   agent/test_solution_graph.cpp
   dataset/test_dataset_generator.cpp
   agent/test_agent_record.cpp
