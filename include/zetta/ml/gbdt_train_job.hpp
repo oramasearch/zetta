@@ -113,6 +113,21 @@ struct DistributedTrainResult {
     // only when a TrainCheckpointConfig store held a checkpoint for this job.
     std::uint64_t resumed_from_round = 0;
 
+    // Metrics over rows NO node trained on, when `params.holdout_fraction` asked
+    // for a holdout (#953). This is the figure that describes behavior on a row
+    // the model has never seen; `metrics` above is in-sample and flatters. Read
+    // them together — the gap between the two is the overfitting signal.
+    //
+    // Appended at the END deliberately: fields inserted mid-struct break anything
+    // that initializes this positionally.
+    GbdtMetrics held_out;
+    // Whether `held_out` was measured. Absent and zero must not read alike.
+    bool has_held_out = false;
+    // Cluster-wide row counts behind the two figures above, so a reader can tell
+    // a held-out AUC over 4,500 rows from one over 12.
+    std::uint64_t train_rows = 0;
+    std::uint64_t held_out_rows = 0;
+
     bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 

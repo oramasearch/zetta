@@ -238,17 +238,22 @@ level can be trusted — a stale card is worse than none.
 > answer is "none", the bug is in the calling code, not the model.** A model
 > whose card you have not read is a model you may not modify.
 
-> **NEVER publish an in-sample metric as a result.** `GbdtTrainResult.metrics` — AUC,
-> accuracy, log-loss — is computed over **the rows the model trained on**: `run_train_job`
-> has each node score its own local rows and gathers the pairs, and there is no train/
-> validation split anywhere in the training path (the one the engine knows about exists
-> only for *calibration*). Those metrics are written onto the Model record and surfaced as
-> "model quality" by `system.models`, `get_model`, the chat agent's grounding and the GUI —
-> so **every one of those is showing a training-set score.** A held-out figure must be
-> measured separately (see `tests/usecases/churn/test_motive_demo_dataset.cpp`), reported
-> beside the in-sample one, and quoted first; the GAP between them is the overfitting
-> signal and is only readable when both are present. This already reached a committed
-> report once ([#953](https://github.com/oramasearch/zetta/issues/953)).
+> **NEVER publish an in-sample metric as a result.** A run's default metrics — AUC,
+> accuracy, log-loss — are computed over **the rows the model trained on**, and they are
+> what `system.models`, `get_model`, the chat agent's grounding and the GUI all label
+> "model quality". An in-sample AUC of 0.868 reached a client-facing report as the
+> headline figure; the held-out figure for the same run was 0.726.
+>
+> **Ask for a holdout: set `holdout_fraction` (on `run`, or on `GbdtParams` directly).**
+> The run then reports both, and the Model's `metrics` carries `in_sample_*` and
+> `held_out_*` keys naming what each figure was measured on — see
+> [`docs/ml/held-out-metrics.md`](docs/ml/held-out-metrics.md) (#953). **Presence of
+> `held_out_auc` is the signal**: when it is there, quote it first and state what it was
+> measured on; when it is absent no holdout was asked for and the only number available
+> is the flattering one. The GAP between the two is the overfitting signal and is only
+> readable when both are present, so never report one alone. Every value in `metrics`
+> must be a **number** — the entity schema rejects anything else at the *receiving* peer,
+> so the model registers on the root and then fails to materialize on the cluster.
 >
 > **Training / eval always produces a validation report.** Any training,
 > retraining, fine-tune, or evaluation run — of the base agent or a fork — MUST

@@ -1,5 +1,6 @@
 #include "zetta/ml/gbdt_train_job.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -156,23 +157,45 @@ DistributedTrainResult run_train_job(
         std::vector<double> train_labels;
         std::vector<std::vector<double>> holdout_columns;
         std::vector<double> holdout_labels;
-        if (calibration.enabled) {
+        // Rows held out to MEASURE the model (#953), kept disjoint from the
+        // calibration holdout: a row that fit the calibration has influenced the
+        // model's probabilities and is therefore not an unseen row.
+        std::vector<std::vector<double>> eval_columns;
+        std::vector<double> eval_labels;
+        const bool wants_eval_holdout = params.holdout_fraction > 0.0;
+        const bool splitting = calibration.enabled || wants_eval_holdout;
+        if (splitting) {
             train_columns.assign(feature_columns.size(), {});
             holdout_columns.assign(feature_columns.size(), {});
+            eval_columns.assign(feature_columns.size(), {});
             for (std::size_t r = 0; r < shard_rows; ++r) {
-                const bool hold = row_is_holdout(columns, r, labels[r],
-                                                 calibration.holdout_fraction);
+                // Evaluation is decided first and wins, so the measured set is the
+                // same rows whether or not calibration is on.
+                const bool evaluate =
+                    wants_eval_holdout &&
+                    row_is_holdout(columns, r, labels[r], params.holdout_fraction);
+                // The hash input is unchanged from what calibration has always
+                // used. Disjointness comes from `!evaluate`; perturbing the input
+                // would change WHICH rows calibrate, and so the calibrated
+                // probabilities, for every run that never asked for an evaluation
+                // holdout.
+                const bool calibrate =
+                    !evaluate && calibration.enabled &&
+                    row_is_holdout(columns, r, labels[r], calibration.holdout_fraction);
+                std::vector<std::vector<double>>& into =
+                    evaluate ? eval_columns
+                             : (calibrate ? holdout_columns : train_columns);
                 for (std::size_t f = 0; f < feature_columns.size(); ++f) {
-                    (hold ? holdout_columns : train_columns)[f].push_back(
-                        columns[f][r]);
+                    into[f].push_back(columns[f][r]);
                 }
-                (hold ? holdout_labels : train_labels).push_back(labels[r]);
+                (evaluate ? eval_labels
+                          : (calibrate ? holdout_labels : train_labels))
+                    .push_back(labels[r]);
             }
         }
         const std::vector<std::vector<double>>& fit_columns =
-            calibration.enabled ? train_columns : columns;
-        const std::vector<double>& fit_labels =
-            calibration.enabled ? train_labels : labels;
+            splitting ? train_columns : columns;
+        const std::vector<double>& fit_labels = splitting ? train_labels : labels;
 
         // 2. Train, combining per-node statistics across the cluster via the
         // round's allreduce (the same boosting loop the single-node path runs).
@@ -304,20 +327,47 @@ DistributedTrainResult run_train_job(
             }
         }
 
-        // 3. Global metrics: each node scores its local rows, the (prob, label)
-        // pairs are gathered to the root, evaluated once over the union, and the
-        // three scalars broadcast back — so every node ends with identical metrics.
-        const std::size_t local_rows = labels.size();
+        // 3. Global metrics: each node scores the rows it fit — plus any it held
+        // out — the (prob, label) pairs are gathered to the root, evaluated once
+        // over the union, and the scalars broadcast back, so every node ends with
+        // identical metrics.
+        //
+        // Both sets of pairs ride THIS ONE gather, length-prefixed (#953). The
+        // obvious shape — a second gather/broadcast guarded by
+        // `wants_eval_holdout` — is a hang waiting to happen: a node that
+        // disagreed about whether a holdout was asked for would sit in a
+        // collective its peers never enter, and the run would block until the
+        // timeout with no error naming the cause. One unconditional collective
+        // cannot desync, whatever any node believes about the parameter.
+        const auto score_rows_of =
+            [&](const std::vector<std::vector<double>>& cols,
+                const std::vector<double>& target, std::vector<double>& into) {
+                std::vector<double> row(feature_columns.size());
+                for (std::size_t r = 0; r < target.size(); ++r) {
+                    for (std::size_t f = 0; f < feature_columns.size(); ++f) {
+                        row[f] = cols[f][r];
+                    }
+                    into.push_back(out.model.predict_proba(row));
+                    into.push_back(target[r]);
+                }
+            };
+
+        // In-sample is scored over the rows the trees were FIT on — not over every
+        // local row. With no holdout of either kind those are the same set and the
+        // numbers are unchanged; once rows are held back, scoring them under the
+        // name "in sample" would make the label false and quietly mix the two
+        // populations the whole distinction exists to keep apart.
+        //
+        // A consequence worth knowing: with calibration on, train_rows +
+        // held_out_rows is LESS than the row count, because the calibration
+        // holdout fit neither the trees nor the evaluation.
         std::vector<double> pairs;
-        pairs.reserve(local_rows * 2);
-        std::vector<double> row(feature_columns.size());
-        for (std::size_t r = 0; r < local_rows; ++r) {
-            for (std::size_t f = 0; f < feature_columns.size(); ++f) {
-                row[f] = columns[f][r];
-            }
-            pairs.push_back(out.model.predict_proba(row));
-            pairs.push_back(labels[r]);
-        }
+        pairs.reserve(fit_labels.size() * 2 + 1);
+        pairs.push_back(0.0);  // placeholder: count of in-sample doubles
+        score_rows_of(fit_columns, fit_labels, pairs);
+        pairs[0] = static_cast<double>(pairs.size() - 1);
+        score_rows_of(eval_columns, eval_labels, pairs);
+
         const std::optional<std::vector<std::vector<double>>> gathered =
             round.gather(tag + ".metrics.gather", pairs, timeout);
         if (!gathered) {
@@ -325,26 +375,53 @@ DistributedTrainResult run_train_job(
         }
         std::vector<double> metric_wire;
         if (!gathered->empty()) {  // the root holds every node's pairs
-            std::vector<double> probabilities;
-            std::vector<double> targets;
+            std::vector<double> probabilities, targets;
+            std::vector<double> held_probabilities, held_targets;
             for (const std::vector<double>& node_pairs : *gathered) {
-                for (std::size_t i = 0; i + 1 < node_pairs.size(); i += 2) {
-                    probabilities.push_back(node_pairs[i]);
-                    targets.push_back(node_pairs[i + 1]);
+                if (node_pairs.empty()) continue;
+                // Clamp rather than trust: the split index came off the wire, and
+                // a bad one would otherwise index past the end.
+                const std::size_t split = std::min<std::size_t>(
+                    static_cast<std::size_t>(std::max(0.0, node_pairs[0])),
+                    node_pairs.size() - 1);
+                for (std::size_t i = 1; i + 1 < node_pairs.size(); i += 2) {
+                    const bool held = i > split;
+                    (held ? held_probabilities : probabilities)
+                        .push_back(node_pairs[i]);
+                    (held ? held_targets : targets).push_back(node_pairs[i + 1]);
                 }
             }
-            const GbdtMetrics metrics =
-                evaluate_binary(probabilities, targets);
-            metric_wire = {metrics.auc, metrics.log_loss, metrics.accuracy};
+            const GbdtMetrics metrics = evaluate_binary(probabilities, targets);
+            // An empty holdout is reported as absent, never as zeros — a zeroed
+            // AUC reads as a model that ranks backwards.
+            const bool measured = !held_targets.empty();
+            const GbdtMetrics held =
+                measured ? evaluate_binary(held_probabilities, held_targets)
+                         : GbdtMetrics{};
+            metric_wire = {metrics.auc,
+                           metrics.log_loss,
+                           metrics.accuracy,
+                           measured ? 1.0 : 0.0,
+                           held.auc,
+                           held.log_loss,
+                           held.accuracy,
+                           static_cast<double>(targets.size()),
+                           static_cast<double>(held_targets.size())};
         }
         const std::optional<std::vector<double>> result_wire =
             round.broadcast(tag + ".metrics.result", metric_wire, timeout);
-        if (!result_wire || result_wire->size() != 3) {
+        if (!result_wire || result_wire->size() != 9) {
             return {.ok = false, .detail = "gbdt metrics: broadcast failed"};
         }
         out.metrics.auc = (*result_wire)[0];
         out.metrics.log_loss = (*result_wire)[1];
         out.metrics.accuracy = (*result_wire)[2];
+        out.has_held_out = (*result_wire)[3] != 0.0;
+        out.held_out.auc = (*result_wire)[4];
+        out.held_out.log_loss = (*result_wire)[5];
+        out.held_out.accuracy = (*result_wire)[6];
+        out.train_rows = static_cast<std::uint64_t>((*result_wire)[7]);
+        out.held_out_rows = static_cast<std::uint64_t>((*result_wire)[8]);
 
         return {.ok = true,
                 .detail = "gbdt over " +
@@ -377,7 +454,35 @@ DistributedTrainResult run_train_job(
         value.feature_schema = {{"objective", "binary_logistic"},
                                 {"features", feature_columns},
                                 {"drivers", std::move(drivers)}};
-        value.metrics = out.metrics.to_json();
+        // The Model's `metrics` is what `system.models`, `get_model`, the chat
+        // agent and the GUI all call "model quality" — and until #953 the three
+        // numbers in it were measured on the rows the model trained on, with
+        // nothing saying so. The legacy top-level keys stay put (every existing
+        // model record has them, and they always meant in-sample); alongside them
+        // go prefixed keys that NAME what each figure was measured on.
+        //
+        // **Every value here must be a number.** `model_schema()` declares
+        // `metrics` as `additionalProperties: {type: number}`, so a nested object
+        // or a string flag is rejected — and rejected at the RECEIVING peer, which
+        // means the root registers the model, replication carries it, and it then
+        // fails to materialize anywhere else. The symptom is a model that "does
+        // not resolve on every member", nowhere near the code that wrote it.
+        //
+        // Which figure to quote is therefore answered by PRESENCE: when
+        // `held_out_auc` is here, that is the one. When it is absent no holdout
+        // was asked for, and the only numbers available are the flattering ones.
+        nlohmann::json metrics = out.metrics.to_json();
+        metrics["in_sample_auc"] = out.metrics.auc;
+        metrics["in_sample_log_loss"] = out.metrics.log_loss;
+        metrics["in_sample_accuracy"] = out.metrics.accuracy;
+        metrics["in_sample_rows"] = out.train_rows;
+        if (out.has_held_out) {
+            metrics["held_out_auc"] = out.held_out.auc;
+            metrics["held_out_log_loss"] = out.held_out.log_loss;
+            metrics["held_out_accuracy"] = out.held_out.accuracy;
+            metrics["held_out_rows"] = out.held_out_rows;
+        }
+        value.metrics = std::move(metrics);
         // Node-tree write: gated onto the owner thread (#624), so a train job
         // driven from a background-action worker registers the Model safely.
         std::shared_ptr<Model> model;

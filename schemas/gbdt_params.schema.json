@@ -3,6 +3,11 @@
   "additionalProperties": false,
   "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic). All fields are optional; an omitted field takes its default.",
   "properties": {
+    "holdout_fraction": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
     "l2_regularization": {
       "minimum": 0,
       "type": "number"

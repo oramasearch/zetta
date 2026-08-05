@@ -243,7 +243,8 @@ nlohmann::json GbdtParams::to_json() const {
                           {"learning_rate", learning_rate},
                           {"l2_regularization", l2_regularization},
                           {"min_split_gain", min_split_gain},
-                          {"min_child_hessian", min_child_hessian}};
+                          {"min_child_hessian", min_child_hessian},
+                          {"holdout_fraction", holdout_fraction}};
 }
 
 std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
@@ -251,7 +252,7 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     static const char* known[] = {"num_trees",         "max_depth",
                                   "max_bins",          "learning_rate",
                                   "l2_regularization", "min_split_gain",
-                                  "min_child_hessian"};
+                                  "min_child_hessian", "holdout_fraction"};
     for (const auto& [key, _] : value.items()) {
         bool recognized = false;
         for (const char* name : known) {
@@ -279,6 +280,11 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     if (!read_number(value, "min_child_hessian", params.min_child_hessian, 0.0,
                      false))
         return std::nullopt;
+    // Not exclusive: 0 is the default and means "no holdout". read_number's last
+    // argument is an exclusive-minimum BOOL, not a maximum — passing a number there
+    // reads as true and rejects the default.
+    if (!read_number(value, "holdout_fraction", params.holdout_fraction, 0.0, false))
+        return std::nullopt;
     return params;
 }
 
@@ -299,7 +305,8 @@ const nlohmann::json& gbdt_params_schema() {
     "learning_rate": { "type": "number", "exclusiveMinimum": 0 },
     "l2_regularization": { "type": "number", "minimum": 0 },
     "min_split_gain": { "type": "number", "minimum": 0 },
-    "min_child_hessian": { "type": "number", "minimum": 0 }
+    "min_child_hessian": { "type": "number", "minimum": 0 },
+    "holdout_fraction": { "type": "number", "minimum": 0, "maximum": 1 }
   },
   "additionalProperties": false
 }

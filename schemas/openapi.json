@@ -7984,6 +7984,12 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "holdout_fraction": {
+                    "description": "hold this fraction of rows OUT of training and measure the model on them separately (e.g. 0.3). Without it the run's only metrics are in-sample — scored on the rows it trained on — and flatter",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
