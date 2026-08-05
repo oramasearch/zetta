@@ -43,13 +43,15 @@ namespace zetta::compute {
 enum class DeviceKind {
     Cpu,
     Cuda,
+    Mlx,   // Apple-Silicon GPU via MLX (Metal); the default accelerator on macOS
 };
 
-// The lowercase canonical name of a device kind ("cpu", "cuda").
+// The lowercase canonical name of a device kind ("cpu", "cuda", "mlx").
 constexpr std::string_view to_string(DeviceKind kind) {
     switch (kind) {
         case DeviceKind::Cpu:  return "cpu";
         case DeviceKind::Cuda: return "cuda";
+        case DeviceKind::Mlx:  return "mlx";
     }
     return "unknown";
 }

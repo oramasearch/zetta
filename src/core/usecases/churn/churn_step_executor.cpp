@@ -12,6 +12,8 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/featurize_job.hpp"
+#include "zetta/ddf/local_partitions.hpp"
+#include "zetta/storage/json_store.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_backend.hpp"
@@ -22,11 +24,20 @@
 #include "zetta/ml/gbdt_explain_job.hpp"
 #include "zetta/ml/gbdt_score_job.hpp"
 #include "zetta/ml/gbdt_train_job.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/storage/engine.hpp"
 
 namespace zetta::usecases::churn {
+namespace {
+// Where a churn run publishes its at-risk list so SQL, Studio, and the agent can
+// read it (#915). One database for every churn pipeline's results; the per-pipeline
+// table inside it is replaced on each run.
+constexpr const char* kChurnResultsDatabase = "churn_results";
+}  // namespace
+
 namespace {
 
 // A short, human-readable label for a step: its name, else its (UUID) id — the
@@ -122,13 +133,20 @@ ChurnStepExecutor::~ChurnStepExecutor() = default;
 
 bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
     State& state = *state_;
+    const bool from_table = !config_.accounts_table.empty();
     if (!state.events_loaded) {
-        if (config_.events_store == nullptr) {
+        if (config_.events_store == nullptr && !from_table) {
             error = "no events shard configured";
             return false;
         }
-        auto loaded = ddf::load_data_frame(*config_.events_store,
-                                           config_.events_schema, device_);
+        // A connector-landed table is one already-featurized row per entity, so
+        // there is no events shard to pair it with. An EMPTY events frame is the
+        // honest input for static carry-through mode — not an error, and not a
+        // reason to skip the load and leave the frame uninitialized.
+        static const zetta::storage::JsonStore kNoEvents;
+        const zetta::storage::StorageEngine& events =
+            config_.events_store != nullptr ? *config_.events_store : kNoEvents;
+        auto loaded = ddf::load_data_frame(events, config_.events_schema, device_);
         if (!loaded.ok()) {
             error = "load events to DDF: " + loaded.status.message;
             return false;
@@ -137,6 +155,31 @@ bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
         state.events_loaded = true;
     }
     if (!state.accounts_loaded) {
+        if (from_table) {
+            // Compute-near-data (#947): only the partition bodies this node
+            // physically holds, read from local disk. On a multi-node cluster each
+            // participant loads a different, disjoint shard — which is the point.
+            //
+            // **Gated onto the owner thread (#624).** This reads the partition
+            // catalog and the blob store off the Node tree, which is owner-thread
+            // only, and a churn run driven through AsyncChurnRun executes on a
+            // worker. Calling it directly deadlocks the node — an in-process test
+            // that runs the pipeline on the owner thread never sees it, and the
+            // deployed API path hangs every time.
+            ddf::LocalShardResult shard;
+            node_.run_on_owner([&] {
+                shard = ddf::load_local_partitions(node_, config_.accounts_table,
+                                                   config_.accounts_schema, device_);
+            });
+            if (!shard.ok()) {
+                error = "load '" + config_.accounts_table +
+                        "' partitions to DDF: " + shard.status.message;
+                return false;
+            }
+            state.accounts = std::move(shard.frame);
+            state.accounts_loaded = true;
+            return true;
+        }
         if (config_.accounts_store == nullptr) {
             error = "no accounts shard configured";
             return false;
@@ -204,8 +247,18 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
     // near-data composition's slice step), so a coordinated multi-node run
     // (#601) counts every entity exactly once. On a single node the shard IS
     // the whole table, so this is the identity there.
+    //
+    // The shard is read from the LOADED FRAME, not from the store: a table-backed
+    // run (#947) has no store at all — its accounts came from this node's owned
+    // partitions — and slicing against an empty set drops every row, which surfaces
+    // much later and much less legibly as "no training rows".
     std::unordered_set<std::int64_t> local_entities;
-    if (config_.accounts_store != nullptr) {
+    if (std::vector<std::int64_t> entities(state.accounts.row_count());
+        state.accounts.row_count() > 0 &&
+        state.accounts.to_host<std::int64_t>(config_.entity_column, entities).ok()) {
+        local_entities.insert(entities.begin(), entities.end());
+    }
+    if (local_entities.empty() && config_.accounts_store != nullptr) {
         for (std::size_t row = 0; row < config_.accounts_store->size(); ++row) {
             const zetta::storage::ParquetLazyPtr account =
                 config_.accounts_store->at(row);
@@ -414,9 +467,41 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         state.playbook.push_back(std::move(action));
     }
 
+    // Materialize the at-risk list as a REAL queryable table (#915). The pipeline
+    // computed the thing the whole use case exists for — who is most likely to churn
+    // and why — and it used to live only in this executor's memory, so SQL, the
+    // Studio Results tab, and the agent could not read it back. It is now a table in
+    // `churn_results`, named per pipeline and replaced on each run (a run supersedes
+    // its predecessor; keeping every run's copy would just accumulate stale lists).
+    std::string at_risk_table;
+    node_.run_on_owner([&] {
+        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
+        if (!database) database = node_.create_database(kChurnResultsDatabase);
+        if (!database) return;
+        const std::string name =
+            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
+                                                : config_.graph.substr(0, 8));
+        database->drop_table(name);  // replace the previous run's list
+        std::shared_ptr<data::Table> table = database->create_table(name);
+        if (!table) return;
+        std::size_t position = 0;
+        for (const RetentionAction& action : state.playbook) {
+            ++position;
+            table->add_row({{"rank", position},
+                            {"account", action.entity},
+                            {"risk", action.risk},
+                            {"dominant_driver", action.dominant_driver},
+                            {"driver_effect", action.dominant_value}});
+        }
+        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+    });
+
     zetta::pipeline::StepOutcome outcome;
+    // Point the run's output at the table when we managed to write one, so `get_run`
+    // names something a caller can actually SELECT from.
     outcome.outputs.push_back(zetta::pipeline::RunOutput{
-        "dataset", step_label(step), "playbook:" + step.id});
+        "dataset", step_label(step),
+        at_risk_table.empty() ? ("playbook:" + step.id) : at_risk_table});
     return outcome;
 }
 

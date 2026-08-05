@@ -1,0 +1,74 @@
+digraph AIProjectSystem {
+  rankdir=TB;
+  node [shape=box, style=rounded];
+
+  ContextSnapshot -> ProjectAdvisor;
+  ProjectAdvisor -> ProjectBrief;
+  ProjectBrief -> AIProject;
+
+  AIProject -> ProjectPolicy;
+  AIProject -> ProjectKnowledgeBase;
+  AIProject -> ProjectImprovementFramework;
+  AIProject -> ModelWorkspace;
+
+  ProjectImprovementFramework -> CrossWorkspacePatterns;
+  ProjectImprovementFramework -> PortfolioRecommendations;
+  ProjectImprovementFramework -> AdvisorFeedbackLoop;
+  AdvisorFeedbackLoop -> ContextSnapshot [style=dashed, label="feedback"];
+
+  ModelWorkspace -> ExperimentTracker;
+  ModelWorkspace -> ModelRegistry;
+  ModelWorkspace -> TrainingFramework;
+  ModelWorkspace -> DeploymentFramework;
+  ModelWorkspace -> MonitoringFramework;
+  ModelWorkspace -> ModelImprovementFramework;
+
+  TrainingFramework -> ModelDesignFramework;
+  TrainingFramework -> AgentHarnessDesignFramework;
+  TrainingFramework -> DatasetFramework;
+  TrainingFramework -> EvaluationFramework;
+  TrainingFramework -> Run;
+
+  ModelDesignFramework -> ArchitectureSpec;
+  ModelDesignFramework -> LearningObjective;
+  ModelDesignFramework -> TrainingRegimen;
+  ModelDesignFramework -> OptimizationConfig;
+  ModelDesignFramework -> RewardPolicyDesign;
+
+  AgentHarnessDesignFramework -> ToolRegistry;
+  AgentHarnessDesignFramework -> OrchestrationPolicy;
+  AgentHarnessDesignFramework -> MemoryDesign;
+  AgentHarnessDesignFramework -> GuardrailPolicy;
+  AgentHarnessDesignFramework -> InteractionContract;
+
+  DatasetFramework -> SourcingPlan;
+  DatasetFramework -> PreparationPipeline;
+  DatasetFramework -> SplitPolicy;
+  DatasetFramework -> DatasetCard;
+
+  EvaluationFramework -> BenchmarkSet;
+  EvaluationFramework -> EvalSuite;
+  EvaluationFramework -> VerifierRegistry;
+
+  RewardPolicyDesign -> VerifierRegistry [style=dashed, label="reuses"];
+
+  Run -> ModelArtifact;
+  Run -> RunReport;
+  Run -> EnvironmentSnapshot;
+
+  ModelRegistry -> ModelArtifact [style=dashed, label="promotes"];
+
+  DeploymentFramework -> RolloutPolicy;
+  DeploymentFramework -> ServingConfig;
+
+  MonitoringFramework -> DriftDetector;
+  MonitoringFramework -> FeedbackCollector;
+
+  ModelImprovementFramework -> DegradationDiagnosis;
+  ModelImprovementFramework -> ImprovementCandidates;
+  ModelImprovementFramework -> PriorityImpactEstimate;
+  ModelImprovementFramework -> TriggerPolicy;
+
+  FeedbackCollector -> ModelImprovementFramework [style=dashed, label="signals"];
+  TriggerPolicy -> Run [style=dashed, label="spawns new"];
+}

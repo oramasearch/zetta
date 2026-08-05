@@ -19,3 +19,6 @@
 [submodule "modules/beast2"]
 	path = modules/beast2
 	url = https://github.com/cppalliance/beast2
+[submodule "modules/libpqxx"]
+	path = modules/libpqxx
+	url = https://github.com/jtv/libpqxx.git

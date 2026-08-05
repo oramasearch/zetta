@@ -28,7 +28,7 @@ install_macos() {
     # openssl@3 — REQUIRED: inter-node mTLS (Corosio's TLS provider) + node
     #             identity minting (CTL-2, docs/cluster/security.md)
     # cmake/ninja/ccache — build system + compiler cache
-    brew install cmake ninja llvm openssl@3 ccache
+    brew install cmake ninja llvm openssl@3 ccache libpq
     note "Done. zetta builds with Homebrew Clang automatically (no PATH change needed)."
 }
 
@@ -38,7 +38,7 @@ install_ubuntu() {
     sudo apt-get install -y \
         build-essential cmake ninja-build git ccache \
         clang lld \
-        zlib1g-dev libssl-dev \
+        zlib1g-dev libssl-dev libpq-dev \
         libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
         libxfixes-dev libxkbcommon-dev libwayland-dev wayland-protocols \
         libgl1-mesa-dev libegl1-mesa-dev libdbus-1-dev libudev-dev \

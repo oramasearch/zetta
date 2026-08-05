@@ -14,8 +14,14 @@ clustered, featurizable zetta dataset with no manual export
 Follow the **zetta-dev** skill for all coding conventions while doing this, and
 **api-dev** when you get to the capability surface.
 
-Read [`docs/data/connector-query.md`](../../../docs/data/connector-query.md) before you
-start — it is the shipped design this skill operationalizes.
+**Start from the practice:** [`docs/data/adding-a-connector.md`](../../../docs/data/adding-a-connector.md)
+is the end-to-end method — **research** the source with a Perplexity deep-dive
+(the **`perplexity`** skill) into a connector-skill doc, **decide the transport**
+(HTTP+SQL API vs a wire-protocol driver — the ADR-17 gate), then **build** with
+this skill. Snowflake (HTTP API) and Postgres (libpqxx driver, coroutine-wrapped
+via `runtime::offload`, a sanctioned ADR-17 exception) are the two worked
+examples. Read [`docs/data/connector-query.md`](../../../docs/data/connector-query.md)
+too — it is the shipped design this skill operationalizes.
 
 ## Core principle: produce rows, nothing else
 

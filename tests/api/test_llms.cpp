@@ -299,7 +299,7 @@ TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     node.stop();
 }
 
-TEST(LlmsHttpAuth, ConfiguredTokenGatesTheLlmsPagesToo) {
+TEST(LlmsHttpAuth, LlmsPagesArePublicDiscoveryDocs) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
@@ -327,7 +327,10 @@ TEST(LlmsHttpAuth, ConfiguredTokenGatesTheLlmsPagesToo) {
     }
     client.join();
 
-    EXPECT_NE(denied.find("401"), std::string::npos);
+    // /llms.txt is a PUBLIC discovery doc — registered before the auth gate so
+    // a no-MCP agent can orient without credentials; it serves identically with
+    // and without a token.
+    EXPECT_NE(denied.find("200"), std::string::npos);
     EXPECT_NE(allowed.find("200"), std::string::npos);
     EXPECT_NE(allowed.find("`server_info`"), std::string::npos);
 

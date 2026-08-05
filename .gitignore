@@ -46,3 +46,39 @@ compile_commands.json
 
 # Node data directory (default data_dir; UUID-named db/table folders + JSONL)
 /zetta-data/
+
+# Python tooling (scripts/ generators; run via `uv run` — deps are PEP 723 inline)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Generated training-data corpus (docs/agent/training-data-runbook.md). Root-level outputs
+# are SCRATCH — ignored; the tracked, committed corpora live in data/ (see data/README.md).
+# Root-anchored so both data/*.jsonl and the test fixtures (tests/fixtures/*.jsonl) stay tracked.
+/corpus.jsonl
+/corpus*.jsonl
+
+/autosuggest.jsonl
+/autosuggest*.jsonl
+
+# Trained checkpoints — large (~GBs); kept local and pushed to a private HF model repo,
+# never committed. The training-metrics log lives alongside (data/checkpoints/*/train.log).
+/data/checkpoints/
+# Training corpora live on the Hub, NOT in git and NOT merely regenerated.
+#
+#   https://huggingface.co/datasets/OramaSearch/base-agent-interaction-corpus  (private)
+#
+# They were ignored on the grounds of being "reproducible from the native generator". That is false
+# the moment the generator changes — and it changed a dozen times in a day, so regenerating from a
+# later commit yields a DIFFERENT corpus. A checkpoint whose corpus was not kept cannot be
+# reproduced, audited, or compared against: the corpus is the provenance of the model. At ~40 MB a
+# version it does not belong in git history either, so it is versioned on the Hub instead.
+#
+# Publish a new version with `hf upload` (see docs/agent/training-agents-runbook.md).
+data/corpora/
+data/sft-logs/
+
+# Generated demo datasets — reproducible from scripts/gen_motive_demo_dataset.py
+# (the generator + manifest are tracked; the rows are not — 80 MB of CSV).
+data/demo/*
+!data/demo/README.md

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- Theme: set data-theme before first paint so there is no flash. Mirrors
+         src/lib/theme.ts (persisted override wins, else OS preference). Only the
+         storage read is guarded — data-theme is always set, so OS-light visitors
+         of token-layer pages never get a dark->light flash after hydration.
+         color-scheme is intentionally NOT set globally (legacy routes stay light
+         for dark-OS visitors); token-layer pages set it on their own root. -->
+    <script>
+      (function () {
+        var stored = null;
+        try { stored = localStorage.getItem("orama-theme"); } catch (e) { /* storage blocked */ }
+        var theme = (stored === "light" || stored === "dark")
+          ? stored
+          : (window.matchMedia
+              ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+              : "dark");
+        document.documentElement.setAttribute("data-theme", theme);
+
+        /* design-preview skin: URL param wins, then the stored choice.
+           "original" = no attribute = the untouched site. A URL-won skin is
+           written back to storage so Back/forward and the next navigation
+           agree instead of silently flip-flopping. */
+        var urlSkin = null;
+        try { urlSkin = new URLSearchParams(window.location.search).get("skin"); } catch (e) {}
+        var valid = function (s) { return s === "original" || /^option-(a2|b2|d2|[a-e])$/.test(s); };
+        var skin = valid(urlSkin) ? urlSkin : null;
+        if (skin) { try { localStorage.setItem("orama-preview-skin", skin); } catch (e) {} }
+        if (!skin) { try { var st = localStorage.getItem("orama-preview-skin"); if (valid(st)) skin = st; } catch (e) {} }
+        if (skin && skin !== "original") {
+          document.documentElement.setAttribute("data-skin", skin);
+        }
+
+        /* Alpha v2 hero background: URL wins, then storage, then clean. */
+        var urlAlphaBg = null;
+        try { urlAlphaBg = new URLSearchParams(window.location.search).get("alpha-bg"); } catch (e) {}
+        var validAlphaBg = function (value) { return /^(original|clean|orama-mark|data-rails|index-bands)$/.test(value || ""); };
+        var alphaBg = validAlphaBg(urlAlphaBg) ? urlAlphaBg : null;
+        if (alphaBg) { try { localStorage.setItem("orama-alpha-background", alphaBg); } catch (e) {} }
+        if (!alphaBg) { try { var storedAlphaBg = localStorage.getItem("orama-alpha-background"); if (validAlphaBg(storedAlphaBg)) alphaBg = storedAlphaBg; } catch (e) {} }
+        document.documentElement.setAttribute("data-alpha-bg", alphaBg || "clean");
+
+      })();
+    </script>
+
+    <!-- Fonts are self-hosted (woff2) and declared in src/styles/tokens.css; no
+         third-party origin, no render-blocking fetch. Geist backs body + display
+         (the bulk of above-the-fold text), so its latin subset is preloaded to
+         start the download before the CSS is parsed. One file serves both roles
+         (the variable face covers the whole weight axis). Space Grotesk (buttons)
+         and Geist Mono are left to lazy @font-face — small footprint above the
+         fold, and font-display:swap avoids blocking. -->
+    <link rel="preload" href="/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <meta name="author" content="Orama" />
+
+    
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="icon" type="image/png" href="/favicon.png">
+
+    <!-- Per-route metadata: the app-head block is replaced at build time (see
+         scripts/prerender.mts). Defaults below serve the dev server; DocumentHead
+         keeps them route-correct at runtime. Social image is a local placeholder. -->
+        <title>Orama · Search and AI infrastructure</title>
+    <meta data-head="description" name="description" content="Orama builds search and AI infrastructure: an open-source search library, managed cloud search with cited answers, and an enterprise platform deployed in your own cloud, on-premises, or on dedicated infrastructure." />
+    <meta data-head="robots" name="robots" content="index, follow" />
+    <meta data-head="og:title" property="og:title" content="Orama · Search and AI infrastructure" />
+    <meta data-head="og:description" property="og:description" content="Orama builds search and AI infrastructure: an open-source search library, managed cloud search with cited answers, and an enterprise platform deployed in your own cloud, on-premises, or on dedicated infrastructure." />
+    <meta data-head="og:type" property="og:type" content="website" />
+    <meta data-head="og:url" property="og:url" content="https://orama.com/" />
+    <meta data-head="og:image" property="og:image" content="https://orama.com/og/og-default.png" />
+    <meta data-head="og:site_name" property="og:site_name" content="Orama" />
+    <meta data-head="twitter:card" name="twitter:card" content="summary_large_image" />
+    <meta data-head="twitter:title" name="twitter:title" content="Orama · Search and AI infrastructure" />
+    <meta data-head="twitter:description" name="twitter:description" content="Orama builds search and AI infrastructure: an open-source search library, managed cloud search with cited answers, and an enterprise platform deployed in your own cloud, on-premises, or on dedicated infrastructure." />
+    <meta data-head="twitter:image" name="twitter:image" content="https://orama.com/og/og-default.png" />
+    <link data-head="canonical" rel="canonical" href="https://orama.com/" />
+    <script data-head="jsonld" type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Orama","url":"https://orama.com","logo":"https://orama.com/favicon.png"}</script>
+    <script data-head="jsonld" type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Orama","url":"https://orama.com"}</script>
+  
+  
+  <script type="module" crossorigin src="/assets/index-7jqyAoHy.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-DKub-7J6.css">
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

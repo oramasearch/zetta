@@ -30,7 +30,18 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    int worker_coroutines = 4;
+    int worker_coroutines = 32;  // the SPA fetches many assets in parallel (Chrome opens 6+ connections)
+    // The built Studio web app (the design repo's React bundle). When set, the
+    // node serves it statically at /app with an SPA fallback to index.html —
+    // the app's only data path is the /v1 surface. Empty = /app is 404.
+    std::string webapp_dir;
+
+    // Clerk issuer (#889): when set, a Clerk session JWT is accepted as a bearer
+    // (verified against `<clerk_issuer>/.well-known/jwks.json`), mapped to a
+    // principal named clerk:<sub>. Clerk is the preferred auth; the native token
+    // store / zetta_session cookie stays the fallback. EMPTY = bearer-only, so
+    // an on-prem / air-gapped node needs no Clerk egress.
+    std::string clerk_issuer;
     // The default-deny auth gate is ALWAYS on (#799) — there is no toggle and no
     // legacy shared-secret. EVERY gated route is closed unless the request
     // carries a bearer that resolves, via the token store (#744: salted-hash +

@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <set>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -48,18 +50,30 @@ public:
         return ParquetLazyPtr(records_[i], ids_[i]);
     }
     std::string id_at(std::size_t i) const override { return ids_.at(i); }
+    void flush() override;
 
 private:
     static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);
     void load();
-    void persist_all();  // rewrite every chunk file from the in-memory rows
+    void persist_all();            // rewrite every chunk file from the in-memory rows
+    void persist_chunk(std::size_t chunk_index);  // rewrite ONE chunk
     std::size_t index_of(const std::string& id) const;
     std::filesystem::path chunk_path(std::size_t chunk_index) const;
 
     std::filesystem::path dir_;
     std::vector<nlohmann::json> records_;
     std::vector<std::string> ids_;             // parallel to records_
-    std::unordered_set<std::string> id_index_;  // for contains()
+    // id -> row index. A SET plus a linear scan was O(n) on every update, and
+    // `update` is the hot path when a multi-thousand-row table reconciles: the
+    // lookup alone made reconcile quadratic before a single byte was written.
+    std::unordered_map<std::string, std::size_t> id_index_;
+
+    // Chunks changed since the last flush. An `update` records the chunk instead
+    // of rewriting it: reconciling 15,000 rows issued 15,000 updates, and a chunk
+    // holds up to kRecordsPerChunk rows, so rewriting on each one wrote ~10,000
+    // rows per update. Deferring collapses a whole reconcile into one rewrite per
+    // touched chunk.
+    std::set<std::size_t> dirty_chunks_;
 };
 
 }  // namespace zetta::storage

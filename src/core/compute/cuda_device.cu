@@ -8,6 +8,10 @@
 #include <string>
 #include <type_traits>
 
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
@@ -336,7 +340,117 @@ __global__ void scatter_apply_kernel(const Element* input,
 
 }  // namespace
 
-CudaDevice::CudaDevice(int device_index) noexcept : device_index_(device_index) {}
+// The allocation pool. cudaMalloc/cudaFree synchronize the device, and an iterative workload
+// allocates constantly — one autograd training step issues ~1,700 allocate/free pairs, which
+// serializes the GPU against the host and showed up as ~11% GPU utilization while training (#928).
+// Reusing exact-size blocks removes that churn without changing any interface.
+struct CudaDevice::Pool {
+    mutable std::mutex mutex;                                  // the sanctioned adapter-level lock
+    // One cuBLAS handle per device, created lazily and reused. Creating a handle per gemm call
+    // costs milliseconds and would reintroduce the per-call setup this pool exists to remove.
+    cublasHandle_t blas = nullptr;
+    bool blas_ready = false;
+    bool allow_tf32 = true;
+    std::unordered_map<std::size_t, std::vector<void*>> free_blocks;  // keyed by exact byte size
+    std::unordered_map<void*, std::size_t> live_sizes;         // release_buffer only gets a handle
+    std::size_t limit_bytes = 2ULL * 1024 * 1024 * 1024;       // 2 GiB reserve by default
+    std::size_t held_bytes = 0;
+    std::size_t hits = 0;
+
+    // A block of exactly `bytes`, from the reserve when one is waiting. Exact-size matching, not
+    // best-fit: a training step reuses the same shapes every iteration, so exact hits are the
+    // common case, and best-fit would fragment the reserve into unusable odd sizes.
+    void* take(std::size_t bytes) {
+        std::lock_guard<std::mutex> guard(mutex);
+        const auto found = free_blocks.find(bytes);
+        if (found == free_blocks.end() || found->second.empty()) return nullptr;
+        void* storage = found->second.back();
+        found->second.pop_back();
+        held_bytes -= bytes;
+        ++hits;
+        live_sizes[storage] = bytes;
+        return storage;
+    }
+
+    void record_live(void* storage, std::size_t bytes) {
+        std::lock_guard<std::mutex> guard(mutex);
+        live_sizes[storage] = bytes;
+    }
+
+    // Keep the block for reuse, unless that would push the reserve past its limit — in which case
+    // hand it back to CUDA. Without the cap the reserve would grow to the high-water mark of every
+    // shape ever seen and quietly consume the memory ceiling #924 sets.
+    bool keep(void* storage) {
+        std::lock_guard<std::mutex> guard(mutex);
+        const auto found = live_sizes.find(storage);
+        if (found == live_sizes.end()) return false;  // not ours: caller frees it
+        const std::size_t bytes = found->second;
+        live_sizes.erase(found);
+        if (limit_bytes == 0 || held_bytes + bytes > limit_bytes) return false;
+        free_blocks[bytes].push_back(storage);
+        held_bytes += bytes;
+        return true;
+    }
+
+    // The cuBLAS handle, created on first use. TF32 is enabled by default: A100 tensor cores run
+    // TF32 matmuls ~8x faster than fp32 CUDA cores, and TF32 keeps fp32's exponent range while
+    // reducing the mantissa to 10 bits — a precision change that must be a deliberate, reported
+    // choice rather than a silent one, which is why it is switchable.
+    cublasHandle_t blas_handle() {
+        std::lock_guard<std::mutex> guard(mutex);
+        if (!blas_ready) {
+            if (cublasCreate(&blas) != CUBLAS_STATUS_SUCCESS) {
+                blas = nullptr;
+            } else {
+                cublasSetMathMode(blas, allow_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH
+                                                   : CUBLAS_DEFAULT_MATH);
+            }
+            blas_ready = true;
+        }
+        return blas;
+    }
+
+    void set_tf32(bool enabled) {
+        std::lock_guard<std::mutex> guard(mutex);
+        allow_tf32 = enabled;
+        if (blas != nullptr) {
+            cublasSetMathMode(blas, enabled ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH);
+        }
+    }
+
+    void destroy_blas() {
+        std::lock_guard<std::mutex> guard(mutex);
+        if (blas != nullptr) cublasDestroy(blas);
+        blas = nullptr;
+        blas_ready = false;
+    }
+
+    void drain() {
+        std::vector<void*> to_free;
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            for (auto& [bytes, blocks] : free_blocks) {
+                for (void* storage : blocks) to_free.push_back(storage);
+                blocks.clear();
+            }
+            free_blocks.clear();
+            held_bytes = 0;
+        }
+        for (void* storage : to_free) cudaFree(storage);  // outside the lock: cudaFree synchronizes
+    }
+};
+
+CudaDevice::CudaDevice(int device_index) noexcept
+    : device_index_(device_index), pool_(std::make_shared<Pool>()) {}
+
+// Hand the reserve back to CUDA. Without this the pooled blocks would live until process exit,
+// which on a box that also serves a node is a leak, not a cache.
+CudaDevice::~CudaDevice() {
+    if (pool_) {
+        pool_->destroy_blas();
+        pool_->drain();
+    }
+}
 
 DeviceInfo CudaDevice::info() const {
     DeviceInfo information;
@@ -357,10 +471,29 @@ DeviceInfo CudaDevice::info() const {
 DeviceBuffer CudaDevice::allocate(DataType dtype, std::size_t element_count) {
     if (cudaSetDevice(device_index_) != cudaSuccess) return DeviceBuffer{};
     const std::size_t byte_count = element_count * byte_size(dtype);
+    if (byte_count == 0) return DeviceBuffer{};
+
+    // Reuse a pooled block when one of exactly this size is waiting, so the common case of an
+    // iterative workload re-allocating the same shapes costs no cudaMalloc at all.
+    if (pool_) {
+        if (void* reused = pool_->take(byte_count); reused != nullptr) {
+            return make_buffer(reused, dtype, element_count);
+        }
+    }
     void* storage = nullptr;
     if (cudaMalloc(&storage, byte_count) != cudaSuccess || storage == nullptr) {
-        return DeviceBuffer{};
+        // Out of memory with a reserve still held is recoverable: hand the reserve back and retry
+        // once. Failing here while pooling megabytes would be an own goal.
+        if (pool_ != nullptr && pool_->held_bytes > 0) {
+            pool_->drain();
+            if (cudaMalloc(&storage, byte_count) != cudaSuccess || storage == nullptr) {
+                return DeviceBuffer{};
+            }
+        } else {
+            return DeviceBuffer{};
+        }
     }
+    if (pool_) pool_->record_live(storage, byte_count);
     return make_buffer(storage, dtype, element_count);
 }
 
@@ -640,6 +773,44 @@ ComputeStatus CudaDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
         return ComputeStatus::backend_error("gemm: cudaSetDevice failed");
     }
     if (params.rows == 0 || params.cols == 0) return ComputeStatus::success();
+
+    // --- cuBLAS fast path (#929) ----------------------------------------------------------
+    // The hand-written kernel below is a naive global-memory loop with an fp64 accumulator: no
+    // tiling, no data reuse, no tensor cores. On an A100 it sustains ~0.3-0.5 TFLOPS against the
+    // 110-130 TFLOPS cuBLAS reaches with TF32 — a 200-400x gap on the hottest op in training.
+    // Keep it only as the fallback for dtypes cuBLAS does not cover, and as the reference the
+    // conformance tests compare against.
+    //
+    // cuBLAS is COLUMN-major; our buffers are row-major. Rather than transpose anything, compute
+    // the transpose of the result: a row-major C[m,n] occupies the same bytes as a column-major
+    // C^T[n,m], and C^T = op_b(B)^T * op_a(A)^T. So the operands are passed in the opposite order
+    // and each "no transpose" case is already transposed by the layout reinterpretation itself.
+    if (a.dtype() == DataType::Float32 && pool_) {
+        if (cublasHandle_t blas = pool_->blas_handle(); blas != nullptr) {
+            const int m = static_cast<int>(params.rows);
+            const int n = static_cast<int>(params.cols);
+            const int k = static_cast<int>(params.inner);
+            const float alpha = static_cast<float>(params.alpha);
+            const float beta = static_cast<float>(params.beta);
+            // Reading row-major memory as column-major already yields the transpose, so a caller
+            // asking for NO transpose needs OP_N here, and one asking FOR a transpose needs OP_T.
+            const cublasOperation_t op_a = params.transpose_a ? CUBLAS_OP_T : CUBLAS_OP_N;
+            const cublasOperation_t op_b = params.transpose_b ? CUBLAS_OP_T : CUBLAS_OP_N;
+            const int lda = params.transpose_a ? m : k;
+            const int ldb = params.transpose_b ? k : n;
+            const cublasStatus_t blas_status = cublasSgemm(
+                blas, op_b, op_a, n, m, k, &alpha,
+                static_cast<const float*>(b.handle()), ldb,
+                static_cast<const float*>(a.handle()), lda, &beta,
+                static_cast<float*>(c.handle()), n);
+            if (blas_status == CUBLAS_STATUS_SUCCESS) {
+                return after_kernel("gemm");
+            }
+            // Fall through to the reference kernel rather than failing: a cuBLAS refusal (an
+            // unsupported shape, say) should degrade to slow-but-correct, not to an error.
+        }
+    }
+
     const dim3 block(16, 16);
     const dim3 grid(static_cast<unsigned>((params.cols + 15) / 16),
                     static_cast<unsigned>((params.rows + 15) / 16));
@@ -893,7 +1064,75 @@ ComputeStatus CudaDevice::scatter(const DeviceBuffer& input,
     return status;
 }
 
-void CudaDevice::release_buffer(void* handle) noexcept { cudaFree(handle); }
+void CudaDevice::release_buffer(void* handle) noexcept {
+    // Keep the block for reuse when the pool will take it; only fall through to cudaFree (which
+    // synchronizes the device) when it will not.
+    if (pool_ && pool_->keep(handle)) return;
+    cudaFree(handle);
+}
+
+ComputeStatus CudaDevice::gemm_batched(const GemmParams& params, const DeviceBuffer& a,
+                                       std::size_t stride_a, const DeviceBuffer& b,
+                                       std::size_t stride_b, DeviceBuffer& c, std::size_t stride_c,
+                                       int batch) {
+    if (batch <= 0) return ComputeStatus::invalid_argument("gemm_batched: batch must be positive");
+    if (a.dtype() != DataType::Float32 || b.dtype() != DataType::Float32 ||
+        c.dtype() != DataType::Float32) {
+        return ComputeStatus::unsupported("gemm_batched: float32 only");
+    }
+    if (cudaSetDevice(device_index_) != cudaSuccess) {
+        return ComputeStatus::backend_error("gemm_batched: cudaSetDevice failed");
+    }
+    if (!pool_) return ComputeStatus::backend_error("gemm_batched: no device pool");
+    cublasHandle_t blas = pool_->blas_handle();
+    if (blas == nullptr) return ComputeStatus::backend_error("gemm_batched: no cuBLAS handle");
+
+    // Same column-major inversion as `gemm`: compute C^T = op_b(B)^T * op_a(A)^T, so the operands
+    // are passed in the opposite order and the layout reinterpretation supplies the transpose.
+    const int m = static_cast<int>(params.rows);
+    const int n = static_cast<int>(params.cols);
+    const int k = static_cast<int>(params.inner);
+    const float alpha = static_cast<float>(params.alpha);
+    const float beta = static_cast<float>(params.beta);
+    const cublasOperation_t op_a = params.transpose_a ? CUBLAS_OP_T : CUBLAS_OP_N;
+    const cublasOperation_t op_b = params.transpose_b ? CUBLAS_OP_T : CUBLAS_OP_N;
+    const int lda = params.transpose_a ? m : k;
+    const int ldb = params.transpose_b ? k : n;
+    const cublasStatus_t status = cublasSgemmStridedBatched(
+        blas, op_b, op_a, n, m, k, &alpha, static_cast<const float*>(b.handle()), ldb,
+        static_cast<long long>(stride_b), static_cast<const float*>(a.handle()), lda,
+        static_cast<long long>(stride_a), &beta, static_cast<float*>(c.handle()), n,
+        static_cast<long long>(stride_c), batch);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        return ComputeStatus::backend_error("gemm_batched: cublasSgemmStridedBatched failed");
+    }
+    return after_kernel("gemm_batched");
+}
+
+void CudaDevice::set_pool_limit(std::size_t bytes) {
+    if (!pool_) return;
+    {
+        std::lock_guard<std::mutex> guard(pool_->mutex);
+        pool_->limit_bytes = bytes;
+    }
+    if (bytes == 0) pool_->drain();  // disabling the pool must release what it already holds
+}
+
+std::size_t CudaDevice::pooled_bytes() const {
+    if (!pool_) return 0;
+    std::lock_guard<std::mutex> guard(pool_->mutex);
+    return pool_->held_bytes;
+}
+
+std::size_t CudaDevice::pool_hits() const {
+    if (!pool_) return 0;
+    std::lock_guard<std::mutex> guard(pool_->mutex);
+    return pool_->hits;
+}
+
+void CudaDevice::drain_pool() {
+    if (pool_) pool_->drain();
+}
 
 #endif  // ZETTA_WITH_CUDA
 

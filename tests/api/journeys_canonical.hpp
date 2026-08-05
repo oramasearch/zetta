@@ -60,8 +60,13 @@ inline Journey uc1_happy_path(const std::string& actor) {
         {"compile the intent to the churn skeleton", "compile_intent",
          {{"project", "churn-q3"}, {"input_id", "$input_id"}},
          {.checks = {equals("/name", "churn skeleton"),
-                     at_least("/steps", 6)}},
+                     at_least("/steps", 6),
+                     equals("/approval", "proposed")}},
          {{"graph", "/name"}}},
+        {"approve the proposed plan (review-before-build, #885)", "approve_plan",
+         {{"project", "churn-q3"}, {"graph", "$graph"}},
+         {.checks = {equals("/approval", "approved"),
+                     not_empty("/approved_at")}}},
         {"gate the compiled graph", "gate",
          {{"project", "churn-q3"}, {"graph", "$graph"}},
          {.checks = {equals("/block_deploy", false), not_empty("/checks")}},
@@ -130,8 +135,8 @@ inline Journey uc1_happy_path(const std::string& actor) {
               [actor](const nlohmann::json& rows) {
                   for (const char* target :
                        {"api:create_project", "api:capture_intent",
-                        "api:compile_intent", "api:gate", "api:deploy",
-                        "api:run"}) {
+                        "api:compile_intent", "api:approve_plan", "api:gate",
+                        "api:deploy", "api:run"}) {
                       bool audited = false;
                       for (const nlohmann::json& row : rows) {
                           if (row.value("target", std::string{}) == target &&
@@ -157,6 +162,12 @@ inline Journey uc1_happy_path(const std::string& actor) {
 inline Journey gate_blocked() {
     Journey journey{"gate-blocked-deploy", {}};
     journey.steps = {
+        // Human approval (#885) precedes the machine gate — approving a plan is
+        // sign-off to build, NOT a claim it is correct; the gate is what catches
+        // the leak below.
+        {"approve the plan so it can be verified", "approve_plan",
+         {{"project", "leaky"}, {"graph", "leaky graph"}},
+         {.checks = {equals("/approval", "approved")}}},
         {"the gate reports the leak and blocks deploy", "gate",
          {{"project", "leaky"}, {"graph", "leaky graph"}},
          {.checks = {equals("/block_deploy", true), not_empty("/checks")}}},

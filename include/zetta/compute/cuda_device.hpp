@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 
 #include "zetta/compute/compute_device.hpp"
 
@@ -30,6 +31,9 @@ public:
     // selected (cudaSetDevice) before each operation, so several CudaDevice
     // instances over distinct ordinals can coexist on a multi-GPU node.
     explicit CudaDevice(int device_index = 0) noexcept;
+
+    // Returns any pooled device memory to CUDA.
+    ~CudaDevice() override;
 
     DeviceInfo info() const override;
 
@@ -69,10 +73,47 @@ public:
     ComputeStatus scatter(const DeviceBuffer& input, const DeviceBuffer& indices,
                           DeviceBuffer& output) override;
 
+    // Strided-batched GEMM: `batch` independent matmuls of identical shape, each operand advanced
+    // by its own stride. This is what attention needs — QK^T and PV are one matmul per head, and
+    // issuing them as a batch keeps the tensor cores fed instead of paying a launch per head.
+    //
+    // Row-major in, like `gemm`: the column-major transpose trick applies identically.
+    ComputeStatus gemm_batched(const GemmParams& params, const DeviceBuffer& a,
+                               std::size_t stride_a, const DeviceBuffer& b, std::size_t stride_b,
+                               DeviceBuffer& c, std::size_t stride_c, int batch);
+
+    // --- allocation pool -------------------------------------------------------------------
+    // How many bytes of freed device memory to keep for reuse instead of returning to CUDA.
+    // Default 2 GiB; 0 disables pooling entirely (every release goes straight to cudaFree).
+    //
+    // This exists because cudaMalloc and cudaFree SYNCHRONIZE the device, and an iterative
+    // workload allocates constantly: one training step through the autograd engine's device_gemm
+    // issues roughly 1,700 allocate/free pairs, which serializes the GPU against the host. The
+    // measured symptom was ~11% GPU utilization while training (#928).
+    void set_pool_limit(std::size_t bytes);
+
+    // Bytes currently held in the pool, and how many allocations were served from it. A test (or
+    // a benchmark) asserts reuse actually happens rather than assuming it: a pool whose hit count
+    // stays zero is a pool that silently is not working.
+    std::size_t pooled_bytes() const;
+    std::size_t pool_hits() const;
+
+    // Return every pooled block to CUDA. Called by the destructor; exposed so a caller that is
+    // about to need peak memory (a large model load) can hand the reserve back first, and so
+    // #924's memory ceiling is not silently consumed by a stale reserve.
+    void drain_pool();
+
 private:
     void release_buffer(void* handle) noexcept override;
 
     int device_index_ = 0;
+
+    // Freed blocks keyed by exact byte size, plus the size of every live block (release_buffer
+    // receives only a handle, so the size has to be remembered to pool it). A raw mutex is the
+    // sanctioned exception here: the lowest cross-thread handoff inside a backend adapter, in the
+    // one TU that names CUDA, never visible in a public API.
+    struct Pool;
+    std::shared_ptr<Pool> pool_;
 };
 
 #endif  // ZETTA_WITH_CUDA

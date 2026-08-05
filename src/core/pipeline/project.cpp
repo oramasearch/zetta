@@ -23,22 +23,31 @@ namespace fs = std::filesystem;
 
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
-                 zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit)
+                 zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit,
+                 std::string description)
     : id_(std::move(id)),
       name_(std::move(name)),
       created_(std::move(created)),
       updated_(std::move(updated)),
       owner_(std::move(owner)),
+      description_(std::move(description)),
       dir_(std::move(dir)),
       replication_(replication),
       audit_(audit) {}
 
+void Project::set_description(std::string description) {
+    description_ = std::move(description);
+    persist_meta();
+}
+
 void Project::set_metadata(std::string name, std::string created,
-                           std::string updated, std::string owner) {
+                           std::string updated, std::string owner,
+                           std::string description) {
     name_ = std::move(name);
     created_ = std::move(created);
     updated_ = std::move(updated);
     owner_ = std::move(owner);
+    description_ = std::move(description);
     persist_meta();
 }
 
@@ -46,7 +55,8 @@ nlohmann::json Project::metadata() const {
     return nlohmann::json{{"name", name_},
                           {"created", created_},
                           {"updated", updated_},
-                          {"owner", owner_}};
+                          {"owner", owner_},
+                          {"description", description_}};
 }
 
 void Project::persist_meta() const {
@@ -127,10 +137,17 @@ void Project::load() {
                     ir::from_json(document["graph"]);
                 if (!graph) continue;
                 // The file name is the authoritative id (like a db/table folder).
-                graphs_.push_back(std::make_shared<ProjectGraph>(
+                auto loaded = std::make_shared<ProjectGraph>(
                     entry.path().stem().string(), id_,
                     document["name"].get<std::string>(), std::move(*graph),
-                    entry.path()));
+                    entry.path());
+                // Restore the plan-approval state (#885). Absent = proposed, so
+                // pre-#885 records load as proposed (needs a fresh approval).
+                loaded->set_approval(
+                    document.value("approval", std::string{}) == "approved",
+                    document.value("approved_by", std::string{}),
+                    document.value("approved_at", std::string{}));
+                graphs_.push_back(std::move(loaded));
             }
             // Stable order (directory iteration order is unspecified).
             std::sort(graphs_.begin(), graphs_.end(),
@@ -265,11 +282,38 @@ std::shared_ptr<ProjectGraph> Project::update_graph(const std::string& name,
     if (final_name != stored->name() && find_graph(final_name)) {
         return nullptr;  // rename would collide with another graph
     }
+    // An edit re-proposes the plan (#885): a changed Pipeline must be approved
+    // again before it can gate/deploy. Reset BEFORE set_contents so the on-disk
+    // projection + the captured record both carry the proposed state.
+    stored->set_approval(false, {}, {});
     // set_contents rewrites the on-disk projection; the CRDT set below makes the
     // edit replicated state, same as create_graph — never persist disk-only.
     stored->set_contents(std::move(final_name), std::move(graph));
     if (replication_) {
         replication_->set(catalog::graph_key(stored->id()), stored->record());
+    }
+    return stored;
+}
+
+std::shared_ptr<ProjectGraph> Project::approve_graph(const std::string& name,
+                                                     std::string approver,
+                                                     std::string at) {
+    auto stored = find_graph(name);
+    if (!stored) return nullptr;  // no graph by that name to approve
+    // set_approved rewrites the on-disk projection; the CRDT set makes the
+    // approval replicated state (peers reconcile it), same as an edit.
+    stored->set_approved(std::move(approver), std::move(at));
+    if (replication_) {
+        replication_->set(catalog::graph_key(stored->id()), stored->record());
+    }
+    // Audit the approval (FEAT-9): a local approve is a governed action. A peer's
+    // approval arrives via reconcile_graphs already carrying its own audit event.
+    if (audit_) {
+        audit_->record_audit_event(
+            {zetta::governance::AuditAction::GraphApproved, owner_, stored->name(),
+             true,
+             "plan '" + stored->name() + "' approved in project '" + name_ + "'",
+             {}});
     }
     return stored;
 }
@@ -299,10 +343,12 @@ std::shared_ptr<ProjectGraph> Project::compile_intent_to_graph(
 }
 
 std::shared_ptr<ProjectGraph> Project::materialize_graph(
-    std::string id, std::string name, ir::ExecutionGraph graph) {
+    std::string id, std::string name, ir::ExecutionGraph graph, bool approved,
+    std::string approved_by, std::string approved_at) {
     if (auto existing = find_graph_by_id(id)) return existing;
     auto stored = std::make_shared<ProjectGraph>(
         id, id_, std::move(name), std::move(graph), graph_file(id));
+    stored->set_approval(approved, std::move(approved_by), std::move(approved_at));
     stored->persist();
     graphs_.push_back(stored);
     return stored;

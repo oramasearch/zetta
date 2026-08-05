@@ -121,6 +121,14 @@ fixture or a sidecar proxy; nothing constructs one for a real source.
 
 ## Scope notes / later slices
 
+- **Large downloads (opt-in on `HttpRequest`)** — for pulling model weights
+  natively ([`connect/model_fetch.hpp`](../../include/zetta/connect/model_fetch.hpp)):
+  `max_redirects` follows up to N `Location` hops (dropping the secret headers on a
+  cross-host hop, so a bearer never reaches a different origin — a HuggingFace LFS
+  URL 302-redirects to a CDN); `download_to_path` streams the 2xx body straight to a
+  file so a multi-GB shard never sits on the heap (`HttpResponse::body` stays empty);
+  `max_response_bytes` raises the 512 MiB connector body cap. All default to off, so a
+  connector is unchanged.
 - **No connection pooling** and **no HTTP/2** — both are changes behind the same
   seam, invisible to connectors.
 - **TLS is not directly tested**: verifying it needs a certificate authority and

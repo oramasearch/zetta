@@ -36,9 +36,9 @@ link can't fire after the first item arrives.
 | Search | no search index | **Open the graph workspace** (#655) |
 | SQL query · results | nothing run yet this session | none (Run is directly above) |
 | Console · transcript | no statements | none (the editor + Run are directly above) |
-| Graph workspace | no projects at all | **New project…** → the New Project modal |
-| Graph workspace | projects exist, none selected | **Open home** → the project list |
-| Graph workspace · graphs | project has no graphs | none (the New graph field is directly above) |
+| Pipeline workspace | no projects at all | **New project…** → the New Project modal |
+| Pipeline workspace | projects exist, none selected | **Open home** → the project list |
+| Pipeline workspace · graphs | project has no graphs | none (the New graph field is directly above) |
 | Deploy · deployments | nothing deployed | none (the solution picker + Deploy are directly above) |
 | Activity | nothing recorded | **Open deploy** (#655) |
 | Traces | nothing traced | **Open SQL query** (#655) |

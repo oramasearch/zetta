@@ -32,6 +32,8 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/workspace/workspace_profile.hpp"
+#include "zetta/billing/plan.hpp"
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
@@ -215,7 +217,8 @@ public:
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
     std::shared_ptr<zetta::pipeline::Project> create_project(std::string name,
-                                            std::string owner = {});
+                                            std::string owner = {},
+                                            std::string description = {});
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
@@ -317,6 +320,39 @@ public:
     bool drop_model(const std::string& id);
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
+
+    // CRUD for Workspace Profiles (the "Discover Opportunities" input — see
+    // workspace_profile.hpp / docs/workspace/; #886). A top-level replicated
+    // entity keyed by id (like models); the registry is workspace_profiles() +
+    // the system.workspace_profiles SQL table. create stamps `created` and
+    // requires a non-empty `owner` (empty handle otherwise); edits go through the
+    // returned handle's set_content. Stable order (created, then id).
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> create_workspace_profile(
+        zetta::workspace::WorkspaceProfileValue value);
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> find_workspace_profile(
+        const std::string& id) const;
+    bool drop_workspace_profile(const std::string& id);
+    std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
+    workspace_profiles() const { return workspace_profiles_; }
+    std::size_t workspace_profile_count() const {
+        return workspace_profiles_.size();
+    }
+
+    // CRUD for Plans (the Billing/Usage quota config — see plan.hpp /
+    // docs/billing/; Conflict D). A top-level replicated entity keyed by id; the
+    // registry is plans() + the system.plans SQL table (usage is metered live in
+    // system.usage). create stamps `created` and requires a non-empty `name`.
+    std::shared_ptr<zetta::billing::Plan> create_plan(zetta::billing::PlanValue value);
+    std::shared_ptr<zetta::billing::Plan> find_plan(const std::string& id) const;
+    bool drop_plan(const std::string& id);
+    std::vector<std::shared_ptr<zetta::billing::Plan>> plans() const { return plans_; }
+    std::size_t plan_count() const { return plans_.size(); }
+
+    // The node's CRDT document manager (null when standalone/unreplicated). Exposed
+    // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
+    // its keys via `agent::AgentStore` without a bespoke method per verb here. Prefer
+    // a typed accessor above where one exists; a served node always has one (main.cpp).
+    zetta::cluster::ReplicationManager* replication() { return replication_; }
 
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
@@ -906,6 +942,12 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
+    void load_workspace_profiles();
+
+    // Rebuild plans_ by scanning config_.data_dir. Called from start().
+    void load_plans();
+
     // Rebuild indexes_ by scanning config_.data_dir. Called from start().
     void load_indexes();
 
@@ -914,6 +956,9 @@ private:
 
     // Rebuild dataset_partitions_ by scanning config_.data_dir. Called from start().
     void load_dataset_partitions();
+    // Settle deferred storage writes after a reconcile pass (#952). Owner-thread
+    // only, like every other tree walk.
+    void flush_stores();
 
     // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
     // start(). Malformed event files are skipped at the boundary (schema).
@@ -961,6 +1006,8 @@ private:
     void reconcile_deployments(const nlohmann::json& snapshot);
     void reconcile_runs(const nlohmann::json& snapshot);
     void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_workspace_profiles(const nlohmann::json& snapshot);
+    void reconcile_plans(const nlohmann::json& snapshot);
     void reconcile_indexes(const nlohmann::json& snapshot);
     void reconcile_jobs(const nlohmann::json& snapshot);
     void reconcile_partitions(const nlohmann::json& snapshot);
@@ -980,7 +1027,8 @@ private:
                                                  std::string name,
                                                  std::string created,
                                                  std::string updated,
-                                                 std::string owner);
+                                                 std::string owner,
+                                                 std::string description = {});
     bool materialize_drop_project(const std::string& id);
     std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
         std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
@@ -991,6 +1039,12 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
+        std::string id, zetta::workspace::WorkspaceProfileValue value);
+    bool materialize_drop_workspace_profile(const std::string& id);
+    std::shared_ptr<zetta::billing::Plan> materialize_plan(
+        std::string id, zetta::billing::PlanValue value);
+    bool materialize_drop_plan(const std::string& id);
     std::shared_ptr<zetta::index::Index> materialize_index(std::string id, zetta::index::IndexValue value);
     bool materialize_drop_index(const std::string& id);
     std::shared_ptr<zetta::compute::ComputeJob> materialize_job(std::string id,
@@ -1040,6 +1094,9 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
+        workspace_profiles_;                                          // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>

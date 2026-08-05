@@ -85,6 +85,10 @@
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "partition_only": {
+                    "description": "do NOT capture the rows into the replicated document (#833) — the data lives only in its partition bodies, which their owners hold. This is the right setting for connector-sized data: capturing rows replicates every one of them to every peer, and reconciling them back rewrites the whole local store per row, which saturates the node's owner loop. Reads go through the scatter-gather select. Default false, for back-compatibility with small replicated tables",
+                    "type": "boolean"
+                  },
                   "partitioned": {
                     "description": "shard + place the rows across the cluster (default true)",
                     "type": "boolean"
@@ -357,6 +361,304 @@
         ]
       }
     },
+    "/v1/agent_run": {
+      "post": {
+        "description": "Give an agent a plain-language ask; it recognizes the use case, compiles a real execution graph from it, and runs that graph through the gate + the real engine (churn today) — end to end in one call. The base agent needs no tool-calling fine-tune for this. Returns the agent's reply, the built graph's steps, and the run id (poll get_run / system.runs). Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "agent_run",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent": {
+                    "description": "the agent's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff: only rows with time_column <= as_of contribute",
+                        "type": "number"
+                      },
+                      "entity_column": {
+                        "description": "the integer key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "feature_columns": {
+                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "dataset_path": {
+                    "description": "`database.table` (a connection/query landed it) or a churn dataset dir on the node (default: the built-in demo)",
+                    "type": "string"
+                  },
+                  "graph_name": {
+                    "description": "name for the stored graph (default derived)",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_new_tokens": {
+                    "maximum": 2048,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_rounds": {
+                    "maximum": 8,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "message": {
+                    "description": "the plain-language ask, e.g. 'predict which customers will churn'",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "model_name": {
+                    "description": "registered model name",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "land the graph + run on this project (name or uuid); a new project is created when omitted",
+                    "type": "string"
+                  },
+                  "top_k": {
+                    "description": "at-risk list cap (0 = all)",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "agent",
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "graph": {
+                          "type": "string"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "reply": {
+                          "description": "the agent's recognition of the ask",
+                          "type": "string"
+                        },
+                        "run": {
+                          "description": "the run result (run_id + engine + status), poll get_run",
+                          "type": "object"
+                        },
+                        "shape": {
+                          "description": "the compiled template: 'churn' | 'generic'",
+                          "type": "string"
+                        },
+                        "steps": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "reply",
+                        "shape",
+                        "project",
+                        "graph",
+                        "steps",
+                        "run"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Agent builds + runs a graph",
+        "tags": [
+          "job"
+        ]
+      }
+    },
+    "/v1/agent_training_status": {
+      "get": {
+        "description": "Whether an agent is stale (its tools or goals changed since its newest Saved Version was trained), whether its schedule says it is due, every version it has produced, and any goals that resolve to no verifiable check. Read-only. Requires orchestration:agent_training_status.",
+        "operationId": "agent_training_status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "due": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "stale": {
+                          "type": "boolean"
+                        },
+                        "versions": {
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Should this agent be retrained?",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/approve_consent": {
       "post": {
         "description": "Approve one pending consent challenge and execute exactly the named action once. Requires a named approver key of a DIFFERENT principal than the requester — a key can never approve its own cloud action. Requires orchestration:approve_consent.",
@@ -471,6 +773,133 @@
           }
         },
         "summary": "Approve a consent request",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/approve_plan": {
+      "post": {
+        "description": "Approve a stored, proposed Pipeline for build (#885, the design's review-before-build flow): records the approving principal + time, replicates, and audits it (graph_approved). gate and deploy require an approved plan; editing a plan re-proposes it. Requires orchestration:approve_plan.",
+        "operationId": "approve_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "description": "the stored plan's name or uuid to approve",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "description": "the owning project's name or uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "approval": {
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
+                        "graph": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "project",
+                        "graph",
+                        "approval",
+                        "approved_by",
+                        "approved_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve a proposed plan",
         "tags": [
           "action"
         ]
@@ -600,6 +1029,207 @@
         "summary": "Capture intent",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/chat": {
+      "get": {
+        "description": "Send a message to an agent and get its reply, with tool-calling: the agent's model generates, any tool calls it emits run in its sandbox and feed back, until it answers. Loads the agent's model (a local checkpoint dir). No persistent side effects. Requires api:query.",
+        "operationId": "chat",
+        "parameters": [
+          {
+            "description": "the agent's id",
+            "in": "query",
+            "name": "agent",
+            "required": true,
+            "schema": {
+              "description": "the agent's id",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "the conversation so far, oldest first: [{ask, reply, tools:[{tool,status,detail}]}]. The tool outcomes matter — a follow-up like \"why did that fail?\" refers to what ran, not to the prose.",
+            "in": "query",
+            "name": "history",
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "max_new_tokens",
+            "required": false,
+            "schema": {
+              "maximum": 2048,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_rounds",
+            "required": false,
+            "schema": {
+              "maximum": 8,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "message",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "description": "scope the answer to this project (name or uuid): its trained model's measure and ranked drivers are given to the agent, so it answers from what the pipeline actually produced instead of from priors (#914)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "grounded": {
+                          "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
+                          "type": "boolean"
+                        },
+                        "grounding_warning": {
+                          "description": "why the reply is ungrounded, when it is",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope",
+                          "enum": [
+                            "action",
+                            "answer",
+                            "clarify",
+                            "abstain",
+                            "unparsed"
+                          ],
+                          "type": "string"
+                        },
+                        "pipeline": {
+                          "description": "the proposed Pipeline, when the turn built one",
+                          "type": "object"
+                        },
+                        "reply": {
+                          "type": "string"
+                        },
+                        "rounds": {
+                          "type": "integer"
+                        },
+                        "tool_calls": {
+                          "items": {
+                            "properties": {
+                              "detail": {
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string"
+                              },
+                              "tool": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "reply",
+                        "tool_calls",
+                        "rounds",
+                        "grounded",
+                        "kind"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Chat with an agent",
+        "tags": [
+          "read"
         ]
       }
     },
@@ -783,6 +1413,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -910,6 +1548,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1037,6 +1683,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -1103,6 +1757,150 @@
         ]
       }
     },
+    "/v1/create_agent": {
+      "post": {
+        "description": "Create a served, selectable agent — a model (checkpoint dir, model:<uuid>, or a HuggingFace repo id) plus an optional system prompt and the tools it may call. Returns the stored record with its generated id; replicates to every node. Requires orchestration:create_agent.",
+        "operationId": "create_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "goals": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model": {
+                    "description": "checkpoint dir, model:<uuid>, or a HuggingFace repo id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "system_prompt": {
+                    "type": "string"
+                  },
+                  "tools": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "name",
+                  "model"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "system_prompt": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create an agent",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_connection": {
       "post": {
         "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it. The token is never returned by any surface (list_connections and system.connections omit it). Requires orchestration:create_connection.",
@@ -1115,16 +1913,15 @@
                 "properties": {
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1132,7 +1929,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1140,30 +1945,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"
@@ -1287,16 +2098,15 @@
                   },
                   "connector": {
                     "additionalProperties": false,
-                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
                     "properties": {
                       "account": {
-                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
-                        "minLength": 1,
+                        "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
                         "type": "string"
                       },
                       "auth": {
                         "default": "pat",
-                        "description": "How to present the bearer token.",
+                        "description": "Snowflake: how to present the bearer token.",
                         "enum": [
                           "pat",
                           "oauth"
@@ -1304,7 +2114,15 @@
                         "type": "string"
                       },
                       "database": {
-                        "description": "Session database.",
+                        "description": "Session database (both connectors).",
+                        "type": "string"
+                      },
+                      "host": {
+                        "description": "Postgres host, e.g. 127.0.0.1.",
+                        "type": "string"
+                      },
+                      "port": {
+                        "description": "Postgres port (default 5432).",
                         "type": "string"
                       },
                       "role": {
@@ -1312,30 +2130,36 @@
                         "type": "string"
                       },
                       "schema": {
-                        "description": "Session schema.",
+                        "description": "Session schema (both connectors).",
+                        "type": "string"
+                      },
+                      "sslmode": {
+                        "description": "Postgres sslmode (disable / require / verify-full / …).",
                         "type": "string"
                       },
                       "token": {
-                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
-                        "minLength": 1,
+                        "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
                         "type": "string"
                       },
                       "type": {
                         "description": "Which connector implementation to use.",
                         "enum": [
-                          "snowflake"
+                          "snowflake",
+                          "postgres"
                         ],
                         "type": "string"
                       },
+                      "user": {
+                        "description": "Postgres role/user.",
+                        "type": "string"
+                      },
                       "warehouse": {
-                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "description": "Snowflake compute warehouse (required for token auth).",
                         "type": "string"
                       }
                     },
                     "required": [
-                      "type",
-                      "account",
-                      "token"
+                      "type"
                     ],
                     "title": "ConnectorConfig",
                     "type": "object"
@@ -1663,6 +2487,148 @@
         ]
       }
     },
+    "/v1/create_plan": {
+      "post": {
+        "description": "Create a Plan — the quota/tier config the Billing/Usage surface measures live consumption against (Conflict D). Replicates to every node. Requires orchestration:create_plan.",
+        "operationId": "create_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the plan's display name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "period_start": {
+                    "description": "ISO-8601 start of the current period",
+                    "type": "string"
+                  },
+                  "quotas": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "description": "numeric limits, e.g. {max_runs, max_storage_bytes}",
+                    "type": "object"
+                  },
+                  "tier": {
+                    "description": "display tier (free / pro / enterprise)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",
@@ -1673,6 +2639,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "description": {
+                    "description": "a one-line human description of the project's intent (optional)",
+                    "type": "string"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -1766,6 +2736,242 @@
           }
         },
         "summary": "Create project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_workspace_profile": {
+      "post": {
+        "description": "Create the calling user's Workspace Profile — the input to the Discover Opportunities pathway (#886). Owner is the caller; replicates to every node. Role, daily work, and approved source refs are the editable body. Requires orchestration:create_workspace_profile.",
+        "operationId": "create_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "description": "plain-language daily-work description",
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "the user's workspace role",
+                    "type": "string"
+                  },
+                  "sources": {
+                    "description": "approved source refs, each {id,name,kind}",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a workspace profile",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_agent": {
+      "post": {
+        "description": "Remove an agent by id (a CRDT tombstone; replicates). Idempotent. Requires orchestration:delete_agent.",
+        "operationId": "delete_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete an agent",
         "tags": [
           "action"
         ]
@@ -2638,6 +3844,252 @@
         ]
       }
     },
+    "/v1/generate_dataset": {
+      "post": {
+        "description": "Synthesize an admission-gated training corpus natively (ADR-17), grounded in the solutions plan: pick a generator kind, get the gated cases (reference passes, negative controls fail) with reference actions, and optionally write the JSONL to a path. This is the native replacement for the offline Python generators + what a per-customer fork (#853) uses to grow its own corpus. Requires orchestration:run.",
+        "operationId": "generate_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "held_out_fraction": {
+                    "description": "canary fraction",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "a generator kind from list_dataset_generators (e.g. 'base-agent')",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "write the gated JSONL corpus to this file on the node (optional)",
+                    "type": "string"
+                  },
+                  "variants_per_subject": {
+                    "description": "task variants per plan subject",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "admitted": {
+                          "type": "boolean"
+                        },
+                        "cases": {
+                          "type": "integer"
+                        },
+                        "held_out": {
+                          "type": "integer"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "subjects": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Generate a dataset",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/get_agent": {
+      "get": {
+        "description": "Read one agent by id. No side effects. Requires api:query.",
+        "operationId": "get_agent",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "system_prompt": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one agent",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_dataset": {
       "get": {
         "description": "Read one dataset's computed summary — schema, row count, size, format, replication, partition placement — by name (plus database when ambiguous). No side effects. Requires api:query.",
@@ -2887,6 +4339,20 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885)",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
                         "edges": {
                           "items": {
                             "description": "a connection: { from, to, kind }",
@@ -3391,6 +4857,130 @@
         ]
       }
     },
+    "/v1/get_plan": {
+      "get": {
+        "description": "Read one Plan's full validated record (name, tier, quota limits) by its uuid. Metered usage is read live from system.usage. (Conflict D) Requires api:query.",
+        "operationId": "get_plan",
+        "parameters": [
+          {
+            "description": "the plan's uuid (system.plans.plan_id)",
+            "in": "query",
+            "name": "plan_id",
+            "required": true,
+            "schema": {
+              "description": "the plan's uuid (system.plans.plan_id)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one plan",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_project": {
       "get": {
         "description": "Read one AI project's full detail — metadata plus its inputs and graphs — by name or uuid. No side effects. Requires api:query.",
@@ -3442,10 +5032,27 @@
                         "created": {
                           "type": "string"
                         },
+                        "description": {
+                          "type": "string"
+                        },
                         "graphs": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
+                              "approval": {
+                                "description": "plan-approval state (#885)",
+                                "enum": [
+                                  "proposed",
+                                  "approved"
+                                ],
+                                "type": "string"
+                              },
+                              "approved_at": {
+                                "type": "string"
+                              },
+                              "approved_by": {
+                                "type": "string"
+                              },
                               "id": {
                                 "type": "string"
                               },
@@ -3499,6 +5106,7 @@
                         "created",
                         "updated",
                         "owner",
+                        "description",
                         "inputs",
                         "graphs"
                       ],
@@ -4000,6 +5608,130 @@
         ]
       }
     },
+    "/v1/get_workspace_profile": {
+      "get": {
+        "description": "Read one Workspace Profile's full validated record (owner, role, daily work, approved source refs) by its uuid. No side effects. (#886) Requires api:query.",
+        "operationId": "get_workspace_profile",
+        "parameters": [
+          {
+            "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+            "in": "query",
+            "name": "workspace_profile_id",
+            "required": true,
+            "schema": {
+              "description": "the profile's uuid (system.workspace_profiles.workspace_profile_id)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one workspace profile",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/import_n8n": {
       "post": {
         "description": "Validate an n8n workflow export against its schema and store it byte-for-byte as a replicated project artifact input; compile it with compile_n8n. Requires orchestration:import_n8n.",
@@ -4334,6 +6066,124 @@
         ]
       }
     },
+    "/v1/list_agents": {
+      "get": {
+        "description": "Read every agent on this node (id, name, model, tools). No side effects. Requires api:query.",
+        "operationId": "list_agents",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "agents": {
+                          "items": {
+                            "properties": {
+                              "created_at": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "system_prompt": {
+                                "type": "string"
+                              },
+                              "tools": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "updated_at": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "agents"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List agents",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_connections": {
       "get": {
         "description": "The saved source connections, credentials REDACTED — name, connector settings, and when each was saved. Same source as system.connections. Requires orchestration:list_connections.",
@@ -4617,6 +6467,103 @@
           }
         },
         "summary": "List consent requests",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_dataset_generators": {
+      "get": {
+        "description": "Read the native training-dataset generators available on this node (the base agent's corpus, Auto-Suggest, …) — each grows + gates a corpus grounded in the solutions plan. No side effects. Requires api:query.",
+        "operationId": "list_dataset_generators",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "generators": {
+                          "items": {
+                            "properties": {
+                              "description": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List dataset generators",
         "tags": [
           "read"
         ]
@@ -5997,8 +7944,39 @@
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
                   },
+                  "dataset": {
+                    "additionalProperties": false,
+                    "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                    "properties": {
+                      "as_of": {
+                        "description": "the cutoff: only rows with time_column <= as_of contribute",
+                        "type": "number"
+                      },
+                      "entity_column": {
+                        "description": "the integer key of the thing being scored, one row per entity",
+                        "type": "string"
+                      },
+                      "feature_columns": {
+                        "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "label_column": {
+                        "description": "the {0,1} training target",
+                        "type": "string"
+                      },
+                      "time_column": {
+                        "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "dataset_path": {
-                    "description": "a churn dataset directory on the node's filesystem (default: the built-in demo dataset)",
+                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
                   "graph": {
@@ -6058,6 +8036,17 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "dataset": {
+                          "description": "table datasets only: the resolved column contract the run trained under",
+                          "type": "object"
+                        },
+                        "dataset_notes": {
+                          "description": "what was inferred rather than given — read these before trusting the model",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
                         "engine": {
                           "enum": [
                             "churn",
@@ -6210,6 +8199,14 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "approval": {
+                          "description": "plan-approval state (#885); a fresh plan is proposed",
+                          "enum": [
+                            "proposed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
                         "edges": {
                           "type": "integer"
                         },
@@ -6273,6 +8270,241 @@
         "summary": "Save a graph",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/score": {
+      "get": {
+        "description": "Run a registered model over a `database.table` dataset (compute-near-data, this node's own partitions) or over rows you supply, and get the entities ranked by risk plus what drives it. This is how the at-risk list is answerable after the run that produced it has ended, and how an account that is not in the data at all gets a score. Read-only. Requires data:predict.",
+        "operationId": "score",
+        "parameters": [
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                  "properties": {
+                    "as_of": {
+                      "description": "the cutoff: only rows with time_column <= as_of contribute",
+                      "type": "number"
+                    },
+                    "entity_column": {
+                      "description": "the integer key of the thing being scored, one row per entity",
+                      "type": "string"
+                    },
+                    "feature_columns": {
+                      "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                      "items": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "label_column": {
+                      "description": "the {0,1} training target",
+                      "type": "string"
+                    },
+                    "time_column": {
+                      "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+            "in": "query",
+            "name": "dataset",
+            "required": false
+          },
+          {
+            "description": "`database.table` to score every row of; omit when supplying `rows`",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "`database.table` to score every row of; omit when supplying `rows`",
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "entity key per supplied row (default: the row's index)",
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "entity key per supplied row (default: the row's index)",
+            "in": "query",
+            "name": "entities",
+            "required": false
+          },
+          {
+            "description": "the registered model's id, or its name",
+            "in": "query",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "description": "the registered model's id, or its name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "score these rows instead of a dataset - an account that is not in the data at all. Each row is keyed by the model's own feature columns",
+            "in": "query",
+            "name": "rows",
+            "required": false
+          },
+          {
+            "description": "cap the ranked list (0 = all)",
+            "in": "query",
+            "name": "top_k",
+            "required": false,
+            "schema": {
+              "description": "cap the ranked list (0 = all)",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "drivers": {
+                          "description": "population drivers, strongest first",
+                          "items": {
+                            "properties": {
+                              "feature": {
+                                "type": "string"
+                              },
+                              "importance": {
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "feature_columns": {
+                          "description": "what the model was trained on, in the order it expects",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "partitions_read": {
+                          "type": "integer"
+                        },
+                        "ranked": {
+                          "description": "entities by risk, highest first",
+                          "items": {
+                            "properties": {
+                              "entity": {
+                                "type": "integer"
+                              },
+                              "risk": {
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "rows_scored": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "ranked",
+                        "feature_columns",
+                        "rows_scored"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Score a dataset or rows through a trained model",
+        "tags": [
+          "read"
         ]
       }
     },
@@ -6596,6 +8828,158 @@
         "summary": "Server info",
         "tags": [
           "read"
+        ]
+      }
+    },
+    "/v1/set_training_schedule": {
+      "post": {
+        "description": "Set an agent's training spec: the corpus, the base checkpoint, the step count, and the cadence (manual, on_change, daily, weekly, monthly). Manual is the default - an agent never retrains behind your back. Requires orchestration:set_training_schedule.",
+        "operationId": "set_training_schedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "description": "the agent's id",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "training": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "base_checkpoint": {
+                        "description": "what to start from; empty = the agent's current model",
+                        "type": "string"
+                      },
+                      "cadence": {
+                        "description": "when this agent retrains on its own; manual never does",
+                        "enum": [
+                          "manual",
+                          "on_change",
+                          "daily",
+                          "weekly",
+                          "monthly"
+                        ],
+                        "type": "string"
+                      },
+                      "corpus": {
+                        "description": "corpus to train on; empty = the built-in corpus",
+                        "type": "string"
+                      },
+                      "steps": {
+                        "description": "0 = one epoch",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "id",
+                  "training"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "system_prompt": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Set when an agent retrains",
+        "tags": [
+          "action"
         ]
       }
     },
@@ -7348,6 +9732,434 @@
           }
         },
         "summary": "Un-expose model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_agent": {
+      "post": {
+        "description": "Update the provided fields of an agent (name, description, model, system prompt, tools); replicates. Returns the updated record. Requires orchestration:update_agent.",
+        "operationId": "update_agent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "description": {
+                    "type": "string"
+                  },
+                  "goals": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "system_prompt": {
+                    "type": "string"
+                  },
+                  "tools": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "created_at": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "system_prompt": {
+                          "type": "string"
+                        },
+                        "tools": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "updated_at": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update an agent",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_plan": {
+      "post": {
+        "description": "Update a Plan's name, tier, quotas, or period by its uuid (Conflict D); the created stamp stays fixed. Replicates. Requires orchestration:update_plan.",
+        "operationId": "update_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "period_start": {
+                    "type": "string"
+                  },
+                  "plan_id": {
+                    "description": "the plan's uuid to update",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "quotas": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "tier": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "plan_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "period_start": {
+                          "type": "string"
+                        },
+                        "quotas": {
+                          "additionalProperties": {
+                            "type": "number"
+                          },
+                          "type": "object"
+                        },
+                        "tier": {
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id"
+                      ],
+                      "title": "zetta.Plan",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_workspace_profile": {
+      "post": {
+        "description": "Update a Workspace Profile's role, daily work, or approved source refs by its uuid (#886); the owner and created stamp stay fixed. Replicates. Requires orchestration:update_workspace_profile.",
+        "operationId": "update_workspace_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "daily_work": {
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  },
+                  "sources": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "workspace_profile_id": {
+                    "description": "the profile's uuid to update",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "workspace_profile_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "daily_work": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "owner",
+                        "id"
+                      ],
+                      "title": "zetta.WorkspaceProfile",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a workspace profile",
         "tags": [
           "action"
         ]

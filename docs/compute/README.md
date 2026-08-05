@@ -8,7 +8,7 @@ partials over the wire. Read here for anything touching device backends, job sch
 autoscaling, or near-data execution; the ops themselves live in [../ddf/](../ddf/ddf.md) and
 [../ml/](../ml/gbdt.md).
 
-- [compute-device.md](compute-device.md) — the `ComputeDevice` operator interface + typed device-buffer memory model + the `zetta-compute` target and optional CUDA backend (ADR-27 / #359, #363).
+- [compute-device.md](compute-device.md) — the `ComputeDevice` operator interface + typed device-buffer memory model + the `zetta-compute` target and optional CUDA / MLX backends (ADR-27 / #359, #363). The **MLX backend** (`MlxDevice`, Apple-Silicon/Metal, opt-in `-DZETTA_ENABLE_MLX=ON`) is the default macOS accelerator for the RLVR agent (#555); SYCL is the deferred cross-platform backend.
 - [cpu-device.md](cpu-device.md) — the always-built reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for` (`CpuDevice`, #360).
 - [device-registry.md](device-registry.md) — per-node device enumeration + capability report + backend selection (accelerator-first, CPU fallback) (`DeviceRegistry`, #362).
 - [work-stealing-scheduler.md](work-stealing-scheduler.md) — the task pool: idle/faster workers and nodes steal pending work, elastic mid-job membership (`WorkStealingScheduler` / `DistributedScheduler`, #366/#367).

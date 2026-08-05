@@ -237,6 +237,8 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_workspace_profiles();
+    load_plans();
     load_indexes();
     load_jobs();
     load_dataset_partitions();
@@ -301,6 +303,19 @@ bool Node::start() {
     return true;
 }
 
+// Flush every table's storage engine. The engines defer file writes so a
+// reconcile pass costs one rewrite per touched chunk instead of one per row; this
+// is the point at which that deferral is settled, on the thread that owns the
+// tree.
+void Node::flush_stores() {
+    for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
+        if (!database) continue;
+        for (const std::shared_ptr<zetta::data::Table>& table : database->tables()) {
+            if (table) table->store().flush();
+        }
+    }
+}
+
 void Node::tick() {
     // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
     //    adopt this thread, then execute any node-tree work queued by
@@ -335,6 +350,13 @@ void Node::tick() {
         //     rebalance partition placement (#517). This DOES capture updated
         //     part: owners; step 3 persists the moved document.
         rebalance_partitions_on_membership_change(snapshot);
+        // 1c. Make the reconciled rows durable, ONCE. Reconcile issues an update
+        //     per row and the storage engine defers the file write (#952), so the
+        //     whole pass costs one rewrite per chunk it actually touched rather
+        //     than one per row. Reads never saw the difference — the engine
+        //     answers from memory — but the projection must not lag past the tick
+        //     that produced it.
+        flush_stores();
     }
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
@@ -676,7 +698,7 @@ void Node::load_projects() {
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
             meta.value("owner", std::string{}), entry.path(), replication_,
-            this);
+            this, meta.value("description", std::string{}));
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -944,7 +966,8 @@ std::vector<std::string> Node::database_names() const {
 // ----- projects (mirror the database CRUD; replicated as project:<uuid>) -----
 
 std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
-                                              std::string owner) {
+                                              std::string owner,
+                                              std::string description) {
     if (name.empty() || find_project(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     const std::string now = zetta::util::now_iso8601();
@@ -953,16 +976,19 @@ std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
                           nlohmann::json{{"name", name},
                                          {"created", now},
                                          {"updated", now},
-                                         {"owner", owner}});
+                                         {"owner", owner},
+                                         {"description", description}});
     }
-    return materialize_project(id, std::move(name), now, now, std::move(owner));
+    return materialize_project(id, std::move(name), now, now, std::move(owner),
+                               std::move(description));
 }
 
 std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string id,
                                                    std::string name,
                                                    std::string created,
                                                    std::string updated,
-                                                   std::string owner) {
+                                                   std::string owner,
+                                                   std::string description) {
     if (auto existing = find_project_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
@@ -972,7 +998,7 @@ std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string 
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
-                                             replication_, this);
+                                             replication_, this, std::move(description));
     project->persist_meta();
     projects_.push_back(project);
     return project;
@@ -1320,6 +1346,184 @@ bool Node::materialize_drop_model(const std::string& id) {
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     models_.erase(it);
+    return true;
+}
+
+// ----- workspace profiles (#886) --------------------------------------------
+// A top-level replicated entity, identical in shape to models: a `profile:<uuid>`
+// CRDT key + a `<uuid>/workspace_profile.json` projection, boundary-validated on
+// load and reconcile.
+
+void Node::load_workspace_profiles() {
+    workspace_profiles_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "workspace_profile.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::workspace::WorkspaceProfileValue> value =
+            meta.is_discarded()
+                ? std::nullopt
+                : zetta::workspace::parse_workspace_profile_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid workspace profile %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        workspace_profiles_.push_back(
+            std::make_shared<zetta::workspace::WorkspaceProfile>(
+                entry.path().filename().string(), *value, entry.path(),
+                replication_));
+    }
+    std::sort(workspace_profiles_.begin(), workspace_profiles_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created()) return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::create_workspace_profile(zetta::workspace::WorkspaceProfileValue value) {
+    if (value.owner.empty()) return nullptr;  // owner is required
+    const std::string id = zetta::util::new_uuid();
+    value.created = zetta::util::now_iso8601();
+    if (value.updated.empty()) value.updated = value.created;
+    if (replication_) {
+        replication_->set(catalog::workspace_profile_key(id), to_json(value));
+    }
+    return materialize_workspace_profile(id, std::move(value));
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::materialize_workspace_profile(std::string id,
+                                    zetta::workspace::WorkspaceProfileValue value) {
+    if (auto existing = find_workspace_profile(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto profile = std::make_shared<zetta::workspace::WorkspaceProfile>(
+        std::move(id), std::move(value), dir, replication_);
+    profile->persist_meta();
+    workspace_profiles_.push_back(profile);
+    return profile;
+}
+
+std::shared_ptr<zetta::workspace::WorkspaceProfile>
+Node::find_workspace_profile(const std::string& id) const {
+    for (const auto& profile : workspace_profiles_) {
+        if (profile->id() == id) return profile;
+    }
+    return nullptr;
+}
+
+bool Node::drop_workspace_profile(const std::string& id) {
+    if (!find_workspace_profile(id)) return false;
+    if (replication_) replication_->remove(catalog::workspace_profile_key(id));
+    return materialize_drop_workspace_profile(id);
+}
+
+bool Node::materialize_drop_workspace_profile(const std::string& id) {
+    const auto it = std::find_if(
+        workspace_profiles_.begin(), workspace_profiles_.end(),
+        [&](const std::shared_ptr<zetta::workspace::WorkspaceProfile>& p) {
+            return p->id() == id;
+        });
+    if (it == workspace_profiles_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    workspace_profiles_.erase(it);
+    return true;
+}
+
+// ----- plans (Conflict D: metered usage + plan) -----------------------------
+// A top-level replicated entity, identical in shape to workspace profiles: a
+// `plan:<uuid>` CRDT key + a `<uuid>/plan.json` projection, boundary-validated.
+
+void Node::load_plans() {
+    plans_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "plan.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::billing::PlanValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : zetta::billing::parse_plan_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid plan %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        plans_.push_back(std::make_shared<zetta::billing::Plan>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    std::sort(plans_.begin(), plans_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<zetta::billing::Plan> Node::create_plan(
+    zetta::billing::PlanValue value) {
+    if (value.name.empty()) return nullptr;  // name is required
+    const std::string id = zetta::util::new_uuid();
+    value.created = zetta::util::now_iso8601();
+    if (value.updated.empty()) value.updated = value.created;
+    if (replication_) replication_->set(catalog::plan_key(id), to_json(value));
+    return materialize_plan(id, std::move(value));
+}
+
+std::shared_ptr<zetta::billing::Plan> Node::materialize_plan(
+    std::string id, zetta::billing::PlanValue value) {
+    if (auto existing = find_plan(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto plan = std::make_shared<zetta::billing::Plan>(
+        std::move(id), std::move(value), dir, replication_);
+    plan->persist_meta();
+    plans_.push_back(plan);
+    return plan;
+}
+
+std::shared_ptr<zetta::billing::Plan> Node::find_plan(const std::string& id) const {
+    for (const auto& plan : plans_) {
+        if (plan->id() == id) return plan;
+    }
+    return nullptr;
+}
+
+bool Node::drop_plan(const std::string& id) {
+    if (!find_plan(id)) return false;
+    if (replication_) replication_->remove(catalog::plan_key(id));
+    return materialize_drop_plan(id);
+}
+
+bool Node::materialize_drop_plan(const std::string& id) {
+    const auto it = std::find_if(
+        plans_.begin(), plans_.end(),
+        [&](const std::shared_ptr<zetta::billing::Plan>& p) { return p->id() == id; });
+    if (it == plans_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    plans_.erase(it);
     return true;
 }
 
@@ -3146,6 +3350,17 @@ void Node::migrate_to_replication() {
                               model->metadata());
         }
     }
+    for (const auto& profile : workspace_profiles_) {
+        if (!already_replicated(catalog::workspace_profile_key(profile->id()))) {
+            replication_->set(catalog::workspace_profile_key(profile->id()),
+                              profile->metadata());
+        }
+    }
+    for (const auto& plan : plans_) {
+        if (!already_replicated(catalog::plan_key(plan->id()))) {
+            replication_->set(catalog::plan_key(plan->id()), plan->metadata());
+        }
+    }
     for (const auto& index : indexes_) {
         if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
@@ -3197,6 +3412,8 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
     reconcile_models(snapshot);
+    reconcile_workspace_profiles(snapshot);
+    reconcile_plans(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
@@ -3400,6 +3617,7 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         std::string created;
         std::string updated;
         std::string owner;
+        std::string description;
     };
     std::map<std::string, ProjectEntry> projects;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -3411,7 +3629,8 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
                          ProjectEntry{value.value("name", std::string{}),
                                       value.value("created", std::string{}),
                                       value.value("updated", std::string{}),
-                                      value.value("owner", std::string{})});
+                                      value.value("owner", std::string{}),
+                                      value.value("description", std::string{})});
     }
     std::vector<std::string> local_project_ids;
     for (const auto& project : projects_) {
@@ -3424,12 +3643,13 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         auto project = find_project_by_id(id);
         if (!project) {
             materialize_project(id, entry.name, entry.created, entry.updated,
-                                entry.owner);
+                                entry.owner, entry.description);
         } else if (project->name() != entry.name ||
                    project->updated() != entry.updated ||
-                   project->owner() != entry.owner) {
+                   project->owner() != entry.owner ||
+                   project->description() != entry.description) {
             project->set_metadata(entry.name, entry.created, entry.updated,
-                                  entry.owner);  // a peer changed it (no re-capture)
+                                  entry.owner, entry.description);  // a peer changed it (no re-capture)
         }
     }
 }
@@ -3505,6 +3725,9 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         std::string project_id;
         std::string name;
         ir::ExecutionGraph graph;
+        bool approved = false;  // #885: the replicated plan-approval state
+        std::string approved_by;
+        std::string approved_at;
     };
     std::map<std::string, GraphEntry> desired_graphs;  // id -> entry
     for (const auto& [key, value] : snapshot.items()) {
@@ -3519,7 +3742,10 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         desired_graphs.emplace(
             std::move(id),
             GraphEntry{value.value("project", std::string{}),
-                       value.value("name", std::string{}), std::move(*graph)});
+                       value.value("name", std::string{}), std::move(*graph),
+                       value.value("approval", std::string{}) == "approved",
+                       value.value("approved_by", std::string{}),
+                       value.value("approved_at", std::string{})});
     }
     for (const auto& project : projects_) {
         std::vector<std::string> local_graph_ids;
@@ -3539,11 +3765,17 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         if (!project) continue;  // dangling graph (project gone) — ignore
         auto existing = project->find_graph_by_id(id);
         if (!existing) {
-            project->materialize_graph(id, entry.name, std::move(entry.graph));
+            project->materialize_graph(id, entry.name, std::move(entry.graph),
+                                       entry.approved, entry.approved_by,
+                                       entry.approved_at);
         } else if (existing->name() != entry.name ||
+                   existing->approved() != entry.approved ||
                    ir::to_json(existing->graph()) != ir::to_json(entry.graph)) {
-            existing->set_contents(entry.name,
-                                   std::move(entry.graph));  // a peer changed it
+            // A peer changed the plan and/or its approval — mirror both, then
+            // persist once (set_approval is pure; set_contents writes the file).
+            existing->set_approval(entry.approved, entry.approved_by,
+                                   entry.approved_at);
+            existing->set_contents(entry.name, std::move(entry.graph));
         }
     }
 }
@@ -3652,6 +3884,63 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
             materialize_model(id, std::move(value));
         } else if (model->metadata() != to_json(value)) {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
+    // Workspace profiles (top-level, no parent): profile:<id> -> the value.
+    // Decode + validate the desired set at the boundary (a malformed CRDT value
+    // is ignored, not trusted), then drop / add / update the local projection to
+    // match — with no re-capture (apply_value rewrites the file only).
+    std::map<std::string, zetta::workspace::WorkspaceProfileValue> profiles;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kWorkspaceProfilePrefix);
+        if (id.empty()) continue;
+        if (std::optional<zetta::workspace::WorkspaceProfileValue> parsed =
+                zetta::workspace::parse_workspace_profile_value(value)) {
+            profiles.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& profile : workspace_profiles_) local_ids.push_back(profile->id());
+    for (const std::string& id : local_ids) {
+        if (!profiles.contains(id)) materialize_drop_workspace_profile(id);
+    }
+    for (auto& [id, value] : profiles) {
+        auto profile = find_workspace_profile(id);
+        if (!profile) {
+            materialize_workspace_profile(id, std::move(value));
+        } else if (profile->metadata() != to_json(value)) {
+            profile->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_plans(const nlohmann::json& snapshot) {
+    // Plans (top-level, no parent): plan:<id> -> the value. Decode + validate at
+    // the boundary (a malformed CRDT value is ignored), then drop / add / update
+    // the local projection to match — with no re-capture.
+    std::map<std::string, zetta::billing::PlanValue> plans;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kPlanPrefix);
+        if (id.empty()) continue;
+        if (std::optional<zetta::billing::PlanValue> parsed =
+                zetta::billing::parse_plan_value(value)) {
+            plans.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& plan : plans_) local_ids.push_back(plan->id());
+    for (const std::string& id : local_ids) {
+        if (!plans.contains(id)) materialize_drop_plan(id);
+    }
+    for (auto& [id, value] : plans) {
+        auto plan = find_plan(id);
+        if (!plan) {
+            materialize_plan(id, std::move(value));
+        } else if (plan->metadata() != to_json(value)) {
+            plan->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
 }

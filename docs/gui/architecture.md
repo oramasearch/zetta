@@ -112,7 +112,7 @@ split: it renders through the master-detail scaffold.
 
 `draw_active_view()` renders: menu bar (File · View · Help only) → a fixed
 left **sidebar** (grammar-rendered from the registry: section headers, rows
-with name + badge, coral accent strictly on the active row — the design
+with name + badge, the accent strictly on the active row — the design
 system's "you are here") → the content region, which begins with the view's
 `page_header`. The sidebar is the app's shape made visible; menus no longer
 carry navigation.

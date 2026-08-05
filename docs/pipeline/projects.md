@@ -103,7 +103,8 @@ reverse path used by reconciliation.
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
 | `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::pipeline::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
-| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
+| `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
 | `graph_names()` / `graph_count()` | `vector<string>` / `size_t` | Sorted by name / count. |
@@ -113,9 +114,10 @@ A `ProjectGraph` is `id` + `project_id` + `name` + the `ir::ExecutionGraph`. It 
 else:
 
 - **Replicated state.** One flat key per graph,
-  `graph:<uuid> → { project: <proj_uuid>, name, graph: { nodes, edges } }`
-  (`src/core/catalog.hpp`). The whole graph rides as a single value (a graph is
-  authored and stored as a unit) — the serialized form is
+  `graph:<uuid> → { project: <proj_uuid>, name, approval, approved_by,
+  approved_at, graph: { nodes, edges } }` (`src/core/catalog.hpp`). The whole
+  graph rides as a single value (a graph is authored and stored as a unit) — the
+  serialized form is
   [`ir::to_json`](execution-graph.md#json-serialization). On each `tick()` the
   node reconciles, so a peer's graph (or an edit/drop) materializes locally and
   versions converge conflict-free.
@@ -128,6 +130,31 @@ else:
   **skip** anything that fails the schema/structure check, so a malformed payload
   is dropped rather than allowed to corrupt the projection. The integrity
   preflight counts a `graph:` whose project is gone as a **dangling graph**.
+
+### Plan approval — review-before-build (#885)
+
+A `ProjectGraph` carries a **plan-approval state** so the product's
+review-before-build flow (the design's *Proposed Solution* screen) has engine
+truth behind it. It is part of the replicated record (`approval` +
+`approved_by` + `approved_at`), reconciles across peers, and survives restart on
+both the disk and CRDT paths.
+
+- **Proposed by default.** Every compiled/created plan starts `proposed`
+  (`create_graph` / `compile_intent_to_graph`). Editing a plan (`update_graph`)
+  **re-proposes** it — a changed Pipeline must be approved again.
+- **Approved by `approve_plan`.** The governed, audited `approve_plan` capability
+  (→ `Project::approve_graph`) is the human "yes, build this": it stamps the
+  approver + instant and audits `graph_approved`.
+- **gate and deploy require approval.** `handle_gate` and `handle_deploy` refuse a
+  `proposed` plan with `not_approved` (approve first). This is **orthogonal to
+  the correctness gate**: approval is the human sign-off; the gate is the machine
+  verification — a plan can be approved *and* still be blocked by the gate (the
+  gate-blocked journey approves the leaky plan, then the gate catches the leak).
+  The normal Studio flow is **approve → gate → deploy → run**; `run` inherits
+  approval by sequence (it follows a deploy that required it).
+- **Surfaced for the UI.** `get_project` (per graph), `get_graph`, and the
+  compile/save outputs all carry `approval`, so the Studio statuses (Draft /
+  Needs approval / Ready / Running) map onto engine state.
 
 ## GUI panel
 

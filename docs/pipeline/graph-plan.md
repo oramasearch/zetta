@@ -91,13 +91,13 @@ graph shows the projection; uncheck it for a plain edit canvas). When on:
   `coordinator`) under its name, so the graph reads as "coloured by where it runs".
 - **Cluster strip** — the current cluster's node boxes (the Cluster view's
   grammar). Selecting a step (in the canvas or the table) gives the nodes it runs
-  on the coral **"runs here"** treatment — the direct graph↔cluster link.
+  on the accent **"runs here"** treatment — the direct graph↔cluster link.
 - **Per-step table** — `Step · Stage · Placement · Runs on`, one row per step.
   Clicking a row selects that step; hovering it shows the projection's rationale.
 
 Placement colours are the shared status tones (`tone_of(StepPlacement)` in
 `src/gui/tones.hpp`, [status-tones.md](../gui/status-tones.md), #636) — semantic,
-never coral (coral stays the "you are here" / "runs here" accent): **green** for
+never the accent (it stays the "you are here" / "runs here" signal): **green** for
 near-data (compute where the data lives — the efficient case), **quiet** for
 fan-out (SPMD, distributed) and an all-nodes load (neutral, nothing to flag),
 **amber** for the coordinator (a single-node funnel point).

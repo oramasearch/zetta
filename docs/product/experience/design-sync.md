@@ -1,0 +1,183 @@
+# design-sync — the Studio design import ledger
+
+The record of every sync between Daniel's design repo (`oramasearch/orama-design`)
+and zetta's two Studio surfaces — the web app (`src/core/api/web_ui.cpp`) and the
+desktop GUI (`src/gui/`). One entry per sync wave: the pinned design ref, what
+moved, and what was deliberately skipped (with the reason, so the next sync
+doesn't re-litigate it). Workflow + translation tables: the **studio-design-sync**
+skill (`.claude/skills/studio-design-sync/`). Reference inventory of the design
+repo: `docs/projects/orama-studio-marketplace/design-index.md` in
+https://github.com/oramasearch/orama-bridge.
+
+Boundaries: rendering only — no new JSON/wire formats, no new behavior paths.
+The web app stays C++ server-rendered (minimal hand-written JS only where the
+interaction demands it); the desktop is SDL3-first with ImGui as the temporary
+crutch (repo `CLAUDE.md` → "Orama Studio — the product surface this engine
+wears").
+
+## 2026-07-23 — web app (#874)
+
+**Source pin:** `oramasearch/orama-design` `main` @ `5bdbc27` — live version
+"Orama Studio, July 23rd", design system `@orama/design-system` v0.3.0.
+
+**What moved:**
+
+- **Tokens** (`web_ui_stylesheet()`): IBM Plex Sans / IBM Plex Mono stacks
+  (system-font fallback), the one action hue Carbon Blue 60 `#0f62fe`
+  (`--accent` for links/focus/active, `--accent-solid` for the primary button),
+  Carbon-derived neutral surfaces and status colors (always paired with text),
+  product default 14px type, and a full **paired dark theme** via
+  `prefers-color-scheme` (gray 100/90/80 surfaces, Blue 40 links) — pure CSS,
+  no JS. `--white` renamed to the semantic `--surface`.
+- **Shell IA** (`web_ui_shell()`): the five Studio sidebar groups — Workspace
+  (Home · Projects · Data library · Models), Operate (Runs and activity ·
+  Observability · Governance), Developer (Shell · Notebooks · Agents · Chat ·
+  Data generators), Documentation (Overview `/llms.txt` · MCP `/mcp.md` · API
+  `/v1/openapi.json`), Advanced (Infrastructure — the cluster view, demoted per
+  the design). Nav keys (`?view=` values) unchanged; only grouping and labels
+  moved. Brand lockup, page titles, login, and console copy are **Orama
+  Studio**.
+- **Vocabulary contract**: user-facing copy says Pipeline / Verification (never
+  "execution graph" / "correctness gate"); the visual graph editor is retitled
+  **Pipeline editor** and explicitly labeled *Technical view* — the one
+  sanctioned surface for raw platform terms.
+- **Icon semantics**: home = Studio home (the `overview` nav key), plus `docs`
+  / `mcp` / `api` glyphs for the Documentation group; favicon on Blue 60.
+- **Locked by** `tests/api/test_web_ui_studio.cpp` (tokens, groups, vocabulary,
+  icons — the renderers are pure, so the contract is directly testable).
+
+**Second pass — the Studio home.** The `overview` view became the design's
+create-first welcome: hero ("What would you like to create?"), the two entry
+paths (Create a Solution — fully backed; Discover Opportunities — honest
+in-training state for the Auto-Suggest model that reads a Workspace Profile),
+and Continue your work (every Project with live status + next useful action
+from `system.runs` / the authoring stage). The workspace counts moved to the
+top of Runs and activity; the cluster table already lived on Infrastructure.
+
+**Third pass — full design parity.** The follow-ups closed: **IBM Plex is
+now real on both surfaces** — the node serves the woff2 latin subsets itself
+at `GET /fonts/*.woff2` (embedded at build time, immutable-cacheable, no
+external requests; `@font-face` in the stylesheet), and the GUI embeds the
+Plex TTFs (Sans Regular + SemiBold for headings + Mono; `assets/fonts/`,
+`cmake/embed_font.cmake`). The web shell gained the design's chrome: topbar
+utility cluster (Search → Data library, Get help → the docs index, the
+activity bell → Runs and activity — every icon a real destination), the
+signed-in identity card pinned to the sidebar bottom (owning Sign out), the
+live Projects count badge, dotted status pills, and a bounded content column.
+The GUI sidebar leads with the Orama Studio lockup and the Pipeline-workspace
+row carries the project-count badge.
+
+**Fourth pass — the Ask Orama rail, the theme toggle, and the identity.** The
+design's collaborator column is real: every page renders the right-hand **Ask
+Orama rail**, backed by the node's served agent through `POST /assist` -> the
+same `chat` capability the MCP/REST surfaces expose (cookie-authed, audited,
+traced). With no served agent the rail shows its honest empty state pointing
+at Agents - never a mock conversation. This supersedes the first-pass skip:
+the base agent (#555/#849) **is** the product agent, so the naming is honest
+now. The topbar gains the **theme toggle** (light -> dark -> follow-the-system;
+a pre-paint pin so a stored choice never flashes; `data-theme` +
+`prefers-color-scheme` share one override set), and the sidebar identity card
+shows the **resolved user name** (`authenticate_token` -> `User::name`)
+instead of a key id. The rail's chat JS is the sanctioned kind - streaming
+chat is exactly the "only when the interaction demands it" case. Desktop: the
+entry cards carry the design's hierarchy (accent eyebrow -> heading-face
+title -> body -> action) and Continue your work is the design's three-column
+layout (state · project · next action). The Pipeline editor stays on both
+surfaces, untouched.
+
+**Still deliberately out (and why):**
+- **The six project tabs / discovery / lifecycle screens**: no backing engine
+  capabilities for Opportunities, Verification criteria editing, Saved
+  Versions, or Continuous health as designed — the web app renders engine
+  truth, no mock screens. These arrive with their capabilities.
+- **Notifications as a real inbox**: the bell routes to Runs and activity (the
+  live feed); a per-user notification store does not exist in the engine.
+- (The first-pass skips — fonts, the utility cluster, Ask Orama — were closed
+  by passes three and four above.)
+
+## 2026-07-23 — desktop GUI (#875)
+
+**Source pin:** same as the web import — `oramasearch/orama-design` `main` @
+`5bdbc27`, design system v0.3.0. The GUI inherits the token decisions the web
+import recorded.
+
+**What moved:**
+
+- **Theme table** (`src/gui/app_internal.hpp` — the one shared grammar
+  header): the accent is now named after its role — `kCoral`/`kCoralHover`/
+  `kCoralWash` became **`kAccent` (Carbon Blue 60 `#0f62fe`) / `kAccentHover`
+  (Blue 70) / `kAccentWash` (Blue 10)** — and the canvas draw-list selected
+  fill/border follow. Both render paths consume the same table: the ImGui
+  style (`apply_orama_theme`) and the custom SDL3 draw-list canvases
+  (`kCanvasBox*`). The "one accent, used surgically; never for status"
+  discipline is unchanged — only the hue and the naming converged.
+- **Shell IA** (`App::view_registry()`, app_views.cpp): the Studio sidebar
+  groups — Workspace (Pipeline workspace · Verification · Deploy · Models),
+  Data library (Explorer · Datasets · Search), Operate (Activity · Traces ·
+  Runs · Compute jobs · Test suite · Admin & audit), Developer (SQL query ·
+  Console · Agents · Chat · Data generators), Advanced (Infrastructure ·
+  Cloud inspector). View enum names stay the engine's; labels speak Studio.
+- **Vocabulary contract**: "Graph workspace" → **Pipeline workspace**,
+  "Correctness gate" → **Verification**, "Cluster" → **Infrastructure**
+  (demoted to Advanced); every user-facing "execution graph" / "correctness
+  gate" string in panel copy and onboarding rewrote to Pipeline /
+  Verification. Window title, About dialog, and menu are **Orama Studio**
+  (the About copy states Studio is the surface of the Zetta platform).
+- **Docs**: `docs/gui/design-system.md` reground on the Studio system
+  (canonical source = `oramasearch/orama-design` `packages/design-system/`);
+  the coral-era wording swept from every `docs/gui/` page and the rule-cards.
+
+**Second pass — the Studio home** (mirrors the web): `draw_home` is
+create-first — the hero question via `page_header`, the two entry-path
+`section_card`s side by side (Create a Solution → the New Project modal;
+Discover Opportunities with the honest in-training state), Needs attention
+only when non-empty, and Continue your work (per-Project live state + next
+action: newest run → Review run/failure/results; compiled Pipelines →
+Verify and deploy; else Capture an intent). The cluster-health strip, recent
+runs, and recent activity dropped off Home — their owning panels are one
+click away in Operate. `docs/gui/home-dashboard.md` rewrote to match.
+
+**Fifth pass — the July 24 design sync (walked live against the prototype).**
+Synced against the live "Orama Studio, July 24th" prototype with a page-by-page
+browser walk. The canonical page anatomy now applies to **every** web view:
+mono eyebrow -> huge title -> one-line sub -> mono meta strip with hairline
+separators (`web_ui_page_hero`), accent-square section headers, tinted table
+header rows, and status banners (live execution on Runs and activity, the
+red unreachable-node banner + stat cards on Infrastructure). The sidebar
+follows the July 24 IA (Connections + Models under Developer; Governance +
+Infrastructure under Advanced), the topbar carries the current page title with
+the Connected pill, and the Ask Orama rail is a **toggleable drawer, closed by
+default** (the July 24 behavior) behind the topbar agent button. New
+**Connections** view: the three connection paths (API / MCP / Shell — every
+card a live destination), the saved source connections, and the safety
+contract. The desktop registry mirrors the same IA. Fixed along the way: the
+`sql` capability calls used the wrong input key (`sql` vs `statement`) so the
+home worklist fell back to authoring states, and `nlohmann::value()` throwing
+on explicit nulls in system rows could kill the node from a render path — all
+row reads are now null-safe (the no-exceptions boundary applies to renderers
+too).
+
+**Architecture revision (Steve, 2026-07-24).** The web surface adopts the
+design repo's **React Studio app as the real web UI**: screens wired to the
+`/v1` JSON surface (the capability registry stays the only behavior path),
+the node serves the built bundle (built in the design repo — no npm enters
+zetta's build), and the C++ SSR pages remain as the zero-JS fallback until
+screen parity, then retire. Supersedes the 07-23 SSR-first rule; the
+division of labor follows the design repo's lane docs (Codex builds the
+screens; zetta owns serving, auth, and the API contract). Tracking:
+the adoption-plan issue on oramasearch/zetta.
+
+**Deliberately skipped (and why):**
+
+- **IBM Plex faces**: the GUI embeds Geist/Geist Mono TTFs; swapping requires
+  adding the Plex font binaries — a follow-up shared with the web surface's
+  font-serving question. The type *scale* and grammar are unchanged.
+- **Custom-SDL3 rewrites of ImGui views**: the rendering philosophy (SDL3
+  first, ImGui as the temporary crutch) governs *new* design-led surfaces;
+  this import recolors and regroups the existing views rather than rewriting
+  them — motion parity work rides the SDL3 surfaces as they land.
+- **Documentation nav group**: the GUI has no in-app docs views yet; the web
+  surface links the public discovery docs. No mock screens.
+- **Ask Orama entry**: same reason as the web — the `chat` view talks to
+  user-built/served agents, which the design keeps distinct from the product
+  agent.

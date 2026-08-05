@@ -184,7 +184,10 @@ TEST_F(RequireAuthFixture, EveryRouteDeniesWithoutToken) {
               401);
     EXPECT_EQ(drive(*server, "GET", "/v1/server_info").status, 401);
     EXPECT_EQ(drive(*server, "GET", "/v1/specs").status, 401);
-    EXPECT_EQ(drive(*server, "GET", "/llms.txt").status, 401);
+    // /llms.txt is a PUBLIC discovery doc — registered before the gate, like
+    // /mcp.md (the web-ui public-discovery-docs change): 200 without a token
+    // by design.
+    EXPECT_EQ(drive(*server, "GET", "/llms.txt").status, 200);
     // '/' serves the PUBLIC web-UI shell (an SPA login page — no secrets; its JS
     // fetches the gated /v1/* data endpoints under a bearer), so it is 200 by
     // design: it is the one deliberate public route (see the web_ui_page route in

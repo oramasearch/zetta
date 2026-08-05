@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.dev/schemas/rlvr-task.schema.json",
+  "title": "RLVR training task (CorpusTask)",
+  "description": "One verifiable RLVR training game the base agent trains on (zetta#866). Mirrors zetta::agent::CorpusTask / AdmissionCase; the native loader (agent/corpus_io.hpp) and admission gate re-check it before training. Every generated task MUST validate against this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task", "reference", "negative_controls"],
+  "properties": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "required"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "initial_state": {
+          "type": "object",
+          "description": "The world before the agent acts — data available + any pasted current_state (n8n/sql/notebook/prose) the user wants improved."
+        },
+        "tool_names": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["connect", "clean", "model", "index", "serve", "act"] }
+        },
+        "required": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "The checkable success criterion — objectively verifiable facts of a correct built graph. A task with no required facts is untrainable and MUST be rejected."
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "The reference solution's facts — MUST satisfy every required fact (passes the grader)."
+    },
+    "negative_controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "object" },
+      "description": "Plausible-wrong solutions — each MUST fail >= 1 required fact (discrimination is the product)."
+    },
+    "tier": { "type": "integer", "minimum": 0, "maximum": 5 },
+    "difficulty": { "type": "number", "minimum": 0, "maximum": 1 },
+    "held_out": { "type": "boolean" },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  }
+}

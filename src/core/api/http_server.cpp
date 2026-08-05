@@ -4,8 +4,13 @@
 // happens exactly once, here, at the wire boundary.
 #include "zetta/api/server.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <cctype>
+#include <map>
 #include <thread>
 #include <utility>
 
@@ -20,16 +25,25 @@
 #include <boost/http/server/router.hpp>
 #include <boost/json.hpp>
 
+#include "zetta_web_font_mono_400.hpp"
+#include "zetta_web_font_sans_400.hpp"
+#include "zetta_web_font_sans_500.hpp"
+#include "zetta_web_font_sans_600.hpp"
+
 #include "zetta/api/background.hpp"
+#include "zetta/api/clerk_auth.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
 #include "zetta/api/mcp_docs.hpp"
+#include "zetta/api/mcp_prompts.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
+#include "zetta/agent/agent_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -393,7 +407,7 @@ struct ConsoleRoute {
 
 std::string console_help_json() {
     return nlohmann::json{{"messages", nlohmann::json::array({
-        "Orama Zetta console \xE2\x80\x94 one box, auto-detected.",
+        "Orama Studio console \xE2\x80\x94 one box, auto-detected.",
         "  type SQL directly        SELECT * FROM system.tables",
         "  type Python directly     model = rank(customers)",
         "  /sql <statement>         force SQL",
@@ -401,8 +415,8 @@ std::string console_help_json() {
         "  /tables                  list the system.* tables",
         "  /help                    this message",
         "  /clear                   clear the transcript (browser)",
-        "SQL runs through the query engine; Python lowers to the execution graph, passes the",
-        "correctness gate, then runs \xE2\x80\x94 every statement is audited."})}}.dump();
+        "SQL runs through the query engine; Python lowers to a Pipeline, passes",
+        "Verification, then runs \xE2\x80\x94 every statement is audited."})}}.dump();
 }
 
 bool is_sql_leading_keyword(std::string word) {
@@ -616,7 +630,9 @@ struct ApiServer::Impl {
         if (method == "initialize") {
             return jsonrpc_result(
                 id, {{"protocolVersion", kProtocolVersion},
-                     {"capabilities", {{"tools", nlohmann::json::object()}}},
+                     {"capabilities",
+                      {{"tools", nlohmann::json::object()},
+                       {"prompts", nlohmann::json::object()}}},
                      {"serverInfo",
                       {{"name", "zetta"}, {"version", zetta::kVersion}}}});
         }
@@ -700,6 +716,26 @@ struct ApiServer::Impl {
             result["structuredContent"] = std::move(payload);
             result["isError"] = !call_result.ok;
             return jsonrpc_result(id, std::move(result));
+        }
+        if (method == "prompts/list") {
+            // Guided workflows over the tools (#872) — no per-prompt scoping: a prompt is a
+            // template the client expands into tool calls, and each of those calls is still
+            // scope-checked at tools/call time.
+            return jsonrpc_result(id, {{"prompts", mcp_prompt_definitions()}});
+        }
+        if (method == "prompts/get") {
+            const auto& params = request.value("params", nlohmann::json::object());
+            const std::string prompt_name = params.value("name", "");
+            if (prompt_name.empty()) {
+                return jsonrpc_error(id, -32602, "params.name is required");
+            }
+            std::string reason;
+            if (std::optional<nlohmann::json> prompt = render_mcp_prompt(
+                    prompt_name, params.value("arguments", nlohmann::json::object()),
+                    &reason)) {
+                return jsonrpc_result(id, std::move(*prompt));
+            }
+            return jsonrpc_error(id, -32602, reason);
         }
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
@@ -820,13 +856,32 @@ struct ApiServer::Impl {
                 zetta::observability::parse_traceparent(traceparent)
                     .value_or(zetta::observability::make_root_trace());
             ApiResult call_result;
-            co_await bridge.run_on_owner([&] {
-                ApiContext context{node, cluster, identity.acting_key, trace,
-                                   &node.span_recorder(), &background};
-                context.acting_is_user = identity.is_user;
-                call_result =
-                    capability_registry.call(capability->name, input, context);
-            });
+            // An offloadable capability (chat: a CPU/GPU model decode touching only
+            // the thread-safe replication store) runs on a pool worker so a long
+            // generation never pins the owner/tick loop. Everything else is marshaled
+            // onto the owning loop, where a handler may touch the Node freely.
+            if (capability->offloadable) {
+                call_result = co_await zetta::runtime::offload([&]() -> ApiResult {
+                    ApiContext context{node, cluster, identity.acting_key, trace,
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = identity.is_user;
+                    return capability_registry.call(capability->name, input, context);
+                });
+                // offload resumes us on a pool worker; hop back onto the owning
+                // loop before touching the connection. route.send below is a
+                // Corosio op bound to that loop's executor — resuming it on a pool
+                // thread never completes and the response hangs (the decode itself
+                // already ran off-thread, so the tick loop stayed free).
+                co_await bridge.run_on_owner([] {});
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, identity.acting_key, trace,
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = identity.is_user;
+                    call_result =
+                        capability_registry.call(capability->name, input, context);
+                });
+            }
             status = http_status_of(rest_status(call_result));
             response_body = rest_envelope(call_result).dump();
         }
@@ -1048,6 +1103,16 @@ struct ApiServer::Impl {
             options += form_option(db_name, db_name, false);
         return options;
     }
+    // The served agents (agent:<id>) as a picker, so the Chat form is a selector (#849).
+    std::string agent_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select an agent\xE2\x80\xA6</option>";
+        if (context.node.replication() != nullptr)
+            for (const zetta::agent::AgentRecord& agent :
+                 zetta::agent::AgentStore(*context.node.replication()).list())
+                options += form_option(agent.name.empty() ? agent.id : agent.name, agent.id,
+                                       false);
+        return options;
+    }
 
     // The saved source connections, so the connector dialog offers a picker
     // instead of asking for a credential again (#827). Names only — the store's
@@ -1207,6 +1272,8 @@ struct ApiServer::Impl {
                 options = index_options(context);
             } else if (key == "model") {
                 options = model_options(context);
+            } else if (key == "agent") {
+                options = agent_options(context);
             } else if (key == "database") {
                 options = database_options(context);
             } else if (key == "connection") {
@@ -1498,28 +1565,140 @@ struct ApiServer::Impl {
         const std::string sel = query_param(route, "p", "");
 
         if (sel.empty()) {
+            // The Projects index (July 24): search, filter segments, and the
+            // rich table — every column derived from live engine state.
+            const std::string q = query_param(route, "q", "");
+            const std::string filter = query_param(route, "f", "all");
             ApiResult r =
                 capability_registry.call("list_projects", nlohmann::json::object(), context);
-            std::string list;
+            // user id -> name, so the Owner column reads as a person.
+            std::map<std::string, std::string> user_names;
+            if (ApiResult users = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", "SELECT user_id, name FROM system.users"}},
+                    context);
+                users.ok && users.value.contains("rows") && users.value["rows"].is_array())
+                for (const auto& row : users.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    const auto id = row.find("user_id");
+                    const auto name = row.find("name");
+                    if (id != row.end() && id->is_string() && name != row.end() &&
+                        name->is_string())
+                        user_names[id->get<std::string>()] = name->get<std::string>();
+                }
+            // Latest run per project id, one governed read.
+            struct RunInfo { std::string status; std::string updated; };
+            std::map<std::string, RunInfo> latest;
+            if (ApiResult runs = capability_registry.call(
+                    "sql",
+                    nlohmann::json{{"statement",
+                                    "SELECT project, status, updated FROM system.runs"}},
+                    context);
+                runs.ok && runs.value.contains("rows") && runs.value["rows"].is_array())
+                for (const auto& row : runs.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    auto text = [&](const char* key) -> std::string {
+                        const auto found = row.find(key);
+                        return found != row.end() && found->is_string()
+                                   ? found->get<std::string>()
+                                   : std::string();
+                    };
+                    const std::string project = text("project");
+                    if (project.empty()) continue;
+                    RunInfo& slot = latest[project];
+                    const std::string updated = text("updated");
+                    if (updated >= slot.updated) slot = {text("status"), updated};
+                }
+            std::string rows_html;
+            std::size_t total = 0;
             const nlohmann::json names =
                 r.ok ? r.value.value("projects", nlohmann::json::array()) : nlohmann::json::array();
             for (const auto& n : names) {
                 if (!n.is_string()) continue;
                 const std::string name = n.get<std::string>();
-                list += "<a class=\"exprow\" href=\"/?view=projects&p=" + web_ui_escape(name) +
-                        "\"><span>" + web_ui_escape(name) + "</span></a>";
+                if (!q.empty()) {
+                    std::string hay = name;
+                    std::string needle = q;
+                    std::transform(hay.begin(), hay.end(), hay.begin(), ::tolower);
+                    std::transform(needle.begin(), needle.end(), needle.begin(), ::tolower);
+                    if (hay.find(needle) == std::string::npos) continue;
+                }
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", name}}, context);
+                if (!detail.ok) continue;
+                const std::string uuid = detail.value.value("id", "");
+                std::string owner = detail.value.value("owner", "");
+                if (const auto resolved = user_names.find(owner); resolved != user_names.end())
+                    owner = resolved->second;
+                else if (owner.size() > 12)
+                    owner = owner.substr(0, 8);
+                const std::size_t graphs =
+                    detail.value.value("graphs", nlohmann::json::array()).size();
+                const auto run_found = latest.find(uuid);
+                const bool has_run = run_found != latest.end();
+                const std::string run_status = has_run ? run_found->second.status : "";
+                // Status / health / next action, all from engine state.
+                std::string status = "Draft", stone, health = "Not evaluated", htone,
+                            next = "Capture an intent", next_href = "/?view=projects&p=" + name;
+                if (run_status == "Running") {
+                    status = "Running"; stone = "warn"; health = "Waiting"; htone = "warn";
+                    next = "Review run"; next_href = "/?view=pipeline";
+                } else if (run_status == "Failed") {
+                    status = "Needs attention"; stone = "err"; health = "Needs attention";
+                    htone = "err"; next = "Review failure"; next_href = "/?view=pipeline";
+                } else if (!run_status.empty()) {
+                    status = "Ready"; stone = "ok"; health = "Healthy"; htone = "ok";
+                    next = "Review results"; next_href = "/?view=pipeline";
+                } else if (graphs > 0) {
+                    status = "Ready"; stone = "ok"; health = "Not evaluated";
+                    next = "Verify and deploy";
+                }
+                if (filter == "running" && status != "Running") continue;
+                if (filter == "attention" && health != "Needs attention") continue;
+                ++total;
+                std::string updated =
+                    has_run ? run_found->second.updated : detail.value.value("updated", "");
+                rows_html += "<tr><td><a href=\"/?view=projects&p=" + web_ui_escape(name) +
+                             "\"><b>" + web_ui_escape(name) +
+                             "</b></a></td><td><span class=\"pill " + stone + "\">" + status +
+                             "</span></td><td>" + web_ui_escape(owner.empty() ? "\xC2\xB7" : owner) +
+                             "</td><td class=\"mono\">" +
+                             (graphs > 0 ? "Compiled" : "Sandbox") +
+                             "</td><td><span class=\"pill " + htone + "\">" + health +
+                             "</span></td><td class=\"mono\">" +
+                             web_ui_escape(updated.substr(0, 10)) + "</td><td><a href=\"" +
+                             next_href + "\">" + next + " \xE2\x86\x92</a></td></tr>";
             }
-            if (list.empty())
-                list = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
-                       "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
-                       "project below, then capture an intent, compile it, gate, deploy, and "
-                       "run.</span></div>";
+            auto seg = [&](const char* id, const char* label) {
+                return std::string("<a class=\"") + (filter == id ? "on" : "") +
+                       "\" href=\"/?view=projects&f=" + id +
+                       (q.empty() ? "" : "&q=" + q) + "\">" + label + "</a>";
+            };
+            std::string list =
+                "<form class=\"filterrow\" method=\"get\" action=\"/\">"
+                "<input type=\"hidden\" name=\"view\" value=\"projects\">"
+                "<input type=\"search\" name=\"q\" placeholder=\"Search Projects\" value=\"" +
+                web_ui_escape(q) +
+                "\"><span class=\"filterseg\">" + seg("all", "All") +
+                seg("running", "Running") + seg("attention", "Needs attention") +
+                "</span><span class=\"fcount mono\">" + std::to_string(total) +
+                " Projects</span></form>";
+            if (rows_html.empty())
+                list += "<div class=\"emptybox\"><span class=\"eico\">" +
+                        web_ui_icon("projects") +
+                        "</span><span class=\"et\">No projects match</span></div>";
+            else
+                list += "<div class=\"twrap\"><table><thead><tr><th>Project</th><th>Status</th>"
+                        "<th>Owner</th><th>Environment</th><th>Health</th><th>Updated</th>"
+                        "<th>Next action</th></tr></thead><tbody>" +
+                        rows_html + "</tbody></table></div>";
+            std::string ignored_list;
+            (void)ignored_list;
             std::string out = render_action_bar(context, "projects", {"create_project"});
             out += web_ui_panel(
                 "Projects",
-                "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
-                "\xE2\x86\x92 run",
-                "<div class=\"prjlist\">" + list + "</div>");
+                "an AI project: intent \xE2\x86\x92 Pipeline \xE2\x86\x92 Verification \xE2\x86\x92 "
+                "deploy \xE2\x86\x92 run",
+                list);
             return out;
         }
 
@@ -1554,7 +1733,7 @@ struct ApiServer::Impl {
             "Inputs", "captured intents + imported artifacts",
             web_ui_table(nlohmann::json::array(), project.value("inputs", nlohmann::json::array())));
         out += web_ui_panel(
-            "Graphs", "compiled execution graphs",
+            "Pipelines", "what this project's intent compiled to",
             web_ui_table(nlohmann::json::array(), project.value("graphs", nlohmann::json::array())));
         if (safe_uuid(uuid)) {
             out += web_ui_panel("Runs", "",
@@ -1566,26 +1745,149 @@ struct ApiServer::Impl {
         return out;
     }
 
+    // The Studio home (#874 second pass) — the design's create-first welcome:
+    // hero ("What would you like to create?"), the two entry paths (Create a
+    // Solution · Discover Opportunities), and Continue your work (every
+    // Project with its live status + the next useful action, derived from
+    // engine state — never a fixture). The operator dashboard this replaced
+    // lives on the Operate views (Runs and activity, Infrastructure).
+    std::string render_studio_home(ApiContext& context) {
+        ApiResult info =
+            capability_registry.call("server_info", nlohmann::json::object(), context);
+        const long long nodes =
+            (info.ok && info.value.contains("cluster_members") &&
+             info.value["cluster_members"].is_array())
+                ? static_cast<long long>(info.value["cluster_members"].size())
+                : 0;
+
+        std::string out = web_ui_page_hero(
+            "Studio home", "What would you like to create?",
+            "Start with a goal, or let Studio study the data you already have.",
+            "<span>Workspace <b>" +
+                web_ui_escape(info.ok ? info.value.value("node_id", "").substr(0, 8) : "") +
+                "</b></span><span>Nodes <b>" + std::to_string(nodes) +
+                "</b></span><span>Version <b>v" +
+                web_ui_escape(info.ok ? info.value.value("version", "") : "") +
+                "</b></span>");
+
+        // The two entry paths. Create a Solution is fully backed (create_project
+        // → capture_intent → compile). Discover Opportunities renders honestly:
+        // the Auto-Suggest model that reads a Workspace Profile (your data,
+        // connectors, and daily work) is in training — no mock flow behind it.
+        out += "<div class=\"paths\">";
+        out += "<div class=\"path\"><div class=\"peyebrow\"><span class=\"pico\">" +
+               web_ui_icon("bolt") +
+               "</span>Start with a goal</div><h3>Create a Solution</h3>"
+               "<div class=\"pbody\">Describe your goal. Studio proposes a Solution, builds "
+               "it, verifies it against your success measures, and gets it ready for "
+               "production.</div>"
+               "<div class=\"pact\"><a href=\"/?view=projects\">Describe your goal " +
+               web_ui_icon("chevron") + "</a></div></div>";
+        out += "<div class=\"path muted\"><div class=\"peyebrow\"><span class=\"pico\">" +
+               web_ui_icon("observability") +
+               "</span>Start with your data</div><h3>Discover Opportunities</h3>"
+               "<div class=\"pbody\">Not sure where to start? Studio studies your Workspace "
+               "Profile \xE2\x80\x94 the data you hold, your connections, and your daily "
+               "work \xE2\x80\x94 and recommends what you could create from it.</div>"
+               "<div class=\"pnote\"><span class=\"dot\"></span>Auto-Suggest is in training "
+               "\xC2\xB7 not available on this node yet</div></div>";
+        out += "</div>";
+
+        // Continue your work — live Projects with the next useful action. The
+        // latest run per project (system.runs) decides the state; a project
+        // with no runs falls back to where it is in the authoring flow.
+        struct LatestRun { std::string status; std::string started; };
+        std::map<std::string, LatestRun> latest_by_project;
+        ApiResult runs = capability_registry.call(
+            "sql", nlohmann::json{{"statement", "SELECT project, status, started FROM system.runs"}},
+            context);
+        if (runs.ok && runs.value.contains("rows") && runs.value["rows"].is_array())
+            for (const auto& row : runs.value["rows"]) {
+                if (!row.is_object()) continue;
+                // .value() throws on an explicit null — system rows carry
+                // nulls, so read defensively (the no-exceptions boundary).
+                auto text = [&](const char* key) -> std::string {
+                    const auto found = row.find(key);
+                    return found != row.end() && found->is_string()
+                               ? found->get<std::string>()
+                               : std::string();
+                };
+                const std::string project = text("project");
+                const std::string started = text("started");
+                if (project.empty()) continue;
+                LatestRun& latest = latest_by_project[project];
+                if (started >= latest.started) latest = {text("status"), started};
+            }
+
+        std::string rows;
+        ApiResult projects =
+            capability_registry.call("list_projects", nlohmann::json::object(), context);
+        if (projects.ok)
+            for (const auto& name : projects.value.value("projects", nlohmann::json::array())) {
+                if (!name.is_string()) continue;
+                const std::string pname = name.get<std::string>();
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", pname}}, context);
+                if (!detail.ok) continue;
+                const std::string uuid = detail.value.value("id", "");
+                const std::size_t inputs =
+                    detail.value.value("inputs", nlohmann::json::array()).size();
+                const std::size_t graphs =
+                    detail.value.value("graphs", nlohmann::json::array()).size();
+                std::string pill = "Draft", tone, next = "Capture an intent", age;
+                if (auto found = latest_by_project.find(uuid);
+                    found != latest_by_project.end()) {
+                    const std::string status = found->second.status;
+                    age = found->second.started.empty()
+                              ? detail.value.value("updated", "").substr(0, 10)
+                              : found->second.started.substr(0, 10);
+                    if (status == "Running") { pill = "Running"; tone = "warn"; next = "Review run"; }
+                    else if (status == "Failed") { pill = "Failed"; tone = "err"; next = "Review failure"; }
+                    else { pill = "Succeeded"; tone = "ok"; next = "Review results"; }
+                } else if (graphs > 0) {
+                    pill = "Ready"; tone = "ok"; next = "Verify and deploy";
+                    age = detail.value.value("updated", "").substr(0, 10);
+                } else {
+                    if (inputs > 0) next = "Compile the intent";
+                    age = detail.value.value("updated", "").substr(0, 10);
+                }
+                rows += "<a class=\"workrow\" href=\"/?view=projects&p=" + web_ui_escape(pname) +
+                        "\"><span class=\"wstat\"><span class=\"pill " + tone + "\">" + pill +
+                        "</span><span class=\"wage\">" + web_ui_escape(age) +
+                        "</span></span><span class=\"wname\">" + web_ui_escape(pname) +
+                        "</span><span class=\"wnext\">" + next +
+                        "</span><span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>";
+            }
+        if (rows.empty())
+            rows = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
+                   "</span><span class=\"et\">No projects yet</span><span class=\"eh\">"
+                   "Describe a goal to create your first Solution.</span></div>";
+        out += web_ui_panel("Continue your work",
+                            "active Projects and the next useful action",
+                            "<div class=\"worklist\">" + rows + "</div>");
+        return out;
+    }
+
     // An explanatory legend for the pipeline model — the answer to "what's a run vs a job".
     std::string pipeline_legend() {
         return "<div class=\"legend\"><div class=\"legendhd\"><span class=\"ico\">" +
                web_ui_icon("pipeline") +
-               "</span><b>How a pipeline works</b></div>"
+               "</span><b>How a Pipeline works</b></div>"
                "<div class=\"legendflow\">Project <span>\xE2\x86\x92</span> Intent <span>\xE2\x86\x92"
-               "</span> <em>Graph</em> <span>\xE2\x86\x92</span> Gate <span>\xE2\x86\x92</span> Deploy "
+               "</span> <em>Pipeline</em> <span>\xE2\x86\x92</span> Verification <span>\xE2\x86\x92</span> Deploy "
                "<span>\xE2\x86\x92</span> <em>Run</em> <span>\xE2\x86\x92</span> <em>Jobs</em> "
                "<span>\xE2\x86\x92</span> Model</div>"
                "<div class=\"legenddefs\">"
-               "<div><b>Graph</b> the compiled pipeline (connect \xE2\x86\x92 clean \xE2\x86\x92 model "
+               "<div><b>Pipeline</b> the compiled steps (connect \xE2\x86\x92 clean \xE2\x86\x92 model "
                "\xE2\x86\x92 serve) a project's intent lowers to.</div>"
-               "<div><b>Run</b> one end-to-end execution of a graph; produces a Model + outputs. One "
+               "<div><b>Run</b> one end-to-end execution of a Pipeline; produces a Model + outputs. One "
                "row per run.</div>"
                "<div><b>Job</b> a unit of native distributed compute a run fans out into (featurize / "
                "train / score) across the cluster \xE2\x80\x94 many jobs per run.</div>"
                "</div></div>";
     }
 
-    // The Graphs panel — aggregates every project's compiled execution graphs (there is no
+    // The Pipelines panel — aggregates every project's compiled execution graphs (there is no
     // system.graphs view; graphs are owned by projects, reached via get_project).
     // The visual graph editor panel: embeds every project graph's structure (via
     // get_graph) and mounts the interactive SVG editor over it (kGraphEditorJs),
@@ -1615,13 +1917,13 @@ struct ApiServer::Impl {
 
         if (graphs.empty())
             return web_ui_panel(
-                "Graph editor",
-                "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean \xE2\x86\x92 model "
-                "\xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                "Pipeline editor",
+                "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 connect "
+                "\xE2\x86\x92 clean \xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
                 "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
-                    "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">Compile a "
+                    "</span><span class=\"et\">No Pipelines yet</span><span class=\"eh\">Compile a "
                     "project's intent (Projects \xE2\x86\x92 open one \xE2\x86\x92 compile) to get an "
-                    "editable graph here.</span></div>");
+                    "editable Pipeline here.</span></div>");
 
         std::string options;
         for (std::size_t i = 0; i < graphs.size(); ++i)
@@ -1646,9 +1948,10 @@ struct ApiServer::Impl {
             "<div id=\"ge-toast\" class=\"getoast\"></div>"
             "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
             "<script>" + std::string(kGraphEditorJs) + "</script>";
-        return web_ui_panel("Graph editor",
-                            "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean "
-                            "\xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+        return web_ui_panel("Pipeline editor",
+                            "Technical view \xC2\xB7 the Pipeline as its raw execution graph \xC2\xB7 "
+                            "connect \xE2\x86\x92 clean \xE2\x86\x92 model \xE2\x86\x92 index "
+                            "\xE2\x86\x92 serve \xE2\x86\x92 act",
                             body);
     }
 
@@ -1675,13 +1978,13 @@ struct ApiServer::Impl {
         std::string html =
             rows.empty()
                 ? "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
-                      "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">A graph is "
-                      "created when you compile a project's intent (Projects \xE2\x86\x92 open a "
-                      "project \xE2\x86\x92 compile). Then gate, deploy, and run it.</span></div>"
-                : "<div class=\"twrap\"><table><thead><tr><th>Graph</th><th>Project</th><th>id</th>"
+                      "</span><span class=\"et\">No Pipelines yet</span><span class=\"eh\">A Pipeline "
+                      "is created when you compile a project's intent (Projects \xE2\x86\x92 open a "
+                      "project \xE2\x86\x92 compile). Then verify, deploy, and run it.</span></div>"
+                : "<div class=\"twrap\"><table><thead><tr><th>Pipeline</th><th>Project</th><th>id</th>"
                   "</tr></thead><tbody>" + rows + "</tbody></table></div>";
-        return web_ui_panel("Graphs",
-                            "compiled execution pipelines \xC2\xB7 what a project's intent lowers to",
+        return web_ui_panel("Pipelines",
+                            "compiled Pipelines \xC2\xB7 what a project's intent lowers to",
                             html);
     }
 
@@ -1801,27 +2104,80 @@ struct ApiServer::Impl {
         };
         std::string out;
         if (view == "overview") {
-            ApiResult info =
-                capability_registry.call("server_info", nlohmann::json::object(), context);
-            if (info.ok)
-                out += web_ui_panel(
-                    "Overview", "",
-                    web_ui_overview_cards(info.value) + "<div class=\"metaline mono\">" +
-                        web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
-                        web_ui_escape(info.value.value("version", "")) + "</div>");
-            out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
-                                ptable("SELECT * FROM system.nodes", "n"));
+            // The Studio home — create-first per the design. The workspace
+            // counts moved to Runs and activity; the cluster table lives on
+            // Infrastructure.
+            out += render_studio_home(context);
         } else if (view == "cluster") {
+            // Infrastructure (July 24): the page hero, the stat cards, an
+            // unreachable-node banner when one exists, then the node tables.
+            long long node_count = 0, live_count = 0;
+            std::string unreachable_node;
+            if (ApiResult nodes_read = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", "SELECT node_id, reachability FROM system.nodes"}},
+                    context);
+                nodes_read.ok && nodes_read.value.contains("rows"))
+                for (const auto& row : nodes_read.value["rows"]) {
+                    if (!row.is_object()) continue;
+                    ++node_count;
+                    auto text = [&](const char* key) -> std::string {
+                        const auto found = row.find(key);
+                        return found != row.end() && found->is_string()
+                                   ? found->get<std::string>()
+                                   : std::string();
+                    };
+                    if (text("reachability").find("unreachable") != std::string::npos)
+                        unreachable_node = text("node_id");
+                    else
+                        ++live_count;
+                }
+            out += web_ui_page_hero(
+                "Infrastructure", "Cluster",
+                "Advanced capacity and node controls stay available without leading the "
+                "main creation experience.",
+                "<span>Scope <b>Advanced</b></span><span>Cluster health <b>" +
+                    std::to_string(live_count) + " of " + std::to_string(node_count) +
+                    " live</b></span>");
+            if (!unreachable_node.empty())
+                out += "<div class=\"bannerrow errb\"><span class=\"bico\">" +
+                       web_ui_icon("crash") + "</span><span class=\"bbody\"><b>One node is "
+                       "unreachable</b><span>Work remains available on the other nodes. Open "
+                       "the node to review reachability and recovery detail.</span></span>"
+                       "<span class=\"bact mono\">" +
+                       web_ui_escape(unreachable_node.substr(0, 12)) + "</span></div>";
+            out += "<div class=\"statgrid\"><div class=\"statcard\"><div class=\"schd\">"
+                   "<span>Nodes</span><span class=\"scico\">" + web_ui_icon("nodes") +
+                   "</span></div><div class=\"num\">" + std::to_string(node_count) +
+                   "</div><div class=\"scft\"><span>" + std::to_string(live_count) +
+                   " live</span><span class=\"pill " +
+                   (unreachable_node.empty() ? "ok\">Healthy" : "warn\">Degraded") +
+                   "</span></div></div>";
+            out += "<div class=\"statcard\"><div class=\"schd\"><span>Projects</span>"
+                   "<span class=\"scico\">" + web_ui_icon("projects") +
+                   "</span></div><div class=\"num\">" +
+                   std::to_string(context.node.project_names().size()) +
+                   "</div><div class=\"scft\"><span>All Project data available</span>"
+                   "<span class=\"pill ok\">Protected</span></div></div></div>";
             out += render_action_panel(
                 context, view, "cluster", "Nodes",
-                "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync",
+                "membership, location, synchronization, reachability, and version",
                 {"add_nodes", "detect_provisioners", "cloud_inspect"},
                 ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
-            out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
+            out += web_ui_panel("Deployments", "Pipelines placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
         } else if (view == "projects") {
+            out += web_ui_page_hero(
+                "Projects", "Projects",
+                "Intent, data, execution, outcomes, and history stay together.",
+                "<span>Projects <b>" + std::to_string(context.node.project_names().size()) +
+                    "</b></span><span>Workspace <b>this node</b></span>");
             out += render_projects(context, route);
         } else if (view == "data") {
+            out += web_ui_page_hero(
+                "Data library", "Data",
+                "Find reusable sources and understand readiness, location, access, and "
+                "Project relationships.",
+                "<span>Scope <b>Workspace library</b></span>");
             out += render_search_panel(context, route);
             out += render_action_panel(
                 context, view, "dataset", "Datasets",
@@ -1841,16 +2197,211 @@ struct ApiServer::Impl {
                 ptable("SELECT * FROM system.indexes", "idx"));
             out += render_data_explorer(context, route);
         } else if (view == "models") {
+            out += web_ui_page_hero(
+                "Developer", "Models",
+                "Every Model is produced by a Project Run. Exposing a Model serves it to "
+                "your Workspace so applications and Solutions can call it.",
+                "<span>Context <b>Workspace</b></span>");
             out += render_action_panel(
-                context, view, "models", "Models",
-                "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
-                "one to serve predictions",
+                context, view, "models", "Trained Models",
+                "select a Model to see the Run and evidence behind it \xC2\xB7 exposing and "
+                "un-exposing are governed actions",
                 {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
+        } else if (view == "connections") {
+            // Connections (July 24): the three connection paths — every card a
+            // real, live destination — plus the saved source connections and
+            // the safety contract.
+            out += web_ui_page_hero(
+                "Developer", "Connections",
+                "Choose a connection path, understand its scope, and verify it without "
+                "exposing credentials.",
+                "<span>Workspace <b>this node</b></span><span>Credential health "
+                "<b>Connected</b></span>");
+            out += web_ui_panel(
+                "Connection paths", "API, MCP, and CLI \xC2\xB7 workspace-scoped access",
+                "<div class=\"worklist\">"
+                "<a class=\"workrow\" href=\"/v1/openapi.json\"><span class=\"wstat\">"
+                "<span class=\"pill ok\">Connected</span></span><span class=\"wname\">API"
+                "<span class=\"actionsub\"> \xC2\xB7 workspace-scoped access for applications "
+                "and services</span></span><span class=\"wnext\">View API setup</span>"
+                "<span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "<a class=\"workrow\" href=\"/mcp.md\"><span class=\"wstat\">"
+                "<span class=\"pill ok\">Available</span></span><span class=\"wname\">MCP"
+                "<span class=\"actionsub\"> \xC2\xB7 give approved coding agents access to "
+                "this workspace</span></span><span class=\"wnext\">Configure MCP</span>"
+                "<span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "<a class=\"workrow\" href=\"/?view=shell\"><span class=\"wstat\">"
+                "<span class=\"pill\">Console</span></span><span class=\"wname\">Shell"
+                "<span class=\"actionsub\"> \xC2\xB7 inspect Projects, data, runs, and "
+                "status from the governed console</span></span><span class=\"wnext\">Open "
+                "Shell</span><span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>"
+                "</div>");
+            out += render_action_panel(
+                context, view, "token", "Source connections",
+                "saved warehouse credentials, held on every node \xC2\xB7 the read surface "
+                "never carries a token",
+                {"create_connection", "delete_connection"},
+                ptable("SELECT * FROM system.connections", "conn"));
+            out += web_ui_panel(
+                "Connection safety", "applies to API, MCP, CLI, desktop, and external agents",
+                "<div class=\"legenddefs\">"
+                "<div><b>Scoped access</b> every credential resolves to a user and a role; "
+                "capability checks are default-deny.</div>"
+                "<div><b>Visible activity</b> every action records its origin, actor, "
+                "affected object, and result in the audit trail.</div>"
+                "<div><b>Rotation and revocation</b> tokens can be revoked at any time; "
+                "secrets are shown once and stored only as hashes.</div></div>");
+        } else if (view == "agents") {
+            out += web_ui_page_hero("Developer", "Agents",
+                "Served agents: a model, a system prompt, and tools you can chat with. Creating, updating, and deleting are governed actions.", "");
+            // The served agents (#849). No system.agents view yet, so the list is rendered
+            // straight from the replicated records; create/update/delete are the capabilities.
+            // Each row carries an inline, PRE-FILLED update_agent form (the system prompt +
+            // name/description/tools are editable in place — the generic action form below is
+            // blank, so this is how you edit an existing agent's prompt without retyping it).
+            std::string table;
+            if (context.node.replication() != nullptr) {
+                std::string rows;
+                for (const zetta::agent::AgentRecord& agent :
+                     zetta::agent::AgentStore(*context.node.replication()).list()) {
+                    std::string tools;
+                    for (const std::string& tool : agent.tools) {
+                        if (!tools.empty()) tools += ", ";
+                        tools += tool;
+                    }
+                    // The tools field is a JSON array at the boundary (coerce_query_value
+                    // JSON-parses it), so pre-fill it as JSON, not the comma view above.
+                    const std::string tools_json =
+                        web_ui_escape(nlohmann::json(agent.tools).dump());
+                    // Empty fields aren't sent (web_form_input skips them) -> update_agent
+                    // keeps the existing value, so a partial edit only changes what you touch.
+                    const std::string edit_form =
+                        "<details><summary class=\"btn small\">Edit</summary>"
+                        "<form method=\"post\" action=\"/run\" class=\"agent-edit\">"
+                        "<input type=\"hidden\" name=\"cap\" value=\"update_agent\">"
+                        "<input type=\"hidden\" name=\"_return\" value=\"/?view=agents\">"
+                        "<input type=\"hidden\" name=\"id\" value=\"" +
+                        web_ui_escape(agent.id) +
+                        "\">"
+                        "<label>name</label><input name=\"name\" value=\"" +
+                        web_ui_escape(agent.name) +
+                        "\">"
+                        "<label>description</label><input name=\"description\" value=\"" +
+                        web_ui_escape(agent.description) +
+                        "\">"
+                        "<label>system prompt</label>"
+                        "<textarea name=\"system_prompt\" rows=\"4\">" +
+                        web_ui_escape(agent.system_prompt) +
+                        "</textarea>"
+                        "<label>tools (JSON array)</label><input name=\"tools\" value=\"" +
+                        tools_json +
+                        "\">"
+                        "<div class=\"dlgact\"><button class=\"btn btn-primary\">Save</button>"
+                        "</div></form></details>";
+                    rows += "<tr><td>" +
+                            web_ui_escape(agent.name.empty() ? agent.id : agent.name) +
+                            "</td><td>" + web_ui_escape(agent.model) + "</td><td>" +
+                            web_ui_escape(tools) + "</td><td>" + edit_form + "</td></tr>";
+                }
+                if (!rows.empty())
+                    table = "<table class=\"grid\"><thead><tr><th>Name</th><th>Model</th>"
+                            "<th>Tools</th><th></th></tr></thead><tbody>" +
+                            rows + "</tbody></table>";
+            }
+            if (table.empty())
+                table = "<p class=\"muted\">No agents yet \xE2\x80\x94 create one above, then talk "
+                        "to it in the Chat view.</p>";
+            out += render_action_panel(
+                context, view, "models", "Agents",
+                "served agents \xC2\xB7 a model + prompt + tools you can chat with \xC2\xB7 "
+                "Edit a row to change its system prompt",
+                {"create_agent", "update_agent", "delete_agent"}, table);
+        } else if (view == "chat") {
+            out += web_ui_page_hero("Developer", "Chat",
+                "Talk to a served agent, or have it build and run a real Pipeline from your ask.", "");
+            // Talk to a selected agent (#849), or have it build + run a real graph (#872). One
+            // form, two submit buttons: the clicked button's name=cap picks the capability —
+            // "Send" -> chat (reply only), "Build & run" -> agent_run (the agent recognizes the
+            // ask, the engine compiles a graph from it, and runs it). POSTed to /run WITHOUT a
+            // _return, so serve_web_run renders the result inline. The turn blocks for seconds
+            // (model load + generation, then the run) — fine for a request/response page.
+            out += "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
+                   web_ui_icon("models") +
+                   "</span><h2>Chat</h2><span class=\"psub\">talk to an agent \xC2\xB7 or have it "
+                   "build + run a real pipeline from your ask</span></div>"
+                   "<form method=\"post\" action=\"/run\">"
+                   "<div class=\"fgrid\"><div><label>agent</label><select name=\"agent\">" +
+                   agent_options(context) +
+                   "</select></div><div class=\"full\"><label>message</label>"
+                   "<textarea name=\"message\" rows=\"3\" placeholder=\"e.g. predict which "
+                   "customers are about to churn, with calibrated scores + explanations\"></textarea></div></div>"
+                   "<div class=\"dlgact\"><button class=\"btn\" name=\"cap\" value=\"chat\">Send</button>"
+                   "<button class=\"btn btn-primary\" name=\"cap\" value=\"agent_run\">Build &amp; "
+                   "run</button></div>"
+                   "</form></section>";
+        } else if (view == "datagen") {
+            out += web_ui_page_hero("Developer", "Data generators",
+                "Generate and gate training datasets natively, grounded in the solutions plan.", "");
+            // Native dataset generators (#873): the factory's generators + a Generate action.
+            std::string rows;
+            for (const std::shared_ptr<const zetta::dataset::DatasetGenerator>& generator :
+                 zetta::dataset::DatasetGeneratorFactory::builtin().generators()) {
+                rows += "<tr><td><code>" + web_ui_escape(generator->kind()) + "</code></td><td>" +
+                        web_ui_escape(generator->title()) + "</td><td>" +
+                        web_ui_escape(generator->description()) + "</td></tr>";
+            }
+            const std::string table =
+                "<table class=\"grid\"><thead><tr><th>Kind</th><th>Name</th>"
+                "<th>What it generates</th></tr></thead><tbody>" +
+                rows + "</tbody></table>";
+            out += render_action_panel(
+                context, view, "datagen", "Data generators",
+                "native training-dataset generators \xC2\xB7 grow + gate a corpus grounded in the "
+                "solutions plan, inside Zetta (ADR-17) \xC2\xB7 Generate writes gated JSONL",
+                {"generate_dataset"}, table);
         } else if (view == "pipeline") {
+            out += web_ui_page_hero(
+                "Operate", "Runs and activity",
+                "Monitor work by Project first, then open infrastructure detail only when "
+                "it explains an issue.",
+                "<span>Scope <b>All Projects</b></span><span>Last refresh <b>just now</b></span>");
+            // The live-execution banner (July 24): the newest running run, when
+            // one exists — straight from system.runs.
+            if (ApiResult running = capability_registry.call(
+                    "sql",
+                    nlohmann::json{{"statement",
+                                    "SELECT run_id, status FROM system.runs WHERE status = "
+                                    "'Running'"}},
+                    context);
+                running.ok && running.value.contains("rows") &&
+                !running.value["rows"].empty()) {
+                const auto& last_row = running.value["rows"].back();
+                const std::string run_id =
+                    last_row.is_object() && last_row.contains("run_id") &&
+                            last_row["run_id"].is_string()
+                        ? last_row["run_id"].get<std::string>()
+                        : std::string();
+                out += "<div class=\"bannerrow live\"><span class=\"bico\">" +
+                       web_ui_icon("runs") +
+                       "</span><span class=\"bbody\"><b>A run is executing now</b><span "
+                       "class=\"mono\">run " +
+                       web_ui_escape(run_id.substr(0, 8)) +
+                       " \xC2\xB7 live in the Runs table below</span></span></div>";
+            }
             out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
                                                      "compile_intent", "compile_n8n", "compile_python",
                                                      "gate", "deploy", "run"});
+            // The workspace-at-a-glance counts (moved off the Studio home —
+            // Runs and activity is the operator's landing).
+            if (ApiResult info = capability_registry.call("server_info",
+                                                          nlohmann::json::object(), context);
+                info.ok)
+                out += web_ui_panel(
+                    "Workspace at a glance", "",
+                    web_ui_overview_cards(info.value) + "<div class=\"metaline mono\">" +
+                        web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
+                        web_ui_escape(info.value.value("version", "")) + "</div>");
             out += pipeline_legend();
             out += render_graph_editor(context);
             out += web_ui_panel(
@@ -1866,6 +2417,11 @@ struct ApiServer::Impl {
                 "score) \xC2\xB7 many jobs per run",
                 ptable("SELECT * FROM system.jobs", "jobs"));
         } else if (view == "observability") {
+            out += web_ui_page_hero(
+                "Operate", "Observability",
+                "Every operation records its intent, plan, timing, and result \xE2\x80\x94 "
+                "traces, spans, and crashes, threaded across surfaces and nodes.",
+                "<span>Scope <b>this node</b></span>");
             out += web_ui_panel(
                 "Traces", "one row per operation (an MCP/REST call, a run) \xC2\xB7 its intent, timing + result",
                 ptable("SELECT * FROM system.traces", "tr"));
@@ -1874,22 +2430,60 @@ struct ApiServer::Impl {
             out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
                                 ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
+            out += web_ui_page_hero(
+                "Advanced", "Governance and audit",
+                "Access is default-deny: every request resolves to a role, and every "
+                "decision is recorded.",
+                "<span>Roles <b>3 built-in</b></span><span>Access model "
+                "<b>Default-deny</b></span><span>Audit <b>Append-only</b></span>");
+            // Segmented tabs (July 24): Users and roles / Tokens / Consent / Audit.
+            const std::string tab = query_param(route, "tab", "users");
+            auto gtab = [&](const char* id, const char* label) {
+                return std::string("<a class=\"") + (tab == id ? "on" : "") +
+                       "\" href=\"/?view=governance&tab=" + id + "\">" + label + "</a>";
+            };
+            out += "<div class=\"segtabs\">" + gtab("users", "Users and roles") +
+                   gtab("tokens", "Tokens") + gtab("consent", "Consent requests") +
+                   gtab("audit", "Audit") + "</div>";
             out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
-            out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
-                                ptable("SELECT * FROM system.users", "u"));
-            out += web_ui_panel("Roles", "named capability bundles assigned to users",
-                                ptable("SELECT * FROM system.roles", "r"));
-            out += web_ui_panel("Policies", "row / column access rules",
-                                ptable("SELECT * FROM system.policies", "pol"));
-            out += web_ui_panel("Tokens", "issued bearer access tokens + their scope",
-                                ptable("SELECT * FROM system.tokens", "tok"));
-            out += web_ui_panel("Consent requests", "pending cloud-action approvals (deny-by-default)",
-                                ptable("SELECT * FROM system.consent_requests", "cons"));
-            out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
-                                ptable("SELECT * FROM system.audit", "aud"));
+            if (tab == "users") {
+                out += web_ui_panel(
+                    "Users",
+                    "each user holds built-in roles \xC2\xB7 roles are seeded at node "
+                    "bootstrap and replicated across the cluster",
+                    ptable("SELECT * FROM system.users", "u"));
+                out += web_ui_panel("Roles", "named permission bundles assigned to users",
+                                    ptable("SELECT * FROM system.roles", "r"));
+                out += web_ui_panel("Policies", "row / column access rules",
+                                    ptable("SELECT * FROM system.policies", "pol"));
+                out += "<div class=\"bannerrow warnb\"><span class=\"bico\">" +
+                       web_ui_icon("governance") +
+                       "</span><span class=\"bbody\"><b>Scoping is structural but "
+                       "unused</b><span>Roles carry scope fields, but all built-ins are "
+                       "unrestricted today. There are no per-Project or per-Workspace roles "
+                       "yet.</span></span></div>";
+            } else if (tab == "tokens") {
+                out += web_ui_panel(
+                    "Tokens",
+                    "issued bearer tokens \xC2\xB7 secrets are shown once and stored only "
+                    "as hashes; this view carries no secret material",
+                    ptable("SELECT * FROM system.tokens", "tok"));
+            } else if (tab == "consent") {
+                out += web_ui_panel("Consent requests",
+                                    "pending cloud-action approvals (deny-by-default)",
+                                    ptable("SELECT * FROM system.consent_requests", "cons"));
+            } else {
+                out += web_ui_panel(
+                    "Audit", "the immutable, append-only record of every governed action",
+                    ptable("SELECT * FROM system.audit", "aud"));
+            }
         } else if (view == "shell") {
+            out += web_ui_page_hero("Developer", "Shell",
+                "SQL or Python against this node, governed: every statement is capability-scoped and audited.", "");
             out += web_ui_shell_repl();
         } else if (view == "notebooks") {
+            out += web_ui_page_hero("Developer", "Notebooks",
+                "SQL and Python cells, executed through the same governed console, saved in this browser.", "");
             out += web_ui_notebooks();
         } else {
             out += "<div class=\"empty\">Unknown view.</div>";
@@ -1900,11 +2494,27 @@ struct ApiServer::Impl {
     // GET / — the dashboard (or the login page when the session cookie is absent/invalid).
     boost::http::route_task serve_web_root(boost::http::route_params& route) {
         namespace http = boost::http;
+        // The React Studio app replaces the server-rendered UI when a bundle
+        // is configured (2026-07-24): / lands on the SPA entry.
+        if (!options.webapp_dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(options.webapp_dir) / "index.html")) {
+            route.status(http::status::found);
+            route.res.set(http::field::location, "/studio/");
+            stamp_response_headers(route, "");
+            auto [redirect_error] = co_await route.send("");
+            if (redirect_error) co_return http::route_error(redirect_error);
+            co_return http::route_done;
+        }
         const std::string token = cookie_value(route, "zetta_session");
         std::string user_id;
+        std::string user_name;
         if (!token.empty())
-            co_await bridge.run_on_owner(
-                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+            co_await bridge.run_on_owner([&] {
+                if (auto user = node.authenticate_token(token)) {
+                    user_id = user->id();
+                    user_name = user->name();
+                }
+            });
         std::string body;
         if (user_id.empty()) {
             body = web_ui_login("");
@@ -1912,7 +2522,18 @@ struct ApiServer::Impl {
             const std::string view = query_param(route, "view", "overview");
             std::string content;
             std::string meta;
+            std::string assist_agent;
+            long long project_count = 0;
             co_await bridge.run_on_owner([&] {
+                project_count = static_cast<long long>(node.project_names().size());
+                // The Ask Orama rail talks to the first served agent (the base
+                // agent when one is loaded); no agent → the rail's honest
+                // empty state.
+                if (node.replication() != nullptr) {
+                    const auto agents =
+                        zetta::agent::AgentStore(*node.replication()).list();
+                    if (!agents.empty()) assist_agent = agents.front().id;
+                }
                 ApiContext context{node, cluster, user_id,
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
                                    &background};
@@ -1930,11 +2551,12 @@ struct ApiServer::Impl {
                 }
                 content = render_dashboard_content(context, view, route);
             });
-            body = web_ui_shell(view, user_id.size() > 12 ? user_id.substr(0, 12) : user_id, meta,
-                                content);
+            body = web_ui_shell(view, user_name.empty() ? user_id : user_name, meta, content,
+                                project_count, assist_agent);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
@@ -1954,6 +2576,7 @@ struct ApiServer::Impl {
             const std::string body = web_ui_login("Invalid or expired token.");
             route.status(http::status::unauthorized);
             route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
             stamp_response_headers(route, body);
             auto [send_error] = co_await route.send(body);
             if (send_error) co_return http::route_error(send_error);
@@ -1979,6 +2602,63 @@ struct ApiServer::Impl {
         route.res.set(http::field::location, "/");
         stamp_response_headers(route, "");
         auto [send_error] = co_await route.send("");
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /session — the SPA's JSON login (#884): exchange a bearer token for
+    // the same HttpOnly session cookie the form login sets, returning the
+    // resolved identity as JSON. POST /session/logout clears it. The token
+    // never lives in the page's JavaScript.
+    boost::http::route_task serve_session_login(boost::http::route_params& route) {
+        namespace http = boost::http;
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string token;
+        if (nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            input.is_object() && input.contains("token") && input["token"].is_string())
+            token = input["token"].get<std::string>();
+        std::string user_id;
+        std::string user_name;
+        if (!token.empty())
+            co_await bridge.run_on_owner([&] {
+                if (auto user = node.authenticate_token(token)) {
+                    user_id = user->id();
+                    user_name = user->name();
+                }
+            });
+        std::string body;
+        if (user_id.empty()) {
+            route.status(http::status::unauthorized);
+            body = nlohmann::json{{"ok", false}, {"error", "invalid or expired token"}}.dump();
+        } else {
+            std::string cookie =
+                "zetta_session=" + token + "; HttpOnly; SameSite=Strict; Path=/";
+            if (request_is_https(route)) cookie += "; Secure";
+            route.status(http::status::ok);
+            route.res.set(http::field::set_cookie, cookie);
+            body = nlohmann::json{{"ok", true},
+                                  {"user", {{"id", user_id}, {"name", user_name}}}}
+                       .dump();
+        }
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set(http::field::cache_control, "no-store");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    boost::http::route_task serve_session_logout(boost::http::route_params& route) {
+        namespace http = boost::http;
+        route.status(http::status::ok);
+        route.res.set(http::field::set_cookie,
+                      "zetta_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+        const std::string body = R"({"ok":true})";
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set(http::field::cache_control, "no-store");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
@@ -2042,13 +2722,71 @@ struct ApiServer::Impl {
                 if (redirect_error) co_return http::route_error(redirect_error);
                 co_return http::route_done;
             }
+            // Same shell state as every page (badge + rail), so navigation
+            // never differs on a result page. Node reads ride the owner
+            // thread, like everything else.
+            std::string assist_agent;
+            long long project_count = 0;
+            co_await bridge.run_on_owner([&] {
+                project_count = static_cast<long long>(node.project_names().size());
+                if (node.replication() != nullptr) {
+                    const auto agents = zetta::agent::AgentStore(*node.replication()).list();
+                    if (!agents.empty()) assist_agent = agents.front().id;
+                }
+            });
             body = web_ui_shell("console",
-                                user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content);
+                                user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content,
+                                project_count, assist_agent);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        route.res.set(http::field::cache_control, "no-store");
         stamp_response_headers(route, body);
         auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /assist — the Ask Orama rail (#874): a cookie-authed JSON body
+    // {agent, message} invoked through the same `chat` capability the MCP/REST
+    // surfaces expose, audited as the signed-in user. The reply is the served
+    // agent's; the turn blocks while the model loads + generates (the rail's
+    // JS shows a thinking state — streaming is a later slice).
+    boost::http::route_task serve_assist(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"ok":false,"error":"unauthorized"})";
+        } else {
+            nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            if (input.is_discarded() || !input.is_object()) {
+                json_body = R"({"ok":false,"error":"malformed json"})";
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, user_id,
+                                       zetta::observability::make_root_trace(),
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = true;
+                    ApiResult result = capability_registry.call("chat", input, context);
+                    json_body = result.ok
+                                    ? nlohmann::json{{"ok", true}, {"value", result.value}}.dump()
+                                    : nlohmann::json{{"ok", false},
+                                                     {"error", result.error.message}}
+                                          .dump();
+                });
+            }
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
@@ -2325,6 +3063,76 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // GET /fonts/<name>.woff2 — the IBM Plex faces, embedded at build time and
+    // served by the node itself (the self-contained page rule: no external
+    // font requests, ever). Immutable-cacheable: the bytes only change with
+    // the binary.
+    boost::http::route_task serve_font(boost::http::route_params& route,
+                                       const unsigned char* data, unsigned length) {
+        namespace http = boost::http;
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "font/woff2");
+        route.res.set(http::field::cache_control, "public, max-age=31536000, immutable");
+        const std::string_view body(reinterpret_cast<const char*>(data), length);
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // GET /app[/...] — the built Studio web app (the design repo's React
+    // bundle, #874 architecture revision 2026-07-24): static files from
+    // options.webapp_dir with an SPA fallback to index.html for client-side
+    // routes. Public like /style.css — the bundle is the static shell; its
+    // only data path is the gated /v1 surface. Small local reads, same
+    // blocking pattern as the other asset routes.
+    boost::http::route_task serve_webapp(boost::http::route_params& route,
+                                         std::string rel_url) {
+        namespace http = boost::http;
+        std::string body;
+        std::string served;
+        if (!options.webapp_dir.empty()) {
+            if (const auto rel = web_ui_webapp_path(rel_url)) {
+                const std::filesystem::path root(options.webapp_dir);
+                const auto read_file = [&](const std::filesystem::path& file) {
+                    std::ifstream in(file, std::ios::binary);
+                    if (!in) return false;
+                    std::ostringstream buffer;
+                    buffer << in.rdbuf();
+                    body = std::move(buffer).str();
+                    return true;
+                };
+                if (read_file(root / *rel)) {
+                    served = *rel;
+                } else if (rel->find('.') == std::string::npos &&
+                           read_file(root / "index.html")) {
+                    served = "index.html";  // the SPA fallback for client routes
+                }
+            }
+        }
+        if (served.empty()) {
+            const std::string message =
+                options.webapp_dir.empty()
+                    ? "No web app bundle configured - start the node with --webapp-dir PATH."
+                    : "Not found in the web app bundle.";
+            route.status(http::status::not_found);
+            route.res.set(http::field::content_type, "text/plain; charset=utf-8");
+            stamp_response_headers(route, message);
+            auto [send_error] = co_await route.send(message);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, std::string(web_ui_content_type(served)));
+        route.res.set(http::field::cache_control,
+                      served == "index.html" ? "no-store"
+                                             : "public, max-age=31536000, immutable");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /favicon.svg — the self-contained favicon.
     boost::http::route_task serve_favicon(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -2365,11 +3173,20 @@ bool ApiServer::start() {
     router.add(http::method::post, "/login", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_login(route);
     });
+    router.add(http::method::post, "/session", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_session_login(route);
+    });
+    router.add(http::method::post, "/session/logout", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_session_logout(route);
+    });
     router.add(http::method::post, "/logout", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_logout(route);
     });
     router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_run(route);
+    });
+    router.add(http::method::post, "/assist", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_assist(route);
     });
     router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_shell(route);
@@ -2393,6 +3210,53 @@ bool ApiServer::start() {
     });
     router.add(http::method::get, "/favicon.svg", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_favicon(route);
+    });
+    router.add(http::method::get, "/fonts/plex-sans-400.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff400, kPlexSansWoff400_len);
+               });
+    router.add(http::method::get, "/fonts/plex-sans-500.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff500, kPlexSansWoff500_len);
+               });
+    router.add(http::method::get, "/fonts/plex-sans-600.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexSansWoff600, kPlexSansWoff600_len);
+               });
+    router.add(http::method::get, "/fonts/plex-mono-400.woff2",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_font(route, kPlexMonoWoff400, kPlexMonoWoff400_len);
+               });
+    // The Studio web app bundle (the design repo's React build) REPLACES the
+    // server-rendered UI when --webapp-dir is set (2026-07-24): / redirects to
+    // /studio/, the SPA entry; the bundle's asset paths serve here, pre-gate,
+    // exactly like /style.css. The SSR pages remain the no-bundle fallback.
+    auto joined = [](http::route_params& route, std::string prefix) {
+        for (const auto& [parameter, value] : route.params) {
+            if (!prefix.empty()) prefix += '/';
+            prefix += value;
+        }
+        return prefix;
+    };
+    router.add(http::method::get, "/studio", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "");  // the SPA entry (client route)
+    });
+    router.add(http::method::get, "/studio/:p1", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "");  // client subroutes → index.html
+    });
+    router.add(http::method::get, "/assets/:p1", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "assets"));
+    });
+    router.add(http::method::get, "/assets/:p1/:p2", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "assets"));
+    });
+    router.add(http::method::get, "/favicon.png", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, "favicon.png");
+    });
+    // The bundle's own fonts (Geist etc.) — the embedded Plex routes above
+    // stay first; anything else under /fonts resolves from the bundle.
+    router.add(http::method::get, "/fonts/:p1", [&impl, joined](http::route_params& route) -> http::route_task {
+        return impl.serve_webapp(route, joined(route, "fonts"));
     });
 
     // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
@@ -2448,6 +3312,16 @@ bool ApiServer::start() {
                    co_return http::route_done;
                });
 
+    // Root-level bundle files (brand marks, og images) and top-level client
+    // routes — GET, single segment, registered after every named public route
+    // so it shadows nothing. Deeper unknown paths still hit the gate (401).
+    router.add(http::method::get, "/:file", [&impl](http::route_params& route) -> http::route_task {
+        std::string file;
+        for (const auto& [parameter, value] : route.params)
+            if (parameter == "file") file = value;
+        return impl.serve_webapp(route, std::move(file));
+    });
+
     // The ONE auth gate (#745, epic #743): a single middleware at the router
     // seam that runs before EVERY gated route (cors handles the CORS preflight
     // before it, so credential-less OPTIONS is not blocked). Auth is ALWAYS on
@@ -2460,18 +3334,40 @@ bool ApiServer::start() {
     // registered BEFORE this middleware, so they stay reachable without a token;
     // and the in-process headed GUI authorizes locally, not through this gate.)
     router.use([&impl](http::route_params& route) -> http::route_task {
-        const std::string bearer = bearer_of(route);
+        // Authorization: Bearer wins; else the HttpOnly zetta_session cookie
+        // (its value IS a bearer token, validated identically) — so the Studio
+        // web app authenticates its /v1 calls with the session cookie set by
+        // POST /session, the token never touching the page's JavaScript.
+        std::string bearer = bearer_of(route);
+        if (bearer.empty()) bearer = cookie_value(route, "zetta_session");
         RequestIdentity identity;
         bool authorized = false;
 
         std::string resolved_user_id;
-        // authenticate_token touches the Node (token store) — main-thread only,
-        // so marshal it onto the owning loop, like every handler.
+        // Native token store first (cheap, local): authenticate_token touches the
+        // Node — main-thread only, so marshal it onto the owning loop.
         co_await impl.bridge.run_on_owner([&] {
             if (auto user = impl.node.authenticate_token(bearer)) {
                 resolved_user_id = user->id();
             }
         });
+
+        // Clerk fallback (#889): if the native token missed AND a Clerk issuer is
+        // configured AND the bearer is JWT-shaped, verify it against the issuer's
+        // JWKS and map the subject to a principal named clerk:<sub> (provisioned
+        // on first sight). No issuer configured → this never runs (bearer-only).
+        if (resolved_user_id.empty() && !impl.options.clerk_issuer.empty() &&
+            looks_like_jwt(bearer)) {
+            if (auto claims = verify_clerk_jwt(impl.options.clerk_issuer, bearer)) {
+                const std::string principal_name = "clerk:" + claims->subject;
+                co_await impl.bridge.run_on_owner([&] {
+                    auto user = impl.node.find_user(principal_name);
+                    if (!user) user = impl.node.create_user(principal_name);
+                    if (user) resolved_user_id = user->id();
+                });
+            }
+        }
+
         if (!resolved_user_id.empty()) {
             authorized = true;
             identity.acting_key = std::move(resolved_user_id);

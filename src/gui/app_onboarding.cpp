@@ -218,7 +218,7 @@ void App::draw_guided_demo_card() {
         step_header(2, "Create the churn project", step_done[1], current == 1);
         if (step_done[1]) {
             panel_note_prefix();
-            entity_link("open it in the Graph workspace", View::Graph, {});
+            entity_link("open it in the Pipeline workspace", View::Graph, {});
         } else if (current == 1) {
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(kInkMuted,
@@ -247,11 +247,11 @@ void App::draw_guided_demo_card() {
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(
                 kInkMuted,
-                "The intent compiles into an execution graph, and the "
-                "correctness gate checks it before anything deploys: no deploy "
-                "without a passing gate.");
+                "The intent compiles into a Pipeline, and "
+                "Verification checks it before anything deploys: no deploy "
+                "without a passed Verification.");
             ImGui::PopTextWrapPos();
-            if (primary_button("Compile, gate, and deploy")) {
+            if (primary_button("Compile, verify, and deploy")) {
                 onboarding_active_ = true;
                 onboarding_failed_ = false;
                 onboarding_status_.clear();

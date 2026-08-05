@@ -54,7 +54,8 @@ bool ranks_higher(const DeviceInfo& candidate, const DeviceInfo& incumbent,
 }  // namespace
 
 bool device_kind_from_string(std::string_view text, DeviceKind& out) {
-    constexpr std::array<DeviceKind, 2> kinds{DeviceKind::Cpu, DeviceKind::Cuda};
+    constexpr std::array<DeviceKind, 3> kinds{DeviceKind::Cpu, DeviceKind::Cuda,
+                                              DeviceKind::Mlx};
     for (const DeviceKind kind : kinds) {
         if (to_string(kind) == text) {
             out = kind;

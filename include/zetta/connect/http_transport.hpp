@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <utility>
@@ -51,6 +52,24 @@ struct HttpRequest {
     // reason string, a log line, or a process argument. Names are matched
     // case-insensitively against `headers`.
     std::vector<std::string> secret_headers;
+
+    // --- Large-download controls (used by the native model-weights fetch,
+    // connect/model_fetch.hpp). All default to off, so a connector is unchanged.
+
+    // Follow up to this many 3xx redirects. Each hop re-dials the `Location`
+    // (a new host + TLS is fine), dropping the secret headers on a cross-host
+    // hop so a bearer never reaches a different origin. 0 = return the 3xx as-is.
+    // A HuggingFace LFS URL 302-redirects to a CDN, so a weights fetch needs it.
+    int max_redirects = 0;
+
+    // Stream the 2xx response body straight to this file instead of buffering it
+    // in `HttpResponse::body` (which stays empty). Keeps a multi-GB download off
+    // the heap. A non-2xx, or a body that is only a redirect, writes nothing.
+    std::string download_to_path;
+
+    // Raise the transport's default response-body cap (bytes); 0 keeps the
+    // default. A model shard exceeds the connector default, so the fetch lifts it.
+    std::size_t max_response_bytes = 0;
 };
 
 // The result of one exchange. `error` is a **transport-level** failure (DNS,

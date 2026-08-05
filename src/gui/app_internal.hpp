@@ -21,12 +21,14 @@
 
 namespace zetta::gui {
 
-// ── Orama design-system palette (light) ───────────────────────────────────
-// Exact tokens from design-system/colors_and_type.css. Coral is the brand
-// "you are here" accent — used surgically (active nav, one focal action), NEVER
-// for status. Status uses the semantic green/amber/red below. See CLAUDE.md.
-inline constexpr ImVec4 kCoral{0.886f, 0.329f, 0.353f, 1.0f};       // #E2545A
-inline constexpr ImVec4 kCoralHover{0.831f, 0.263f, 0.286f, 1.0f};  // #D44349
+// ── Orama Studio design-system palette (light) ─────────────────────────────
+// Semantic tokens imported from the Studio design system
+// (oramasearch/orama-design, #875; docs/product/experience/design-sync.md).
+// The ONE action hue is Carbon Blue 60 — the "you are here" accent, used
+// surgically (active nav, one focal action), NEVER for status. Status uses the
+// semantic green/amber/red below. See CLAUDE.md.
+inline constexpr ImVec4 kAccent{0.059f, 0.384f, 0.996f, 1.0f};      // #0F62FE (Blue 60)
+inline constexpr ImVec4 kAccentHover{0.0f, 0.263f, 0.808f, 1.0f};   // #0043CE (Blue 70)
 inline constexpr ImVec4 kInkPrimary{0.110f, 0.110f, 0.102f, 1.0f};  // #1C1C1A
 inline constexpr ImVec4 kInkSecondary{0.267f, 0.267f, 0.255f, 1.0f};// #444441
 inline constexpr ImVec4 kInkMuted{0.373f, 0.373f, 0.361f, 1.0f};    // #5F5F5C
@@ -35,12 +37,12 @@ inline constexpr ImVec4 kCanvas{0.980f, 0.980f, 0.973f, 1.0f};      // #FAFAF8
 inline constexpr ImVec4 kSidebar{0.961f, 0.957f, 0.949f, 1.0f};     // #F5F4F2
 inline constexpr ImVec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};             // #FFFFFF
 inline constexpr ImVec4 kBorder{0.878f, 0.878f, 0.878f, 1.0f};      // #E0E0E0
-// The coral wash — the "you are here" *fill* (a selected node box, a
+// The accent wash — the "you are here" *fill* (a selected node box, a
 // deep-linked table row). The canvas palette's kCanvasBoxFillSelected is this
-// same token in ImU32 form.
-inline constexpr ImVec4 kCoralWash{0.969f, 0.933f, 0.937f, 1.0f};   // #F7EEEF
+// same token in ImU32 form. Carbon Blue 10.
+inline constexpr ImVec4 kAccentWash{0.929f, 0.961f, 1.0f, 1.0f};    // #EDF5FF
 
-// Semantic state palette (product only) — for status, never coral.
+// Semantic state palette (product only) — for status, never the accent.
 inline constexpr ImVec4 kSuccessColor{0.059f, 0.431f, 0.337f, 1.0f};// fresh-fg #0F6E56
 inline constexpr ImVec4 kDotActive{0.114f, 0.620f, 0.459f, 1.0f};   // dot-active #1D9E75
 inline constexpr ImVec4 kWarnColor{0.522f, 0.310f, 0.043f, 1.0f};   // stale-fg #854F0B
@@ -54,14 +56,14 @@ inline constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alph
 // The draw-list forms of the tokens above, for the spatial canvases: the graph
 // workspace's node boxes, the Cluster view's node boxes, the Datasets
 // partition-placement overlay, and the Search cluster strip. Same grammar
-// everywhere — white cards with hairline borders, a soft wash on hover, a
-// coral border + wash (the "you are here" accent) when selected. Panels never
+// everywhere — white cards with hairline borders, a soft wash on hover, an
+// accent border + wash (the "you are here" accent) when selected. Panels never
 // define draw-list colours of their own; a new one lands here first.
 inline constexpr ImU32 kCanvasBoxFill = IM_COL32(255, 255, 255, 255);          // white
 inline constexpr ImU32 kCanvasBoxFillHover = IM_COL32(242, 242, 240, 255);     // wash
-inline constexpr ImU32 kCanvasBoxFillSelected = IM_COL32(247, 238, 239, 255);  // coral wash
+inline constexpr ImU32 kCanvasBoxFillSelected = IM_COL32(237, 245, 255, 255);  // accent wash
 inline constexpr ImU32 kCanvasBoxBorder = IM_COL32(224, 224, 224, 255);        // border
-inline constexpr ImU32 kCanvasBoxBorderSelected = IM_COL32(226, 84, 90, 255);  // coral
+inline constexpr ImU32 kCanvasBoxBorderSelected = IM_COL32(15, 98, 254, 255);  // accent
 inline constexpr ImU32 kCanvasBoxText = IM_COL32(28, 28, 26, 255);             // ink-primary
 inline constexpr ImU32 kCanvasBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-muted
 // The per-node resource gauges (Cluster view): the meter track is the design
@@ -241,7 +243,7 @@ inline void mono_line(ImVec4 color, const char* label, const std::string& value)
 }
 
 // The one focal action on a surface: a charcoal-filled, white-text button (the
-// design system's primary button). Everything else stays a ghost button. Coral
+// design system's primary button). Everything else stays a ghost button. The accent
 // is never a button fill here (there is no "send").
 inline bool primary_button(const char* label) {
     ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
@@ -342,7 +344,7 @@ inline void stat_tile(const char* label, const std::string& value,
 // plus the entity_link hover affordance (hand cursor + an underline beneath
 // the eyebrow label). Returns true when clicked so the caller can
 // navigate_to(...) its owning panel. Not a button — links are wayfinding, so
-// there is no fill, no border, and never coral (the design system's link
+// there is no fill, no border, and never the accent (the design system's link
 // rules).
 inline bool stat_tile_link(const char* label, const std::string& value,
                            Tone tone = Tone::Muted) {

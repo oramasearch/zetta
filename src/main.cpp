@@ -8,7 +8,11 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/api/native_http_transport.hpp"
+#include "zetta/api/postgres_protocol.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/compute/mlx_serving.hpp"
+#include "zetta/connect/http_transport.hpp"
+#include "zetta/connect/model_fetch.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/cloud/node_bootstrap_env.hpp"
@@ -33,6 +37,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -48,6 +53,8 @@ struct Options {
     zetta::cluster::ClusterConfig cluster;
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
+    std::string webapp_dir;                     // --webapp-dir PATH (the Studio SPA bundle)
+    std::string clerk_issuer;                   // --clerk-issuer URL (Clerk JWT verify; else bearer-only)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
@@ -76,6 +83,7 @@ void print_usage(const char* argv0) {
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
+        "  --webapp-dir PATH   Serve the built Studio web app at /app from PATH\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
         "                      hashed at rest, never logged. If omitted on a\n"
@@ -110,7 +118,8 @@ void print_usage(const char* argv0) {
         "flags above — a provisioned node auto-joins with no manual flags):\n"
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
-        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n",
+        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
+        "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -131,6 +140,12 @@ Options parse_args(int argc, char** argv) {
         const std::string arg = argv[i];
         if (arg == "--no-mcp") {
             o.mcp_enabled = false;
+        } else if (arg == "--webapp-dir") {
+            const char* v = take_value(argc, argv, i, o, "--webapp-dir");
+            if (v) o.webapp_dir = v;
+        } else if (arg == "--clerk-issuer") {
+            const char* v = take_value(argc, argv, i, o, "--clerk-issuer");
+            if (v) o.clerk_issuer = v;
         } else if (arg == "--mcp-listen") {
             const char* v = take_value(argc, argv, i, o, "--mcp-listen");
             if (v) o.mcp_listen = v;
@@ -237,9 +252,70 @@ std::string load_or_create_node_id(const std::string& data_dir) {
     return id;
 }
 
+// `zetta pull <owner/model> [--revision REV] [--dir PATH]` — download open-weights
+// model files natively (config + tokenizer + safetensors, sharded or single) into
+// PATH, using the engine's own HTTPS client (no Python, no curl; ADR-17). The
+// printed directory is what `ZETTA_QWEN_DIR` / the base-agent training consume.
+int run_pull(int argc, char** argv) {
+    std::string repo;
+    std::string revision = "main";
+    std::string dir;
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--dir" && i + 1 < argc) {
+            dir = argv[++i];
+        } else if (arg == "--revision" && i + 1 < argc) {
+            revision = argv[++i];
+        } else if (!arg.empty() && arg.front() == '-') {
+            std::fprintf(stderr, "zetta pull: unknown option %s\n", argv[i]);
+            return 2;
+        } else if (repo.empty()) {
+            repo = argv[i];
+        } else {
+            std::fprintf(stderr, "zetta pull: unexpected argument %s\n", argv[i]);
+            return 2;
+        }
+    }
+    if (repo.empty()) {
+        std::fprintf(stderr,
+                     "usage: zetta pull <owner/model> [--revision REV] [--dir PATH]\n"
+                     "  download open-weights model files (config + tokenizer +\n"
+                     "  safetensors) into PATH (default ./models/<model>); set HF_TOKEN\n"
+                     "  in the environment for a gated/private repo\n");
+        return 2;
+    }
+    if (dir.empty()) {
+        const std::string base = repo.substr(repo.find_last_of('/') + 1);
+        dir = (std::filesystem::path("models") / base).string();
+    }
+    const char* token_env = std::getenv("HF_TOKEN");  // never logged; a secret header
+    const std::string token = token_env != nullptr ? token_env : "";
+
+    zetta::api::install_native_http_transport();
+    std::fprintf(stderr, "pulling %s (%s) -> %s\n", repo.c_str(), revision.c_str(),
+                 dir.c_str());
+    const zetta::connect::ModelFetchResult result = zetta::connect::fetch_hf_model(
+        zetta::connect::default_http_transport(), repo, revision, dir, token,
+        [](const std::string& file, const std::string& note) {
+            std::fprintf(stderr, "  %s: %s\n", file.c_str(), note.c_str());
+        });
+    zetta::api::shutdown_native_http_transport();
+
+    if (!result.ok) {
+        std::fprintf(stderr, "zetta pull: %s\n", result.reason.c_str());
+        return 1;
+    }
+    std::fprintf(stderr, "done: %zu files\n", result.files.size());
+    std::printf("%s\n", dir.c_str());  // the directory to point ZETTA_QWEN_DIR at
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string_view(argv[1]) == "pull") {
+        return run_pull(argc, argv);
+    }
     Options opts = parse_args(argc, argv);
     if (opts.bad_usage) {
         print_usage(argv[0]);
@@ -257,6 +333,21 @@ int main(int argc, char** argv) {
     // fails with "no outbound HTTP transport is installed", which is exactly
     // what a build that deliberately has no egress should do.
     zetta::api::install_native_http_transport();
+#ifdef ZETTA_WITH_POSTGRES
+    // The libpqxx Postgres connector (#892) — registers into the connector runner
+    // seam so a "postgres" source connection can run its read-only query. Built
+    // only when the libpqxx submodule is present; without it, a Postgres query
+    // fails cleanly ("the Postgres connector is not built into this binary").
+    zetta::connect::install_postgres_protocol();
+#endif
+#ifdef ZETTA_WITH_MLX
+    // The fast Metal-GPU Qwen decode (#555) — register MlxQwenInference as the agent's
+    // serving-inference runner, so chat()/respond() decode on the Apple-Silicon GPU
+    // (one fused MLX graph per token, KV cache on-GPU) instead of the per-op-synced
+    // autograd CPU path. Built only in the MLX build; without it the agent falls back
+    // to the native CPU inference cleanly.
+    zetta::compute::model::install_mlx_qwen_inference();
+#endif
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster
     // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
@@ -301,6 +392,15 @@ int main(int argc, char** argv) {
             }
             std::printf("%s\n", summary.c_str());
         }
+    }
+
+    // The Studio web app bundle (#883): the image bakes the bundle and seats
+    // ZETTA_WEBAPP_DIR; an explicit --webapp-dir always wins.
+    if (opts.webapp_dir.empty()) {
+        if (const char* env = std::getenv("ZETTA_WEBAPP_DIR")) opts.webapp_dir = env;
+    }
+    if (opts.clerk_issuer.empty()) {
+        if (const char* env = std::getenv("ZETTA_CLERK_ISSUER")) opts.clerk_issuer = env;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
@@ -556,6 +656,8 @@ int main(int argc, char** argv) {
         }
         api_options.listen_address = opts.mcp_listen.substr(0, colon);
         api_options.port = api_port;
+        api_options.webapp_dir = opts.webapp_dir;
+        api_options.clerk_issuer = opts.clerk_issuer;
         // The default-deny gate is always on (#799) and has no toggle: every
         // HTTP/MCP/REST path needs a bearer that resolves to a user via the token
         // store, else 401. There is no opt-out and no legacy shared-secret bypass.

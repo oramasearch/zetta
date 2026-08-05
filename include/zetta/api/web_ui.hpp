@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -36,11 +37,32 @@ std::string web_ui_login(std::string_view error);
 
 // Wrap `content` in the full page shell (sticky top bar + responsive nav). `active` is the current
 // nav key, `user` the acting user's label, `meta` the node meta line (id · version · N nodes).
+// `project_count` >= 0 renders the count badge on the Projects nav row (the
+// Studio shell's one live count); pass -1 to omit it. `assist_agent` is the
+// served agent id the Ask Orama rail talks to (through POST /assist → the
+// `chat` capability); empty renders the rail's honest no-agent state.
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
-                         std::string_view content);
+                         std::string_view content, long long project_count = -1,
+                         std::string_view assist_agent = {});
 
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);
+
+// Sanitize a /app/<...> request into a bundle-relative file path for the
+// Studio web app: empty or "/" becomes index.html, traversal ("..", a leading
+// slash kept, backslashes) is rejected with nullopt. Pure — the caller does
+// the filesystem work.
+std::optional<std::string> web_ui_webapp_path(std::string_view url_path);
+
+// The Content-Type for a bundle file, by extension (text/html fallback).
+std::string_view web_ui_content_type(std::string_view path);
+
+// The Studio page hero (every view): mono eyebrow, title, one-line sub, the
+// mono meta strip (pre-built HTML, e.g. "<span>Nodes <b>3</b></span>…"), and
+// an optional top-right actions cluster (pre-built HTML).
+std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
+                             std::string_view sub, std::string_view meta_html,
+                             std::string_view actions_html = {});
 
 // Render a SQL/read result (an ordered `columns` array + a `rows` array of column-keyed objects) as
 // an on-brand, horizontally-scrollable HTML table. Column-name heuristics format status/bytes/bools.

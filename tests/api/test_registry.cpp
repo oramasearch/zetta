@@ -59,8 +59,14 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 50u);
+    EXPECT_EQ(registry.size(), 69u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+                                      // +agent_training_status +set_training_schedule (#941), +score (#948)
     EXPECT_TRUE(registry.find("server_info"));
+    // The #849 agent CRUD surface (create/list/get/update/delete).
+    for (const char* name :
+         {"create_agent", "list_agents", "get_agent", "update_agent", "delete_agent"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // The #825 create path for a full-text index over a loaded table.
     EXPECT_TRUE(registry.find("create_index"));
     // The visual graph workspace's read + save path.
@@ -87,9 +93,10 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // orchestration:<name> action like every other mutation.
     for (const char* name :
          {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
-          "compile_python", "gate", "deploy", "run", "add_dataset",
-          "testsuite_run", "expose_model", "unexpose_model", "expose_index",
-          "unexpose_index"}) {
+          "compile_python", "approve_plan", "gate", "deploy", "run",
+          "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
+          "expose_index", "unexpose_index", "create_workspace_profile",
+          "update_workspace_profile", "create_plan", "update_plan"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,

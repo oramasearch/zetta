@@ -36,10 +36,10 @@ namespace {
 }  // namespace
 
 void App::draw_gate() {
-    ImGui::SeparatorText("Correctness gate");
+    ImGui::SeparatorText("Verification");
     ImGui::TextDisabled(
-        "Validate an execution graph before you deploy. No deploy without a "
-        "passing gate.");
+        "Validate a Pipeline before you deploy. No deploy without a "
+        "passed Verification.");
 
     // Graph source. Fill a preset, load a stored graph from the selected
     // project, or edit the IR JSON directly below. ir::from_json validates the
@@ -162,8 +162,8 @@ void App::draw_deploy() {
     }
     ImGui::SeparatorText("Deploy");
     ImGui::TextDisabled(
-        "Pick an AI solution, choose where to run it, and deploy. The "
-        "correctness gate must pass first; no deploy without it.");
+        "Pick an AI solution, choose where to run it, and deploy. "
+        "Verification must pass first; no deploy without it.");
 
     const zetta::pipeline::SolutionCatalog& catalog = zetta::pipeline::SolutionCatalog::builtin();
 
@@ -329,12 +329,12 @@ void App::draw_deploy() {
         for (const std::shared_ptr<zetta::pipeline::Deployment>& deployment : deployments) {
             ImGui::PushID(deployment->id().c_str());
             ImGui::TableNextRow();
-            // The deep-linked deployment gets the coral "you are here" wash —
+            // The deep-linked deployment gets the accent "you are here" wash —
             // matched by id or by the deployed graph's name (audit targets).
             if (deployment->id() == selected_deployment_ ||
                 deployment->graph_name() == selected_deployment_) {
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
-                                       ImGui::GetColorU32(kCoralWash));
+                                       ImGui::GetColorU32(kAccentWash));
             }
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(

@@ -143,6 +143,33 @@ TEST(RuntimeParallelFor, SmallRangeRunsInlineAsOneChunk) {
     EXPECT_EQ(chunk_count, 1u);
 }
 
+// offload runs a BLOCKING callable on a pool worker and resumes the awaiting
+// coroutine with its result — the bridge for a blocking backend (libpq). The
+// result must flow back, and the blocking must happen off the calling thread.
+namespace {
+zetta::runtime::task<int> awaits_offload(std::shared_ptr<std::thread::id> ran_on) {
+    const int value = co_await zetta::runtime::offload([ran_on]() -> int {
+        *ran_on = std::this_thread::get_id();
+        // A real blocking call (a DB round-trip) would sit here; a short sleep
+        // stands in — on a pool worker, so the caller's thread is never pinned.
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        return 99;
+    });
+    co_return value;
+}
+}  // namespace
+
+TEST(Runtime, OffloadReturnsResultFromAPoolWorker) {
+    auto ran_on = std::make_shared<std::thread::id>();
+    const std::thread::id caller = std::this_thread::get_id();
+
+    const int result = zetta::runtime::block_on(awaits_offload(ran_on));
+
+    EXPECT_EQ(result, 99);                 // the blocking result flowed back
+    EXPECT_NE(*ran_on, std::thread::id{});  // the callable actually ran
+    EXPECT_NE(*ran_on, caller);             // …on a pool worker, not the caller
+}
+
 TEST(RuntimeParallelForDeathTest, ThrowingBodyAborts) {
     // parallel_for bodies must not throw — zetta-core never unwinds across a
     // seam. A throwing body is a contract violation and aborts the process.

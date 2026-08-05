@@ -1,0 +1,90 @@
+// Motive churn — what the pipeline does today.
+//
+// Generated source for motive-churn-flow.svg. Render with:
+//   dot -Tsvg motive-churn-flow.dot -o motive-churn-flow.svg
+//
+// Colour is status, not decoration:
+//   green = running today   blue = built, verified in the test harness
+//   grey  = next
+digraph motive_churn {
+  rankdir=TB;
+  bgcolor="white";
+  fontname="IBM Plex Sans,Helvetica,Arial,sans-serif";
+  node [fontname="IBM Plex Sans,Helvetica,Arial,sans-serif", fontsize=11,
+        shape=box, style="rounded,filled", penwidth=1.2, margin="0.18,0.10"];
+  edge [fontname="IBM Plex Sans,Helvetica,Arial,sans-serif", fontsize=9,
+        color="#525252", penwidth=1.1];
+
+  subgraph cluster_legend {
+    label="Status"; fontsize=11; color="#c6c6c6"; style="rounded"; margin=10;
+    node [shape=box, width=2.0, height=0.26, fontsize=9];
+    L1 [label="running today", fillcolor="#defbe6", color="#24a148"];
+    L2 [label="verified in the harness", fillcolor="#d0e2ff", color="#0f62fe"];
+    L3 [label="next", fillcolor="#f4f4f4", color="#a8a8a8"];
+    L1 -> L2 -> L3 [style=invis];
+  }
+
+  subgraph cluster_in {
+    label="1 · Data in"; fontsize=12; color="#c6c6c6"; style="rounded"; margin=12;
+    src [label="Communications event log\n11 sources · one timeline per account",
+         fillcolor="#defbe6", color="#24a148"];
+    q [label="Read-only query against a saved connection",
+       fillcolor="#defbe6", color="#24a148"];
+    ds [label="Internal dataset\nParquet, partitioned across the cluster\naddressed database.table",
+        fillcolor="#defbe6", color="#24a148"];
+    scale [label="Next: the full ~12 GB event log\nsame query, same pipeline",
+           fillcolor="#f4f4f4", color="#a8a8a8"];
+    src -> q -> ds;
+    ds -> scale [style=dashed, label="  scales to"];
+  }
+
+  subgraph cluster_pipe {
+    label="2 · One pipeline · the model is a step inside it"; fontsize=12;
+    color="#c6c6c6"; style="rounded"; margin=12;
+    contract [label="Column contract\nentity · label · features\ninferred, and reported back",
+              fillcolor="#defbe6", color="#24a148"];
+    shard [label="Near-data read\neach node reads only the partitions it holds",
+           fillcolor="#defbe6", color="#24a148"];
+    feat [label="Featurize\npoint-in-time; the cutoff is never guessed",
+          fillcolor="#defbe6", color="#24a148"];
+    train [label="Train\ngradient-boosted trees on the account's own columns\nheld-out AUC 0.726 · in-sample 0.770\ngap 0.04 — it generalizes",
+           fillcolor="#defbe6", color="#24a148"];
+    shap [label="Explain\nTreeSHAP, per row and per population",
+          fillcolor="#defbe6", color="#24a148"];
+    rank [label="Rank\n15,000 accounts by risk",
+          fillcolor="#defbe6", color="#24a148"];
+    contract -> shard -> feat -> train -> shap -> rank;
+  }
+  ds -> contract [label="  dataset_path = \"database.table\""];
+
+  subgraph cluster_out {
+    label="3 · What comes back"; fontsize=12; color="#c6c6c6"; style="rounded"; margin=12;
+    model [label="A registered model\nkept, versioned, re-scorable",
+           fillcolor="#defbe6", color="#24a148"];
+    drivers [label="What drives churn\nescalations · billing disputes ·\nunresolved contacts · sales silence",
+             fillcolor="#defbe6", color="#24a148"];
+    atrisk [label="The at-risk list\noutlives the run that produced it",
+            fillcolor="#d0e2ff", color="#0f62fe"];
+    infer [label="Score an account not in the data\na missing feature fails, never zero-fills",
+           fillcolor="#d0e2ff", color="#0f62fe"];
+    report [label="Next: the report as an artifact",
+            fillcolor="#f4f4f4", color="#a8a8a8"];
+    train -> model; shap -> drivers; rank -> atrisk; model -> infer;
+    drivers -> report [style=dashed]; atrisk -> report [style=dashed];
+  }
+
+  subgraph cluster_ask {
+    label="4 · Ask it"; fontsize=12; color="#c6c6c6"; style="rounded"; margin=12;
+    q3 [label="\"Which accounts are most at risk, and why?\"",
+        fillcolor="#d0e2ff", color="#0f62fe"];
+    q2 [label="\"What would this account score?\"",
+        fillcolor="#d0e2ff", color="#0f62fe"];
+    q4 [label="\"What's our revenue next quarter?\"\n→ declines, invents nothing",
+        fillcolor="#defbe6", color="#24a148"];
+    q1 [label="Next: \"What's in this data?\"",
+        fillcolor="#f4f4f4", color="#a8a8a8"];
+  }
+  atrisk -> q3 [style=dotted]; drivers -> q3 [style=dotted];
+  infer -> q2 [style=dotted]; ds -> q1 [style=dotted];
+
+}

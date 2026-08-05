@@ -41,14 +41,20 @@ namespace zetta::connect {
 // OAuth token). It is **input-only** — `to_json()` never emits it, so a config
 // can be echoed back to a caller or logged without leaking the secret.
 struct ConnectorConfig {
-    std::string type;              // "snowflake" (see connector_types())
-    std::string account;           // e.g. "ab12345.us-east-1" (the host prefix)
-    std::string token;             // bearer credential — never serialized
-    std::string auth = "pat";      // "pat" (default) | "oauth"
-    std::string database;          // session database
-    std::string schema;            // session schema
-    std::string warehouse;         // compute warehouse (required for token auth)
-    std::string role;              // optional session role
+    std::string type;              // "snowflake" | "postgres" (see connector_types())
+    std::string account;           // Snowflake: "ab12345.us-east-1" (the host prefix)
+    std::string token;             // the secret — never serialized (Snowflake bearer / Postgres password)
+    std::string auth = "pat";      // Snowflake: "pat" (default) | "oauth"
+    std::string database;          // session database (both)
+    std::string schema;            // session schema (both)
+    std::string warehouse;         // Snowflake: compute warehouse (required for token auth)
+    std::string role;              // optional session role (both)
+    // Postgres fields (type == "postgres"). The password rides in `token` (so the
+    // one redaction rule covers it); host + user + database are required.
+    std::string host;              // Postgres host (e.g. 127.0.0.1)
+    std::string port;              // Postgres port (default 5432)
+    std::string user;              // Postgres role/user
+    std::string sslmode;           // Postgres sslmode (disable/require/verify-full/…)
 
     // The JSON form (token omitted — see above). This is the OUTWARD-facing
     // shape: what a capability returns, what a system view renders, what a log

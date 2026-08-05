@@ -304,6 +304,43 @@ else()
                  "`git submodule update --init modules/oramacore-cpp` to enable)")
 endif()
 
+# libpqxx — the Postgres source connector (#892). A public-upstream submodule
+# (modules/libpqxx, jtv/libpqxx) on **libpq**. Guarded on presence so a checkout
+# without it still configures + builds + runs green (ZETTA_WITH_POSTGRES) — the
+# same discipline as oramacore-cpp above. The blocking libpq calls are wrapped in
+# runtime::offload so zetta's threading is never disturbed; the adapter
+# (src/core/api/postgres_protocol.cpp) is the one TU that names libpqxx and links
+# into zetta-api, so **zetta-core links no libpq** (the outbound-transport
+# boundary). ADR-17 exception (vendor driver) — a deliberate, documented decision.
+set(ZETTA_LIBPQXX_DIR "${CMAKE_SOURCE_DIR}/modules/libpqxx")
+if(EXISTS "${ZETTA_LIBPQXX_DIR}/CMakeLists.txt")
+  # libpqxx's src/CMakeLists.txt does find_package(PostgreSQL REQUIRED). On macOS
+  # Homebrew keeps libpq keg-only, so add the hint prefixes; on Ubuntu/the build
+  # box libpq-dev is found without help.
+  if(APPLE)
+    foreach(pg_prefix /opt/homebrew/opt/libpq /usr/local/opt/libpq
+                      /opt/homebrew/opt/postgresql@17)
+      if(EXISTS "${pg_prefix}")
+        list(APPEND CMAKE_PREFIX_PATH "${pg_prefix}")
+      endif()
+    endforeach()
+  endif()
+  set(SKIP_BUILD_TEST ON CACHE BOOL "" FORCE)  # don't build libpqxx's own tests
+  add_subdirectory("${ZETTA_LIBPQXX_DIR}" EXCLUDE_FROM_ALL)
+  # Match zetta-core's libc++ ABI (std containers cross the link boundary), same
+  # as the oramacore + json-schema-validator guards above.
+  if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+    target_compile_options(pqxx PRIVATE -fexperimental-library)
+  endif()
+  set(ZETTA_WITH_POSTGRES ON)
+  message(STATUS "Postgres source connector (libpqxx): ENABLED")
+else()
+  set(ZETTA_WITH_POSTGRES OFF)
+  message(STATUS "Postgres source connector: disabled "
+                 "(modules/libpqxx not initialized — "
+                 "`git submodule update --init modules/libpqxx` to enable)")
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
@@ -316,6 +353,8 @@ endif()
 
 option(ZETTA_ENABLE_CUDA
   "Build the optional CUDA compute backend (requires the CUDA toolkit)" OFF)
+option(ZETTA_ENABLE_MLX
+  "Build the optional MLX (Apple-Silicon/Metal) compute backend (requires libmlx)" OFF)
 
 set(ZETTA_COMPUTE_SOURCES
   src/core/compute/device_buffer.cpp
@@ -328,11 +367,32 @@ if(ZETTA_ENABLE_CUDA)
   # absent, rather than silently dropping the backend.
   find_package(CUDAToolkit REQUIRED)
   enable_language(CUDA)
-  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu)
+  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu
+                                    src/core/compute/cuda_transformer.cu
+                                    src/core/compute/cuda_resident.cpp
+                                    src/core/compute/cuda_qwen_model.cpp)
   message(STATUS "CUDA compute backend: ENABLED (CUDAToolkit ${CUDAToolkit_VERSION})")
 else()
   message(STATUS "CUDA compute backend: disabled (CPU-only build). "
                  "Enable with -DZETTA_ENABLE_CUDA=ON on a host with the CUDA toolkit.")
+endif()
+
+if(ZETTA_ENABLE_MLX)
+  # MLX is a normal C++ library (no separate language, unlike CUDA): find its
+  # header + shared lib and add the backend TU. REQUIRED so an explicit opt-in
+  # fails loudly when libmlx is absent rather than silently dropping the backend.
+  find_path(MLX_INCLUDE_DIR mlx/mlx.h REQUIRED)
+  find_library(MLX_LIBRARY mlx REQUIRED)
+  list(APPEND ZETTA_COMPUTE_SOURCES
+    src/core/compute/mlx_device.cpp
+    src/core/compute/mlx_transformer.cpp
+    src/core/compute/mlx_qwen.cpp
+    src/core/compute/mlx_qwen_inference_install.cpp
+    src/core/compute/safetensors.cpp)
+  message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
+else()
+  message(STATUS "MLX compute backend: disabled (CPU-only build). "
+                 "Enable with -DZETTA_ENABLE_MLX=ON on a host with libmlx (macOS).")
 endif()
 
 add_library(zetta-compute STATIC ${ZETTA_COMPUTE_SOURCES})
@@ -355,7 +415,15 @@ if(ZETTA_ENABLE_CUDA)
   set_target_properties(zetta-compute PROPERTIES
     CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON)
-  if(NOT CMAKE_CUDA_HOST_COMPILER)
+  # Only nvcc has a separate host compiler. It also enforces a version whitelist that
+  # our toolchain outruns: CUDA 12.8's nvcc rejects host Clang >= 20 outright
+  # ("unsupported clang version! clang version must be less than 20"), so pairing it
+  # with the Clang 22 the rest of the build uses is not possible. Two ways out, and
+  # CMAKE_CUDA_COMPILER decides which:
+  #   * nvcc  -> pin an older host Clang (-DCMAKE_CUDA_HOST_COMPILER=clang++-19), or
+  #   * Clang -> let Clang compile the .cu itself (-DCMAKE_CUDA_COMPILER=clang++-22),
+  #     which needs no host compiler at all and keeps ONE compiler across the build.
+  if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND NOT CMAKE_CUDA_HOST_COMPILER)
     set_target_properties(zetta-compute PROPERTIES
       CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
   endif()
@@ -364,12 +432,40 @@ if(ZETTA_ENABLE_CUDA)
   # binary without leaking the CUDA include directories into zetta-core (a static-
   # library PRIVATE dependency propagates to consumers as link-only).
   target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_CUDA=1)
-  target_link_libraries(zetta-compute PRIVATE CUDA::cudart)
-  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation when
-  # the host compiler is Clang (the toolchain zetta selects).
+  # cuBLAS provides the tuned GEMM (#929). The hand-written kernel stays as the fallback for
+  # dtypes cuBLAS does not cover and as the conformance reference.
+  target_link_libraries(zetta-compute PRIVATE CUDA::cudart CUDA::cublas)
+  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation. How the
+  # flag is spelled depends on which compiler owns the .cu: nvcc forwards to its host
+  # compiler via -Xcompiler, whereas Clang IS the host compiler and takes the flag
+  # directly. Getting this wrong is not a subtle failure -- an unguarded -Xcompiler
+  # reaches nvcc's DEFAULT host compiler (gcc), which rejects the clang-only flag with
+  # "unrecognized command-line option '-fexperimental-library'".
   if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
-    target_compile_options(zetta-compute PRIVATE
-      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+    elseif(CMAKE_CUDA_COMPILER_ID MATCHES "Clang")
+      target_compile_options(zetta-compute PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-fexperimental-library>)
+    endif()
+  endif()
+endif()
+
+if(ZETTA_ENABLE_MLX)
+  # ZETTA_WITH_MLX is PUBLIC so consumers (the device registry, tests) guard their
+  # use of MlxDevice on it. The MLX headers + libmlx are PRIVATE so they link into
+  # the final binary without leaking into zetta-core's public surface. On macOS
+  # libmlx pulls the Metal/Foundation frameworks it was built against.
+  target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_MLX=1)
+  target_include_directories(zetta-compute PRIVATE ${MLX_INCLUDE_DIR})
+  # nlohmann/json (header-only) for the safetensors header; the include path comes
+  # via the interface target set up above.
+  target_link_libraries(zetta-compute PRIVATE ${MLX_LIBRARY} nlohmann_json)
+  if(APPLE)
+    target_link_libraries(zetta-compute PRIVATE
+      "-framework Metal" "-framework Foundation" "-framework QuartzCore"
+      "-framework Accelerate")
   endif()
 endif()
 
@@ -387,6 +483,7 @@ add_library(zetta-core STATIC
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
+  src/core/api/mcp_prompts.cpp
   src/core/api/registry.cpp
   src/core/api/rest.cpp
   src/core/api/serving.cpp
@@ -438,6 +535,8 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
   src/core/ml/model.cpp
+  src/core/workspace/workspace_profile.cpp
+  src/core/billing/plan.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp
@@ -495,12 +594,15 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/add_dataset.cpp
+  src/core/data/dataset_path.cpp
   src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
+  src/core/connect/postgres_runner.cpp
   src/core/connect/distributed_fetch.cpp
   src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
   src/core/connect/http_transport.cpp
+  src/core/connect/model_fetch.cpp
   src/core/usecases/churn/churn_dataset.cpp
   src/core/pipeline/n8n_import.cpp
   src/core/pipeline/n8n_compile.cpp
@@ -534,11 +636,58 @@ add_library(zetta-core STATIC
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
+  src/core/ml/score_table.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
   src/core/ml/local_featurize_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
+  src/core/agent/action.cpp
+  src/core/agent/goal.cpp
+  src/core/agent/conversation.cpp
+  src/core/agent/training_policy.cpp
+  src/core/agent/agent_record.cpp
+  src/core/agent/agent_store.cpp
+  src/core/agent/base_prompt.cpp
+  src/core/agent/interaction.cpp
+  src/core/agent/response_facts.cpp
+  src/core/agent/solution_graph.cpp
+  src/core/dataset/auto_suggest_generator.cpp
+  src/core/dataset/base_agent_generator.cpp
+  src/core/dataset/dataset_generator_factory.cpp
+  src/core/dataset/interaction_families.cpp
+  src/core/dataset/plan_templates.cpp
+  src/core/agent/chat.cpp
+  src/core/agent/model_cache.cpp
+  src/core/agent/inference_runner.cpp
+  src/core/agent/grader.cpp
+  src/core/agent/sandbox.cpp
+  src/core/agent/rollout.cpp
+  src/core/agent/reward.cpp
+  src/core/agent/admission_gate.cpp
+  src/core/agent/curriculum.cpp
+  src/core/agent/corpus_io.cpp
+  src/core/agent/softmax_policy.cpp
+  src/core/agent/advantage.cpp
+  src/core/agent/policy_gradient.cpp
+  src/core/agent/training.cpp
+  src/core/agent/sequence_training.cpp
+  src/core/agent/corpus_training.cpp
+  src/core/agent/linear_policy.cpp
+  src/core/agent/distributed.cpp
+  src/core/agent/distributed_training.cpp
+  src/core/agent/collectives_allreduce.cpp
+  src/core/agent/neural_training.cpp
+  src/core/agent/judge.cpp
+  src/core/agent/qwen_rlvr.cpp
+  src/core/agent/text_generation.cpp
+  src/core/autograd/tensor.cpp
+  src/core/autograd/transformer.cpp
+  src/core/autograd/qwen.cpp
+  src/core/autograd/safetensors.cpp
+  src/core/tokenizer/byte_encoding.cpp
+  src/core/tokenizer/pre_tokenizer.cpp
+  src/core/tokenizer/bpe.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
@@ -652,7 +801,8 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(zetta-api STATIC
   src/core/api/http_server.cpp
-  src/core/api/native_http_transport.cpp)
+  src/core/api/native_http_transport.cpp
+  src/core/api/clerk_auth.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)
 target_link_libraries(zetta-api PRIVATE
@@ -661,6 +811,16 @@ target_link_libraries(zetta-api PRIVATE
   Boost::json
   Boost::corosio
   Boost::corosio_openssl)
+
+# The Postgres connector adapter (#892) — the one TU that names libpqxx, compiled
+# into zetta-api only when the submodule is present, so zetta-core links no libpq.
+if(ZETTA_WITH_POSTGRES)
+  target_sources(zetta-api PRIVATE src/core/api/postgres_protocol.cpp)
+  target_link_libraries(zetta-api PRIVATE pqxx)
+  # PUBLIC so consumers (the executable's main.cpp, tests) can guard the install
+  # call the same way — the CUDA/MLX pattern.
+  target_compile_definitions(zetta-api PUBLIC ZETTA_WITH_POSTGRES=1)
+endif()
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)
@@ -680,6 +840,9 @@ add_executable(zetta
   src/gui/app_traces.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
+  src/gui/app_agents.cpp
+  src/gui/app_chat.cpp
+  src/gui/app_datagen.cpp
   src/gui/app_datasets.cpp
   src/gui/app_search.cpp
   src/gui/app_jobs.cpp
@@ -703,42 +866,55 @@ target_link_libraries(zetta PRIVATE
   SDL3::SDL3-static
 )
 
-# Embed the Orama design-system typefaces — Geist (UI sans) + Geist Mono
-# (labels / counts / metrics) — so the GUI can rasterize real TTFs at
-# framebuffer-pixel density on HiDPI displays with no runtime font-file
-# dependency. ImGui's default ProggyClean is a 13px bitmap font that goes
-# blurry the moment SDL_SetRenderScale upscales it; AddFontFromMemoryTTF with
-# RasterizerDensity = pixel_density keeps text crisp. The TTFs live in
-# assets/fonts/ (SIL OFL 1.1; see assets/fonts/README.md).
-set(ZETTA_FONT_SANS_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/Geist.ttf")
-set(ZETTA_FONT_MONO_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/GeistMono.ttf")
-set(ZETTA_FONT_SANS_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_sans.hpp")
-set(ZETTA_FONT_MONO_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_mono.hpp")
+# Embed the Orama Studio typefaces — IBM Plex Sans (UI) + IBM Plex Sans
+# SemiBold (headings) + IBM Plex Mono (labels / counts / metrics) — so the GUI
+# can rasterize real TTFs at framebuffer-pixel density on HiDPI displays with
+# no runtime font-file dependency, and the web app can serve the matching
+# woff2 files from the node itself (GET /fonts/*, no external requests —
+# air-gapped nodes have no egress). ImGui's default ProggyClean is a 13px
+# bitmap font that goes blurry the moment SDL_SetRenderScale upscales it;
+# AddFontFromMemoryTTF with RasterizerDensity = pixel_density keeps text
+# crisp. The font files live in assets/fonts/ (SIL OFL 1.1; see
+# assets/fonts/README.md).
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
-add_custom_command(
-  OUTPUT  "${ZETTA_FONT_SANS_HPP}"
-  COMMAND ${CMAKE_COMMAND}
-          -DIN_FILE=${ZETTA_FONT_SANS_SRC}
-          -DOUT_FILE=${ZETTA_FONT_SANS_HPP}
-          -DSYMBOL=kGeistSans
-          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  DEPENDS ${ZETTA_FONT_SANS_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  COMMENT "Embedding Geist.ttf into zetta_font_sans.hpp"
-)
-add_custom_command(
-  OUTPUT  "${ZETTA_FONT_MONO_HPP}"
-  COMMAND ${CMAKE_COMMAND}
-          -DIN_FILE=${ZETTA_FONT_MONO_SRC}
-          -DOUT_FILE=${ZETTA_FONT_MONO_HPP}
-          -DSYMBOL=kGeistMono
-          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  DEPENDS ${ZETTA_FONT_MONO_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  COMMENT "Embedding GeistMono.ttf into zetta_font_mono.hpp"
-)
-add_custom_target(zetta-font-embed ALL
-  DEPENDS "${ZETTA_FONT_SANS_HPP}" "${ZETTA_FONT_MONO_HPP}")
+function(zetta_embed_font SRC_NAME HPP_NAME SYMBOL)
+  add_custom_command(
+    OUTPUT  "${CMAKE_BINARY_DIR}/generated/${HPP_NAME}"
+    COMMAND ${CMAKE_COMMAND}
+            -DIN_FILE=${CMAKE_SOURCE_DIR}/assets/fonts/${SRC_NAME}
+            -DOUT_FILE=${CMAKE_BINARY_DIR}/generated/${HPP_NAME}
+            -DSYMBOL=${SYMBOL}
+            -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+    DEPENDS ${CMAKE_SOURCE_DIR}/assets/fonts/${SRC_NAME}
+            ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+    COMMENT "Embedding ${SRC_NAME} into ${HPP_NAME}"
+  )
+endfunction()
+
+# The GUI faces (TTF, rasterized by ImGui).
+zetta_embed_font(IBMPlexSans-Regular.ttf  zetta_font_sans.hpp    kPlexSans)
+zetta_embed_font(IBMPlexSans-SemiBold.ttf zetta_font_heading.hpp kPlexSansSemiBold)
+zetta_embed_font(IBMPlexMono-Regular.ttf  zetta_font_mono.hpp    kPlexMono)
+add_custom_target(zetta-font-embed ALL DEPENDS
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_sans.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_heading.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_font_mono.hpp")
 add_dependencies(zetta zetta-font-embed)
 target_include_directories(zetta PRIVATE "${CMAKE_BINARY_DIR}/generated")
+
+# The web faces (woff2, served by the node at GET /fonts/* — latin subsets,
+# ~15-25 KB each).
+zetta_embed_font(IBMPlexSans-Regular.woff2  zetta_web_font_sans_400.hpp kPlexSansWoff400)
+zetta_embed_font(IBMPlexSans-Medium.woff2   zetta_web_font_sans_500.hpp kPlexSansWoff500)
+zetta_embed_font(IBMPlexSans-SemiBold.woff2 zetta_web_font_sans_600.hpp kPlexSansWoff600)
+zetta_embed_font(IBMPlexMono-Regular.woff2  zetta_web_font_mono_400.hpp kPlexMonoWoff400)
+add_custom_target(zetta-web-font-embed ALL DEPENDS
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_400.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_500.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_sans_600.hpp"
+  "${CMAKE_BINARY_DIR}/generated/zetta_web_font_mono_400.hpp")
+add_dependencies(zetta-api zetta-web-font-embed)
+target_include_directories(zetta-api PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 set_target_properties(zetta PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
