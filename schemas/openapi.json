@@ -3468,6 +3468,216 @@
         ]
       }
     },
+    "/v1/explain": {
+      "get": {
+        "description": "Answer WHY one account scored as it did: the exact signed contribution of every feature, strongest first, for a single entity of a dataset or for a row you supply. This is the per-account answer — `score`'s drivers are the population ranking, identical for every row, so two accounts with the same score look the same there even when they are at risk for opposite reasons. Read-only. Requires data:predict.",
+        "operationId": "explain",
+        "parameters": [
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                  "properties": {
+                    "as_of": {
+                      "description": "the cutoff: only rows with time_column <= as_of contribute",
+                      "type": "number"
+                    },
+                    "entity_column": {
+                      "description": "the integer key of the thing being scored, one row per entity",
+                      "type": "string"
+                    },
+                    "feature_columns": {
+                      "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                      "items": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "label_column": {
+                      "description": "the {0,1} training target",
+                      "type": "string"
+                    },
+                    "time_column": {
+                      "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+            "in": "query",
+            "name": "dataset",
+            "required": false
+          },
+          {
+            "description": "`database.table` holding the entity; pair with `entity`",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "`database.table` holding the entity; pair with `entity`",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the entity key to explain, read from `dataset_path`",
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "description": "the entity key to explain, read from `dataset_path`",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "the registered model's id, or its name",
+            "in": "query",
+            "name": "model",
+            "required": true,
+            "schema": {
+              "description": "the registered model's id, or its name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "explain this row instead of a dataset entity — an account that is not in the data at all. Keyed by the model's own feature columns",
+            "in": "query",
+            "name": "row",
+            "required": false
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "base_value": {
+                          "description": "the model's expected raw score — what an account with nothing notable about it would get. Contributions are movements away from this",
+                          "type": "number"
+                        },
+                        "contributions": {
+                          "description": "every feature, strongest influence first. `contribution` is signed in raw-score space: positive pushed this row's score up. A contribution says how much this row's value moved the model relative to a typical row — it does not say the column caused the outcome",
+                          "items": {
+                            "properties": {
+                              "contribution": {
+                                "type": "number"
+                              },
+                              "feature": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "entity": {
+                          "description": "present when a dataset entity was explained",
+                          "type": "integer"
+                        },
+                        "raw": {
+                          "description": "this row's raw score. Equals base_value + the sum of contributions",
+                          "type": "number"
+                        },
+                        "residual": {
+                          "description": "raw - (base_value + sum of contributions); ~0 when the explanation is exact. Exposed so a caller can check the arithmetic rather than trust it",
+                          "type": "number"
+                        },
+                        "risk": {
+                          "description": "the same prediction as a probability, comparable with a ranked list. NOT the sum of the contributions — probabilities are not additive",
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "contributions",
+                        "base_value",
+                        "raw",
+                        "risk"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Explain one row's score",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/expose_index": {
       "post": {
         "description": "Publish an index's HTTP search endpoint (/v1/indexes/{name}/search — the distributed scatter-gather path underneath) on every node; endpoint access then requires the data:search capability. Idempotent; undo with unexpose_index. Requires orchestration:expose_index.",
