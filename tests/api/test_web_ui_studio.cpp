@@ -11,6 +11,8 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/api/web_ui.hpp"
 
 namespace {
@@ -143,6 +145,126 @@ TEST(WebUiStudio, WebappPathSanitizesAndFallsBack) {
     EXPECT_EQ(web_ui_content_type("assets/app.js"), "text/javascript; charset=utf-8");
     EXPECT_EQ(web_ui_content_type("assets/app.css"), "text/css; charset=utf-8");
     EXPECT_EQ(web_ui_content_type("fonts/plex.woff2"), "font/woff2");
+}
+
+// =====================================================================
+// Reports (#960 item 4) — the design's Reports screens, rendering the engine's
+// own numbers. These lock the report's DISCIPLINE, not its markup: a surface
+// that shows the figures without it undoes the work that produced them.
+// =====================================================================
+
+namespace {
+
+// A report with everything: a held-out figure, accuracy with its baseline,
+// drivers, and a ranked list carrying evidence.
+nlohmann::json full_report() {
+    return {{"run", {{"id", "run-1"}, {"graph", "churn"}, {"status", "succeeded"}}},
+            {"dataset",
+             {{"accounts", 15000},
+              {"events", 3870209},
+              {"churn_rate", 0.1843},
+              {"majority_class_accuracy", 0.8157}}},
+            {"model",
+             {{"id", "m-1"},
+              {"held_out_auc", 0.7259},
+              {"held_out_rows", 4500},
+              {"in_sample_auc", 0.7697},
+              {"in_sample_accuracy", 0.8231}}},
+            {"drivers",
+             {{{"feature", "escalations_90d"}, {"weight", 0.5275}},
+              {{"feature", "billing_disputes_180d"}, {"weight", 0.3440}}}},
+            {"at_risk",
+             {{{"rank", 1}, {"entity", 8336}, {"risk", 0.7657},
+               {"evidence", {{"escalations_90d", 19}}}}}}};
+}
+
+}  // namespace
+
+TEST(WebUiReports, TheHeldOutFigureLeadsAndSaysWhatItWasMeasuredOn) {
+    const std::string html = zetta::api::web_ui_run_report(full_report());
+    EXPECT_TRUE(contains(html, "0.726"));
+    EXPECT_TRUE(contains(html, "Held out"));
+    // Not just the number: what it was measured on, and what it MEANS.
+    EXPECT_TRUE(contains(html, "4,500"));
+    EXPECT_TRUE(contains(html, "never trained on"));
+    // The lead card is the held-out one, so the eye lands there first.
+    const std::size_t lead = html.find("metric lead");
+    ASSERT_NE(lead, std::string::npos);
+    EXPECT_LT(lead, html.find("In sample"));
+    // And the in-sample figure is present beside it — the gap between the two is
+    // the overfitting signal and is unreadable with only one of them.
+    EXPECT_TRUE(contains(html, "0.770"));
+}
+
+TEST(WebUiReports, AccuracyNeverAppearsWithoutItsTrivialBaseline) {
+    const std::string html = zetta::api::web_ui_run_report(full_report());
+    ASSERT_TRUE(contains(html, "82.3%"));
+    // 82.3% sounds strong until you know a constant answer scores 81.6%. Printing
+    // the first without the second is misleading by omission.
+    EXPECT_TRUE(contains(html, "81.6%"));
+    EXPECT_TRUE(contains(html, "constant answer"));
+}
+
+TEST(WebUiReports, AMissingHeldOutFigureIsShownRatherThanSkipped) {
+    nlohmann::json report = full_report();
+    report["model"].erase("held_out_auc");
+    report["model"].erase("held_out_rows");
+    report["missing"] = {{{"field", "held_out_auc"},
+                          {"why", "this run set no holdout_fraction"}}};
+    const std::string html = zetta::api::web_ui_run_report(report);
+
+    // The caveat is rendered. Left off, a reader takes the in-sample number for
+    // quality — the failure the whole holdout change exists to prevent.
+    EXPECT_TRUE(contains(html, "holdout_fraction"));
+    EXPECT_TRUE(contains(html, "held_out_auc"));
+    // And the in-sample figure now says, at the figure, that it flatters.
+    EXPECT_TRUE(contains(html, "flatters"));
+    EXPECT_FALSE(contains(html, "Held out"));
+}
+
+TEST(WebUiReports, DriverBarsShareOneInkAndSayAWeightIsNotACause) {
+    const std::string html = zetta::api::web_ui_run_report(full_report());
+    // The strongest driver is full width and the rest are proportional — length
+    // encodes the ranking. Giving the top bar its own colour would make the others
+    // read as unimportant rather than as ranked.
+    EXPECT_TRUE(contains(html, "width:100.0%"));
+    EXPECT_TRUE(contains(html, "escalations_90d"));
+    EXPECT_TRUE(contains(html, "not a cause"));
+}
+
+TEST(WebUiReports, TheRankedListSaysHowToReadItself) {
+    const std::string html = zetta::api::web_ui_run_report(full_report());
+    // The account key renders as an identifier, not a quantity: "8,336" is a
+    // number that does not exist and cannot be searched for.
+    EXPECT_TRUE(contains(html, "8336"));
+    EXPECT_FALSE(contains(html, "8,336"));
+    EXPECT_TRUE(contains(html, "0.766"));
+    // Across the evidence columns, not down any one of them.
+    EXPECT_TRUE(contains(html, "ACROSS"));
+    EXPECT_TRUE(contains(html, "not a prediction about any one account"));
+}
+
+TEST(WebUiReports, TheIndexEmptyStateSaysWhatProducesAReport) {
+    const std::string html = zetta::api::web_ui_reports_index(nlohmann::json::array());
+    // "No data" tells a reader nothing they can act on.
+    EXPECT_TRUE(contains(html, "Run a Pipeline"));
+}
+
+TEST(WebUiReports, ReportsIsOneItemInTheWorkspaceGroup) {
+    const std::string html = web_ui_shell("reports", "u", "", "<p>x</p>", 2, "");
+    EXPECT_TRUE(contains(html, "/?view=reports"));
+    // One item under Data library — not a nav group of its own.
+    // Look inside the sidebar, not the page — the topbar carries the page title
+    // "Reports" too, which an unanchored search finds first.
+    const std::size_t nav = html.find("<nav class=\"side\">");
+    ASSERT_NE(nav, std::string::npos);
+    const std::size_t data = html.find("Data library", nav);
+    const std::size_t reports = html.find(">Reports<", nav);
+    ASSERT_NE(data, std::string::npos);
+    ASSERT_NE(reports, std::string::npos);
+    EXPECT_LT(data, reports);
+    EXPECT_LT(reports, html.find("Operate", nav));
+    EXPECT_FALSE(contains(html, "<div class=\"group\">Reports</div>"));
 }
 
 }  // namespace

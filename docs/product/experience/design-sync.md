@@ -15,6 +15,69 @@ interaction demands it); the desktop is SDL3-first with ImGui as the temporary
 crutch (repo `CLAUDE.md` → "Orama Studio — the product surface this engine
 wears").
 
+## 2026-08-05 — Reports, both surfaces ([#960](https://github.com/oramasearch/zetta/issues/960) item 4)
+
+**Source pin:** `oramasearch/orama-design` `feat/reports-surface` @ `4621d87`
+(2026-08-04) — the Reports screens from
+[`oramasearch/orama-design#28`](https://github.com/oramasearch/orama-design/pull/28).
+
+**What moved:**
+
+- **IA** — Reports is **one item under Data library**, not a nav group of its
+  own. Both surfaces: the web sidebar's Workspace group after Data library, and
+  the GUI's `Data library` section in `App::view_registry()`. This was the
+  design's own correction mid-branch (`74be8e1`, "Reports is one item under Data
+  library, not its own section"), so it is imported as the settled answer rather
+  than as the first draft.
+- **Screen structure** — how good the model is · what it was built from · what
+  drives the outcome · who is most at risk · what to check before acting. Metric
+  cards, the driver bars, the ranked table with its evidence columns, and the
+  caveats block.
+- **Copy and the report's discipline** — the held-out figure leads and says what
+  it was measured on; accuracy is never shown without the accuracy a constant
+  answer would score; the ranked list says to read the evidence columns *across*
+  rather than down; a driver is named a weight, never a cause.
+- **The driver-bar ink rule** — every bar shares one ink and length encodes the
+  ranking. This is imported as a *rule*, not just a color: the design branch
+  shipped a version where the top bar had the accent and the rest a background
+  tint, and twelve of thirteen were nearly invisible (`bb7ad72`). It is now the
+  `weight_bar` grammar widget in `app_internal.hpp` so a third surface cannot
+  reintroduce it.
+- **The empty state** — "a Pipeline run produces its report here when it
+  finishes", not "no data".
+
+**What the design does NOT supply, and the engine does:**
+
+The design's reports render a fixture (`fixtures/motive-churn-run-report.json`).
+Both zetta surfaces render **the engine's own numbers** through `get_run_report`
+([#958](https://github.com/oramasearch/zetta/issues/958)) — one behavior path,
+so the GUI, the web app, MCP and chat cannot disagree about what a run found.
+Two consequences the fixture never exercised:
+
+- **`missing` is rendered.** A run that asked for no holdout has no honest
+  headline figure, and the surface has to *say so* where that figure would have
+  been. The fixture always had one.
+- **An account key is an identifier, not a quantity.** The web table's numeric
+  formatting rendered entity 8336 as "8,336" — a number that does not exist and
+  cannot be searched for. Both surfaces now render it unformatted.
+
+**Deliberately skipped (and why):**
+
+- **The React components** (`ReportsScreens.jsx`, `reports.css`, `useReveal`,
+  `Ticker`, `GapChart`, `RiskProfile`, `PipelineFlow`). Per the transfer
+  contract, code never crosses; the IA, copy and states do.
+- **The reveal-on-scroll and count-up animations.** The web surface is
+  server-rendered with no framework, and the GUI's motion work rides the SDL3
+  surfaces as they land rather than ImGui. The design's *timings* are recorded
+  here for when those surfaces exist.
+- **The pipeline flow diagram.** It is a rendered Graphviz asset in the design;
+  serving it needs the asset-embedding question answered (the same one the IBM
+  Plex font binaries are waiting on). The report links nothing external — the
+  self-contained page rule holds.
+- **The second report** ("Churn model results"). It summarizes a body of work
+  rather than a run, so it has no `run_id` to assemble from. A run report is the
+  thing the engine can produce honestly today.
+
 ## 2026-07-23 — web app (#874)
 
 **Source pin:** `oramasearch/orama-design` `main` @ `5bdbc27` — live version

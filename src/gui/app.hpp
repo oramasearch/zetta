@@ -177,6 +177,7 @@ private:
         Cloud,     // cloud provider inspector (permission-gated)
         Admin,     // principals / keys / audit
         Tests,     // the in-app test suite (zetta::testkit catalog)
+        Reports,   // what a finished run found (#960 item 4) — via get_run_report
     };
 
     // One row of the view registry (docs/gui/architecture.md): each view is
@@ -400,6 +401,8 @@ private:
     // file-local render_*) because the links go through entity_link.
     void draw_run_detail(const zetta::pipeline::Run& run);
     void draw_models();      // standalone models (system.models): list + detail + add
+    void draw_reports();     // what a finished run found: quality, drivers, at-risk (#960)
+    void draw_run_report(const std::string& run_id);  // one run's report detail
     void draw_agents();      // served agents (agent:<id>): list + detail + create (#849)
     void draw_add_agent_form();  // inline "New agent" affordance (create_agent)
     // Edit an existing agent's fields in place (name/description/model/system prompt/tools),
@@ -612,6 +615,7 @@ private:
     std::string selected_run_;  // run id; re-resolved each frame like the others
     std::string selected_dataset_;  // dataset table id; re-resolved each frame
     std::string selected_model_;  // model id; re-resolved each frame
+    std::string selected_report_run_;  // run id of the open report; re-resolved each frame
     std::string selected_agent_;  // agent id (Agents view); re-resolved each frame
     // The inline "New agent" form (create_agent) + its outcome banners (#849).
     std::string add_agent_name_;

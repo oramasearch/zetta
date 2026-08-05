@@ -83,6 +83,25 @@ than left blank:
 A blank field invites the writer to substitute its own number, which is the one thing
 [the report rule](run-report-prompt.md) forbids. A stated absence does not.
 
+## Where it is rendered
+
+Both Studio surfaces read this capability — **one behavior path**, so the GUI, the web
+app, MCP and chat cannot disagree about what a run found:
+
+| Surface | Where |
+|---|---|
+| Web app | `?view=reports` — index, then `?view=reports&run=<id>` (`web_ui_run_report`) |
+| Desktop GUI | Data library → Reports (`src/gui/app_reports.cpp`) |
+
+Reports is **one item under Data library** on both, matching the design
+(`oramasearch/orama-design@4621d87`); the import is recorded in
+[`docs/product/experience/design-sync.md`](../product/experience/design-sync.md).
+
+**The report's discipline is part of the surface, not the prose.** A screen that shows
+the figures without it undoes the work that produced them, so both renderers lead with
+the held-out figure and say what it was measured on, never print accuracy without the
+accuracy a constant answer would score, and **draw `missing` rather than skipping it**.
+
 ## Boundaries
 
 No new JSON format and no new storage. `run.schema.json`'s output `kind` enum gains
