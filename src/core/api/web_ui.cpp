@@ -1021,12 +1021,16 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
            link("projects", "Projects",
                 project_count >= 0 ? std::to_string(project_count) : std::string()) +
-           link("data", "Data library") + link("reports", "Reports");
+           link("agents", "Agents") + link("data", "Data library") +
+           link("reports", "Reports");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
            link("observability", "Observability");
+    // Agents sits in Workspace, beside Projects, as the design has it: an agent is
+    // something you create and own, not a developer tool. Chat stays in Developer —
+    // it is where you talk to one you have already served.
     out += "<div class=\"group\">Developer</div>" + link("connections", "Connections") +
            link("models", "Models") + link("shell", "Shell") + link("notebooks", "Notebooks") +
-           link("agents", "Agents") + link("chat", "Chat") + link("datagen", "Data generators");
+           link("chat", "Chat") + link("datagen", "Data generators");
     out += "<div class=\"group\">Documentation</div>" +
            doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
