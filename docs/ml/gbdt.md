@@ -112,9 +112,12 @@ return a `compute::ComputeStatus`.
 - Each participating node reads its shard back from the device and runs the boosting
   loop, combining statistics with the round's `allreduce` (no new wire format — the
   histograms ride the schema-validated `CollectiveMessage`).
-- **Global metrics** are computed once: each node scores its local rows, the
+- **Global metrics** are computed once: each node scores the rows it fit, the
   `(probability, label)` pairs are gathered to the root, evaluated over the union,
-  and the three scalars broadcast back — so every node ends with identical metrics.
+  and the scalars broadcast back — so every node ends with identical metrics.
+  When `holdout_fraction` is set, the held-out pairs ride that same gather and a
+  second set of metrics comes back beside the in-sample ones — see
+  [held-out-metrics.md](held-out-metrics.md) (#953).
 - The deterministic collective **root** registers the trained model as a
   `Model` (kind `classifier`): the GBDT weights body (the schema-validated JSON) is
   attached via `set_weights` (fingerprinted + replicated peer-to-peer like any

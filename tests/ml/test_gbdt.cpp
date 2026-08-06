@@ -691,4 +691,160 @@ TEST(GbdtCheckpoint, ClearsCheckpointsOnSuccess) {
     cn.cluster.stop();
 }
 
+// =====================================================================
+// Held-out metrics (#953)
+// =====================================================================
+
+// Features that say nothing about the label. A model can only score above chance
+// on this by memorizing individual rows — which is exactly what an in-sample
+// metric rewards and a held-out metric exposes.
+Synthetic make_noise(std::size_t rows) {
+    Synthetic data;
+    data.columns.assign(3, {});
+    for (std::size_t i = 0; i < rows; ++i) {
+        // Deterministic, but with no relationship to the label below.
+        data.columns[0].push_back(static_cast<double>((i * 37) % 101) / 101.0);
+        data.columns[1].push_back(static_cast<double>((i * 53) % 97) / 97.0);
+        data.columns[2].push_back(static_cast<double>((i * 71) % 89) / 89.0);
+        data.labels.push_back(i % 2 == 0 ? 1.0 : 0.0);
+    }
+    return data;
+}
+
+// Asking for no holdout must leave the result saying so, not carrying zeros. A
+// zeroed AUC reads as a model that ranks backwards, which is a worse lie than
+// the in-sample number this exists to qualify.
+TEST(GbdtHoldout, AbsentHoldoutIsMarkedAbsentRatherThanZero) {
+    const Synthetic data = make_synthetic(80);
+    GbdtParams params;
+    params.num_trees = 8;
+
+    ComputeNode cn("node-hold-off", 22400, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    const auto result = run_single_node_train(
+        cn, synthetic_rows(data, "y"), data.names, "y", params, "hold-off", {});
+    ASSERT_TRUE(result.ok());
+
+    EXPECT_FALSE(result.has_held_out);
+    EXPECT_EQ(result.held_out_rows, 0u);
+    EXPECT_EQ(result.train_rows, 80u);  // every row trained AND was scored
+    EXPECT_GT(result.metrics.auc, 0.9);
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// The load-bearing test. On data with no signal, a model that genuinely never saw
+// the held-out rows cannot rank them: in-sample climbs by memorization, held-out
+// sits at chance. If the split leaked — if the "held-out" rows were trained on
+// after all — both figures would rise together and this fails.
+TEST(GbdtHoldout, HeldOutRowsWereNotTrainedOn) {
+    const Synthetic data = make_noise(400);
+    GbdtParams params;
+    params.num_trees = 40;   // deep enough, and enough of them, to memorize
+    params.max_depth = 6;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-on", 22410, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    const auto result = run_single_node_train(
+        cn, synthetic_rows(data, "y"), data.names, "y", params, "hold-on", {});
+    ASSERT_TRUE(result.ok());
+
+    ASSERT_TRUE(result.has_held_out);
+    // Every row is accounted for, and the split is near the fraction asked for
+    // (the row hash is content-based, so it lands close, not exactly).
+    EXPECT_EQ(result.train_rows + result.held_out_rows, 400u);
+    EXPECT_GT(result.held_out_rows, 80u);
+    EXPECT_LT(result.held_out_rows, 160u);
+
+    EXPECT_GT(result.metrics.auc, 0.75) << "in-sample should show memorization";
+    EXPECT_LT(result.held_out.auc, 0.65) << "held-out must sit near chance; a "
+                                            "high value here means the split "
+                                            "leaked training rows";
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// Whatever a run writes into the Model's `metrics` must survive the entity
+// boundary, because it is validated at the RECEIVING peer. A value the schema
+// rejects still registers on the root and still replicates — it simply fails to
+// materialize anywhere else, surfacing as "the model does not resolve on every
+// member" a long way from the code that wrote it. `metrics` is declared as
+// `additionalProperties: {type: number}`, so every value has to be a number: this
+// caught a nested `in_sample` object and a `headline_metric` string that had
+// passed every single-node test.
+TEST(GbdtHoldout, RegisteredModelMetricsSurviveTheEntityBoundary) {
+    const Synthetic data = make_synthetic(120);
+    GbdtParams params;
+    params.num_trees = 8;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-entity", 22440, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "y")),
+                                 training_schema(data.names, "y"), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result =
+        run_train_job(cn.coordinator, *job, frame.frame, data.names, "y", params,
+                      &cn.node, "holdout-entity-model");
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.has_held_out);
+
+    std::shared_ptr<zetta::ml::Model> registered;
+    for (const auto& model : cn.node.models()) {
+        if (model->name() == "holdout-entity-model") registered = model;
+    }
+    ASSERT_TRUE(registered) << "the run registered no model";
+
+    std::string error;
+    EXPECT_TRUE(zetta::ml::parse_model_value(zetta::ml::to_json(registered->value()),
+                                            &error))
+        << "the registered model does not pass its own boundary schema, so it "
+           "would fail to materialize on every peer: " << error;
+
+    // And the held-out figure is actually carried, by presence.
+    const nlohmann::json& metrics = registered->metrics();
+    ASSERT_TRUE(metrics.contains("held_out_auc"));
+    EXPECT_DOUBLE_EQ(metrics["held_out_auc"].get<double>(), result.held_out.auc);
+    EXPECT_EQ(metrics["held_out_rows"].get<std::uint64_t>(), result.held_out_rows);
+    for (const auto& [key, entry] : metrics.items()) {
+        EXPECT_TRUE(entry.is_number()) << "metrics['" << key << "'] is not a number";
+    }
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// The holdout is decided by a content hash of the row, so WHICH rows are held out
+// does not depend on how the rows were spread over nodes. Two shardings of the
+// same data therefore report the same held-out figure — without this, a run's
+// headline metric would change when the cluster resized.
+TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
+    const Synthetic data = make_noise(300);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 12;
+    params.max_depth = 4;
+    params.holdout_fraction = 0.25;
+
+    const auto single =
+        run_distributed_train(rows, data.names, "y", params, 1, 22420, false);
+    const auto multi =
+        run_distributed_train(rows, data.names, "y", params, 3, 22430, false);
+
+    ASSERT_TRUE(single.has_held_out);
+    ASSERT_TRUE(multi.has_held_out);
+    EXPECT_EQ(single.held_out_rows, multi.held_out_rows);
+    EXPECT_EQ(single.train_rows, multi.train_rows);
+    EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);
+    EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
+}
+
 }  // namespace

@@ -176,3 +176,10 @@ The facts artifact is emitted today by
 `tests/usecases/churn/test_motive_demo_dataset.cpp`. Emitting it from the run itself — as a
 `RunOutput` of kind `report` alongside `model` and `dataset` — is the remaining engine work
 for #948 step 4.
+
+**The held-out figure no longer has to be measured outside the engine.** A run that sets
+`holdout_fraction` reports `held_out` beside `in_sample`, with the row count behind each,
+and the Model's `metrics` names which one to quote
+([`docs/ml/held-out-metrics.md`](../ml/held-out-metrics.md), #953). The test measures its
+own holdout because it predates that; a run emitting its own artifact should take both
+figures straight from the training result.

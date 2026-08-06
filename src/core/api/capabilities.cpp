@@ -2082,6 +2082,14 @@ const nlohmann::json& run_schema() {
            {{"type", "integer"},
             {"minimum", 0},
             {"description", "at-risk list / playbook cap (0 = all)"}}},
+          {"holdout_fraction",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description",
+             "hold this fraction of rows OUT of training and measure the model "
+             "on them separately (e.g. 0.3). Without it the run's only metrics "
+             "are in-sample — scored on the rows it trained on — and flatter"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
@@ -2230,6 +2238,8 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
     options.model_name = input.value("model_name", options.model_name);
     options.top_k = input.value("top_k", options.top_k);
     options.coordinate = input.value("coordinate", true);
+    options.params.holdout_fraction =
+        input.value("holdout_fraction", options.params.holdout_fraction);
 
     std::set<std::string> prior;
     for (const auto& existing : context.node.runs()) {
