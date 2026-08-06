@@ -601,6 +601,33 @@ the load-bearing rules:
   closing comment on what changed, and **leave the PR open for review** — solved
   work must not clutter the tracker (umbrella `CLAUDE.md` → "Close shipped tickets").
 
+### Checkpoints live in `data/checkpoints/` — look there BEFORE the Hub
+
+**Every base-agent and fine-tune checkpoint is already on disk** at
+`data/checkpoints/<name>/` (gitignored, ~28 GB, 14 of them today —
+`base-agent-0.6b`, `…-interaction-v1`/`v3`/`v4`/`v7`/`v9`/`v10`, `…-bf16`, …).
+`ls data/checkpoints/` costs nothing; re-pulling a 2.2 GB checkpoint from
+HuggingFace costs minutes and bandwidth, and it has already happened.
+
+So the order is: **`ls data/checkpoints/` → the HF cache → only then the Hub.**
+
+Two things that make the Hub path slower than it looks:
+
+- **`zetta pull <repo>` 404s on this repo.** It expects `config.json` at the repo
+  root, and `OramaSearch/base-agent-0.6b` organizes checkpoints into subfolders
+  (`v10/config.json`, `v10/model.safetensors`, …). The error says
+  *"could not fetch required config.json (HTTP 404)"*, which reads like a missing
+  model rather than a layout it does not handle.
+- **The HF cache can be a stub.** `~/.cache/huggingface/hub/models--OramaSearch--base-agent-0.6b`
+  existed at **8 KB** — the README and nothing else. A cache directory being
+  present is not evidence the weights are.
+
+Point a test or an agent at the local directory:
+
+```sh
+ZETTA_QWEN_DIR=$(pwd)/data/checkpoints/base-agent-0.6b-interaction-v10
+```
+
 ### Datasets and models are published to HuggingFace, with cards
 
 **Every corpus version and every checkpoint goes to the private `OramaSearch` org on the Hub, with

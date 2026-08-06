@@ -1998,7 +1998,7 @@ ApiResult handle_import_n8n(const nlohmann::json& input, ApiContext& context) {
 const nlohmann::json& compile_intent_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"project", "input_id"}},
+        {"required", {"project"}},
         {"additionalProperties", false},
         {"properties",
          {{"project",
@@ -2008,7 +2008,10 @@ const nlohmann::json& compile_intent_schema() {
           {"input_id",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the captured intent input's uuid (capture_intent)"}}},
+            {"description",
+             "the captured intent's uuid (capture_intent). Optional: omit it and the "
+             "project's most recently captured intent compiles, which is what you want "
+             "in the common case of describing a goal and building it"}}},
           {"name",
            {{"type", "string"},
             {"description",
@@ -2023,7 +2026,24 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
         return ApiResult::failure("not_found",
                                   "no project named '" + name + "' (or with that id)");
     }
-    const std::string input_id = input.at("input_id").get<std::string>();
+    // Threading a uuid from capture_intent into compile_intent made two calls out of
+    // one act, and forgetting it failed with a schema error naming a property rather
+    // than anything about intents. Omit it and the project's most recent intent
+    // compiles — the common case by a wide margin.
+    std::string input_id = input.value("input_id", std::string{});
+    if (input_id.empty()) {
+        for (const std::shared_ptr<zetta::pipeline::ProjectInput>& candidate :
+             project->inputs()) {
+            if (candidate) input_id = candidate->id();  // inputs() is insertion order
+        }
+        if (input_id.empty()) {
+            return ApiResult::failure(
+                "not_found",
+                "project '" + project->name() +
+                    "' has no captured intent to compile — describe the goal first "
+                    "(capture_intent)");
+        }
+    }
     auto intent_input = project->find_input(input_id);
     if (!intent_input) {
         return ApiResult::failure("not_found", "no input with id '" + input_id +
@@ -5624,6 +5644,15 @@ void register_core_capabilities(Registry& registry) {
     // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
     // offload/executor resumption is fixed, serve chat on the owner loop — correct,
     // at the cost of briefly occupying the tick during a decode. See #731.
+    // NOT offloadable, and the reason changed in 2026-08 (#975). The flag is only
+    // safe for a handler touching no main-thread-only Node state — and grounding a
+    // reply on the active Project (#969) reads `node.runs()` and
+    // `node.project_names()`, which are exactly that. So offloading chat today would
+    // race the Node tree.
+    //
+    // That also means the REST hang in #975 cannot be fixed by flipping this flag:
+    // whoever fixes it has to either move the grounding read behind the owner gate
+    // or fix the offload/executor resumption the comment below describes.
     chat_capability.offloadable = false;
     registry.add(std::move(chat_capability));
     registry.add(Capability{
