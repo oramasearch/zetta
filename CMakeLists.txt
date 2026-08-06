@@ -636,6 +636,7 @@ add_library(zetta-core STATIC
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
+  src/core/ml/explain_row.cpp
   src/core/ml/score_table.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,8 @@
 #include "zetta/ddf/local_partitions.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/score_table.hpp"
 #include <chrono>
 #include <thread>
@@ -94,6 +97,18 @@ std::vector<Json> warehouse_rows(std::size_t count) {
                             {"churned", (at_risk != flipped) ? 1 : 0}});
     }
     return rows;
+}
+
+// One account's value for one column, straight from the generator above. Used to
+// check an explanation against the DATA rather than against another engine read,
+// which would agree with a wrong answer as readily as a right one.
+std::optional<double> warehouse_value(std::int64_t entity, const std::string& column) {
+    const std::vector<Json> rows = warehouse_rows(static_cast<std::size_t>(entity));
+    if (rows.empty()) return std::nullopt;
+    const Json& row = rows.back();  // account_id == index + 1, so the last row is it
+    const auto found = row.find(column);
+    if (found == row.end() || !found->is_number()) return std::nullopt;
+    return found->get<double>();
 }
 
 // Land the rows the way a connector query lands them: partitioned + placed.
@@ -292,6 +307,175 @@ TEST(ChurnTableRun, TheAtRiskListSurvivesTheRunThatProducedIt) {
     ASSERT_TRUE(top.ok()) << top.error;
     ASSERT_EQ(top.ranked.size(), 10u);
     EXPECT_EQ(top.ranked.front().entity, scored.ranked.front().entity);
+}
+
+// "Why is the top one at risk?" — the per-account answer (#948 step 6, #960 item 5).
+// The population drivers are the same list for every row, so they cannot say why THIS
+// account is where it is.
+TEST(ChurnTableRun, TheTopAccountCanSayWhyItIsAtRisk) {
+    AttachedNode host(24726);
+    const std::string table_id = land_dataset(host.node, "churn_demo", "accounts", 300);
+    ASSERT_FALSE(table_id.empty());
+
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    const ChurnSolutionResult run = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, {});
+    ASSERT_TRUE(run.ok()) << run.execution.error;
+    const std::shared_ptr<zetta::ml::Model> model = host.node.find_model(run.model_id);
+    ASSERT_TRUE(model);
+    ASSERT_FALSE(run.ranked.empty());
+    const std::int64_t top = run.ranked.front().entity;
+
+    CpuDevice explain_device;
+    const zetta::ml::RowExplanation why = zetta::ml::explain_entity(
+        host.node, *model, resolved.table_id, resolved.contract, explain_device, top);
+    ASSERT_TRUE(why.ok()) << why.error;
+
+    ASSERT_TRUE(why.entity);
+    EXPECT_EQ(*why.entity, top);
+    // Every feature is accounted for, strongest influence first. A feature that did
+    // nothing here sorts last rather than vanishing — "this column did not matter for
+    // this account" is an answer.
+    ASSERT_EQ(why.contributions.size(), 3u);
+    for (std::size_t index = 1; index < why.contributions.size(); ++index) {
+        EXPECT_GE(std::abs(why.contributions[index - 1].contribution),
+                  std::abs(why.contributions[index].contribution)) << index;
+    }
+
+    // Efficiency: the contributions EXPLAIN the score rather than merely accompanying
+    // it. This is what makes the answer checkable instead of a plausible story.
+    double summed = why.base_value;
+    for (const zetta::ml::FeatureContribution& contribution : why.contributions) {
+        summed += contribution.contribution;
+    }
+    EXPECT_NEAR(summed, why.raw, 1e-6);
+    EXPECT_NEAR(why.residual, 0.0, 1e-6);
+
+    // The risk agrees with what the run itself ranked this account at, so the
+    // explanation and the list cannot tell different stories.
+    EXPECT_NEAR(why.risk, run.ranked.front().risk, 1e-6);
+
+    // The reported values are this account's own, not the population's.
+    for (const zetta::ml::FeatureContribution& contribution : why.contributions) {
+        const std::optional<double> expected =
+            warehouse_value(top, contribution.feature);
+        ASSERT_TRUE(expected) << contribution.feature;
+        EXPECT_DOUBLE_EQ(contribution.value, *expected) << contribution.feature;
+    }
+}
+
+// Two accounts at similar risk can be there for different reasons, and that is the
+// whole point of a per-row explanation. If the strongest driver were always the same
+// column, the population ranking would already have answered the question.
+TEST(ChurnTableRun, ExplanationsDifferBetweenAccounts) {
+    AttachedNode host(24727);
+    const std::string table_id = land_dataset(host.node, "churn_demo", "accounts", 300);
+    ASSERT_FALSE(table_id.empty());
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    const ChurnSolutionResult run = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, {});
+    ASSERT_TRUE(run.ok()) << run.execution.error;
+    const std::shared_ptr<zetta::ml::Model> model = host.node.find_model(run.model_id);
+    ASSERT_TRUE(model);
+
+    // A row invented to be at risk for a reason the population ranking would not
+    // name first, against one that is healthy on every column.
+    const zetta::ml::RowExplanation risky = zetta::ml::explain_row(
+        *model, {{"failed_payments", 9}, {"logins_30d", 0}, {"nps", 1}});
+    ASSERT_TRUE(risky.ok()) << risky.error;
+    const zetta::ml::RowExplanation healthy = zetta::ml::explain_row(
+        *model, {{"failed_payments", 0}, {"logins_30d", 40}, {"nps", 10}});
+    ASSERT_TRUE(healthy.ok()) << healthy.error;
+
+    EXPECT_GT(risky.risk, healthy.risk);
+    // The same feature pushes one row up and the other down — the sign carries the
+    // direction, which a magnitude-only population ranking cannot.
+    const auto contribution_for = [](const zetta::ml::RowExplanation& explanation,
+                                     const std::string& feature) {
+        for (const zetta::ml::FeatureContribution& entry : explanation.contributions) {
+            if (entry.feature == feature) return entry.contribution;
+        }
+        return 0.0;
+    };
+    EXPECT_GT(contribution_for(risky, "failed_payments"), 0.0);
+    EXPECT_LT(contribution_for(healthy, "failed_payments"), 0.0);
+
+    // A row missing a column the model needs fails rather than being zero-filled: a
+    // zero is a real value to a GBDT, and would be explained as "no failed payments".
+    const zetta::ml::RowExplanation incomplete =
+        zetta::ml::explain_row(*model, {{"failed_payments", 3}, {"nps", 4}});
+    EXPECT_FALSE(incomplete.ok());
+    EXPECT_NE(incomplete.error.find("logins_30d"), std::string::npos) << incomplete.error;
+}
+
+// The capability is the deliverable, not the function behind it: a feature that
+// cannot be called from the API and MCP is not shipped. `score` shipped once and was
+// invisible to chat until it reached the allowlist.
+TEST(ChurnTableRun, ExplainIsAnswerableThroughTheControlSurface) {
+    AttachedNode host(24728);
+    ASSERT_FALSE(land_dataset(host.node, "churn_demo", "accounts", 200).empty());
+    const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+        host.node, zetta::data::parse_dataset_path("churn_demo.accounts"), {},
+        zetta::data::default_dataset_sampler(host.node, &host.cluster));
+    ASSERT_TRUE(resolved.ok()) << resolved.error;
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    CpuDevice device;
+    ChurnTableInput input;
+    input.table_id = resolved.table_id;
+    input.contract = resolved.contract;
+    const ChurnSolutionResult run = zetta::usecases::churn::run_churn_solution_on_table(
+        host.node, device, solution->graph, input, {});
+    ASSERT_TRUE(run.ok()) << run.execution.error;
+    ASSERT_FALSE(run.ranked.empty());
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{host.node};
+
+    const zetta::api::ApiResult answered = registry.call(
+        "explain",
+        {{"model", run.model_id},
+         {"dataset_path", "churn_demo.accounts"},
+         {"entity", run.ranked.front().entity}},
+        context);
+    ASSERT_TRUE(answered.ok) << answered.error.message;
+    EXPECT_EQ(answered.value.at("entity").get<std::int64_t>(), run.ranked.front().entity);
+    ASSERT_FALSE(answered.value.at("contributions").empty());
+    EXPECT_NEAR(answered.value.at("residual").get<double>(), 0.0, 1e-6);
+    EXPECT_NEAR(answered.value.at("risk").get<double>(), run.ranked.front().risk, 1e-6);
+
+    // An account that is not in the data at all, explained the same way.
+    const zetta::api::ApiResult hypothetical = registry.call(
+        "explain",
+        {{"model", run.model_id},
+         {"row", {{"failed_payments", 9}, {"logins_30d", 0}, {"nps", 1}}}},
+        context);
+    ASSERT_TRUE(hypothetical.ok) << hypothetical.error.message;
+    EXPECT_FALSE(hypothetical.value.contains("entity"));  // it is not one
+
+    // Neither half given is a usable-answer failure, not a silent empty result.
+    const zetta::api::ApiResult neither =
+        registry.call("explain", {{"model", run.model_id}}, context);
+    EXPECT_FALSE(neither.ok);
+    EXPECT_EQ(neither.error.code, "invalid_input");
 }
 
 // "Take an account not in the training data and ask what it would score."

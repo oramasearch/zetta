@@ -24,6 +24,7 @@
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/compute/cpu_device.hpp"
+#include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
@@ -2668,6 +2669,161 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- explain -----------------------------------------------------------------------
+//
+// "Why is THIS one at risk" (#948 step 6, #960 item 5). `score`'s drivers are the
+// POPULATION ranking — the same list for every account — so they cannot answer the
+// question a person asks when they open the at-risk list. Two accounts with the same
+// score can be there for opposite reasons.
+// -----------------------------------------------------------------------------------
+
+const nlohmann::json& explain_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the registered model's id, or its name"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"description",
+             "`database.table` holding the entity; pair with `entity`"}}},
+          {"dataset", zetta::data::dataset_contract_schema()},
+          {"entity",
+           {{"type", "integer"},
+            {"description",
+             "the entity key to explain, read from `dataset_path`"}}},
+          {"row",
+           {{"type", "object"},
+            {"description",
+             "explain this row instead of a dataset entity — an account that is not "
+             "in the data at all. Keyed by the model's own feature columns"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& explain_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"contributions", "base_value", "raw", "risk"}},
+        {"properties",
+         {{"entity",
+           {{"type", "integer"},
+            {"description", "present when a dataset entity was explained"}}},
+          {"base_value",
+           {{"type", "number"},
+            {"description",
+             "the model's expected raw score — what an account with nothing notable "
+             "about it would get. Contributions are movements away from this"}}},
+          {"raw",
+           {{"type", "number"},
+            {"description",
+             "this row's raw score. Equals base_value + the sum of contributions"}}},
+          {"risk",
+           {{"type", "number"},
+            {"description",
+             "the same prediction as a probability, comparable with a ranked list. "
+             "NOT the sum of the contributions — probabilities are not additive"}}},
+          {"residual",
+           {{"type", "number"},
+            {"description",
+             "raw - (base_value + sum of contributions); ~0 when the explanation is "
+             "exact. Exposed so a caller can check the arithmetic rather than trust it"}}},
+          {"contributions",
+           {{"type", "array"},
+            {"description",
+             "every feature, strongest influence first. `contribution` is signed in "
+             "raw-score space: positive pushed this row's score up. A contribution "
+             "says how much this row's value moved the model relative to a typical "
+             "row — it does not say the column caused the outcome"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"feature", {{"type", "string"}}},
+                {"value", {{"type", "number"}}},
+                {"contribution", {{"type", "number"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
+    const std::string wanted = input.at("model").get<std::string>();
+    std::shared_ptr<zetta::ml::Model> model = context.node.find_model(wanted);
+    if (!model) {
+        for (const std::shared_ptr<zetta::ml::Model>& candidate : context.node.models()) {
+            if (candidate && candidate->value().name == wanted) {
+                model = candidate;
+                break;
+            }
+        }
+    }
+    if (!model) {
+        return ApiResult::failure("not_found", "no model '" + wanted + "' (or with that id)");
+    }
+
+    const auto row = input.find("row");
+    const auto entity = input.find("entity");
+    if (row == input.end() && entity == input.end()) {
+        return ApiResult::failure(
+            "invalid_input",
+            "give either `entity` with `dataset_path` (explain one account in the "
+            "data) or `row` (explain an account that is not in it)");
+    }
+
+    zetta::ml::RowExplanation explained;
+    if (row != input.end()) {
+        explained = zetta::ml::explain_row(*model, *row);
+    } else {
+        const auto dataset_path = input.find("dataset_path");
+        if (dataset_path == input.end()) {
+            return ApiResult::failure("invalid_input",
+                                      "`entity` needs `dataset_path` to read it from");
+        }
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
+        if (path.kind != zetta::data::DatasetPathKind::Table) {
+            return ApiResult::failure(
+                "invalid_input",
+                "explain reads a `database.table` dataset; a dataset directory has no "
+                "partitions to read near");
+        }
+        zetta::data::DatasetContract overrides;
+        if (const auto given = input.find("dataset"); given != input.end()) {
+            std::string reason;
+            const std::optional<zetta::data::DatasetContract> parsed =
+                zetta::data::dataset_contract_from_json(*given, &reason);
+            if (!parsed) return ApiResult::failure("invalid_input", reason);
+            overrides = *parsed;
+        }
+        const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+            context.node, path, overrides,
+            zetta::data::default_dataset_sampler(context.node, context.cluster));
+        if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
+
+        compute::CpuDevice device;
+        explained = zetta::ml::explain_entity(context.node, *model, resolved.table_id,
+                                              resolved.contract, device,
+                                              entity->get<std::int64_t>());
+    }
+    if (!explained.ok()) return ApiResult::failure("engine_error", explained.error);
+
+    nlohmann::json contributions = nlohmann::json::array();
+    for (const zetta::ml::FeatureContribution& contribution : explained.contributions) {
+        contributions.push_back({{"feature", contribution.feature},
+                                 {"value", contribution.value},
+                                 {"contribution", contribution.contribution}});
+    }
+    nlohmann::json output;
+    if (explained.entity) output["entity"] = *explained.entity;
+    output["base_value"] = explained.base_value;
+    output["raw"] = explained.raw;
+    output["risk"] = explained.risk;
+    output["residual"] = explained.residual;
+    output["contributions"] = std::move(contributions);
+    return ApiResult::success(std::move(output));
+}
+
 // --- add_dataset -------------------------------------------------------------------
 
 const nlohmann::json& add_dataset_schema() {
@@ -4267,6 +4423,11 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "read what a finished run found — model quality (held-out first), the "
          "drivers, and the ranked at-risk list with the evidence behind each row: "
          "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
+        {"explain",
+         "explain WHY one account scored as it did — every feature's signed "
+         "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
+         "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
+         "data: {\"model\": \"<id>\", \"row\": {...}}"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
@@ -5153,6 +5314,22 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_score});
+    registry.add(Capability{
+        "explain",
+        "Explain one row's score",
+        "Answer WHY one account scored as it did: the exact signed contribution of "
+        "every feature, strongest first, for a single entity of a dataset or for a "
+        "row you supply. This is the per-account answer — `score`'s drivers are the "
+        "population ranking, identical for every row, so two accounts with the same "
+        "score look the same there even when they are at risk for opposite reasons. "
+        "Read-only.",
+        explain_schema(),
+        explain_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Data, "predict"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_explain});
     registry.add(Capability{
         "delete_agent",
         "Delete an agent",
