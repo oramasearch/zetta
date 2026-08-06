@@ -412,6 +412,52 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // cheapest thing a model can learn is to emit a template verbatim — and that is precisely what the
 // first checkpoint did, reproducing a corpus message word for word for an unrelated ask. Distinct
 // messages relative to corpus size is the direct measure of that risk.
+// The corpus-wide ratio above is necessary and not sufficient: a 10% floor is satisfiable
+// while ANY SINGLE family is fully templated, because 15 other families dilute the average.
+// That is not hypothetical — it is how #976 shipped. `capability_family` emits one sentence
+// shape across every capability, the corpus-wide check stayed green, and a served checkpoint
+// reproduced that sentence word for word for an ask the family did not own.
+//
+// So measure each family on its own. The family is the id's first segment.
+// DISABLED until clarify_family is diversified (#937). It FAILS today, correctly:
+// clarify has 8 distinct messages across 400 cases (2%). Enabling it before the fix
+// would redden the build; deleting it would lose the measurement. Run it with
+// --gtest_also_run_disabled_tests to see the current worst family.
+TEST_F(CorpusInvariants, DISABLED_NoSingleFamilyIsOneTemplate) {
+    std::map<std::string, std::set<std::string>> distinct_by_family;
+    std::map<std::string, int> total_by_family;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string id = admission_case.task.id();
+        const std::string family = id.substr(0, id.find('/'));
+        distinct_by_family[family].insert(admission_case.reference_action->message);
+        total_by_family[family]++;
+    }
+
+    // Deliberately lenient — this is a floor against "one template, a thousand cases",
+    // not a style rule. A family below it is memorizable on its own however diverse the
+    // corpus looks in aggregate.
+    constexpr double kFloor = 0.05;
+    std::string worst_family;
+    double worst_ratio = 1.0;
+    for (const auto& [family, distinct] : distinct_by_family) {
+        const int total = total_by_family[family];
+        if (total < 20) continue;  // too few cases for the ratio to mean anything
+        const double ratio =
+            static_cast<double>(distinct.size()) / static_cast<double>(total);
+        if (ratio < worst_ratio) {
+            worst_ratio = ratio;
+            worst_family = family;
+        }
+    }
+
+    EXPECT_GE(worst_ratio, kFloor)
+        << "family '" << worst_family << "' has "
+        << distinct_by_family[worst_family].size() << " distinct messages across "
+        << total_by_family[worst_family] << " cases (" << 100.0 * worst_ratio
+        << "%) — memorizable on its own, however diverse the corpus looks in aggregate";
+}
+
 TEST_F(CorpusInvariants, ReferenceMessagesAreNotMemorizable) {
     std::set<std::string> distinct;
     std::map<std::string, int> frequency;
