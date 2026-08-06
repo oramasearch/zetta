@@ -890,16 +890,44 @@ InteractionFamily clarify_family(const std::vector<ProjectContext>& contexts) {
                                       "the current Saved Version?"},
     }};
     for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
-        const std::string grounding =
-            render_grounding(contexts[context_index], GroundingView::Results);
+        const ProjectContext& context = contexts[context_index];
+        const std::string grounding = render_grounding(context, GroundingView::Results);
         for (std::size_t ask_index = 0; ask_index < asks.size(); ++ask_index) {
             EndState required = facts({{"clarify", true},
                                        {"asked_one_question", true},
                                        {"built_nothing", true}});
+
+            // The question NAMES what it would act on. Two reasons, and the second is
+            // why this is not decoration:
+            //
+            // 1. A clarifying question that says which Project and table it would touch
+            //    is a better question — the person answering can tell whether the agent
+            //    is even looking at the right thing.
+            // 2. Every case previously carried the SAME eight sentences: 8 distinct
+            //    messages across 400 cases, 2%. The corpus-wide diversity invariant is
+            //    green at that number because fifteen other families dilute it, and a
+            //    family that templated is memorizable on its own — which is exactly how
+            //    a checkpoint came to reproduce a corpus sentence verbatim for an ask it
+            //    did not fit (#976). Grounding the question in the context makes each
+            //    case distinct as a side effect of making it better.
+            std::string closer;
+            switch ((context_index + ask_index) % 3) {
+                case 0:
+                    closer = " I'd apply it to " + context.project + ".";
+                    break;
+                case 1:
+                    closer = " That would run against `" + context.table + "`.";
+                    break;
+                default:
+                    closer = " Right now " + context.project + " is what's loaded, on `" +
+                             context.table + "`.";
+                    break;
+            }
+
             family.cases.push_back(make_case(
                 "clarify/" + std::to_string(context_index) + "/" + std::to_string(ask_index),
                 asks[ask_index].first, grounding, InteractionKind::Clarify,
-                asks[ask_index].second, required));
+                std::string(asks[ask_index].second) + closer, required));
         }
     }
     return family;

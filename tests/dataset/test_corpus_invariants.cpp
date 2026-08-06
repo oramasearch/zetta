@@ -419,11 +419,7 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // reproduced that sentence word for word for an ask the family did not own.
 //
 // So measure each family on its own. The family is the id's first segment.
-// DISABLED until clarify_family is diversified (#937). It FAILS today, correctly:
-// clarify has 8 distinct messages across 400 cases (2%). Enabling it before the fix
-// would redden the build; deleting it would lose the measurement. Run it with
-// --gtest_also_run_disabled_tests to see the current worst family.
-TEST_F(CorpusInvariants, DISABLED_NoSingleFamilyIsOneTemplate) {
+TEST_F(CorpusInvariants, NoSingleFamilyIsOneTemplate) {
     std::map<std::string, std::set<std::string>> distinct_by_family;
     std::map<std::string, int> total_by_family;
     for (const AdmissionCase& admission_case : cases()) {
