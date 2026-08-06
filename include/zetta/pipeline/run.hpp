@@ -36,7 +36,11 @@ struct RunLogEntry {
 
 // One artifact a run produced. `kind` is one of "dataset" / "model" / "index".
 struct RunOutput {
-    std::string kind;  // "dataset" | "model" | "index"
+    // "dataset" | "model" | "index" | "report". A `report` names what a run
+    // FOUND rather than what it produced — read it back with `get_run_report`
+    // (#958); the ref is the run id, because the report is assembled at query
+    // time from the run's model and its at-risk table rather than stored.
+    std::string kind;
     std::string name;  // human label
     std::string ref;   // id / uri pointing at the artifact
 };

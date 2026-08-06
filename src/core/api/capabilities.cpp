@@ -387,6 +387,222 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// ---------------------------------------------------------------------------
+// get_run_report (#958) — the facts a run FOUND, assembled at query time.
+//
+// The artifact a report is written from. Deliberately NOT a stored document: every
+// number here already lives in replicated state — the Model record carries the
+// metrics and what the model was trained from, the at-risk table carries the
+// ranked list with its evidence — so assembling it on read means there is no
+// second copy to drift from the first, and a report generated a month later
+// reflects the same facts as one generated at the end of the run.
+//
+// The rule this serves: **the engine computes every number and the narrator only
+// arranges them.** A field a writer has to work out is a field this artifact is
+// missing. `majority_class_accuracy` is here because exactly that happened once.
+// ---------------------------------------------------------------------------
+
+const nlohmann::json& get_run_report_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
+          {"limit",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "how many at-risk entities to return, highest risk first (default 20). "
+             "The whole population is ranked; this caps what comes back"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_run_report_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run", "model"}},
+        {"properties",
+         {{"run", {{"type", "object"},
+                   {"description", "run id, graph, status, and when it finished"}}},
+          {"dataset",
+           {{"type", "object"},
+            {"description",
+             "what the model was built from: accounts, events, churn_rate, "
+             "majority_class_accuracy (the accuracy a constant answer scores), and "
+             "the feature columns. Absent when the model records no dataset facts"}}},
+          {"model",
+           {{"type", "object"},
+            {"description",
+             "id, name, and the metrics. `held_out_*` is present only when the run "
+             "asked for a holdout; when it is absent the only figures available are "
+             "in-sample and they flatter (#953)"}}},
+          {"drivers",
+           {{"type", "array"},
+            {"description", "feature -> weight, strongest first. A weight is what "
+                            "the model leaned on, not a cause"}}},
+          {"at_risk",
+           {{"type", "array"},
+            {"description",
+             "the ranked entities with their risk and their evidence values, "
+             "capped by `limit`"}}},
+          {"missing",
+           {{"type", "array"},
+            {"description",
+             "fields a report would want that this run cannot supply, each saying "
+             "why. Stated rather than omitted so a writer does not quietly "
+             "substitute its own number"}}}}}};
+    return schema;
+}
+
+// The at-risk table this run wrote, by the run's own `dataset` outputs. Named
+// `churn_results.at_risk_*`, which is what run_act materializes.
+std::shared_ptr<zetta::data::Table> run_at_risk_table(
+    Node& node, const zetta::pipeline::Run& run) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        const std::size_t dot = output.ref.find('.');
+        if (output.kind != "dataset" || dot == std::string::npos) continue;
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (!database) continue;
+        if (auto table = database->find_table(output.ref.substr(dot + 1))) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("run_id").get<std::string>();
+    const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
+    if (!run) {
+        return ApiResult::failure("not_found", "no run with id '" + id + "'");
+    }
+    const std::size_t limit = input.value("limit", std::size_t{20});
+
+    nlohmann::json report;
+    nlohmann::json missing = nlohmann::json::array();
+    report["run"] = {{"id", run->id()},
+                     {"graph", run->graph()},
+                     {"project", run->project()},
+                     {"status", to_string(run->status())},
+                     {"finished", run->updated()}};
+
+    // The model output names the Model this run trained; everything numeric hangs
+    // off it.
+    std::shared_ptr<zetta::ml::Model> model;
+    for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+        if (output.kind == "model") model = context.node.find_model(output.ref);
+        if (model) break;
+    }
+    if (!model) {
+        return ApiResult::failure(
+            "not_found",
+            "run '" + id +
+                "' has no resolvable model output, so there are no measured "
+                "numbers to report");
+    }
+
+    const nlohmann::json& metrics = model->metrics();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto found = metrics.find(key);
+        if (found == metrics.end() || !found->is_number()) return std::nullopt;
+        return found->get<double>();
+    };
+
+    nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
+    if (const auto held = number("held_out_auc")) {
+        model_facts["held_out_auc"] = *held;
+        if (const auto value = number("held_out_log_loss")) model_facts["held_out_log_loss"] = *value;
+        if (const auto value = number("held_out_accuracy")) model_facts["held_out_accuracy"] = *value;
+        if (const auto value = number("held_out_rows")) model_facts["held_out_rows"] = *value;
+    } else {
+        // Said out loud rather than left blank. A report that leads with a
+        // held-out figure has to know when there isn't one, or it leads with the
+        // in-sample number instead and calls it quality (#953).
+        missing.push_back(
+            {{"field", "held_out_auc"},
+             {"why", "this run set no holdout_fraction, so nothing was measured on "
+                     "rows the model had not seen. Every figure below is in-sample "
+                     "and flatters. Re-run with holdout_fraction to get one"}});
+    }
+    if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
+    else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
+    if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
+    else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
+    if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
+    else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
+    if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    report["model"] = std::move(model_facts);
+
+    nlohmann::json dataset = nlohmann::json::object();
+    if (const auto value = number("dataset_accounts")) dataset["accounts"] = *value;
+    if (const auto value = number("dataset_events")) dataset["events"] = *value;
+    if (const auto value = number("dataset_churn_rate")) dataset["churn_rate"] = *value;
+    if (const auto value = number("dataset_majority_class_accuracy")) {
+        dataset["majority_class_accuracy"] = *value;
+    }
+    nlohmann::json features = nlohmann::json::array();
+    nlohmann::json drivers = nlohmann::json::array();
+    for (const zetta::ml::ModelDriver& driver : model->drivers()) {
+        drivers.push_back({{"feature", driver.feature}, {"weight", driver.importance}});
+        features.push_back(driver.feature);
+    }
+    if (!features.empty()) dataset["features"] = std::move(features);
+    if (!dataset.empty()) report["dataset"] = std::move(dataset);
+    else {
+        missing.push_back({{"field", "dataset"},
+                           {"why", "this run's model records no dataset facts; it "
+                                   "predates them being written (#958)"}});
+    }
+    if (!drivers.empty()) report["drivers"] = std::move(drivers);
+
+    // The ranked list, read back from the table the run materialized — so the
+    // report and anything querying `churn_results` cannot disagree.
+    if (const std::shared_ptr<zetta::data::Table> table =
+            run_at_risk_table(context.node, *run)) {
+        std::vector<nlohmann::json> rows;
+        const zetta::storage::StorageEngine& store = table->store();
+        for (std::size_t index = 0; index < store.size(); ++index) {
+            if (const auto row = store.at(index)) rows.push_back(*row);
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const nlohmann::json& left, const nlohmann::json& right) {
+                      return left.value("rank", 0.0) < right.value("rank", 0.0);
+                  });
+        nlohmann::json at_risk = nlohmann::json::array();
+        for (const nlohmann::json& row : rows) {
+            if (at_risk.size() >= limit) break;
+            nlohmann::json entry = {{"rank", row.value("rank", 0)},
+                                    {"entity", row.value("account", 0)},
+                                    {"risk", row.value("risk", 0.0)}};
+            // Evidence is whatever columns beyond the fixed ones the run wrote —
+            // the population's strongest drivers, the same columns on every row.
+            nlohmann::json evidence = nlohmann::json::object();
+            for (const auto& [key, value] : row.items()) {
+                if (key == "rank" || key == "account" || key == "risk" ||
+                    key == "dominant_driver" || key == "driver_effect" || key == "id") {
+                    continue;
+                }
+                evidence[key] = value;
+            }
+            if (!evidence.empty()) entry["evidence"] = std::move(evidence);
+            at_risk.push_back(std::move(entry));
+        }
+        report["at_risk"] = std::move(at_risk);
+    } else {
+        missing.push_back({{"field", "at_risk"},
+                           {"why", "this run materialized no at-risk table"}});
+    }
+
+    if (!missing.empty()) report["missing"] = std::move(missing);
+    return ApiResult::success(std::move(report));
+}
+
 const nlohmann::json& get_model_schema() {
     static const nlohmann::json schema =
         id_input_schema("model_id", "the model's uuid (system.models.model_id)");
@@ -4047,6 +4263,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
          "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
+        {"get_run_report",
+         "read what a finished run found — model quality (held-out first), the "
+         "drivers, and the ranked at-risk list with the evidence behind each row: "
+         "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
@@ -4600,6 +4820,23 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_run});
+
+    registry.add(Capability{
+        "get_run_report",
+        "Get a run's report facts",
+        "Read the facts a finished run produced — how good the model is (held-out "
+        "first, in-sample beside it), what drives the outcome, and the ranked "
+        "at-risk list with its evidence. Assembled at query time from the run's "
+        "model and its at-risk table, so it cannot drift from them. Anything a "
+        "report would want and this run cannot supply is listed in `missing` with "
+        "the reason, rather than left blank. No side effects. (#958)",
+        get_run_report_schema(),
+        get_run_report_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_run_report});
 
     registry.add(Capability{
         "get_model",

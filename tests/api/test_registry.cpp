@@ -59,9 +59,13 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 69u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
-                                      // +agent_training_status +set_training_schedule (#941), +score (#948)
+    EXPECT_EQ(registry.size(), 70u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+                                      // +agent_training_status +set_training_schedule (#941), +score (#948),
+                                      // +get_run_report (#958)
     EXPECT_TRUE(registry.find("server_info"));
+    // A run's report is readable through the control surface, not only from the
+    // node that ran it (#958).
+    EXPECT_TRUE(registry.find("get_run_report"));
     // The #849 agent CRUD surface (create/list/get/update/delete).
     for (const char* name :
          {"create_agent", "list_agents", "get_agent", "update_agent", "delete_agent"}) {
