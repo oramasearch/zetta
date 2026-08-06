@@ -64,6 +64,28 @@ std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
                              std::string_view sub, std::string_view meta_html,
                              std::string_view actions_html = {});
 
+// Render one run's report (#958, #960 item 4) — the Reports surface of Orama
+// Studio, from the JSON `get_run_report` returns. Pure: data in, HTML out.
+//
+// The design's Reports screens (oramasearch/orama-design, feat/reports-surface)
+// are React; this re-implements their information architecture, copy and states
+// in server-rendered HTML, and renders the ENGINE's numbers rather than the
+// design's fixtures.
+//
+// The report's discipline travels with it, because a surface that shows the
+// figures without it undoes the work that produced them:
+//   * the held-out figure leads and says what it was measured on; the in-sample
+//     one sits beside it, never alone;
+//   * accuracy appears next to the accuracy a constant answer would score;
+//   * `missing` is rendered, not skipped — a run that measured no held-out
+//     figure has to SAY so, or a reader takes the in-sample number for quality.
+std::string web_ui_run_report(const nlohmann::json& report);
+
+// Render the Reports index: one row per run that produced a report, newest
+// first. `runs` is an array of `{run_id, graph, project, status, updated,
+// model}` objects. Pure.
+std::string web_ui_reports_index(const nlohmann::json& runs);
+
 // Render a SQL/read result (an ordered `columns` array + a `rows` array of column-keyed objects) as
 // an on-brand, horizontally-scrollable HTML table. Column-name heuristics format status/bytes/bools.
 std::string web_ui_table(const nlohmann::json& columns, const nlohmann::json& rows);

@@ -2196,6 +2196,52 @@ struct ApiServer::Impl {
                 {"create_index", "expose_index", "unexpose_index"},
                 ptable("SELECT * FROM system.indexes", "idx"));
             out += render_data_explorer(context, route);
+        } else if (view == "reports") {
+            // Reports (#960 item 4): the IA and copy of the design's Reports screens
+            // (oramasearch/orama-design, feat/reports-surface), rendering the ENGINE's
+            // numbers through `get_run_report` rather than the design's fixtures.
+            const std::string run_id = query_param(route, "run", "");
+            if (run_id.empty()) {
+                out += web_ui_page_hero(
+                    "Workspace", "Reports",
+                    "What a finished run found: how good the model is, what drives the "
+                    "outcome, and which accounts are most at risk.", "");
+                // One row per run that emitted a report output, newest first.
+                nlohmann::json runs = nlohmann::json::array();
+                for (const std::shared_ptr<zetta::pipeline::Run>& run : node.runs()) {
+                    if (!run) continue;
+                    bool has_report = false;
+                    for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+                        if (output.kind == "report") has_report = true;
+                    }
+                    if (!has_report) continue;
+                    runs.push_back({{"run_id", run->id()},
+                                    {"graph", run->graph()},
+                                    {"project", run->project()},
+                                    {"status", to_string(run->status())},
+                                    {"updated", run->updated()}});
+                }
+                std::sort(runs.begin(), runs.end(),
+                          [](const nlohmann::json& left, const nlohmann::json& right) {
+                              return left.value("updated", "") > right.value("updated", "");
+                          });
+                out += web_ui_reports_index(runs);
+            } else {
+                out += web_ui_page_hero(
+                    "Workspace", "Report",
+                    "Every number here was computed by the engine. Nothing on this page "
+                    "was derived while rendering it.",
+                    "<span>Run <b>" + web_ui_escape(run_id.substr(0, 8)) + "</b></span>",
+                    "<a class=\"btn\" href=\"/?view=reports\">All reports</a>");
+                const ApiResult report = capability_registry.call(
+                    "get_run_report", {{"run_id", run_id}}, context);
+                if (!report.ok) {
+                    out += "<div class=\"empty\">" + web_ui_escape(report.error.message) +
+                           "</div>";
+                } else {
+                    out += web_ui_run_report(report.value);
+                }
+            }
         } else if (view == "models") {
             out += web_ui_page_hero(
                 "Developer", "Models",

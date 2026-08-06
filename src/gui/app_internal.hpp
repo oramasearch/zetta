@@ -562,6 +562,36 @@ inline void callout(Tone tone, const char* callout_id,
 // zebra OFF (hierarchy comes from type, not stripes). OR in ScrollY per site
 // when the table scrolls. Header labels are sentence case; a row's height
 // stays the theme default (no per-table padding).
+// A ranked-weight row: name, a proportional bar, and the value (#960 item 4).
+// `fraction` is the weight relative to the strongest in the set, so length
+// encodes the ranking.
+//
+// **Every bar shares one ink.** Colouring the strongest differently makes the
+// rest read as unimportant rather than as ranked — that shipped once in the
+// design repo and twelve of thirteen bars were nearly invisible.
+inline void weight_bar(const std::string& name, float fraction, const std::string& value) {
+    ImGui::TextColored(kInkMuted, "%s", name.c_str());
+    ImGui::SameLine(220.0f);
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, kAccent);
+    ImGui::ProgressBar(fraction, ImVec2(-100.0f, 8.0f), "");
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkQuiet, "%s", value.c_str());
+    if (g_mono_font) ImGui::PopFont();
+}
+
+// A wrapped line of explanatory prose under a figure or a table. The number
+// answers WHAT; this answers SO WHAT, and a reader who stops at the number has
+// still got the fact right.
+inline void gloss(const std::string& text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kInkMuted);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
 inline constexpr ImGuiTableFlags kDataTableFlags =
     ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp;
 

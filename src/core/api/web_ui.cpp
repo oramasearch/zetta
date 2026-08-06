@@ -316,6 +316,27 @@ html[data-rail=open] .rail{display:flex;}
 .eyebrow{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.09em;color:var(--ink-quiet);
   margin:28px 2px 13px;}
 .empty{color:var(--ink-quiet);font-size:13px;padding:6px 0;}
+/* Reports (#960 item 4). A figure gets its meaning under it: the number answers
+   WHAT, the gloss answers SO WHAT, and a reader who stops at the number has still
+   got the fact right. The lead card is the held-out one. */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;}
+.metric{padding:14px 16px;border:1px solid var(--rule-card);border-radius:10px;background:var(--surface);}
+.metric.lead{border-color:var(--accent);}
+.mlabel{font:500 11px/1.3 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-quiet);}
+.mvalue{font:600 30px/1.15 var(--font-sans);margin:6px 0 8px;letter-spacing:-.02em;}
+.mgloss{font-size:12.5px;line-height:1.6;color:var(--ink-muted);}
+/* Every bar shares ONE ink; length encodes the ranking. Colouring the top bar
+   differently makes the other twelve read as unimportant rather than as ranked. */
+.drivers{display:flex;flex-direction:column;gap:9px;}
+.driver{display:grid;grid-template-columns:minmax(120px,190px) 1fr 56px;align-items:center;gap:12px;}
+.dname{font:400 12.5px/1.4 var(--font-mono);color:var(--ink-muted);overflow-wrap:anywhere;}
+.dtrack{height:8px;border-radius:4px;background:var(--wash-selected);overflow:hidden;}
+.dbar{display:block;height:100%;border-radius:4px;background:var(--accent);}
+.dval{font:400 12px/1.4 var(--font-mono);color:var(--ink-quiet);text-align:right;}
+.reportnote{margin:14px 0 0;font-size:13px;line-height:1.65;color:var(--ink-muted);}
+.caveats{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:9px;
+  font-size:13px;line-height:1.65;color:var(--ink-muted);}
+@media (max-width:640px){.driver{grid-template-columns:1fr;gap:4px;}.dval{text-align:left;}}
 .emptybox{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;padding:32px 16px;color:var(--ink-quiet);}
 .emptybox .eico{width:40px;height:40px;border-radius:11px;display:inline-flex;align-items:center;justify-content:center;
   background:var(--wash-hover);color:var(--ink-quiet);}
@@ -819,6 +840,9 @@ std::string web_ui_icon(std::string_view name) {
     if (name == "data")
         return svg("<ellipse cx='12' cy='6' rx='7.5' ry='3'/><path d='M4.5 6v12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6'/>"
                    "<path d='M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3'/>");
+    if (name == "reports")
+        return svg("<path d='M6.5 2.5h7L19 8v13.5H6.5z'/><path d='M13.5 2.5V8H19'/>"
+                   "<path d='M9.5 17.5v-3M12 17.5v-5.5M14.5 17.5v-2'/>");
     if (name == "models")
         return svg("<path d='M12 2.5 20.5 7v10L12 21.5 3.5 17V7z'/><path d='M12 2.5v19M3.5 7l8.5 4.6 8.5-4.6'/>");
     if (name == "pipeline")
@@ -908,6 +932,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "cluster") return "Infrastructure \xE2\x80\x94 nodes, metrics, and deployments; add capacity";
         if (key == "projects") return "AI projects: intent \xE2\x86\x92 Pipeline \xE2\x86\x92 Verification \xE2\x86\x92 deploy \xE2\x86\x92 run";
         if (key == "data") return "Data library \xE2\x80\x94 databases, tables, rows, and files";
+        if (key == "reports")
+            return "Reports \xE2\x80\x94 what a finished run found: model quality, drivers, who is most at risk";
         if (key == "models") return "Trained models + serving";
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
@@ -961,6 +987,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "overview") return "Studio home";
         if (key == "projects") return "Projects";
         if (key == "data") return "Data";
+        if (key == "reports") return "Reports";
         if (key == "models") return "Models";
         if (key == "pipeline") return "Operate";
         if (key == "observability") return "Observability";
@@ -994,7 +1021,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
            link("projects", "Projects",
                 project_count >= 0 ? std::to_string(project_count) : std::string()) +
-           link("data", "Data library");
+           link("data", "Data library") + link("reports", "Reports");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
            link("observability", "Observability");
     out += "<div class=\"group\">Developer</div>" + link("connections", "Connections") +
@@ -1154,6 +1181,235 @@ std::string web_ui_panel(std::string_view title, std::string_view sub, std::stri
     out += "</div>";
     out += body;
     out += "</section>";
+    return out;
+}
+
+namespace {
+
+// A number as a fixed-precision string, without iostreams' locale surprises.
+std::string fixed(double value, int places) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.*f", places, value);
+    return buffer;
+}
+
+// A count with thousands separators — "3,870,209" reads as a scale, "3870209"
+// reads as a serial number.
+std::string grouped(double value) {
+    std::string digits = fixed(value < 0 ? -value : value, 0);
+    for (std::size_t at = digits.size(); at > 3;) {
+        at -= 3;
+        digits.insert(at, ",");
+    }
+    return value < 0 ? "-" + digits : digits;
+}
+
+std::optional<double> number_at(const nlohmann::json& object, const char* key) {
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_number()) return std::nullopt;
+    return found->get<double>();
+}
+
+// One headline figure: the number, what it is, and one line saying what it MEANS.
+// The gloss is not decoration — a figure a reader cannot act on is decoration, and
+// the sentence after it is the part that does the work.
+std::string metric_card(std::string_view label, std::string_view value,
+                        std::string_view gloss, bool lead = false) {
+    std::string out = "<div class=\"metric";
+    if (lead) out += " lead";
+    out += "\"><div class=\"mlabel\">";
+    out += web_ui_escape(label);
+    out += "</div><div class=\"mvalue\">";
+    out += web_ui_escape(value);
+    out += "</div><div class=\"mgloss\">";
+    out += web_ui_escape(gloss);
+    out += "</div></div>";
+    return out;
+}
+
+}  // namespace
+
+std::string web_ui_reports_index(const nlohmann::json& runs) {
+    if (!runs.is_array() || runs.empty()) {
+        // The honest empty state: say what produces one, not "no data".
+        return web_ui_panel(
+            "Reports", "what a finished run found",
+            "<div class=\"empty\">No run has produced a report yet. Run a Pipeline "
+            "&mdash; its report appears here when it finishes.</div>");
+    }
+    std::string rows = "<div class=\"worklist\">";
+    for (const nlohmann::json& run : runs) {
+        const std::string run_id = run.value("run_id", std::string{});
+        const std::string status = run.value("status", std::string{});
+        std::string label = run.value("graph", std::string{});
+        if (label.empty()) label = run.value("project", std::string{});
+        if (label.empty()) label = run_id;
+        rows += "<a class=\"workrow\" href=\"/?view=reports&run=" + web_ui_escape(run_id) +
+                "\"><span class=\"wstat\"><span class=\"pill" +
+                (status == "succeeded" ? " ok" : "") + "\">" + web_ui_escape(status) +
+                "</span></span><span class=\"wname\">" + web_ui_escape(label) +
+                "<span class=\"actionsub\"> \xC2\xB7 " + web_ui_escape(run.value("updated", "")) +
+                "</span></span><span class=\"wnext\">Open report</span>"
+                "<span class=\"warr\">" + web_ui_icon("chevron") + "</span></a>";
+    }
+    rows += "</div>";
+    return web_ui_panel("Reports", "what a finished run found \xC2\xB7 newest first", rows);
+}
+
+std::string web_ui_run_report(const nlohmann::json& report) {
+    if (!report.is_object() || report.empty()) {
+        return "<div class=\"empty\">This run produced no report.</div>";
+    }
+    const nlohmann::json& model = report.value("model", nlohmann::json::object());
+    const nlohmann::json& dataset = report.value("dataset", nlohmann::json::object());
+
+    std::string out;
+
+    // --- 1. How good the model is -----------------------------------------------
+    // The held-out figure LEADS and says what it was measured on. The in-sample one
+    // sits beside it, never alone: the gap between them is the overfitting signal
+    // and is unreadable with only one present.
+    std::string cards = "<div class=\"metrics\">";
+    const std::optional<double> held = number_at(model, "held_out_auc");
+    const std::optional<double> in_sample = number_at(model, "in_sample_auc");
+    if (held) {
+        const std::optional<double> held_rows = number_at(model, "held_out_rows");
+        cards += metric_card(
+            "Held out \xC2\xB7 AUC", fixed(*held, 3),
+            held_rows ? "measured on " + grouped(*held_rows) +
+                            " rows the model never trained on. Draw one account that "
+                            "churned and one that did not: it scores the churner higher "
+                            "about " + fixed(*held * 100.0, 0) + " times in a hundred"
+                      : "measured on rows the model never trained on",
+            /*lead=*/true);
+    }
+    if (in_sample) {
+        cards += metric_card("In sample \xC2\xB7 AUC", fixed(*in_sample, 3),
+                             held ? "over the rows it trained on. The gap to the held-out "
+                                    "figure is what says whether it memorized them"
+                                  : "over the rows it trained on \xE2\x80\x94 this flatters, "
+                                    "and no held-out figure was measured");
+    }
+    // Accuracy never appears without the accuracy a constant answer would score.
+    // Alone it invites the reader to quote a number that a model doing nothing
+    // would nearly match.
+    if (const std::optional<double> accuracy = number_at(model, "in_sample_accuracy")) {
+        const std::optional<double> baseline = number_at(dataset, "majority_class_accuracy");
+        cards += metric_card(
+            "Accuracy", fixed(*accuracy * 100.0, 1) + "%",
+            baseline ? "against " + fixed(*baseline * 100.0, 1) +
+                           "% for always answering \"no churn\" \xE2\x80\x94 accuracy "
+                           "barely separates a working model from a constant answer here"
+                     : "at a 0.5 threshold");
+    }
+    cards += "</div>";
+    out += web_ui_panel("How good the model is",
+                        held ? "held out first \xC2\xB7 in sample beside it"
+                             : "in-sample only \xC2\xB7 see the caveats below",
+                        cards);
+
+    // --- 2. What the model was built from ----------------------------------------
+    if (!dataset.empty()) {
+        std::string built = "<div class=\"metrics\">";
+        if (const std::optional<double> accounts = number_at(dataset, "accounts")) {
+            built += metric_card("Accounts", grouped(*accounts), "entities scored");
+        }
+        if (const std::optional<double> events = number_at(dataset, "events")) {
+            built += metric_card("Events", grouped(*events),
+                                 "source rows the features were built from");
+        }
+        if (const std::optional<double> rate = number_at(dataset, "churn_rate")) {
+            built += metric_card("Churn rate", fixed(*rate * 100.0, 1) + "%",
+                                 "of accounts in this dataset churned");
+        }
+        built += "</div>";
+        out += web_ui_panel("What it was built from", "the dataset behind the numbers above",
+                            built);
+    }
+
+    // --- 3. What drives the outcome ----------------------------------------------
+    // Bars share one ink and encode ranking by length. Giving the top bar a
+    // different colour makes the rest read as unimportant rather than as ranked.
+    if (const auto drivers = report.find("drivers");
+        drivers != report.end() && drivers->is_array() && !drivers->empty()) {
+        double top = 0.0;
+        for (const nlohmann::json& driver : *drivers) {
+            top = std::max(top, std::abs(driver.value("weight", 0.0)));
+        }
+        std::string bars = "<div class=\"drivers\">";
+        for (const nlohmann::json& driver : *drivers) {
+            const double weight = std::abs(driver.value("weight", 0.0));
+            const double width = top > 0.0 ? (weight / top) * 100.0 : 0.0;
+            bars += "<div class=\"driver\"><span class=\"dname\">" +
+                    web_ui_escape(driver.value("feature", "")) +
+                    "</span><span class=\"dtrack\"><span class=\"dbar\" style=\"width:" +
+                    fixed(width, 1) + "%\"></span></span><span class=\"dval\">" +
+                    fixed(driver.value("weight", 0.0), 3) + "</span></div>";
+        }
+        bars += "</div><p class=\"reportnote\">A weight is how much a column moved "
+                "predictions across the population. It is not a cause &mdash; where the "
+                "arrow plausibly runs the other way, it does.</p>";
+        out += web_ui_panel("What drives the outcome", "strongest first", bars);
+    }
+
+    // --- 4. Who is most at risk ---------------------------------------------------
+    if (const auto at_risk = report.find("at_risk");
+        at_risk != report.end() && at_risk->is_array() && !at_risk->empty()) {
+        // Evidence columns are the same for every row (the population's strongest
+        // drivers), so the table is comparable down a column as well as across.
+        std::vector<std::string> evidence;
+        if (const auto first = at_risk->front().find("evidence");
+            first != at_risk->front().end() && first->is_object()) {
+            for (const auto& [key, value] : first->items()) evidence.push_back(key);
+        }
+        nlohmann::json columns = {"rank", "account", "risk"};
+        for (const std::string& column : evidence) columns.push_back(column);
+        nlohmann::json rows = nlohmann::json::array();
+        for (const nlohmann::json& entry : *at_risk) {
+            // The entity goes in as a STRING: it is an account identifier, not a
+            // quantity, and the table's numeric formatting would render key 8336 as
+            // "8,336" — a number that does not exist and cannot be searched for.
+            nlohmann::json row = {
+                {"rank", entry.value("rank", 0)},
+                {"account", std::to_string(entry.value("entity", std::int64_t{0}))},
+                {"risk", fixed(entry.value("risk", 0.0), 3)}};
+            const auto values = entry.find("evidence");
+            for (const std::string& column : evidence) {
+                if (values != entry.end() && values->contains(column)) {
+                    row[column] = (*values)[column];
+                }
+            }
+            rows.push_back(std::move(row));
+        }
+        out += web_ui_panel(
+            "Who is most at risk", "highest risk first \xC2\xB7 evidence at this account's values",
+            web_ui_table(columns, rows) +
+                "<p class=\"reportnote\">Read the evidence columns ACROSS each other, not "
+                "down any one. An account high on several is in a different situation from "
+                "one carried by a single large number, and the second is the likelier false "
+                "positive. A ranked list is a way to spend attention where it pays best, "
+                "not a prediction about any one account.</p>");
+    }
+
+    // --- 5. What this run cannot tell you -----------------------------------------
+    // Rendered, never skipped. A missing held-out figure that goes unshown is a
+    // reader quoting the in-sample number as quality.
+    std::string caveats;
+    if (const auto missing = report.find("missing");
+        missing != report.end() && missing->is_array()) {
+        for (const nlohmann::json& entry : *missing) {
+            caveats += "<li><b>" + web_ui_escape(entry.value("field", "")) + "</b> &mdash; " +
+                       web_ui_escape(entry.value("why", "")) + "</li>";
+        }
+    }
+    caveats +=
+        "<li><b>Risk ranks; it is not a calibrated probability</b> unless calibration was "
+        "enabled for this run.</li>"
+        "<li><b>A driver is a weight, not a cause.</b> The model leaning on a column does "
+        "not establish that the column causes the outcome.</li>";
+    out += web_ui_panel("What to check before acting on this",
+                        "the limits that apply to this run",
+                        "<ul class=\"caveats\">" + caveats + "</ul>");
     return out;
 }
 

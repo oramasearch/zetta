@@ -37,6 +37,10 @@ std::span<const App::ViewInfo> App::view_registry() {
         {View::Explorer, "Data library", "Explorer", &App::draw_explorer, nullptr},
         {View::Datasets, "Data library", "Datasets", &App::draw_datasets, nullptr},
         {View::Search, "Data library", "Search", &App::draw_search, nullptr},
+        // Reports sits under Data library as ONE item, matching the design's
+        // Studio nav (oramasearch/orama-design, feat/reports-surface) — not a
+        // group of its own. What a run found is read where the data lives.
+        {View::Reports, "Data library", "Reports", &App::draw_reports, nullptr},
         // Activity leads Operate: the feed is the first thing an operator
         // looks at ("what has been happening on this cluster", #622).
         {View::Activity, "Operate", "Activity", &App::draw_activity,

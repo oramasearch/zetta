@@ -652,3 +652,4 @@ projection of `replication.automerge`; standalone nodes read/write it directly.
 `add_row` appends a line to the active chunk immediately (append-open per row —
 simple and crash-resilient; can hold the stream open later). `data_dir` defaults
 to `./zetta-data` and is git-ignored.
+    app_reports.cpp         zetta::gui — the Reports view: runs that emitted a report, and one run's report drawn from get_run_report (metrics, weight bars, at-risk + evidence, caveats) (#960 item 4)
