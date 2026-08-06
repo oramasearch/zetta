@@ -761,6 +761,63 @@ InteractionFamily capability_family(int phrasings) {
     return family;
 }
 
+// --- Class 9b: CALL the tool, then answer from what it returned -------------------------------
+//
+// Measured in the product, not on a canary (#976). Asked "list models", a served v10 agent
+// replied *"Yes - use the `list_models` capability…"* with `tool_calls: []`.
+//
+// It was not confused. That sentence is `capability_family`'s target verbatim. That family
+// answers QUESTIONS about the platform — "Can Orama {}?", "How do I {}?" — and teaches
+// description. No family owned an IMPERATIVE, so an instruction pattern-matched onto the
+// nearest thing. The corpus taught describing a capability and never taught invoking one.
+//
+// This family owns the imperative, and is deliberately adjacent to capability_discovery:
+// the pair is what makes the distinction learnable. "How do I list models" is a question
+// about the platform; "list models" is an instruction.
+InteractionFamily tool_use_family(const std::vector<ProjectContext>& contexts,
+                                  int phrasings) {
+    InteractionFamily family{
+        "tool_use",
+        "Answer an imperative by CALLING the tool and reporting what it returned - not by "
+        "describing the capability that could return it",
+        {}};
+
+    // Imperatives only. A question about the platform belongs to capability_discovery, and
+    // mixing the two is what produced the failure above.
+    static const std::array<const char*, 3> shapes = {
+        "list the models on this node", "show me the models", "what models are here"};
+
+    for (const ProjectContext& context : contexts) {
+        // Grounding is the RETRIEVED RESULT the harness would already hold — the same
+        // thing a real tool call returns. A tool-use case with no context would teach the
+        // model to answer from memory, which is the failure next door.
+        const std::string grounding = render_grounding(context, GroundingView::Results);
+        for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
+            const zetta::agent::ToolCall call{"list_models", nlohmann::json::object()};
+            EndState required = facts({{"grounded", true}, {"numbers_from_context", true}});
+
+            AdmissionCase entry = make_case(
+                "tool_use/list_models/" + context.project + "/" + std::to_string(phrasing),
+                shapes[static_cast<std::size_t>(phrasing)], grounding,
+                InteractionKind::Answer,
+                "The models on this node, from `list_models`: " + context.model_kind +
+                    " for " + context.project + ".",
+                required, {}, {call});
+
+            // The load-bearing half. Showing only the right answer teaches a shape; the
+            // grader has to REJECT the failure that is actually happening.
+            entry.negative_controls = {
+                // Described the capability instead of calling it — the production failure.
+                facts({{"grounded", false}, {"numbers_from_context", false}}),
+                // Called it, then answered with a figure it never returned.
+                facts({{"grounded", true}, {"numbers_from_context", false}}),
+            };
+            family.cases.push_back(std::move(entry));
+        }
+    }
+    return family;
+}
+
 // --- Class 10a: abstain when the context cannot support an answer -----------------------------
 InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
     InteractionFamily family{
@@ -1608,6 +1665,9 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(qa_data_family(contexts, phrasings));
     families.push_back(platform_family(contexts, phrasings));
     families.push_back(capability_family(phrasings));
+    // Beside capability_discovery on purpose: one answers a question about the platform,
+    // the other responds to an instruction. The pair makes the distinction learnable (#976).
+    families.push_back(tool_use_family(contexts, phrasings));
     families.push_back(product_knowledge_family(phrasings));
     families.push_back(migration_family(contexts, phrasings));
     families.push_back(discovery_family(contexts, phrasings));
