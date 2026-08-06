@@ -845,6 +845,69 @@ InteractionFamily tool_use_family(const std::vector<ProjectContext>& contexts,
     return family;
 }
 
+// --- Class 9c: greetings and orientation ------------------------------------------------------
+//
+// The third instance of one root cause (#976, #979). Asked `hello`, a served v12 agent
+// emitted a full action envelope — "I'll connect your source, build leakage-free
+// point-in-time features…" — 636 characters that failed to parse and reached the user as
+// raw JSON.
+//
+// It was not confused. NO FAMILY OWNED A GREETING, so the nearest thing claimed it, and
+// the nearest thing was a pipeline build. Same shape as an imperative landing on a
+// question family, and the fix is the same: give the ask form a family of its own.
+//
+// The targets are deliberately SHORT. A greeting answered with a paragraph is how a
+// checkpoint learns that every turn deserves a pipeline description.
+InteractionFamily greeting_family(const std::vector<ProjectContext>& contexts) {
+    InteractionFamily family{
+        "greeting",
+        "Answer a greeting or an orientation question briefly, and build nothing",
+        {}};
+
+    static const std::array<const char*, 6> greetings = {
+        "hello", "hi", "hey there", "good morning", "morning", "hi, are you there?"};
+
+    for (std::size_t index = 0; index < contexts.size(); ++index) {
+        const ProjectContext& context = contexts[index];
+        const std::string grounding = render_grounding(context, GroundingView::Results);
+        for (std::size_t ask = 0; ask < greetings.size(); ++ask) {
+            // Short, and oriented: it says where you are, which is the useful thing a
+            // greeting can be answered with. It does NOT propose work — offering to
+            // build something in response to "hello" is the failure being fixed.
+            std::string message;
+            switch ((index + ask) % 3) {
+                case 0:
+                    message = "Hello. You're in " + context.project +
+                              ", working on `" + context.table + "`. What would you like "
+                              "to know about it?";
+                    break;
+                case 1:
+                    message = "Hi. " + context.project + " is what's loaded here. Ask me "
+                              "about its results, or tell me what you'd like to build.";
+                    break;
+                default:
+                    message = "Hello. I can answer questions about " + context.project +
+                              " or start something new - what do you need?";
+                    break;
+            }
+
+            EndState required = facts({{"built_nothing", true}});
+            AdmissionCase entry =
+                make_case("greeting/" + std::to_string(index) + "/" + std::to_string(ask),
+                          greetings[ask], grounding, InteractionKind::Answer, message,
+                          required);
+
+            // A greeting that builds something, or answers with a pipeline description,
+            // is the production failure. The grader must reject it.
+            entry.negative_controls = {
+                facts({{"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(entry));
+        }
+    }
+    return family;
+}
+
 // --- Class 10a: abstain when the context cannot support an answer -----------------------------
 InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
     InteractionFamily family{
@@ -1723,6 +1786,9 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     // Beside capability_discovery on purpose: one answers a question about the platform,
     // the other responds to an instruction. The pair makes the distinction learnable (#976).
     families.push_back(tool_use_family(contexts, phrasings));
+    // A greeting is its own ask form. Without this family the nearest one claims it,
+    // and the nearest one built a pipeline (#979).
+    families.push_back(greeting_family(contexts));
     families.push_back(product_knowledge_family(phrasings));
     families.push_back(migration_family(contexts, phrasings));
     families.push_back(discovery_family(contexts, phrasings));
