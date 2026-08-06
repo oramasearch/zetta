@@ -934,6 +934,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "data") return "Data library \xE2\x80\x94 databases, tables, rows, and files";
         if (key == "reports")
             return "Reports \xE2\x80\x94 what a finished run found: model quality, drivers, who is most at risk";
+        if (key == "profile")
+            return "Workspace Profile \xE2\x80\x94 what you hold and how you work; Auto-Suggest reads it";
         if (key == "models") return "Trained models + serving";
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
@@ -988,6 +990,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "projects") return "Projects";
         if (key == "data") return "Data";
         if (key == "reports") return "Reports";
+        if (key == "profile") return "Workspace Profile";
         if (key == "models") return "Models";
         if (key == "pipeline") return "Operate";
         if (key == "observability") return "Observability";

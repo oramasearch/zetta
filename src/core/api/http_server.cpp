@@ -1790,7 +1790,12 @@ struct ApiServer::Impl {
                "Profile \xE2\x80\x94 the data you hold, your connections, and your daily "
                "work \xE2\x80\x94 and recommends what you could create from it.</div>"
                "<div class=\"pnote\"><span class=\"dot\"></span>Auto-Suggest is in training "
-               "\xC2\xB7 not available on this node yet</div></div>";
+               "\xC2\xB7 not available on this node yet</div>"
+               // The design gives both entry cards an action. Ours had one, so this
+               // card explained something you could not begin. The profile is real
+               // and useful before Auto-Suggest ships: it is the input it will read.
+               "<div class=\"pact\"><a href=\"/?view=profile\">Set up profile " +
+               web_ui_icon("chevron") + "</a></div></div>";
         out += "</div>";
 
         // Continue your work — live Projects with the next useful action. The
@@ -2242,6 +2247,36 @@ struct ApiServer::Impl {
                     out += web_ui_run_report(report.value);
                 }
             }
+        } else if (view == "profile") {
+            // The Workspace Profile (#886) — the destination "Discover
+            // Opportunities" needed. Without it that card explained something you
+            // could not begin, which is worse than not offering it.
+            out += web_ui_page_hero(
+                "Workspace", "Workspace Profile",
+                "What you hold, what you connect, and what your work looks like. "
+                "Auto-Suggest reads this to recommend what you could create.", "");
+            ApiResult existing = capability_registry.call(
+                "get_workspace_profile", nlohmann::json::object(), context);
+            std::string body;
+            if (existing.ok && existing.value.is_object() && !existing.value.empty()) {
+                nlohmann::json rows = nlohmann::json::array();
+                for (const auto& [key, value] : existing.value.items()) {
+                    rows.push_back({{"field", key},
+                                    {"value", value.is_string()
+                                                  ? value.get<std::string>()
+                                                  : value.dump()}});
+                }
+                body = web_ui_table(nlohmann::json{"field", "value"}, rows);
+            } else {
+                body =
+                    "<div class=\"empty\">No Workspace Profile yet. Creating one "
+                    "records your role, your daily work, and the sources you approve "
+                    "&mdash; the input Auto-Suggest reads.</div>";
+            }
+            out += render_action_panel(
+                context, view, "data", "Your profile",
+                "role Â· daily work Â· approved sources",
+                {"create_workspace_profile", "update_workspace_profile"}, body);
         } else if (view == "models") {
             out += web_ui_page_hero(
                 "Developer", "Models",
