@@ -1199,6 +1199,166 @@ InteractionFamily follow_up_family(const std::vector<ProjectContext>& contexts, 
     return family;
 }
 
+// --- Class 10b: the BARE turn -----------------------------------------------------------------
+// "yes". "go ahead". "what?". "no, a new one." One or two words that carry no content at all —
+// the entire meaning is in the turn before them.
+//
+// This is the SECOND thing almost everyone types, and until now no family emitted it. The
+// follow-up family above covers *contentful* follow-ups ("Add calibration to that", "Why did that
+// fail?"), all of which are full sentences that a single-turn model can still partially parse. A
+// bare turn cannot be parsed at all standalone — so the model classified it by surface form,
+// landed every one of them in the same family, and answered:
+//
+//     "Create a new churn project please" -> "Which pipeline would you like me to base this on?"
+//     "yes"                               -> "Yes. Studio will list the trained models ..."
+//     "what?"                             -> "Yes. Studio will list the trained models ..."
+//
+// Two different asks, one byte-identical reply. That is the signature of a model that never saw a
+// second turn, and it shipped because every walkthrough beat was one ask and one reply.
+//
+// The training signal that matters here is not "handle short input" — it is that the SAME word
+// demands DIFFERENT behavior depending on what it follows:
+//
+//   "yes" after a concrete proposal      -> DO it (Action). The referent is unambiguous.
+//   "yes" after an either/or question    -> still Clarify. "Yes" does not choose between two
+//                                           options, and guessing is worse than asking.
+//   "what?"                              -> RESTATE the previous turn more plainly. Never repeat
+//                                           it verbatim, and never treat it as a new question.
+//   "no, a new one"                      -> abandon the proposal, do not modify it.
+//
+// So each case below is (bare ask x a specific antecedent), and the negative controls are the
+// behaviors that are correct for a DIFFERENT antecedent. That is what forces attention onto the
+// history rather than onto the word.
+InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) {
+    InteractionFamily family{
+        "bare_turn",
+        "One- or two-word turns whose entire meaning is the turn before them - yes, go ahead, "
+        "what?, no a new one",
+        {}};
+
+    // Paraphrases per intent. Held small and deliberately mundane: these are the exact strings
+    // people type, and inventing elaborate ones would train a register nobody uses.
+    const std::vector<std::string> affirm = {"yes", "yes please", "ok", "sure", "go ahead",
+                                             "do it", "okay... go ahead", "yep", "please do"};
+    const std::vector<std::string> confused = {"what?", "huh?", "sorry what", "what do you mean",
+                                               "I don't follow"};
+    const std::vector<std::string> redirect = {"no", "no... start a new project", "new one",
+                                               "not that", "no, a different one"};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        const EndState solution = solution_facts(context);
+        const std::string described = zetta::agent::describe_pipeline(solution);
+        const std::string data_view = render_grounding(context, GroundingView::Data);
+        const std::string index = std::to_string(context_index);
+
+        // --- 1. "yes" after a CONCRETE proposal -> build it. --------------------------------
+        // The proposal named one thing, so the referent is unambiguous and asking again would be
+        // the annoying failure, not the safe one.
+        {
+            const std::string& ask = affirm[context_index % affirm.size()];
+            EndState required = solution;
+            zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+            AdmissionCase yes = make_case(
+                "bare/affirm/" + index, ask, data_view, InteractionKind::Action,
+                std::string("Building the ") + context.project + " Pipeline now. " + described,
+                required, std::move(graph));
+            yes.history = {{std::string("Create a churn project over `") + context.table + "`.",
+                            std::string("I can build the ") + context.project +
+                                " Pipeline over `" + context.table + "`. Shall I?"}};
+            // The controls are the two ways this actually failed: answering a question nobody
+            // asked, and re-asking what was just confirmed.
+            yes.negative_controls = {
+                facts({{"kind", std::string("answer")}, {"built_nothing", true}}),
+                facts({{"kind", std::string("clarify")}, {"built_nothing", true}}),
+            };
+            family.cases.push_back(std::move(yes));
+        }
+
+        // --- 2. "yes" after an EITHER/OR question -> still clarify. -------------------------
+        // The same word, the opposite correct behavior. Without this pair the model can satisfy
+        // case 1 by learning "yes means build", which is wrong exactly when it matters.
+        {
+            const std::string& ask = affirm[(context_index + 3) % affirm.size()];
+            EndState required = facts({{"clarify", true},
+                                       {"asked_one_question", true},
+                                       {"built_nothing", true}});
+            AdmissionCase ambiguous = make_case(
+                "bare/affirm-ambiguous/" + index, ask, data_view, InteractionKind::Clarify,
+                std::string("Which of the two - the churn Pipeline over `") + context.table +
+                    "`, or the retention one? \"Yes\" fits either.",
+                required);
+            ambiguous.history = {
+                {"Set something up for me.",
+                 std::string("Two obvious starts on `") + context.table +
+                     "`: a churn Pipeline, or a retention one. Which do you want?"}};
+            // Building SOMETHING is the failure: it looks helpful and silently picks for the user.
+            ambiguous.negative_controls = {
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(ambiguous));
+        }
+
+        // --- 3. "what?" -> restate the PREVIOUS turn, more plainly. -------------------------
+        // The observed failure was repeating the previous reply verbatim. So the reference here
+        // says the same thing in different words, and `restated_prior_turn` is the fact the
+        // grader checks — not "answered something".
+        {
+            const std::string& ask = confused[context_index % confused.size()];
+            EndState required = facts({{"restated_prior_turn", true},
+                                       {"built_nothing", true},
+                                       {"grounded", true},
+                                       {"numbers_from_context", true}});
+            AdmissionCase what = make_case(
+                "bare/confused/" + index, ask,
+                render_grounding(context, GroundingView::Results), InteractionKind::Answer,
+                std::string("Sorry - plainly: `") + context.table + "` has enough history to "
+                    "train a model that flags which accounts look likely to leave. I have not "
+                    "built anything yet. Do you want me to?",
+                required);
+            what.history = {
+                {"What can you do with this data?",
+                 std::string("`") + context.table + "` supports a supervised churn Pipeline with "
+                     "point-in-time featurization and a calibrated gradient-boosted model."}};
+            // Repeating the prior reply is the exact regression this case exists to catch, and it
+            // must be scored as a FAILURE rather than as a harmless retry.
+            what.negative_controls = {
+                facts({{"repeated_prior_turn", true}}),
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(what));
+        }
+
+        // --- 4. "no, a new one" -> abandon the proposal, do not edit it. --------------------
+        // A redirect reads superficially like a modification, and treating it as one quietly
+        // carries the rejected pipeline forward - the user says no and gets the thing anyway.
+        {
+            const std::string& ask = redirect[context_index % redirect.size()];
+            // "Abandoned the proposal" is not mechanically checkable, so it is not a fact —
+            // what IS checkable is that the turn asks rather than builds, and does not simply
+            // repeat the proposal it was told to drop.
+            EndState required = facts({{"clarify", true},
+                                       {"asked_one_question", true},
+                                       {"built_nothing", true},
+                                       {"repeated_prior_turn", false}});
+            AdmissionCase no = make_case(
+                "bare/redirect/" + index, ask, data_view, InteractionKind::Clarify,
+                std::string("Dropped that one. What should the new Project predict, and over "
+                            "which table? `") + context.table + "` is here if you want it.",
+                required);
+            no.history = {{"Create a churn project please",
+                           std::string("I can base it on the ") + context.project +
+                               " Pipeline. Shall I?"}};
+            no.negative_controls = {
+                // Carrying the rejected proposal forward - the failure that looks like progress.
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(no));
+        }
+    }
+    return family;
+}
+
 // --- Class 11: build the solution itself ------------------------------------------------------
 // "Predict which machines are likely to fail." "Score our leads." "Forecast demand per SKU." The
 // central ask — and the one the whole catalogue exists to answer — had ONE training case per
@@ -1818,6 +1978,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(discovery_family(contexts, phrasings));
     families.push_back(solution_build_family(contexts, phrasings));
     families.push_back(follow_up_family(contexts, phrasings));
+    families.push_back(bare_turn_family(contexts));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));

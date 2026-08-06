@@ -120,8 +120,14 @@ EndState execution_facts(const std::vector<ToolOutcome>& outcomes);
 // `grounding` is the VERIFIER's view, which may be richer than what the policy saw — the same
 // asymmetry the rollout harvest relies on. A product answer can be served with no capability
 // listing and still be scored against one.
+// `history` reaches `response_solution_facts`, so a generation that simply repeats the previous
+// reply grades as `repeated_prior_turn` and can be penalized. Without it the reward is blind to
+// the relationship between turns, and a model that answers every follow-up with the same sentence
+// scores exactly as well as one that actually follows the thread — which is how that behavior
+// survived to serving. Empty history (every single-turn caller) grades unchanged.
 double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
-                                  const std::string& grounding);
+                                  const std::string& grounding,
+                                  const std::vector<PriorTurn>& history = {});
 
 // The reward for one turn, counting BOTH what the response claimed and what its calls actually
 // did (#941).

@@ -4,6 +4,7 @@
 
 #include "zetta/agent/action.hpp"
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/interaction.hpp"
 
 // Project a RESPONSE into gradeable facts (#918) — the verifiable-reward primitive for every
 // interaction mode, and the counterpart of `graph_solution_facts` for the whole envelope rather
@@ -42,6 +43,18 @@ namespace zetta::agent {
 //
 // Plus every fact the pipeline carries (`graph_solution_facts`), so an `action` turn keeps
 // grading exactly as it did before this existed.
-EndState response_solution_facts(const StudioAction& action, const std::string& grounding);
+// When `history` is supplied, two more facts about the turn's RELATIONSHIP to the one before it:
+//
+//   repeated_prior_turn   — the message is (modulo whitespace/case) the previous reply, verbatim
+//   restated_prior_turn   — history exists, the message says something, and it is NOT the previous
+//                           reply repeated
+//
+// These exist because "what?" returned a byte-identical reply to the turn before it, and nothing
+// in the corpus or the grader could express that as a failure — the response was well-formed,
+// grounded, and useless. Repetition is mechanically checkable against the history, so it is a real
+// verifiable reward rather than a judgement call. Empty history emits neither fact, so every
+// single-turn case grades exactly as it did before.
+EndState response_solution_facts(const StudioAction& action, const std::string& grounding,
+                                 const std::vector<PriorTurn>& history = {});
 
 }  // namespace zetta::agent

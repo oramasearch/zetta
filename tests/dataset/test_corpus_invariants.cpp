@@ -286,8 +286,8 @@ TEST_F(CorpusInvariants, NoReferenceMessageCitesANumberItsGroundingDoesNotContai
     for (const AdmissionCase& admission_case : cases()) {
         if (!admission_case.reference_action) continue;
         if (admission_case.grounding.empty()) continue;  // covered by the ungrounded rule below
-        const zetta::agent::EndState facts = zetta::agent::response_solution_facts(
-            *admission_case.reference_action, admission_case.grounding);
+        const zetta::agent::EndState facts = zetta::agent::response_solution_facts(*admission_case.reference_action, admission_case.grounding,
+                                            admission_case.history);
         ++grounded;
         EXPECT_TRUE(facts.matches("numbers_from_context", true))
             << "case " << admission_case.task.id() << " fabricates a number.\n  message: "
@@ -338,8 +338,8 @@ TEST_F(CorpusInvariants, EveryReferencePassesItsOwnGrader) {
     for (const AdmissionCase& admission_case : cases()) {
         ASSERT_TRUE(admission_case.reference_action.has_value());
         EXPECT_TRUE(admission_case.task.grader()
-                        .grade(zetta::agent::response_solution_facts(
-                            *admission_case.reference_action, admission_case.grounding))
+                        .grade(zetta::agent::response_solution_facts(*admission_case.reference_action, admission_case.grounding,
+                                            admission_case.history))
                         .passed)
             << "case " << admission_case.task.id() << " reference fails its own grader";
     }
@@ -430,6 +430,76 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // An unowned form does not fail loudly. It produces a fluent, well-formed answer to a
 // different question — which is the worst failure mode a corpus has, because every
 // aggregate metric stays green through it.
+// The ask-form invariant above asks "does SOME case use this wording". That is not enough for a
+// BARE turn, because a bare turn can be present and still untrainable: "yes" with no history
+// teaches the model to answer from the word alone, which is precisely the defect. So this asserts
+// two stronger things the generator must keep true.
+//
+// It exists because the generator did NOT anticipate this class and nothing caught that. The
+// corpus had a follow_up family, every case in it was a full sentence, and the second thing a real
+// person types is one word. The result shipped: "yes" and "what?" returned a byte-identical reply.
+TEST_F(CorpusInvariants, EveryBareTurnCarriesTheTurnItDependsOn) {
+    // Exact strings, not substrings — a bare turn is defined by being the WHOLE ask.
+    const std::vector<std::string> bare = {"yes", "ok", "sure", "go ahead", "do it",
+                                           "what?", "huh?", "no", "new one", "not that"};
+
+    std::vector<std::string> missing;
+    std::vector<std::string> without_history;
+    for (const std::string& probe : bare) {
+        bool seen = false;
+        for (const AdmissionCase& admission_case : cases()) {
+            if (admission_case.task.description() != probe) continue;
+            seen = true;
+            // A bare ask with no history is worse than an absent one: it is a training example
+            // whose correct answer is not derivable from its own input.
+            if (admission_case.history.empty()) without_history.push_back(probe);
+        }
+        if (!seen) missing.push_back(probe);
+    }
+
+    std::string missing_report;
+    for (const std::string& form : missing) missing_report += "\"" + form + "\" ";
+    EXPECT_TRUE(missing.empty())
+        << "no case trains these bare turns: " << missing_report
+        << "\n(a one-word turn is the second thing most people type; unowned, it is classified "
+           "by surface form and every one of them gets the same reply)";
+
+    std::string history_report;
+    for (const std::string& form : without_history) history_report += "\"" + form + "\" ";
+    EXPECT_TRUE(without_history.empty())
+        << "these bare turns appear with NO history: " << history_report
+        << "\n(the answer is not derivable from the ask, so the case teaches the model to "
+           "respond to the word rather than to what it follows)";
+}
+
+// The pairing invariant. A bare word means different things after different turns, and a corpus
+// that only ever pairs "yes" with "build it" teaches "yes -> build" — which is wrong exactly when
+// it matters, because "yes" after an either/or question must still ask which one.
+//
+// Without this, the family above could be silently weakened to one case per word and every count
+// in the coverage report would stay green.
+TEST_F(CorpusInvariants, TheSameBareWordTrainsMoreThanOneBehavior) {
+    std::map<std::string, std::set<std::string>> kinds_by_ask;
+    for (const AdmissionCase& admission_case : cases()) {
+        const std::string& ask = admission_case.task.description();
+        // Bare = short enough that the ask carries no referent of its own.
+        if (ask.size() > 12 || admission_case.history.empty()) continue;
+        if (!admission_case.reference_action) continue;
+        kinds_by_ask[ask].insert(std::string(zetta::agent::to_string(admission_case.reference_action->kind)));
+    }
+
+    // At least one bare word must be trained toward two different behaviors. Requiring it of
+    // EVERY word would be wrong — "what?" legitimately has one correct shape.
+    bool any_polysemous = false;
+    for (const auto& [ask, kinds] : kinds_by_ask) {
+        if (kinds.size() > 1) { any_polysemous = true; break; }
+    }
+    EXPECT_TRUE(any_polysemous)
+        << "every bare turn in the corpus maps to exactly one behavior"
+        << "\n(then the model can pass by memorizing the word — \"yes\" means build — and it will "
+           "build when the previous turn offered a choice, which is the failure that matters)";
+}
+
 TEST_F(CorpusInvariants, EveryAskFormIsOwnedByAFamily) {
     // A representative ask per form the product actually accepts. If a form has no case
     // whose ask matches it, no family owns it and the nearest one will claim it.

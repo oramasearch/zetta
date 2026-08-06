@@ -152,6 +152,36 @@ TEST(Goals, AnAgentWithoutGoalsIsUnchanged) {
 // THE CONNECTION #941 is about: a raw generation scored against the agent's own goals, which is
 // what `grpo_step` needs as its CompletionReward. Training now moves the policy toward what this
 // deployment wants rather than toward a rubric compiled into the engine.
+// Repeating the previous reply is a failure the reward could not previously see: the response is
+// well-formed, grounded, on-topic, and useless. The model shipped doing exactly this — "yes" and
+// "what?" returned a byte-identical sentence — and every aggregate reward stayed high, because
+// nothing scored a turn against the one before it.
+TEST(Goals, RepeatingThePreviousReplyIsNotRewarded) {
+    const std::vector<Goal> goals = {
+        {"Say something the previous turn did not already say.", 5.0, {"restated_prior_turn"}}};
+    const std::string grounding = "Project: Churn\nTable: accounts\n";
+    const std::string prior = "The accounts table supports a supervised churn Pipeline.";
+    const std::vector<zetta::agent::PriorTurn> history = {{"What can you do?", prior}};
+
+    const std::string repeated =
+        R"({"kind":"answer","message":"The accounts table supports a supervised churn Pipeline.","tool_calls":[]})";
+    const std::string restated =
+        R"({"kind":"answer","message":"Plainly: it has enough history to flag accounts likely to leave.","tool_calls":[]})";
+
+    EXPECT_GT(zetta::agent::goal_reward_for_generation(goals, restated, grounding, history), 0.9);
+    EXPECT_LT(zetta::agent::goal_reward_for_generation(goals, repeated, grounding, history), 0.1)
+        << "a verbatim repeat of the previous reply must not score as an answer";
+
+    // Casing and punctuation must not launder a repeat into a fresh answer.
+    const std::string dressed =
+        R"({"kind":"answer","message":"The accounts table supports a supervised churn Pipeline!!","tool_calls":[]})";
+    EXPECT_LT(zetta::agent::goal_reward_for_generation(goals, dressed, grounding, history), 0.1)
+        << "punctuation is not a restatement";
+
+    // And with no history the fact is not emitted at all, so single-turn scoring is unchanged.
+    EXPECT_DOUBLE_EQ(zetta::agent::goal_reward_for_generation(goals, repeated, grounding), 0.0);
+}
+
 TEST(Goals, AGenerationIsScoredAgainstTheAgentsOwnGoals) {
     const std::vector<Goal> goals = {
         {"Never state a number we cannot evidence.", 5.0, {"numbers_from_context"}}};

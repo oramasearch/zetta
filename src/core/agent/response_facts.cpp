@@ -140,7 +140,8 @@ std::string first_ranked_name(std::string_view grounding, std::string_view secti
 
 }  // namespace
 
-EndState response_solution_facts(const StudioAction& action, const std::string& grounding) {
+EndState response_solution_facts(const StudioAction& action, const std::string& grounding,
+                                 const std::vector<PriorTurn>& history) {
     // Start from the pipeline's own facts so an `action` turn grades exactly as it always has.
     //
     // A MODEL's response carries tool calls and no graph — the agent is a tool-calling harness, so
@@ -178,6 +179,27 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
     // graded on the capability it requested, not on prose describing it.
     for (const ToolCall& call : action.tool_calls) {
         state.set("called_" + call.tool, true);
+    }
+
+    // Repeating the previous reply word for word is the failure a bare follow-up actually
+    // produced ("what?" -> the same sentence again). Compare on a normalized form so trailing
+    // punctuation or casing cannot make a verbatim repeat read as a fresh answer.
+    if (!history.empty()) {
+        auto normalized = [](std::string_view text) {
+            std::string out;
+            for (const char character : text) {
+                if (std::isalnum(static_cast<unsigned char>(character)) != 0) {
+                    out.push_back(static_cast<char>(
+                        std::tolower(static_cast<unsigned char>(character))));
+                }
+            }
+            return out;
+        };
+        const std::string previous = normalized(history.back().reply);
+        const std::string current = normalized(action.message);
+        const bool repeated = !previous.empty() && current == previous;
+        state.set("repeated_prior_turn", repeated);
+        state.set("restated_prior_turn", !repeated && !current.empty());
     }
 
     if (grounding.empty()) return state;
