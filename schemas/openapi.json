@@ -1149,7 +1149,7 @@
                           "type": "string"
                         },
                         "kind": {
-                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope",
+                          "description": "the mode the agent declared for this turn: answer renders as prose, clarify is a question awaiting a reply, abstain is a refusal to present as such, action carries a proposed Pipeline. `unparsed` means the generation was not a valid envelope - `reply` then carries an honest failure sentence and the raw generation moves to `raw`, so it never reaches a chat window (#979)",
                           "enum": [
                             "action",
                             "answer",
@@ -1162,6 +1162,10 @@
                         "pipeline": {
                           "description": "the proposed Pipeline, when the turn built one",
                           "type": "object"
+                        },
+                        "raw": {
+                          "description": "the raw generation, present only when `kind` is `unparsed`. For developers and traces - never render it to a user",
+                          "type": "string"
                         },
                         "reply": {
                           "type": "string"

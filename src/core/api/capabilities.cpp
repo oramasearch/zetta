@@ -4446,7 +4446,14 @@ const nlohmann::json& chat_output_schema() {
             {"description",
              "the mode the agent declared for this turn: answer renders as prose, clarify is a "
              "question awaiting a reply, abstain is a refusal to present as such, action carries "
-             "a proposed Pipeline. `unparsed` means the generation was not a valid envelope"}}},
+             "a proposed Pipeline. `unparsed` means the generation was not a valid "
+             "envelope - `reply` then carries an honest failure sentence and the raw "
+             "generation moves to `raw`, so it never reaches a chat window (#979)"}}},
+          {"raw",
+           {{"type", "string"},
+            {"description",
+             "the raw generation, present only when `kind` is `unparsed`. For "
+             "developers and traces - never render it to a user"}}},
           {"pipeline",
            {{"type", "object"},
             {"description", "the proposed Pipeline, when the turn built one"}}},
@@ -4829,6 +4836,22 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         // The generation did not parse as a response envelope. Say so explicitly: an unparsed
         // turn is an error state, not an `action` that happened to carry no pipeline.
         output["kind"] = "unparsed";
+
+        // And do NOT hand the raw generation back as the reply (#979). It was reaching
+        // the Studio chat window verbatim: asked "hello", a user saw 636 characters of
+        // `{"kind":"answer","message":…,"tool":"serve"}`.
+        //
+        // A model that emits garbage is a training problem. A harness that SHOWS the
+        // garbage to a customer is a serving problem, and it is the one that has to be
+        // right, because it bounds the blast radius of every future parse failure —
+        // including ones nobody has seen yet.
+        //
+        // The payload is not discarded: it moves to `raw`, which a developer reads and a
+        // chat window does not render.
+        output["raw"] = output.value("reply", std::string{});
+        output["reply"] =
+            "I could not produce a well-formed answer to that. Nothing was built and "
+            "nothing was changed. Try rephrasing, or ask something more specific.";
     }
     return ApiResult::success(std::move(output));
 }
