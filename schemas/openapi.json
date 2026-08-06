@@ -1367,7 +1367,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "input_id": {
-                    "description": "the captured intent input's uuid (capture_intent)",
+                    "description": "the captured intent's uuid (capture_intent). Optional: omit it and the project's most recently captured intent compiles, which is what you want in the common case of describing a goal and building it",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -1386,8 +1386,7 @@
                   }
                 },
                 "required": [
-                  "project",
-                  "input_id"
+                  "project"
                 ],
                 "type": "object"
               }
