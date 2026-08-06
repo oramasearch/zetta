@@ -34,6 +34,10 @@ Distillation:
 
 ## Driving a live cluster from Claude Code (layer 3)
 
+> For a **full-product** walk — every surface, ending in a dated report — use the
+> **zetta-walkthrough** skill, which is layer 3 as its own workflow and feeds its
+> findings back here as layer-1 journeys. The steps below remain the short form.
+
 1. Start a node (`./build/bin/zetta` or `--headless`); the MCP endpoint is
    `POST /mcp` on loopback (bearer token = an AccessKey id when non-local).
 2. Play a user, not a test: pursue an outcome ("score my accounts for churn"),

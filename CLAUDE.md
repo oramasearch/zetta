@@ -705,6 +705,15 @@ Project skills live in `.claude/skills/` (committed, shared):
 - **api-dev** — control-surface work: the capability registry, MCP/REST,
   auth/consent, the Beast2 adapter boundary.
 - **mcp-journeys** — author/run simulated user tests; the promotion rule.
+- **zetta-walkthrough** — runs the full product walkthrough and **manages both
+  avenues onto it**: Claude Code driving the node over MCP/REST, and the Playwright
+  suite (`orama-web-e2e`, #970) driving the browser. Coverage is the union — a
+  capability can be perfect over MCP and unreachable in the UI, and a page can render
+  beautifully while showing a number the engine never computed. Merges both into one
+  dated report with a per-avenue coverage matrix; carries the operational handles
+  (`--listen` is the PEER port, the API is 4800; the owner token races the log) and
+  the finding taxonomy. Use it before claiming a demo, a release, or an epic is done
+  — "the pieces pass in the test harness" is explicitly not the bar.
 - **chaos-experiment** — inject one fault, assert the cluster *heals* within a
   bounded deadline (hypothesis · fault · invariant · deadline · blast radius);
   the safety rules and the prove-the-fault-landed discipline.
