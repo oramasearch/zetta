@@ -193,6 +193,35 @@ ZETTA_EVAL=data/corpora/interaction-corpus-v1.jsonl.canary \
 
 Retrieve the checkpoint (~2.2 GB) with `rsync -a`, and **destroy the instance**.
 
+## Launching a run that outlives your shell
+
+`nohup … &` over ssh is not enough — the job is SIGHUP'd when the ssh session ends, and the
+log freezes mid-run looking exactly like a stall. Use `setsid`:
+
+```sh
+ssh <box> 'cd ~/zetta && setsid nohup env \
+  ZETTA_QWEN_DIR=$HOME/qwen3-0.6b ZETTA_CORPUS=… ZETTA_SFT_STEPS=3000 … \
+  ./build/tests/zetta-tests --gtest_filter=SftCudaResident.TrainsTheInteractionCorpusOnTheGpu \
+  > $HOME/sft.log 2>&1 < /dev/null &'
+```
+
+**Put the completion marker in the same command as the work.** A wrapper that appends
+`echo SFT_DONE` is easy to drop when the launch is rewritten, and then every wait-loop
+watches for a sentinel that can never appear — a 40-minute run reads as hung. Either grep
+the test harness's own `[  PASSED  ]` line, or keep the marker inside the `setsid` command.
+
+**Distinguishing stalled from finished, without a marker:**
+
+```sh
+a=$(tail -1 ~/sft.log); sleep 25; b=$(tail -1 ~/sft.log)
+[ "$a" = "$b" ] && echo STALLED || echo advancing
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+```
+
+A live process at 0% GPU and 0 MiB is wedged, not working — that is what a `pkill -9`
+mid-run leaves behind. Kill it, confirm `pgrep -f zetta-tests` is empty and GPU memory is
+released, then relaunch.
+
 ## Hard rules
 
 - **A training run must never be able to take down its host.** A run exhausted memory on the Mac and
