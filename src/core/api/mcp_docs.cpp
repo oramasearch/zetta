@@ -59,3 +59,66 @@ std::string render_mcp_md(std::string_view origin, bool token_required) {
 }
 
 }  // namespace zetta::api
+
+namespace zetta::api {
+
+std::string render_cli_md(std::string_view origin) {
+    std::string out;
+    out += "# zetta — command line\n\n";
+    out += "One binary. A *node* is one running instance; every node is an equal\n";
+    out += "peer, so there is no separate server or client command.\n\n";
+    out += "```sh\nzetta [options]\n```\n\n";
+
+    out += "## The two that are most often confused\n\n";
+    out += "| Flag | What it binds |\n|---|---|\n";
+    out += "| `--listen HOST:PORT` | the **cluster peer** port (default 7777) |\n";
+    out += "| `--mcp-listen HOST:PORT` | the **API, MCP and web UI** (default 127.0.0.1:4800) |\n\n";
+    out += "`--listen` does **not** move the API. Setting it and then calling the\n";
+    out += "port you chose returns nothing, which reads exactly like a dead node.\n\n";
+    out += "This node serves its API at `";
+    out += std::string(origin);
+    out += "`.\n\n";
+
+    out += "## Running\n\n| Flag | Meaning |\n|---|---|\n";
+    out += "| `--headed` | run with the SDL3 + ImGui UI (default) |\n";
+    out += "| `--headless` | run without a UI, for servers with no display |\n";
+    out += "| `--data-dir PATH` | the database directory |\n";
+    out += "| `--no-preflight` | skip the startup data integrity check |\n";
+    out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
+    out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
+
+    out += "## Cluster\n\n| Flag | Meaning |\n|---|---|\n";
+    out += "| `--peer HOST:PORT` | a node to connect to. Repeatable; all peers are equal |\n";
+    out += "| `--join-token TOKEN` | the cluster join token, printed by the first node |\n";
+    out += "| `--advertise H:P` | extra reachable endpoints to advertise (NAT / load balancer) |\n";
+    out += "| `--dial-out-only` | no routable address: reach peers outbound, never be dialed |\n";
+    out += "| `--node-type T` | `permanent` (default) or `ephemeral` burst capacity |\n";
+    out += "| `--port-range N` | bind the first free port in [PORT, PORT+N) |\n\n";
+    out += "**Inter-node traffic is always mTLS.** There is no plaintext mode.\n\n";
+
+    out += "## API, MCP and the web app\n\n| Flag | Meaning |\n|---|---|\n";
+    out += "| `--mcp-listen H:P` | where the API, MCP and web UI bind |\n";
+    out += "| `--no-mcp` | disable the embedded MCP server |\n";
+    out += "| `--webapp-dir PATH` | serve the built Studio web app at `/app` |\n";
+    out += "| `--admin-token T` | seed the owner token on first boot |\n";
+    out += "| `--clerk-issuer URL` | verify Clerk JWTs; omit for bearer-only, on-prem |\n\n";
+    out += "Without `--admin-token`, a fresh node generates the owner token and\n";
+    out += "prints it **once**, so a node is never locked out. It is hashed at rest\n";
+    out += "and never logged again.\n\n";
+
+    out += "## Provisioning by environment\n\n";
+    out += "Applied as defaults and overridden by the flags above, so a provisioned\n";
+    out += "node auto-joins with no manual flags.\n\n";
+    out += "| Variable | Maps to |\n|---|---|\n";
+    out += "| `ZETTA_SEED_PEER` | `--peer` (comma or space separated) |\n";
+    out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
+    out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n\n";
+
+    out += "## See also\n\n";
+    out += "- [`/mcp.md`](/mcp.md) — connect an MCP client to this node\n";
+    out += "- [`/llms.txt`](/llms.txt) — the documentation index\n";
+    out += "- [`/v1/openapi.json`](/v1/openapi.json) — the REST surface\n";
+    return out;
+}
+
+}  // namespace zetta::api

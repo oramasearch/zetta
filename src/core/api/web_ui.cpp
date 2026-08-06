@@ -1034,6 +1034,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Documentation</div>" +
            doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
+           doc_link("/cli.md", "shell", "CLI", "How to run a node: every flag, and the two that get confused") +
            doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
     out += "<div class=\"group\">Advanced</div>" + link("governance", "Governance") +
            link("cluster", "Infrastructure");

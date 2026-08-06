@@ -3330,6 +3330,31 @@ bool ApiServer::start() {
     // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
     // wins. Deliberately NOT bearer-gated (you must be able to read the connect
     // instructions without already holding the token) and it NEVER prints the token.
+    // GET /cli.md — public, like /mcp.md: the node's own command-line reference.
+    // Public because you must be able to read how to run a node without already
+    // holding a token from one.
+    router.add(http::method::get, "/cli.md",
+               [&impl](http::route_params& route) -> http::route_task {
+                   std::string host;
+                   if (route.req.count(http::field::host)) {
+                       host = std::string(route.req.at(http::field::host));
+                   }
+                   if (host.empty()) {
+                       host = impl.options.listen_address + ":" +
+                              std::to_string(impl.options.port);
+                   }
+                   const std::string origin =
+                       (request_is_https(route) ? "https://" : "http://") + host;
+                   const std::string body = render_cli_md(origin);
+                   route.status(http::status::ok);
+                   route.res.set(http::field::content_type,
+                                 "text/markdown; charset=utf-8");
+                   stamp_response_headers(route, body);
+                   auto [error] = co_await route.send(body);
+                   if (error) co_return http::route_error(error);
+                   co_return http::route_done;
+               });
+
     router.add(http::method::get, "/mcp.md",
                [&impl](http::route_params& route) -> http::route_task {
                    std::string host;
