@@ -1140,6 +1140,10 @@
                           "description": "true only when a project was named AND it has a trained model whose real measure + ranked drivers were given to the agent. False means the reply rests on the model's priors — present it as such, never as a measured result (#914)",
                           "type": "boolean"
                         },
+                        "grounded_project": {
+                          "description": "the Project this reply was grounded in. Present whenever grounding happened — including when the engine chose it, because the caller named none and the most recent successful run's Project was used",
+                          "type": "string"
+                        },
                         "grounding_warning": {
                           "description": "why the reply is ungrounded, when it is",
                           "type": "string"
@@ -3366,6 +3370,131 @@
         "summary": "Deploy a graph",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/deployment_profile": {
+      "get": {
+        "description": "Ask a node how to deploy itself: every port and what it carries, what it needs from the cluster and — as important — the dependencies people assume it needs and it does not, the storage and peering model, and the security posture. `target=helm` returns values a chart can consume directly. Computed from the live node, so it cannot drift from what the binary does. Never emits a credential; it says how to seed one. Read-only. (#974) Requires api:query.",
+        "operationId": "deployment_profile",
+        "parameters": [
+          {
+            "description": "`helm` adds a values-shaped block a chart can consume directly, instead of prose an agent has to interpret. Default `generic`",
+            "in": "query",
+            "name": "target",
+            "required": false,
+            "schema": {
+              "description": "`helm` adds a values-shaped block a chart can consume directly, instead of prose an agent has to interpret. Default `generic`",
+              "enum": [
+                "generic",
+                "helm"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "properties": {
+                        "clustering": {
+                          "type": "object"
+                        },
+                        "helm": {
+                          "description": "present when target=helm",
+                          "type": "object"
+                        },
+                        "identity": {
+                          "type": "object"
+                        },
+                        "ports": {
+                          "description": "every port, and what it carries",
+                          "type": "array"
+                        },
+                        "requires": {
+                          "description": "what this node needs from the cluster — and, as `none_of`, the dependencies people assume it needs and it does not",
+                          "type": "object"
+                        },
+                        "security": {
+                          "type": "object"
+                        },
+                        "storage": {
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "ports",
+                        "storage",
+                        "clustering",
+                        "security",
+                        "requires"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "How to deploy this node",
+        "tags": [
+          "read"
         ]
       }
     },

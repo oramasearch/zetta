@@ -2824,6 +2824,139 @@ ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- deployment_profile (#974) ------------------------------------------------------
+//
+// Charles's ask, on the 2026-08-05 call: "given a Helm chart dependency, this is how
+// you should configure this deployment instance… at that point I don't need anything
+// from you." The goal is not that we write a customer a chart — it is that a coding
+// agent pointed at a node over MCP can produce one without asking us anything.
+//
+// Computed from the LIVE node, never from a document. That is the whole value: a
+// deployment doc drifts from the binary, and the drift is only discovered in someone
+// else's cluster. Same rule as the `system.*` read views.
+//
+// It never emits a credential. It says how to seed one.
+// -----------------------------------------------------------------------------------
+
+const nlohmann::json& deployment_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"target",
+           {{"type", "string"},
+            {"enum", {"generic", "helm"}},
+            {"description",
+             "`helm` adds a values-shaped block a chart can consume directly, instead "
+             "of prose an agent has to interpret. Default `generic`"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& deployment_profile_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"ports", "storage", "clustering", "security", "requires"}},
+        {"properties",
+         {{"ports", {{"type", "array"}, {"description", "every port, and what it carries"}}},
+          {"storage", {{"type", "object"}}},
+          {"clustering", {{"type", "object"}}},
+          {"security", {{"type", "object"}}},
+          {"identity", {{"type", "object"}}},
+          {"requires",
+           {{"type", "object"},
+            {"description",
+             "what this node needs from the cluster — and, as `none_of`, the "
+             "dependencies people assume it needs and it does not"}}},
+          {"helm", {{"type", "object"}, {"description", "present when target=helm"}}}}}};
+    return schema;
+}
+
+ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& context) {
+    const std::string target = input.value("target", std::string("generic"));
+
+    nlohmann::json ports = nlohmann::json::array();
+    ports.push_back(
+        {{"port", context.cluster != nullptr ? 7777 : 7777},
+         {"name", "peer"},
+         {"carries", "cluster traffic between nodes"},
+         {"flag", "--listen"},
+         {"note",
+          "`--listen` moves THIS port, not the API. Setting it and then calling the "
+          "port you chose returns nothing, which reads exactly like a dead node — the "
+          "most common misconfiguration we see"}});
+    ports.push_back({{"port", 4800},
+                     {"name", "api"},
+                     {"carries", "REST /v1, MCP at /mcp, and the web UI"},
+                     {"flag", "--mcp-listen"},
+                     {"note", "what a client Service should target"}});
+
+    nlohmann::json profile;
+    profile["ports"] = std::move(ports);
+    profile["storage"] = {
+        {"data_dir", "--data-dir"},
+        {"durable", true},
+        {"note",
+         "the node's durable state. A StatefulSet wants one PersistentVolumeClaim per "
+         "member; it is not shareable between members"}};
+    profile["clustering"] = {
+        {"model", "equal peers — no leader, no election"},
+        {"join", "--peer HOST:PORT (repeatable) plus --join-token"},
+        {"members_now", context.cluster != nullptr
+                            ? static_cast<long long>(context.cluster->peer_count() + 1)
+                            : 1},
+        {"dial_out_only",
+         "--dial-out-only for a member with no routable address (NAT, private VNet). "
+         "It must never advertise a private pod IP: when two clusters share a pod CIDR "
+         "the dial reaches the wrong node and membership undercounts"}};
+    profile["security"] = {
+        {"peer_transport", "mTLS, always"},
+        {"plaintext_mode", false},
+        {"note",
+         "there is no plaintext mode to disable or justify to a reviewer; one shared "
+         "join token per cluster"},
+        {"external_egress_required", false},
+        {"egress_note",
+         "the web UI serves no external assets — no CDN, no external fonts — so an "
+         "air-gapped node works"}};
+    profile["identity"] = {
+        {"seed", "--admin-token, or ZETTA_ADMIN_TOKEN"},
+        {"why",
+         "a fresh node otherwise generates its owner token and prints it once, which an "
+         "automated deploy cannot capture. Seeding makes the deploy deterministic"},
+        {"never_emitted",
+         "this capability reports how to seed a credential and never a credential"}};
+    profile["requires"] = {
+        {"runtime", nlohmann::json::array({"one statically linked binary", "a data directory"})},
+        {"none_of",
+         nlohmann::json::array({"external Postgres", "Redis", "Python at runtime",
+                                "Node.js at runtime", "a package manager at runtime"})},
+        {"note",
+         "the `none_of` list is the point: enterprise build templates commonly carry all "
+         "of these, and zetta uses none of them"}};
+
+    if (target == "helm") {
+        // Values-shaped, so a chart consumes it rather than an agent interpreting prose.
+        profile["helm"] = {
+            {"values",
+             {{"image", {{"repository", "<your registry>/zetta"}, {"tag", "<version>"}}},
+              {"service",
+               {{"api", {{"port", 4800}}},
+                {"peer", {{"port", 7777}, {"clusterIP", "None"}}}}},
+              {"persistence", {{"enabled", true}, {"mountPath", "/var/lib/zetta"}}},
+              {"env",
+               {{"ZETTA_ADMIN_TOKEN", "<from a Secret — never inline>"},
+                {"ZETTA_CLUSTER_TOKEN", "<from a Secret>"},
+                {"ZETTA_SEED_PEER", "<headless-service>:7777"}}},
+              {"args", nlohmann::json::array({"--headless", "--data-dir",
+                                              "/var/lib/zetta"})}}},
+            {"shape", "StatefulSet + a headless Service on the peer port + a client Service on the API port"},
+            {"probes",
+             {{"readiness", "GET /v1/server_info on the API port"},
+              {"note", "the API answering is the readiness signal; the peer port is not"}}}};
+    }
+    return ApiResult::success(std::move(profile));
+}
+
 // --- add_dataset -------------------------------------------------------------------
 
 const nlohmann::json& add_dataset_schema() {
@@ -4434,6 +4567,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
          "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
          "data: {\"model\": \"<id>\", \"row\": {...}}"},
+        {"deployment_profile",
+         "ask this node how to deploy it — ports, storage, peering, security, and what "
+         "it does NOT need: {\"target\": \"helm\"} returns chart values"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
@@ -5379,6 +5515,22 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_score});
+    registry.add(Capability{
+        "deployment_profile",
+        "How to deploy this node",
+        "Ask a node how to deploy itself: every port and what it carries, what it needs "
+        "from the cluster and — as important — the dependencies people assume it needs "
+        "and it does not, the storage and peering model, and the security posture. "
+        "`target=helm` returns values a chart can consume directly. Computed from the "
+        "live node, so it cannot drift from what the binary does. Never emits a "
+        "credential; it says how to seed one. Read-only. (#974)",
+        deployment_profile_schema(),
+        deployment_profile_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_deployment_profile});
     registry.add(Capability{
         "explain",
         "Explain one row's score",
