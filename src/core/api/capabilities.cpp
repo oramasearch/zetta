@@ -4225,6 +4225,12 @@ const nlohmann::json& chat_output_schema() {
         {"properties",
          {{"reply", {{"type", "string"}}},
           {"rounds", {{"type", "integer"}}},
+          {"grounded_project",
+           {{"type", "string"},
+            {"description",
+             "the Project this reply was grounded in. Present whenever grounding "
+             "happened — including when the engine chose it, because the caller "
+             "named none and the most recent successful run's Project was used"}}},
           {"grounded",
            {{"type", "boolean"},
             {"description",
@@ -4475,8 +4481,46 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     std::string grounding;
     bool grounded = false;
     std::string grounding_warning;
+    std::string grounded_project;
+    // The caller may name a Project. When it does not, fall back to the one whose
+    // run finished most recently (#969): after `agent_run`, "which accounts are
+    // most at risk" and "why that one" are about the run that just happened, and
+    // making the user restate its name every turn is how a conversation stops
+    // being one.
+    //
+    // This is grounding, not memory. It carries ONE referent — the active
+    // Project — onto the retrieval path the model was actually trained on
+    // (#914), rather than threading a conversation history the corpus has almost
+    // no examples of.
+    //
+    // Whichever way it resolves, the reply reports `grounded_project`. A silent
+    // guess about which Project an answer came from is the provenance failure in
+    // #942 wearing a different hat.
+    std::string project_hint;
     if (input.contains("project")) {
-        const std::string project_name = input.at("project").get<std::string>();
+        project_hint = input.at("project").get<std::string>();
+    } else {
+        std::string newest_at;
+        for (const std::shared_ptr<zetta::pipeline::Run>& run : context.node.runs()) {
+            if (!run || run->project().empty()) continue;
+            if (run->status() != zetta::pipeline::RunStatus::Succeeded) continue;
+            if (newest_at.empty() || run->updated() > newest_at) {
+                newest_at = run->updated();
+                // find_project_by_id is private to Node; resolve by scanning the
+                // public name list, which is small and already how other handlers
+                // do it.
+                for (const std::string& name : context.node.project_names()) {
+                    const auto owner = context.node.find_project(name);
+                    if (owner && owner->id() == run->project()) {
+                        project_hint = owner->name();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!project_hint.empty()) {
+        const std::string project_name = project_hint;
         if (auto project = resolve_project(context, project_name)) {
             std::shared_ptr<zetta::ml::Model> newest;
             for (const auto& candidate : context.node.models()) {
@@ -4490,6 +4534,7 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
                 // is answered with real accounts rather than invented ones (#915).
                 grounding += at_risk_grounding_text(context.node, project->graphs());
                 grounded = true;
+                grounded_project = project->name();
             } else {
                 // Deliberately NOT a prompt instruction. Measured behavior: told plainly
                 // that a Project has no model and not to estimate, the base agent ignored
@@ -4559,6 +4604,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     // generated number as a fact (#914). `grounded` is true only when a Project was
     // named AND it has a trained model whose real measure + drivers were supplied.
     output["grounded"] = grounded;
+    // Always say WHICH Project the answer was grounded in. When the caller did not
+    // name one, this is the only way to see that the engine chose the most
+    // recently-run Project rather than the one you had in mind (#969).
+    if (!grounded_project.empty()) output["grounded_project"] = grounded_project;
     if (!grounding_warning.empty()) output["grounding_warning"] = grounding_warning;
     // The mode the agent DECLARED for this turn (#918), so a caller switches on an explicit
     // value instead of inferring intent from the payload's shape. `answer` renders as prose,
