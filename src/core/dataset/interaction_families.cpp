@@ -784,24 +784,51 @@ InteractionFamily tool_use_family(const std::vector<ProjectContext>& contexts,
 
     // Imperatives only. A question about the platform belongs to capability_discovery, and
     // mixing the two is what produced the failure above.
-    static const std::array<const char*, 3> shapes = {
-        "list the models on this node", "show me the models", "what models are here"};
+    //
+    // v11 measured this: with only `list_models` taught, "list models" called the tool and
+    // the other three imperatives did not. The family teaches per-tool, so every tool an
+    // agent is given needs its own imperatives here — a tool absent from this table is a
+    // tool the model will describe rather than call.
+    struct ToolAsks {
+        const char* tool;
+        std::array<const char*, 3> shapes;
+        const char* answer;  // answers FROM the result, never about where to get it
+    };
+    static const std::array<ToolAsks, 4> tools = {{
+        {"list_models",
+         {"list the models on this node", "show me the models", "what models are here"},
+         "The models on this node, from `list_models`: "},
+        {"score",
+         {"which accounts are most at risk", "rank the accounts by risk",
+          "show me the at-risk list"},
+         "The highest-risk accounts, from `score` over "},
+        {"explain",
+         {"why is the top one at risk", "explain the top account",
+          "what is driving the top one"},
+         "From `explain` on the top account of "},
+        {"get_run_report",
+         {"what did that run find", "show me the report for that run",
+          "how did the model do"},
+         "From `get_run_report` for "},
+    }};
 
     for (const ProjectContext& context : contexts) {
         // Grounding is the RETRIEVED RESULT the harness would already hold — the same
         // thing a real tool call returns. A tool-use case with no context would teach the
         // model to answer from memory, which is the failure next door.
         const std::string grounding = render_grounding(context, GroundingView::Results);
+        for (const ToolAsks& entry_tool : tools)
         for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
-            const zetta::agent::ToolCall call{"list_models", nlohmann::json::object()};
+            const zetta::agent::ToolCall call{entry_tool.tool, nlohmann::json::object()};
             EndState required = facts({{"grounded", true}, {"numbers_from_context", true}});
 
             AdmissionCase entry = make_case(
-                "tool_use/list_models/" + context.project + "/" + std::to_string(phrasing),
-                shapes[static_cast<std::size_t>(phrasing)], grounding,
+                std::string("tool_use/") + entry_tool.tool + "/" + context.project + "/" +
+                    std::to_string(phrasing),
+                entry_tool.shapes[static_cast<std::size_t>(phrasing)], grounding,
                 InteractionKind::Answer,
-                "The models on this node, from `list_models`: " + context.model_kind +
-                    " for " + context.project + ".",
+                std::string(entry_tool.answer) + context.project + ", on `" +
+                    context.table + "` (" + context.model_kind + ").",
                 required, {}, {call});
 
             // The load-bearing half. Showing only the right answer teaches a shape; the
