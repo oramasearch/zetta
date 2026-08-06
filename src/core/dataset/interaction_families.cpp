@@ -864,8 +864,13 @@ InteractionFamily greeting_family(const std::vector<ProjectContext>& contexts) {
         "Answer a greeting or an orientation question briefly, and build nothing",
         {}};
 
-    static const std::array<const char*, 6> greetings = {
-        "hello", "hi", "hey there", "good morning", "morning", "hi, are you there?"};
+    // Openings AND closings. Probing v12 found `thanks` answered with
+    // "I read `list_models` for churn-uc1 - here's what its records show" — an
+    // acknowledgement is not a request, and nothing owned it either. Same root cause,
+    // fourth instance.
+    static const std::array<const char*, 10> greetings = {
+        "hello", "hi", "hey there", "good morning", "morning", "hi, are you there?",
+        "thanks", "thank you", "got it, thanks", "perfect, thanks"};
 
     for (std::size_t index = 0; index < contexts.size(); ++index) {
         const ProjectContext& context = contexts[index];
@@ -874,7 +879,26 @@ InteractionFamily greeting_family(const std::vector<ProjectContext>& contexts) {
             // Short, and oriented: it says where you are, which is the useful thing a
             // greeting can be answered with. It does NOT propose work — offering to
             // build something in response to "hello" is the failure being fixed.
+            // An acknowledgement gets acknowledged, not answered with a result. Doing
+            // work in response to "thanks" is the failure this half fixes.
             std::string message;
+            if (ask >= 6) {
+                switch ((index + ask) % 3) {
+                    case 0:  message = "Any time. Ask whenever you need something from " +
+                                       context.project + "."; break;
+                    case 1:  message = "You're welcome."; break;
+                    default: message = "Happy to help - " + context.project +
+                                       " is here when you need it."; break;
+                }
+                EndState ack_required = facts({{"built_nothing", true}});
+                AdmissionCase ack = make_case(
+                    "greeting/ack/" + std::to_string(index) + "/" + std::to_string(ask),
+                    greetings[ask], grounding, InteractionKind::Answer, message,
+                    ack_required);
+                ack.negative_controls = {facts({{"built_nothing", false}})};
+                family.cases.push_back(std::move(ack));
+                continue;
+            }
             switch ((index + ask) % 3) {
                 case 0:
                     message = "Hello. You're in " + context.project +
