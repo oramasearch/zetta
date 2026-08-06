@@ -134,6 +134,78 @@ ApiResult handle_server_info(const nlohmann::json&, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- versions ----------------------------------------------------------------
+
+// "Which version am I actually talking to" — asked of the SOFTWARE and of the
+// MODEL, and the two answers come from different places. Four checkpoints were
+// served side by side for comparison once and the Ask Orama rail answered from
+// the oldest; the replies read as a model regression for an hour before anyone
+// suspected the wrong agent was answering. `server_info` reports the binary and
+// nothing about the agents, so it could not have settled that. This can.
+//
+// `assist_agent` is the one the rail picks, and it is deliberately reported the
+// same way the rail picks it (first served) rather than described, so this
+// cannot drift away from the truth it exists to report — see #981 for making
+// that choice explicit rather than positional.
+
+const nlohmann::json& versions_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& versions_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"software", "agents"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"software",
+           {{"type", "object"},
+            {"required", {"zetta", "node_id"}},
+            {"properties",
+             {{"zetta", {{"type", "string"}}}, {"node_id", {{"type", "string"}}}}}}},
+          {"agents",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "name", "model", "checkpoint"}},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"model", {{"type", "string"}}},
+                {"checkpoint", {{"type", "string"}}}}}}}}},
+          {"assist_agent", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_versions(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json output;
+    output["software"] = {{"zetta", zetta::kVersion}, {"node_id", context.node.node_id()}};
+
+    nlohmann::json agents = nlohmann::json::array();
+    std::string assist;
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        for (const zetta::agent::AgentRecord& agent : store.list()) {
+            // The checkpoint is the last path element of `model` — that is what
+            // distinguishes v12 from v13 when both are named "Base agent".
+            std::string checkpoint = agent.model;
+            if (const std::size_t slash = checkpoint.find_last_of('/');
+                slash != std::string::npos && slash + 1 < checkpoint.size()) {
+                checkpoint = checkpoint.substr(slash + 1);
+            }
+            agents.push_back({{"id", agent.id},
+                              {"name", agent.name},
+                              {"model", agent.model},
+                              {"checkpoint", std::move(checkpoint)}});
+            if (assist.empty()) assist = agent.id;
+        }
+    }
+    output["agents"] = std::move(agents);
+    if (!assist.empty()) output["assist_agent"] = assist;
+    return ApiResult::success(std::move(output));
+}
+
 // --- sql ---------------------------------------------------------------------
 
 const nlohmann::json& sql_schema() {
@@ -4645,6 +4717,11 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
+        // "which version are you" is asked of the model as often as of the binary,
+        // and the agent is the only surface a person asks it on.
+        {"versions",
+         "report the software version and WHICH agent version is answering, "
+         "including its checkpoint"},
     };
     // OPT-IN per agent: an agent only gets live tools it explicitly declares in its
     // record. This matters — naming tools in the prompt changes what the model
@@ -5124,6 +5201,18 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
+    registry.add(Capability{
+        "versions",
+        "Show version",
+        "Read the software version and the version of every agent this node "
+        "serves, including which one answers in Studio. No side effects.",
+        versions_schema(),
+        versions_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_versions});
     registry.add(Capability{
         "server_info",
         "Server info",

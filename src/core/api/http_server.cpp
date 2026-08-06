@@ -2604,6 +2604,7 @@ struct ApiServer::Impl {
             std::string content;
             std::string meta;
             std::string assist_agent;
+            std::string assist_agent_label;
             long long project_count = 0;
             co_await bridge.run_on_owner([&] {
                 project_count = static_cast<long long>(node.project_names().size());
@@ -2613,7 +2614,22 @@ struct ApiServer::Impl {
                 if (node.replication() != nullptr) {
                     const auto agents =
                         zetta::agent::AgentStore(*node.replication()).list();
-                    if (!agents.empty()) assist_agent = agents.front().id;
+                    if (!agents.empty()) {
+                        assist_agent = agents.front().id;
+                        // Name the agent the rail will use, and its checkpoint. A node can
+                        // serve several and this picks one silently (#981) — unnamed, a
+                        // reply from an older agent reads as a model regression rather
+                        // than as the wrong agent answering.
+                        assist_agent_label = agents.front().name;
+                        const std::string& served = agents.front().model;
+                        if (const std::size_t slash = served.find_last_of('/');
+                            slash != std::string::npos && slash + 1 < served.size()) {
+                            const std::string checkpoint = served.substr(slash + 1);
+                            if (checkpoint != assist_agent_label) {
+                                assist_agent_label += " (" + checkpoint + ")";
+                            }
+                        }
+                    }
                 }
                 ApiContext context{node, cluster, user_id,
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
@@ -2633,7 +2649,7 @@ struct ApiServer::Impl {
                 content = render_dashboard_content(context, view, route);
             });
             body = web_ui_shell(view, user_name.empty() ? user_id : user_name, meta, content,
-                                project_count, assist_agent);
+                                project_count, assist_agent, assist_agent_label);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
