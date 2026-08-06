@@ -1,6 +1,6 @@
 ---
 name: zetta-walkthrough
-description: Run the full product walkthrough of Orama Studio and manage both avenues onto it — Claude Code driving the node over MCP, and the Playwright suite driving the browser — merging both into one dated walkthrough report of what worked, what was awkward, and what lied. Use when asked to "walk through zetta", "run the zetta walkthrough", "test all the features from Claude", "walk the demo script", "does this actually work end to end", or before claiming a release, a demo, or an epic is done. Complements mcp-journeys: that one authors and runs journey tables (layers 1-2); this one runs the walkthrough whose findings become those tables.
+description: Run the full product walkthrough of Orama Studio and manage both avenues onto it — Claude Code driving the node over MCP, and the Playwright suite driving the browser — merging both into one dated walkthrough report of what worked, what was awkward, and what lied. Use when asked to "walk through zetta", "run the zetta walkthrough", "test all the features from Claude", "walk the demo script", "does this actually work end to end", or before claiming a release, a demo, or an epic is done. Complements mcp-journeys — that one authors and runs journey tables (layers 1-2); this one runs the walkthrough whose findings become those tables.
 ---
 
 # zetta-walkthrough
