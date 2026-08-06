@@ -419,6 +419,58 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // reproduced that sentence word for word for an ask the family did not own.
 //
 // So measure each family on its own. The family is the id's first segment.
+// Every ask FORM the product accepts must be owned by a family. This is the check that
+// would have caught all four agent-quality failures found by walking the product, none of
+// which any diversity metric could see:
+//
+//   `list models`  (imperative)      -> landed on capability_discovery, was DESCRIBED
+//   `hello`        (greeting)        -> landed on a pipeline build, emitted raw JSON
+//   `thanks`       (acknowledgement) -> landed on tool_use, answered with a tool result
+//
+// An unowned form does not fail loudly. It produces a fluent, well-formed answer to a
+// different question — which is the worst failure mode a corpus has, because every
+// aggregate metric stays green through it.
+TEST_F(CorpusInvariants, EveryAskFormIsOwnedByAFamily) {
+    // A representative ask per form the product actually accepts. If a form has no case
+    // whose ask matches it, no family owns it and the nearest one will claim it.
+    struct Form {
+        const char* name;
+        std::vector<std::string> probes;
+    };
+    const std::vector<Form> forms = {
+        {"greeting", {"hello", "hi"}},
+        {"acknowledgement", {"thanks", "thank you"}},
+        {"imperative", {"list the models on this node", "show me the models"}},
+        {"platform question", {"Can Orama", "How do I"}},
+        {"ambiguous", {"Make it better.", "Fix this."}},
+        {"out of scope", {"What's the capital of France?"}},
+    };
+
+    std::vector<std::string> asks;
+    for (const AdmissionCase& admission_case : cases()) {
+        asks.push_back(admission_case.task.description());
+    }
+
+    std::vector<std::string> unowned;
+    for (const Form& form : forms) {
+        bool owned = false;
+        for (const std::string& probe : form.probes) {
+            for (const std::string& ask : asks) {
+                if (ask.find(probe) != std::string::npos) { owned = true; break; }
+            }
+            if (owned) break;
+        }
+        if (!owned) unowned.push_back(form.name);
+    }
+
+    std::string report;
+    for (const std::string& form : unowned) report += form + " ";
+    EXPECT_TRUE(unowned.empty())
+        << "no family owns these ask forms: " << report
+        << "\n(an unowned form is claimed by the nearest family, which answers a "
+           "different question fluently — every aggregate metric stays green)";
+}
+
 TEST_F(CorpusInvariants, NoSingleFamilyIsOneTemplate) {
     std::map<std::string, std::set<std::string>> distinct_by_family;
     std::map<std::string, int> total_by_family;
