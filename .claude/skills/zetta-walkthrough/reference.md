@@ -63,6 +63,33 @@ the gap.
 | "Why is this one at risk?" | `explain` | Reports · evidence columns |
 | Score a row not in the data | `score` with `rows` | — |
 | Ask what the data cannot support | `chat` declines | Chat view |
+| **A follow-up that depends on the turn before it** | `chat` with `history` | **Ask Orama rail · three turns** |
+
+#### The follow-up row is not optional, and it is the one this suite kept missing
+
+Every other row is **one ask, one reply**, and a conversation that repeats itself
+passes all of them. It did: the rail answered three different asks —
+`"yes"`, `"what?"`, `"no… start a new project"` — with the *identical* sentence, and
+the whole matrix was green (#942).
+
+So walk it as **at least three turns**, where turn 2 and turn 3 are meaningless on
+their own:
+
+```
+1. "create me a churn project"
+2. "yes"                          <- resolves only against turn 1
+3. "what?"                        <- must NOT repeat turn 2's reply
+```
+
+Two assertions, both cheap:
+
+- **No two consecutive replies are byte-identical.** Identical output to different
+  input is the signature of a model classifying each message standalone.
+- **The request carries `history`.** Watch the network call, not the screen. The
+  `chat` capability accepts `history`; a client that omits it makes even a
+  multi-turn-capable model answer blind, and the screen looks the same either way.
+
+A single-turn suite cannot see either. That is why this row exists.
 
 The report step has one assertion that matters more than the others: the held-out
 figure is present, **or** `missing` names `held_out_auc` with a reason. A report that

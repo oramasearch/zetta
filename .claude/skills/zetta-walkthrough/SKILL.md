@@ -98,6 +98,7 @@ The findings are the deliverable. Four kinds, all product bugs, not test failure
 | **Awkward sequence** | three calls and a uuid you had to save, to do one obvious thing |
 | **Missing read-back** | a mutation succeeded and nothing confirms what changed |
 | **Unactionable error** | a reason that does not say what to do, or names an internal cause |
+| **A reply that ignores the turn before it** | "yes" and "what?" get the same sentence — walk every conversational surface for **three** turns, never one |
 
 And the fifth, which outranks them all: **anything on screen that is false.** A
 badge claiming provenance it does not have, a metric labeled "quality" that was

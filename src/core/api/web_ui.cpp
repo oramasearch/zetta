@@ -922,7 +922,8 @@ std::string web_ui_login(std::string_view error) {
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content, long long project_count,
-                         std::string_view assist_agent) {
+                         std::string_view assist_agent,
+                         std::string_view assist_agent_label) {
     // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
     // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
     // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
@@ -1068,8 +1069,13 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         out += "<div class=\"railempty\">No served agent on this node yet. Create one in "
                "<a href=\"/?view=agents\">Agents</a> and Ask Orama comes to life here.</div>";
     } else {
-        out += "<div class=\"railnote\">Replies come from this node's served agent \xC2\xB7 "
-               "every call is audited and traced.</div>";
+        // Name the agent. "this node's served agent" is singular and a node can
+        // serve several — a reply that reads as a regression is usually a
+        // different agent answering than the reader assumed (#981).
+        out += "<div class=\"railnote\">Replies come from <b>";
+        out += assist_agent_label.empty() ? "this node's served agent"
+                                          : web_ui_escape(assist_agent_label);
+        out += "</b> \xC2\xB7 every call is audited and traced.</div>";
         out += "<div class=\"railbubble\">I can explain the current Studio state, or draft "
                "the intent for a new Project \xE2\x80\x94 ask below.</div>";
         out += "<div class=\"railchat\" id=\"railchat\"></div>";
@@ -1084,13 +1090,24 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 function esc(s){return String(s==null?'':s);}
 function bubble(cls,text){var d=document.createElement('div');d.className='rmsg '+cls;d.textContent=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d;}
 var busy=false;
+// The thread so far. `chat` accepts `history` and threads it into the prompt, but
+// the rail used to send only the current message — so "yes", "go ahead" and
+// "what?" arrived with no antecedent, were classified standalone, and produced
+// the SAME reply turn after turn (#942). The transcript lives here because it is
+// the browser's; /clear drops it, and nothing is written server-side.
+var history=[];
+var HISTORY_TURNS=8;  // enough for a follow-up chain; bounded so the prompt cannot grow without limit
 async function ask(){var m=q.value.trim();if(!m||busy)return;busy=true;q.value='';bubble('rme',m);
   var t=bubble('ragent rthinking','thinking…');
-  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m})});
+  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m,history:history.slice(-HISTORY_TURNS)})});
     var j=await res.json();
     var v=j&&j.value?j.value:{};
     t.classList.remove('rthinking');
-    t.textContent=esc(j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed')));
+    var reply=j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed'));
+    t.textContent=esc(reply);
+    // Only a real exchange joins the thread. Recording an error as if the agent
+    // had said it would make the next turn refer back to our own failure text.
+    if(j&&j.ok)history.push({ask:m,reply:String(v.reply||'')});
   }catch(e){t.classList.remove('rthinking');t.textContent='error: '+e;}
   busy=false;chat.scrollTop=chat.scrollHeight;}
 send.onclick=ask;
