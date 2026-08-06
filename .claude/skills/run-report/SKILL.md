@@ -1,6 +1,6 @@
 ---
 name: run-report
-description: Generate or regenerate the report a pipeline run produces — model quality, what drives the outcome, and the ranked at-risk list — from the run's facts artifact. Use when asked to "write the run report", "generate the churn report", "regenerate the report", "what did this run find", or when a run has finished and someone needs the artifact rather than the logs. Enforces the rule that makes the report trustworthy: the engine computes every number and the narrator only arranges them, verified mechanically.
+description: Generate or regenerate the report a pipeline run produces — model quality, what drives the outcome, and the ranked at-risk list — from the run's facts artifact. Use when asked to "write the run report", "generate the churn report", "regenerate the report", "what did this run find", or when a run has finished and someone needs the artifact rather than the logs. Enforces the rule that makes the report trustworthy — the engine computes every number and the narrator only arranges them, verified mechanically.
 ---
 
 # Run report
