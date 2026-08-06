@@ -4703,6 +4703,22 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
                                 project->name() + "' (name clash or empty)");
     }
 
+    // `run` refuses a plan nobody approved (#969), and a freshly stored graph is
+    // `proposed`. Calling agent_run IS the approval: the caller asked, in one
+    // act, to build this and run it. So record that approval against the caller
+    // rather than bypass the gate — the audit trail then says who said yes,
+    // which is the whole point of the state existing.
+    //
+    // The conversational path is different and deliberately so: an agent that
+    // PROPOSES a run stops here, and a human approves separately. That is the
+    // `propose` half of #969 and it does not come through this handler.
+    if (!project->approve_graph(stored->name(), actor_of(context),
+                                zetta::util::now_iso8601())) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not record approval for the plan agent_run just built");
+    }
+
     // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
     nlohmann::json run_input;
     run_input["project"] = project->name();
