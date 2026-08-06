@@ -451,6 +451,12 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"caveats",
+           {{"type", "array"},
+            {"description",
+             "figures that are PRESENT but must not be read as results — a holdout "
+             "too small to mean anything, a perfect score. `missing` says what the "
+             "run cannot tell you; this says what it can and you should not believe"}}},
           {"missing",
            {{"type", "array"},
             {"description",
@@ -475,6 +481,11 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
         }
     }
     return nullptr;
+}
+
+// A row count as a plain integer string — "4", not "4.000000".
+std::string fixed_rows(double value) {
+    return std::to_string(static_cast<long long>(value));
 }
 
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
@@ -600,6 +611,40 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                            {"why", "this run materialized no at-risk table"}});
     }
 
+    // Figures that are PRESENT but must not be read as results (#948 step 8's rule,
+    // applied to the report itself). `missing` says what the run cannot tell you;
+    // this says what it can tell you and you should not believe.
+    //
+    // The case that forced it: the built-in demo dataset produces a held-out AUC of
+    // 1.000 on FOUR rows. Nothing was wrong — the pipeline worked and the data is
+    // trivially separable — but a perfect score presented without objection is a
+    // number that invites a false conclusion, which is worse than a missing one.
+    nlohmann::json caveats = nlohmann::json::array();
+    if (const std::optional<double> rows = number("held_out_rows")) {
+        // Below this, a ranking metric is noise: one row changing side moves AUC by
+        // a visible amount, so the figure says more about the split than the model.
+        constexpr double kMeaningfulHoldout = 30.0;
+        if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
+            caveats.push_back(
+                {{"field", "held_out_auc"},
+                 {"why", "measured on only " + fixed_rows(*rows) +
+                             " held-out rows. Below about 30 a ranking metric is "
+                             "noise — one row changing side moves it visibly — so "
+                             "this figure describes the split more than the model. "
+                             "Do not quote it as a result"}});
+        }
+    }
+    if (const std::optional<double> auc = number("held_out_auc")) {
+        if (*auc >= 0.999) {
+            caveats.push_back(
+                {{"field", "held_out_auc"},
+                 {"why", "a perfect score. On real data this is almost always a "
+                         "trivially separable demo set or a leaked feature, not a "
+                         "model that solved the problem. Check what the top driver "
+                         "is before showing this to anyone"}});
+        }
+    }
+    if (!caveats.empty()) report["caveats"] = std::move(caveats);
     if (!missing.empty()) report["missing"] = std::move(missing);
     return ApiResult::success(std::move(report));
 }

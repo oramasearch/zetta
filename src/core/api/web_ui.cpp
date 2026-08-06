@@ -1403,6 +1403,17 @@ std::string web_ui_run_report(const nlohmann::json& report) {
     // Rendered, never skipped. A missing held-out figure that goes unshown is a
     // reader quoting the in-sample number as quality.
     std::string caveats;
+    // Figures that are present and must not be read as results come FIRST — a
+    // held-out AUC of 1.000 on four rows is the number a reader will quote, so the
+    // objection has to reach them before the praise does.
+    if (const auto flagged = report.find("caveats");
+        flagged != report.end() && flagged->is_array()) {
+        for (const nlohmann::json& entry : *flagged) {
+            caveats += "<li><b>Do not quote " +
+                       web_ui_escape(entry.value("field", "")) + "</b> &mdash; " +
+                       web_ui_escape(entry.value("why", "")) + "</li>";
+        }
+    }
     if (const auto missing = report.find("missing");
         missing != report.end() && missing->is_array()) {
         for (const nlohmann::json& entry : *missing) {
