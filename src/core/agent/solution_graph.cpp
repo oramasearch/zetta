@@ -27,7 +27,22 @@ ir::ExecutionGraph build_solution_graph(const EndState& facts) {
         const auto fact = facts.facts().find(name);
         if (fact != facts.facts().end() && fact->second.is_boolean() &&
             fact->second.get<bool>()) {
-            const auto node = graph.add_node(kind, name);
+            // The METHODOLOGY belongs on the step that implements it, not in a bag on the
+            // serve node. Until this landed, `model_kind` was swept into the attribute sweep
+            // below, so a forecasting graph and a churn graph were structurally IDENTICAL —
+            // connect → clean → model → index → serve, differing only by a string nothing
+            // read. The corpus was training a distinction the IR could not represent, which
+            // is why a neighbouring-solution negative control had nothing to bite on.
+            nlohmann::json step_attributes = nlohmann::json::object();
+            if (kind == ir::StepKind::Model) {
+                if (const auto model_kind = facts.facts().find("model_kind");
+                    model_kind != facts.facts().end() && model_kind->second.is_string()) {
+                    step_attributes["model_kind"] = model_kind->second;
+                }
+            }
+            const auto node = step_attributes.empty()
+                                  ? graph.add_node(kind, name)
+                                  : graph.add_node(kind, name, std::move(step_attributes));
             graph.add_edge(last->id, node->id);
             last = node;
         }
@@ -37,6 +52,9 @@ ir::ExecutionGraph build_solution_graph(const EndState& facts) {
             kind && *kind != ir::StepKind::Connect && value.is_boolean() && value.get<bool>()) {
             continue;  // already a step node above
         }
+        // `model_kind` now rides the model step itself (above). Leaving it here too would
+        // give the graph two sources of truth for the methodology, free to disagree.
+        if (key == "model_kind" && facts.matches("model", true)) continue;
         attributes[key] = value;  // an attribute fact (incl. a false step fact, e.g. "act":false)
     }
     if (!attributes.empty()) {
