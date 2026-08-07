@@ -32,6 +32,43 @@ EndState supervised_core(const std::string& model_kind) {
                   {"model_kind", model_kind},
                   {"temporal_validation", true},
                   {"calibrated", true},
+                  // Without a holdout the only metric is in-sample, measured on the rows the
+                  // model was fit on. An in-sample AUC of 0.868 reached a client report as the
+                  // headline once; the held-out figure for the same run was 0.726. A supervised
+                  // solution that cannot quote an honest number is not production-grade.
+                  {"holdout", true},
+                  {"explain", "shap"}});
+}
+
+// A FORECAST is not churn with different nouns. Backtested over rolling origins, validated over
+// time, and explicitly NOT calibrated — there is no probability to calibrate, and fitting a
+// calibrator on rows held out by content re-introduces the leak temporal validation prevents
+// (TemporalValidationCheck refuses it at the gate).
+EndState forecast_core() {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"serve", true},
+                  {"model_kind", "forecast"},
+                  {"leakage_free", true},
+                  {"point_in_time", true},
+                  {"temporal_validation", true},
+                  {"backtest", true},
+                  {"holdout", true},
+                  {"explain", "shap"}});
+}
+
+// An UNSUPERVISED solution has no label to leak, so `leakage_free` and `calibrated` do not apply.
+// What it still owes: a threshold someone can govern, and an explanation per flagged row — an
+// anomaly nobody can explain is an alert nobody acts on.
+EndState unsupervised_core(const std::string& model_kind) {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"serve", true},
+                  {"model_kind", model_kind},
+                  {"point_in_time", true},
+                  {"threshold_governed", true},
                   {"explain", "shap"}});
 }
 
@@ -98,13 +135,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     // --- Anomaly / driver analysis, next-best-action (Family III / IV) ---
     templates.push_back(
         {"S-7", "Tell us when a KPI moves abnormally and what's driving it.",
-         facts({{"connect", true},
-                {"clean", true},
-                {"model", true},
-                {"serve", true},
-                {"model_kind", "anomaly"},
-                {"explain", "shap"},
-                {"drivers", true}})});
+         with_fact(unsupervised_core("anomaly"), "drivers", true)});
     templates.push_back(
         {"S-11",
          "Recommend the next best action per customer, and only act where it changes the "
