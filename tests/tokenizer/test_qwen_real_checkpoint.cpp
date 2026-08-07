@@ -1441,6 +1441,108 @@ TEST(QwenRlvrEndToEnd, ExecutionOutranksAssertionInTheReward) {
     std::cout << "[rlvr] sandbox-failing mean_reward=" << mean_reward << "\n";
 }
 
+
+// D2 (#859) — a real campaign: enough tokens to emit a parseable action, several steps, and the
+// mean reward recorded per step so a rise is visible rather than assumed.
+//
+// The wiring test above deliberately proves nothing about learning: at 8 tokens every reward is
+// 0, and a group with equal rewards has zero advantage. This one gives the policy room to
+// actually produce `{"kind":...,"message":...}` and watches what the grader pays it.
+//
+// Env-gated because it is minutes, not seconds. ZETTA_RLVR_STEPS / ZETTA_RLVR_TOKENS /
+// ZETTA_RLVR_GROUP tune it; ZETTA_RLVR_OUT writes the per-step rewards for a report.
+TEST(QwenRlvrEndToEnd, ACampaignProducesANonZeroLearningSignal) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_RLVR_CAMPAIGN") == nullptr) {
+        GTEST_SKIP() << "set ZETTA_RLVR_CAMPAIGN=1 (minutes, not seconds)";
+    }
+
+    const auto knob = [](const char* name, int fallback) {
+        const char* value = std::getenv(name);
+        return value ? std::atoi(value) : fallback;
+    };
+    const int steps = knob("ZETTA_RLVR_STEPS", 8);
+    const int tokens = knob("ZETTA_RLVR_TOKENS", 128);
+    const int group = knob("ZETTA_RLVR_GROUP", 4);
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Answer in the action shape the harness can execute.", 3.0, {"kind"}},
+        {"Never state a number the retrieved context does not contain.", 5.0,
+         {"numbers_from_context"}}};
+    const std::string grounding = "Project: Churn\nTable: accounts\nMeasure: AUC 0.880\n";
+
+    int parsed_total = 0, scored_total = 0;
+    const auto reward = [&](const std::string&, const std::string& completion) -> double {
+        ++scored_total;
+        if (zetta::agent::parse_studio_action(completion)) ++parsed_total;
+        return zetta::agent::goal_reward_for_generation(goals, completion, grounding);
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = group;
+    config.max_new_tokens = tokens;
+    config.temperature = 1.0F;
+    std::mt19937 rng(17);
+
+    std::vector<double> per_step;
+    for (int step = 0; step < steps; ++step) {
+        const double mean = zetta::agent::grpo_step_text(
+            *model, optimizer, *tokenizer, "What is the model's measure?", reward, config, rng);
+        per_step.push_back(mean);
+        std::cout << "[rlvr] step " << step << " mean_reward=" << mean
+                  << " parsed=" << parsed_total << "/" << scored_total << std::endl;
+    }
+
+    if (const char* out = std::getenv("ZETTA_RLVR_OUT")) {
+        std::ofstream file(out);
+        nlohmann::json report{{"steps", steps}, {"tokens", tokens}, {"group", group},
+                              {"per_step_mean_reward", per_step},
+                              {"parsed", parsed_total}, {"scored", scored_total}};
+        file << report.dump(2);
+    }
+
+    // The claim: with room to emit an action, the grader pays SOMETHING. A campaign that is
+    // uniformly zero has no advantage signal and cannot learn, whatever the loss curve says —
+    // that is the failure this test exists to make visible rather than infer.
+    EXPECT_GT(parsed_total, 0)
+        << "no completion parsed as an action across " << scored_total
+        << " rollouts at " << tokens << " tokens — the policy cannot reach the reward at all";
+    const double best = *std::max_element(per_step.begin(), per_step.end());
+    EXPECT_GT(best, 0.0)
+        << "every step scored zero; with equal rewards GRPO has zero advantage and takes a null "
+           "step, so this campaign cannot learn regardless of how long it runs";
+
+    // COLLAPSE CHECK. The first campaign run scored 0.75, 0.75, 0.5, 0, 0, 0 with the parse rate
+    // falling 3/4 -> 2/4 -> 0/4: the updates destroyed the policy's ability to emit a parseable
+    // action at all. `best > 0` passed anyway, because it only looks at the maximum.
+    //
+    // That is the same too-weak-criterion mistake as the three-turn walk, and it is worth naming:
+    // a check written around the failure you already saw ("is the signal zero?") stays blind to
+    // the failure you have not ("does the signal fall off a cliff?").
+    if (per_step.size() >= 4) {
+        const std::size_t half = per_step.size() / 2;
+        const double early =
+            std::accumulate(per_step.begin(), per_step.begin() + half, 0.0) /
+            static_cast<double>(half);
+        const double late =
+            std::accumulate(per_step.begin() + half, per_step.end(), 0.0) /
+            static_cast<double>(per_step.size() - half);
+        EXPECT_GE(late, early * 0.5)
+            << "mean reward collapsed from " << early << " to " << late
+            << " — the updates are degrading the policy, not improving it. Suspect the learning "
+               "rate, a group size too small for a stable advantage estimate, or the missing KL "
+               "penalty that normally keeps a policy near its reference.";
+    }
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
