@@ -85,6 +85,54 @@ with what was missing; never delete the row.
 | **The agent's stated capabilities are TRUE** — ask "can you run Python in a Pipeline step?" and the answer matches the engine (simulated Python), not the marketing line | `chat` vs `product-claims.md` | Chat |
 | **The agent names which version is answering** | `versions` | Ask Orama rail header |
 
+### Every methodology, walked — the full-system matrix
+
+**A methodology absent from this table is a methodology nobody is checking.** The catalogue
+(`03-methodology-portfolio.md` §4) specifies **M-1…M-21**; the engine ships **M-1** and part of
+**M-10** ([#984](https://github.com/oramasearch/zetta/issues/984)). Walk **all twenty-one** every
+run. The unreachable ones are the standing gap list, and it should shrink visibly as #984 lands.
+
+For each: ask in plain language, then assert **the shape it must produce** and **the shape it must
+not be confused with**. The second column is the whole point — a methodology that produces a
+plausible pipeline belonging to its neighbour is the defect that once made one shape serve churn,
+lead scoring and collections alike.
+
+| | Methodology | Must produce | Must NOT be |
+|---|---|---|---|
+| **M-1** | Tabular supervised | point-in-time · leakage-free · calibrated · SHAP | uncalibrated; leaky joins |
+| **M-2** | Entity resolution | blocking + pairwise scoring + a resolved id, **no target label** | a classifier over accounts |
+| **M-3** | Segmentation / clustering | unsupervised · **no label column at all** · cluster profiles | a supervised classifier with invented labels |
+| **M-4** | Time-series forecasting | temporal validation · backtested over rolling origins · **NOT calibrated** | the churn skeleton with nouns swapped |
+| **M-5** | Survival / time-to-event | censoring handled · hazard/time-to-event output | binary churn classification |
+| **M-6** | Causal inference / uplift | treatment vs control · uplift per unit · **not** raw propensity | a propensity score presented as causal effect |
+| **M-7** | Anomaly detection | unsupervised · threshold-governed · no label | a supervised fraud classifier |
+| **M-8** | Recommendation / NBA | candidate generation + ranking + a **policy over outcomes** | a single score with no action path |
+| **M-9** | Learning-to-rank | pairwise/listwise objective · ranking metric (NDCG/MRR) | pointwise regression scored as ranking |
+| **M-10** | NLP / embeddings / RAG | index + retrieve + ground · **no supervised label** | a supervised classifier over text |
+| **M-11** | Document intelligence | extract → structure → validate against a schema | free-text summarization presented as extraction |
+| **M-12** | Graph ML | graph construction + neighbourhood features | a flat tabular join |
+| **M-13** | Computer vision | image pipeline + vision-appropriate validation | tabular features over image metadata |
+| **M-14** | Speech / audio | transcription + audio features | text-only NLP over a transcript, silently |
+| **M-15** | Bandits / sequential decisioning | exploration policy · regret tracking · online update | a static ranked list |
+| **M-16** | Optimization / OR | objective + constraints + a feasible solution | a prediction with no optimizer |
+| **M-17** | Bayesian / UQ | posterior or interval · **uncertainty reported** | a point estimate with no interval |
+| **M-18** | Ensembling / stacking | multiple base models + a combiner | one model called an ensemble |
+| **M-19** | Label efficiency | active/weak supervision · label budget respected | assuming full labels exist |
+| **M-20** | Privacy / synthetic | synthetic generation or a privacy mechanism, with its guarantee stated | raw data with a privacy claim attached |
+| **M-21** | Online / streaming | incremental update · drift response | a batch retrain called streaming |
+
+**How to walk a row.** Ask for it in plain language over `agent_run` (avenue A) and in Chat
+(avenue B). Assert `model_kind` and the step kinds; assert the "must NOT be" shape is **absent**.
+Then perturb the dataset (remove the label, remove the timestamp, remove the treatment flag) and
+assert the proposal **changes** — a shape that survives the perturbation was emitted from the
+noun, not from the data.
+
+**Recording an unreachable row.** State the methodology, what the ask returned instead (usually
+the M-1 skeleton), and whether the failure was *silent* (a plausible wrong pipeline) or *loud* (a
+clear refusal). **Silent is the more serious finding** and should be reported first — a loud
+refusal is honest; a plausible wrong pipeline is the product lying fluently.
+
+
 #### The follow-up row is not optional, and it is the one this suite kept missing
 
 Every other row is **one ask, one reply**, and a conversation that repeats itself
