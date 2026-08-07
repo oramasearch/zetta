@@ -74,3 +74,58 @@ variety and is scored on what it actually did.
 - A CUDA RLVR path, so campaigns are not laptop-bound.
 - Many prompts rather than one, drawn from the use-case catalogue.
 - ROI as the reward signal (kernel D7-2) rather than two facts.
+
+---
+
+# The production-pipeline campaign: a cold start
+
+Same loop, same configuration, with the reward changed from *"answer a question well"* to
+**"build a production-grade pipeline"** — the catalogue's correctness profile: `point_in_time`,
+`leakage_free`, `calibrated`, `holdout`, `shap`, `serve`, `act`.
+
+```
+step 0  mean_reward 0   built 0/16
+step 1  mean_reward 0   built 0/32
+step 2  mean_reward 0   built 0/48
+```
+
+**Zero of 48 rollouts emitted any tool calls or execution graph at all.** Not a wrong pipeline —
+no pipeline. And a group whose rewards are all zero has zero advantage, so GRPO takes a null step:
+**this campaign cannot learn, and running it longer will not change that.**
+
+## Why this is the important result
+
+The first campaign (reward 0.52 → 1.00) trained the model to answer a question in the right
+shape. It learned because the policy **already sometimes did the thing** — 9 of 16 rollouts parsed
+at step 0, so there was variance for the advantage to exploit.
+
+Here there is no variance because there is no behaviour. **RLVR sharpens what a policy already
+occasionally does; it cannot originate a capability from nothing.** That is not a defect in the
+loop — it is the loop's actual precondition, stated as a measurement rather than an assumption.
+
+It also explains the three-turn walk: v16 answered *"create me a churn project"* by describing
+what Studio can do rather than building anything. The campaign is the same failure at scale — the
+agent does not construct pipelines, which is the job the whole product is for.
+
+## What this changes
+
+**The SFT corpus and RLVR are not alternatives; they are a sequence, and the order is fixed.**
+Hand-authored data has to get the policy to *sometimes* build a correct pipeline. Only then does
+the loop have something to sharpen. This work had them backwards — four corpus rounds spent on
+conversational polish (bare turns, follow-ups, repetition) while pipeline construction, the actual
+job, was never the training target.
+
+Concretely, before another RLVR campaign is worth an hour of compute:
+
+1. **The SFT corpus must make pipeline construction the dominant case**, with the production
+   profile as the target — not connect→model→serve.
+2. **`max_new_tokens` must fit a full action.** Six tool calls with arguments will not fit in 192
+   tokens, so some of this zero is budget rather than capability. That needs measuring before it
+   is blamed on the model.
+3. **Then** RLVR, on a policy that already builds something.
+
+## Honest status of #859
+
+The loop is wired, correct, and stable, and it learns on a task the policy can already partly do.
+It is **not** ready to train pipeline construction, because the policy cannot currently do that at
+all. The blocker is the corpus, not the loop.
