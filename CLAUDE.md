@@ -529,6 +529,24 @@ or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,
 idle loop + live resize, font rebuild).
 
+### "Gate" names two different mechanisms — always qualify it
+
+Like "seam", a bare **gate** cannot be acted on without going to read the code, because this
+repo has two unrelated ones:
+
+| Say | Mechanism | Judges |
+|---|---|---|
+| **correctness gate** | `zetta::pipeline::CorrectnessGate` + the `Check` interface (`pipeline/gate.hpp`, `graph_checks.hpp`) | an **ExecutionGraph** before it deploys (RULE-1) |
+| **admission gate** | `admit_corpus(vector<AdmissionCase>)` (`agent/admission_gate.cpp`) | a **training case** — verifiable criterion, reference passes its grader, controls fail |
+
+They share nothing but the noun. Conflating them has already produced a wrong argument: the
+strategy's *"one gate for three authors"* is a property of the **correctness** gate (agent-initiated
+graphs clear the same bar as human ones), and it was cited as the safety precedent for letting a
+model author **training cases**, which the **admission** gate judges. The claim is true of graphs
+and says nothing about corpora.
+
+Always write **correctness gate** or **admission gate**.
+
 ### Say what you mean — do not write "seam"
 
 **Never use the word "seam"** — in code comments, docs, commit messages, issues,
@@ -778,5 +796,13 @@ Project skills live in `.claude/skills/` (committed, shared):
   trustworthy — the engine computes every number and the narrator only arranges them — with a
   script that traces every figure in the prose back to the artifact and fails on any that
   cannot be found.
+- **use-case-corpus** — grow the base agent's corpus **one use case at a time**: research the
+  module (its twelve-field spec, its methodology's correctness profile, the engine's real tool
+  surface, the real-world schema) before authoring anything, then cover the matrix of the
+  agent's five verbs × four autonomy classes as multi-turn threads, and admit every case
+  through `admit_corpus`. Carries the rules that make the output accurate rather than fluent:
+  the best negative control is a **correct answer to a neighbouring question**, facts must be
+  ones `response_solution_facts` computes, and no case may assert a capability the claims
+  register does not carry as shipped. Epic: #983.
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.
