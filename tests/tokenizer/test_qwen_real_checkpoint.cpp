@@ -1587,16 +1587,37 @@ TEST(QwenRlvrEndToEnd, ACampaignTrainsPipelineConstruction) {
 
     // The churn pipeline's required shape — the same facts the corpus's reference solutions
     // carry, so the campaign optimizes toward what the admission gate already calls correct.
+    // PRODUCTION-GRADE, not demoware. connect -> clean -> model -> serve is a demo: it produces a
+    // number and nothing you can defend or act on. The catalogue's definition of a solution is
+    // the methodology applied CORRECTLY and **wired to a business action** (kernel D6), so the
+    // reward requires the whole profile:
+    //
+    //   point_in_time    features dated strictly before the label, or the metric is fiction
+    //   leakage_free     no feature derived from the target
+    //   calibrated       churn scores must be probabilities, not ranks, to threshold on
+    //   shap             reason codes per account - a score nobody can explain is a score
+    //                    nobody acts on, which is how a model gets built and ignored
+    //   holdout          a quality figure measured on rows the model never saw
+    //   act              wired to a named business action; without it there is no ROI to measure
+    //
+    // Every one of these is a fact the grader computes, so "production-grade" is a check that
+    // runs rather than an adjective.
     const std::vector<zetta::agent::Goal> goals = {
-        {"Read the source data.", 2.0, {"connect"}},
-        {"Clean it without leaking the target.", 3.0, {"clean", "leakage_free"}},
-        {"Train a model on it.", 3.0, {"model"}},
-        {"Serve the result so something can act on it.", 2.0, {"serve"}},
+        {"Read the source data.", 1.0, {"connect"}},
+        {"Build features dated strictly before the outcome.", 3.0,
+         {"clean", "leakage_free", "point_in_time"}},
+        {"Train a model whose scores are probabilities, not ranks.", 3.0,
+         {"model", "calibrated"}},
+        {"Measure quality on rows the model never saw.", 2.0, {"holdout"}},
+        {"Explain every score, so someone can act on it.", 3.0, {"shap"}},
+        {"Serve it and wire it to a business action.", 3.0, {"serve", "act"}},
     };
     const std::string grounding =
         "Project: Churn risk\nTable: accounts\nColumns: account_id, mrr, churn_date, "
         "last_seen_at\nRows: 1,240,000\n";
-    const std::string ask = "Build a pipeline that predicts which accounts are likely to churn.";
+    const std::string ask =
+        "Build a production pipeline that predicts which accounts are likely to churn, with "
+        "calibrated scores, explanations, and a held-out quality figure.";
 
     int built = 0, scored = 0;
     const auto pipeline_reward = [&](const std::string&, const std::string& completion) -> double {
