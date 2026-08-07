@@ -1386,6 +1386,104 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts, 
     return family;
 }
 
+// --- Class 10c: MONITOR and IMPROVE -----------------------------------------------------------
+//
+// Two of the agent's five verbs (04-solutions-catalog.md 2.4) had no training data at all, because
+// until `model_health` and `propose_improvement` shipped they had no vocabulary either - and
+// training a verb the agent cannot perform teaches it to DESCRIBE the action, which is #976.
+//
+// These are where a deployed customer actually lives. Build and Explain are the first week;
+// Monitor and Improve are every week after.
+//
+// Register note: the replies here deliberately read like the answer families around them. The
+// bare_turn family once opened with a phrase appearing nowhere else in 16,239 cases and the
+// trained model applied it to substantive requests it was never meant for
+// (docs/reports/base-agent-validation-2026-08-06.md). Distinctiveness is a defect, not a feature.
+InteractionFamily monitor_improve_family(const std::vector<ProjectContext>& contexts) {
+    InteractionFamily family{
+        "monitor_improve",
+        "Watching a deployed model and proposing changes to it - the two verbs a customer uses "
+        "after the first week",
+        {}};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        if (context.auc <= 0.0) continue;  // nothing deployed to monitor
+        const std::string index = std::to_string(context_index);
+        const std::string results = render_grounding(context, GroundingView::Results);
+
+        // 1. MONITOR - answered by CALLING the tool, not by describing monitoring. The negative
+        //    control is the failure this whole family exists to prevent: prose about what the
+        //    system could check, with no call behind it.
+        {
+            // No `built_nothing` here: the harness assembles a pipeline from `tool_calls` when
+            // no graph is supplied, so a case that CALLS a tool cannot also assert it built
+            // nothing. What matters is that the tool was called and no number was invented.
+            EndState required = facts({{"numbers_from_context", true},
+                                       {"called_model_health", true}});
+            AdmissionCase health = make_case(
+                "monitor/health/" + index, "is this model still good?", results,
+                InteractionKind::Answer,
+                std::string("From `model_health`: it measures AUC ") + number(context.auc, 3) +
+                    " on held-out accounts, and the scores are calibrated, so a threshold means "
+                    "what it says. Nothing here says it has drifted.",
+                required, {},
+                {zetta::agent::ToolCall{"model_health", nlohmann::json::object()}});
+            health.negative_controls = {
+                // Describing the capability instead of calling it - #976, exactly.
+                facts({{"called_model_health", false}, {"built_nothing", true}}),
+            };
+            family.cases.push_back(std::move(health));
+        }
+
+        // 2. IMPROVE - a proposal must carry its predicted effect. Kernel D7-2: the metric the
+        //    customer pays for is the metric the agent learns on, so a proposal without a
+        //    predicted effect is a suggestion nobody can score.
+        {
+            EndState required = facts({{"numbers_from_context", true},
+                                       {"called_propose_improvement", true}});
+            AdmissionCase improve = make_case(
+                "improve/propose/" + index, "how could we make it better?", results,
+                InteractionKind::Answer,
+                std::string("From `propose_improvement` on ") + context.project +
+                    ": adding a holdout is the change worth making, and the honest prediction is "
+                    "that the reported quality falls below AUC " + number(context.auc, 3) +
+                    " - the current figure was measured on the rows the model learned from, so a "
+                    "lower number would be a truer one.",
+                required, {},
+                {zetta::agent::ToolCall{"propose_improvement", nlohmann::json::object()}});
+            improve.negative_controls = {
+                // A proposal with no call behind it is prose about improving, which is the
+                // failure this family exists to train against.
+                facts({{"called_propose_improvement", false}}),
+            };
+            family.cases.push_back(std::move(improve));
+        }
+
+        // 3. IMPROVE, refusing. An agent that predicts a gain from a retrain it has no evidence
+        //    for is worse than one that says it cannot predict - the customer plans against the
+        //    number either way.
+        {
+            EndState required = facts({{"grounded", true},
+                                       {"built_nothing", true},
+                                       {"asked_one_question", true},
+                                       {"clarify", true}});
+            AdmissionCase retrain = make_case(
+                "improve/retrain-unclear/" + index, "just retrain it", results,
+                InteractionKind::Clarify,
+                std::string("A retrain of ") + context.project +
+                    " over the same data and the same steps has no predictable effect. What "
+                    "would change - more history, a new feature, a different cutoff?",
+                required);
+            retrain.history = {{"how could we make it better?",
+                                std::string("Adding a holdout to ") + context.project +
+                                    " is the change worth making."}};
+            family.cases.push_back(std::move(retrain));
+        }
+    }
+    return family;
+}
+
 // --- Class 11: build the solution itself ------------------------------------------------------
 // "Predict which machines are likely to fail." "Score our leads." "Forecast demand per SKU." The
 // central ask — and the one the whole catalogue exists to answer — had ONE training case per
@@ -2006,6 +2104,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(solution_build_family(contexts, phrasings));
     families.push_back(follow_up_family(contexts, phrasings));
     families.push_back(bare_turn_family(contexts, phrasings));
+    families.push_back(monitor_improve_family(contexts));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));
