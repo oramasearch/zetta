@@ -65,6 +65,26 @@ the gap.
 | Ask what the data cannot support | `chat` declines | Chat view |
 | **A follow-up that depends on the turn before it** | `chat` with `history` | **Ask Orama rail · three turns** |
 
+**Every row below is an acceptance criterion of [#983](https://github.com/oramasearch/zetta/issues/983).**
+Several name capabilities that do not exist yet. **Walk them anyway** — a row that cannot be
+reached is the single most valuable finding this suite produces, and a row quietly dropped
+because "that isn't built" is how a gap survives to a customer call. Record it as *unreachable*
+with what was missing; never delete the row.
+
+| Step | A (MCP) | B (browser) |
+|---|---|---|
+| **The pipeline shape matches the METHODOLOGY, not the noun** — a forecasting ask returns backtested + temporal validation and **no calibration**; a churn ask still returns the calibrated one | `agent_run` twice, diff the graphs | Chat → two Projects |
+| **The neighbouring solution's shape is refused** — ask for forecasting, assert the churn skeleton with the nouns swapped is *not* what comes back | inspect `model_kind` + step kinds | Pipeline view |
+| **A `model_kind` the engine cannot execute fails with a clear reason** | `run` a graph naming an unimplemented methodology | error surface |
+| **The same ask under A1 and A2 differs** — A1 returns an approval request, A2 executes | `chat` with the autonomy class set | Chat · approval affordance |
+| **Monitor: drift, calibration over time, per-segment performance, holdout integrity** — answered from a real tool call, not prose about monitoring | the Monitor read capabilities | Reports · monitoring panel |
+| **Improve: a proposal carries its predicted ROI effect**, grounded | the proposal verb | Chat · proposal card |
+| **The agent calls a tool it was asked to use**, rather than describing it (#976) | `chat` "list the models" → asserts `called_list_models` | Chat |
+| **A trajectory is conditioned on observations** — the schema decides the pipeline; perturb the dataset and the proposal changes | `agent_run` over two datasets | Chat |
+| **Propose-and-approve in the thread** — the agent proposes a run, `"yes"` in the next turn executes it | `chat` → `chat` | Chat, not a button |
+| **The agent's stated capabilities are TRUE** — ask "can you run Python in a Pipeline step?" and the answer matches the engine (simulated Python), not the marketing line | `chat` vs `product-claims.md` | Chat |
+| **The agent names which version is answering** | `versions` | Ask Orama rail header |
+
 #### The follow-up row is not optional, and it is the one this suite kept missing
 
 Every other row is **one ask, one reply**, and a conversation that repeats itself
