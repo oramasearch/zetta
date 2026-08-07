@@ -226,6 +226,51 @@ std::string join_types(const std::vector<std::string>& types) {
 
 }  // namespace
 
+bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
+    return model_kind == "forecast" || model_kind == "survival" || model_kind == "streaming";
+}
+
+CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) continue;
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) continue;
+        const std::string named = kind->get<std::string>();
+        if (!is_time_ordered(named)) continue;
+
+        // Calibration on a time-ordered model is the churn recipe misapplied — see the header.
+        for (const auto& other : graph.nodes()) {
+            if (!other->attributes.is_object()) continue;
+            const auto calibrated = other->attributes.find("calibrated");
+            if (calibrated != other->attributes.end() && calibrated->is_boolean() &&
+                calibrated->get<bool>()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) + ": '" + named +
+                        "' is time-ordered, so calibration does not apply — there is no "
+                        "probability to calibrate, and fitting a calibrator on rows held out by "
+                        "content re-introduces exactly the leak temporal validation prevents. "
+                        "Drop `calibrated` and backtest over rolling origins instead."};
+            }
+        }
+
+        const auto validated = node->attributes.find("temporal_validation");
+        const bool has_temporal_validation =
+            validated != node->attributes.end() && validated->is_boolean() &&
+            validated->get<bool>();
+        if (!has_temporal_validation) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) + ": '" + named +
+                    "' is time-ordered and must be validated over time. Add "
+                    "`temporal_validation` to this step — a figure measured on rows held out by "
+                    "content is not comparable to anything this model will see in production."};
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every time-ordered model is validated over time and uncalibrated"};
+}
+
 const std::vector<std::string>& MethodologyCheck::implemented() {
     // M-1 tabular supervised ships (histogram GBDT + native TreeSHAP + calibration).
     // Everything else in the catalogue is #984 and must NOT pass this check until its

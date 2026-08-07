@@ -374,3 +374,84 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
 }
+
+// --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
+//
+// This is the check that makes forecasting a different METHODOLOGY rather than churn with
+// different nouns, and it is the first place the engine can tell the two apart.
+
+namespace {
+
+zetta::ir::ExecutionGraph model_graph(nlohmann::json model_attributes) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model =
+        graph.add_node(zetta::ir::StepKind::Model, "model", std::move(model_attributes));
+    graph.add_edge(connect->id, model->id);
+    return graph;
+}
+
+}  // namespace
+
+TEST(TemporalValidationCheck, AForecastValidatedOverTimePasses) {
+    const auto graph =
+        model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(TemporalValidationCheck, AForecastWithoutTemporalValidationFails) {
+    const auto graph = model_graph({{"model_kind", "forecast"}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("temporal_validation"), std::string::npos)
+        << "the reason must name what to add";
+}
+
+// The counter-intuitive half. Calibration is correct and necessary for churn; on a forecast it is
+// the churn recipe applied to a problem it does not fit — there is no probability to calibrate,
+// and fitting a calibrator on rows held out by CONTENT re-introduces the leak temporal validation
+// exists to prevent, wearing a respectable name.
+TEST(TemporalValidationCheck, AForecastThatCalibratesFails) {
+    const auto graph = model_graph(
+        {{"model_kind", "forecast"}, {"temporal_validation", true}, {"calibrated", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("calibrat"), std::string::npos);
+    EXPECT_NE(result.reason.find("backtest"), std::string::npos)
+        << "the reason must say what to do instead, not only what is wrong";
+}
+
+// The other side of the same coin: churn MUST still be allowed to calibrate. A check that made
+// calibration suspicious everywhere would break the one methodology that ships.
+TEST(TemporalValidationCheck, ChurnMayStillCalibrate) {
+    const auto graph = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
+    const auto graph = model_graph(nlohmann::json::object());
+    EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
+              zetta::pipeline::CheckStatus::Pass);
+}
+
+// The two checks together are what the corpus's neighbouring-solution negative control needs:
+// the forecasting shape and the churn shape must not both pass the same gate.
+TEST(TemporalValidationCheck, TheChurnShapeAndTheForecastShapeAreNotInterchangeable) {
+    const auto churn_shape = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
+    const auto forecast_shape =
+        model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
+
+    const zetta::pipeline::TemporalValidationCheck temporal;
+    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::Pass);
+    EXPECT_EQ(temporal.evaluate(forecast_shape).status, zetta::pipeline::CheckStatus::Pass);
+
+    // Now swap the methodologies onto the wrong shapes. Both must be refused.
+    const auto churn_shape_as_forecast =
+        model_graph({{"model_kind", "forecast"}, {"calibrated", true}});
+    EXPECT_EQ(temporal.evaluate(churn_shape_as_forecast).status,
+              zetta::pipeline::CheckStatus::Fail)
+        << "the churn recipe under a forecasting name is the exact confusion the corpus's "
+           "neighbouring-solution control is trying to teach against";
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -39,6 +40,28 @@ namespace zetta::pipeline {
 // rather than failed — the annotation is opt-in, exactly like the other checks here — but a
 // model step that names an UNKNOWN methodology fails, because the alternative is the agent
 // proposing work the engine will silently not do.
+// Temporal-validation check (#984, M-4). A methodology whose data is time-ordered must be
+// validated over time and must NOT be calibrated.
+//
+// Both halves matter and the second is the counter-intuitive one. Calibration maps scores to
+// probabilities by fitting on held-out rows — correct and necessary for churn. On a forecast it
+// is a category error: there is no probability to calibrate, and fitting a calibrator over a
+// time series held out by row is the same leak `temporal_split` exists to prevent, wearing a
+// respectable name. So a forecasting graph that carries `calibrated: true` is not "extra rigour",
+// it is the churn recipe applied to a problem it does not fit — precisely the confusion the
+// corpus's neighbouring-solution negative control is trying to teach against.
+//
+// Opt-in like every check here: a graph whose model step names no methodology is skipped.
+class TemporalValidationCheck final : public Check {
+public:
+    std::string name() const override { return "temporal_validation"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+
+    // Methodologies whose data is time-ordered, so temporal validation is required and
+    // calibration is refused.
+    static bool is_time_ordered(std::string_view model_kind);
+};
+
 class MethodologyCheck final : public Check {
 public:
     std::string name() const override { return "methodology"; }
