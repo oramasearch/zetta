@@ -72,6 +72,38 @@ EndState unsupervised_core(const std::string& model_kind) {
                   {"explain", "shap"}});
 }
 
+// RETRIEVAL has no supervised label at all — nothing to hold out, calibrate or leak. What makes
+// it production-grade instead is that every answer is traceable to the passage it came from:
+// `grounded_in_data` is the retrieval equivalent of a held-out metric, and without it the system
+// is a fluent guesser.
+EndState retrieval_core(const std::string& index_kind) {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"index", true},
+                  {"index_kind", index_kind},
+                  {"serve", true},
+                  {"model_kind", "retrieval"},
+                  {"grounded_in_data", true},
+                  {"retrieval", true}});
+}
+
+// DECISIONING (bandits, optimization, next-best-action) does not predict — it CHOOSES, and then
+// has to prove the choice was better than the alternative. So the profile is not accuracy but
+// counterfactual: an explicit policy, a holdout that never receives the treatment, and an
+// approval gate, because a system that acts without one is an incident waiting for a name.
+EndState decisioning_core(const std::string& model_kind) {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"model_kind", model_kind},
+                  {"serve", true},
+                  {"act", true},
+                  {"holdout", true},
+                  {"incrementality", true},
+                  {"approval_gated", true},
+                  {"explain", "shap"}});
+}
+
 EndState with_fact(EndState state, const std::string& key, nlohmann::json value) {
     state.set(key, std::move(value));
     return state;
@@ -141,14 +173,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     templates.push_back(
         {"M-10",
          "Answer questions over our documents with cited passages, grounded in our data.",
-         facts({{"connect", true},
-                {"index", true},
-                {"serve", true},
-                {"index_kind", "semantic"},
-                {"retrieval", true},
-                {"ranked", true},
-                {"grounded_in_data", true},
-                {"embeddings", true}})});  // RAG: real retrieval + grounding, not an LLM guess
+         with_fact(with_fact(retrieval_core("semantic"), "ranked", true), "embeddings", true)});  // RAG: real retrieval + grounding, not an LLM guess
 
     // --- The methods with no coverage yet (doc 03 §4) — each with its distinguishing checks ---
     templates.push_back(
@@ -171,14 +196,10 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          facts({{"connect", true}, {"model", true}, {"serve", true}, {"model_kind", "speech"}})});
     templates.push_back(
         {"M-15", "Choose offers online + keep learning which works, safely.",
-         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
-                {"model_kind", "bandit"}, {"exploration", true}, {"holdout", true},
-                {"approval_gated", true}})});
+         with_fact(decisioning_core("bandit"), "exploration", true)});
     templates.push_back(
         {"M-16", "Optimize our plan (routing/allocation) under real constraints.",
-         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
-                {"model_kind", "optimization"}, {"constraints", true},
-                {"approval_gated", true}})});
+         with_fact(decisioning_core("optimization"), "constraints", true)});
     templates.push_back(
         {"M-17", "Give predictions WITH calibrated uncertainty on sparse data.",
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
@@ -208,9 +229,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
         {"UC-13", "Decide credit risk on applicants, defensibly (regulated).",
          with_fact(supervised_core("gbdt"), "baseline_glm", true)});  // SR 11-7: GLM baseline
     templates.push_back({"UC-14", "Optimize our prices/discounts within guardrails.",
-                         facts({{"connect", true}, {"model", true}, {"serve", true}, {"act", true},
-                                {"model_kind", "optimization"}, {"constraints", true},
-                                {"approval_gated", true}})});
+                         with_fact(decisioning_core("optimization"), "constraints", true)});
     templates.push_back({"UC-15", "Predict which employees are at risk of leaving.",
                          supervised_core("gbdt")});
     templates.push_back(
