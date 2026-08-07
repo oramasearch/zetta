@@ -67,15 +67,51 @@ reply the `bare/redirect` cases teach for `"no"` / `"new one"` / `"not that"`. v
 returns `"Hi."`, the greeting family. The model is selecting bare-turn families for asks that are
 not bare turns.
 
-Two candidate causes, neither yet distinguished:
+### The v13 control run distinguishes the causes
+
+Same three turns, same node, same history, against **v13** — which was trained on the corpus
+*without* the `bare_turn` family:
+
+```
+USER  create me a churn project
+v13   Which pipeline would you like me to base this on? I'd apply it to churn-uc1.
+
+USER  yes
+v13   Yes. Studio will list the trained models and their measures on `list_models`.
+
+USER  what?
+v13   Yes. Studio will list the trained models and their measures on `list_models`.   <- IDENTICAL
+```
+
+Three conclusions, and they separate cleanly:
+
+1. **The repeat is not caused by `bare_turn`, and was not fixed by it.** Both checkpoints repeat.
+   v13 repeats at turns 2–3; v14 repeats at turns 1–2. **The bug moved rather than went away.**
+   It is the underlying multi-turn weakness — 2.2% of the corpus carries history — not anything
+   the new family did or failed to do.
+2. **"Dropped that one" IS caused by `bare_turn`.** v13 never produces it; v14 produces it for a
+   substantive request. This rules out overfitting as the explanation: v13 was trained the same
+   way, to a similar loss, and does not reach for that phrase. **It is corpus-caused, and it is
+   my change.**
+3. **Turn 1 got worse.** v13 answered a project request with a sensible clarifying question. v14
+   answers it with a redirect reply meant for `"no"` / `"not that"`. The family did not just fail
+   to help; on the first turn it actively regressed behaviour that was previously correct.
+
+So the diagnosis is not "overfitting" and not "needs more multi-turn cases". It is that **180
+cases carrying a phrase that appears nowhere else in 16,239 were enough to capture an ask form
+they were never meant for** — high-signal replies with nothing competing for the same surface.
+The family needs replies phrased no more distinctively than their neighbours, and negative
+controls asserting the redirect reply is WRONG for a substantive ask.
+
+Two candidate causes, now resolved by the control above:
 
 1. **Over-application of a distinctive phrasing.** 180 `bare/*` cases out of 16,239 is 1.1%, but
    *"Dropped that one"* appears nowhere else in the corpus, so it is a high-signal token sequence
    with little to compete with it. The family may need its replies phrased less distinctively, or
    need paired negative controls showing the redirect reply is WRONG for a substantive ask.
-2. **Overfitting.** Minimum loss 1.43e-05 is memorization territory. An overfit model reaches for
-   whatever surface form it memorized most sharply. `SAVE_EVERY=250` checkpoints exist and have
-   not been compared — an earlier one may behave better.
+2. ~~**Overfitting.**~~ Ruled out as the explanation for the phrasing: v13 trained to a similar
+   loss and never reaches for it. Overfitting may still be worth addressing on its own merits —
+   the `SAVE_EVERY=250` checkpoints remain uncompared — but it is not what caused this.
 
 **This is a negative result and it stands.** The corpus fix that looked right in the invariants,
 admitted through the gate, and scored 85% on the canary does not produce the behaviour it was
