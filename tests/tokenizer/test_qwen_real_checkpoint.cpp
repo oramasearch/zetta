@@ -1551,6 +1551,108 @@ TEST(QwenRlvrEndToEnd, ACampaignProducesANonZeroLearningSignal) {
     }
 }
 
+
+// The campaign that trains the agent's ACTUAL JOB: build and mutate pipelines.
+//
+// The first campaign rewarded `kind` and `numbers_from_context` on a question — it proved the
+// loop learns, and it trained the wrong thing. The agent does not exist to answer questions about
+// a model; it exists to compose a correct Pipeline for a use case and to change one on request.
+// So the reward here is PIPELINE CORRECTNESS: the emitted tool calls are assembled into a graph
+// (`build_pipeline_from_tool_calls`, the same path the harness uses) and scored on the shape that
+// use case actually requires.
+//
+// This is what makes the reward verifiable rather than plausible. "Did it say something sensible
+// about churn" is a judgement; "does the graph it built connect, clean leakage-free, train a
+// calibrated gbdt, and serve" is a check that runs.
+TEST(QwenRlvrEndToEnd, ACampaignTrainsPipelineConstruction) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_RLVR_CAMPAIGN") == nullptr) {
+        GTEST_SKIP() << "set ZETTA_RLVR_CAMPAIGN=1 (minutes, not seconds)";
+    }
+
+    const auto knob = [](const char* name, int fallback) {
+        const char* value = std::getenv(name);
+        return value ? std::atoi(value) : fallback;
+    };
+    const int steps = knob("ZETTA_RLVR_STEPS", 16);
+    const int tokens = knob("ZETTA_RLVR_TOKENS", 128);
+    const int group = knob("ZETTA_RLVR_GROUP", 16);
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    // The churn pipeline's required shape — the same facts the corpus's reference solutions
+    // carry, so the campaign optimizes toward what the admission gate already calls correct.
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Read the source data.", 2.0, {"connect"}},
+        {"Clean it without leaking the target.", 3.0, {"clean", "leakage_free"}},
+        {"Train a model on it.", 3.0, {"model"}},
+        {"Serve the result so something can act on it.", 2.0, {"serve"}},
+    };
+    const std::string grounding =
+        "Project: Churn risk\nTable: accounts\nColumns: account_id, mrr, churn_date, "
+        "last_seen_at\nRows: 1,240,000\n";
+    const std::string ask = "Build a pipeline that predicts which accounts are likely to churn.";
+
+    int built = 0, scored = 0;
+    const auto pipeline_reward = [&](const std::string&, const std::string& completion) -> double {
+        ++scored;
+        // `response_solution_facts` assembles the pipeline from `tool_calls` when the model
+        // supplies no graph — exactly what the harness does at serving time — so this scores the
+        // Pipeline the turn would actually produce.
+        if (const std::optional<zetta::agent::StudioAction> action =
+                zetta::agent::parse_studio_action(completion)) {
+            if (!action->tool_calls.empty() || !action->execution_graph.nodes().empty()) ++built;
+        }
+        return zetta::agent::goal_reward_for_generation(goals, completion, grounding);
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = group;
+    config.max_new_tokens = tokens;
+    config.temperature = 1.0F;
+    std::mt19937 rng(23);
+
+    std::vector<double> per_step;
+    for (int step = 0; step < steps; ++step) {
+        const double mean = zetta::agent::grpo_step_text(*model, optimizer, *tokenizer, ask,
+                                                         pipeline_reward, config, rng);
+        per_step.push_back(mean);
+        std::cout << "[rlvr-pipeline] step " << step << " mean_reward=" << mean
+                  << " built=" << built << "/" << scored << std::endl;
+    }
+
+    if (const char* out = std::getenv("ZETTA_RLVR_OUT")) {
+        std::ofstream file(out);
+        file << nlohmann::json{{"task", "pipeline_construction"}, {"steps", steps},
+                               {"tokens", tokens}, {"group", group},
+                               {"per_step_mean_reward", per_step},
+                               {"built", built}, {"scored", scored}}.dump(2);
+    }
+
+    EXPECT_GT(built, 0)
+        << "no completion produced any tool calls or graph across " << scored
+        << " rollouts — the policy is not attempting the job at all, so no amount of training "
+           "on this reward can teach it";
+    const double best = *std::max_element(per_step.begin(), per_step.end());
+    EXPECT_GT(best, 0.0) << "the pipeline reward never fired; a uniformly-zero group has zero "
+                            "advantage and GRPO takes a null step";
+    if (per_step.size() >= 4) {
+        const std::size_t half = per_step.size() / 2;
+        const double early = std::accumulate(per_step.begin(), per_step.begin() + half, 0.0) /
+                             static_cast<double>(half);
+        const double late = std::accumulate(per_step.begin() + half, per_step.end(), 0.0) /
+                            static_cast<double>(per_step.size() - half);
+        EXPECT_GE(late, early * 0.5)
+            << "pipeline reward collapsed from " << early << " to " << late;
+    }
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
