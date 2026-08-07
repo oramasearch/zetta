@@ -632,6 +632,7 @@ add_library(zetta-core STATIC
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
   src/core/ml/backtest.cpp
+  src/core/ml/lag_features.cpp
   src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp
   src/core/ml/calibration.cpp

@@ -136,6 +136,7 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
   ml/test_backtest.cpp
+  ml/test_lag_features.cpp
   ml/test_temporal_split.cpp
   ml/test_gbdt_train_partitions.cpp
   ml/test_gbdt_featurize_train_partitions.cpp
