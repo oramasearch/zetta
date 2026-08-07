@@ -40,12 +40,52 @@ answering where it should have asked. That is the failure class the corpus work 
 the right thing to still be failing on: it means the remaining errors are about *when to act*
 rather than about producing malformed output.
 
+## The acceptance test FAILS — v14 does not fix what it was trained to fix
+
+Run live over `/assist` against v14 on a local node:
+
+```
+USER  create me a churn project
+v14   Dropped that one. What should the new Project predict, and over which table?
+      Right now churn-uc1 is what's loaded, on `customers`.
+
+USER  yes
+v14   Dropped that one. What should the new Project predict, and over which table?
+      Right now churn-uc1 is what's loaded, on `customers`.      <- IDENTICAL
+
+USER  what?
+v14   Hi. churn-uc1 is what's loaded, on `customers`.
+```
+
+**Turns 1 and 2 are byte-identical.** #942's acceptance is not met, and the 85% canary pass rate
+did not predict it — single-case grading cannot see a repeat, which is the entire reason bite A3
+exists separately from A2.
+
+**Worse: the `bare_turn` family appears to have caused a new failure.** *"Dropped that one"* is the
+reply the `bare/redirect` cases teach for `"no"` / `"new one"` / `"not that"`. v14 emits it for
+`"create me a churn project"` — a substantive request that is not a redirect at all. And `"what?"`
+returns `"Hi."`, the greeting family. The model is selecting bare-turn families for asks that are
+not bare turns.
+
+Two candidate causes, neither yet distinguished:
+
+1. **Over-application of a distinctive phrasing.** 180 `bare/*` cases out of 16,239 is 1.1%, but
+   *"Dropped that one"* appears nowhere else in the corpus, so it is a high-signal token sequence
+   with little to compete with it. The family may need its replies phrased less distinctively, or
+   need paired negative controls showing the redirect reply is WRONG for a substantive ask.
+2. **Overfitting.** Minimum loss 1.43e-05 is memorization territory. An overfit model reaches for
+   whatever surface form it memorized most sharply. `SAVE_EVERY=250` checkpoints exist and have
+   not been compared — an earlier one may behave better.
+
+**This is a negative result and it stands.** The corpus fix that looked right in the invariants,
+admitted through the gate, and scored 85% on the canary does not produce the behaviour it was
+written for. The next step is diagnostic — compare intermediate checkpoints and test the
+over-application hypothesis — not another corpus family.
+
 ## Limitations — read these before quoting the numbers
 
-- **The three-turn walk is not verified here.** The canary measures single-case grading. The
-  behaviour #942 is actually about — `"create me a churn project"` → `"yes"` → `"what?"` producing
-  three distinct replies — needs a live node and is ladder bite **A3**, not done. **v14 is not yet
-  demonstrated to fix the bug it was trained to fix.**
+- **The three-turn walk was run and FAILED** — see the section above. The canary's 85% did not
+  predict it, because single-case grading cannot see a repeat.
 - **Overfitting is likely.** Minimum loss 1.43e-05 against a final of 0.115 is the signature
   flagged on v13. `SAVE_EVERY=250` means intermediate checkpoints exist and **have not been
   compared**; the best checkpoint is frequently not the last one.
