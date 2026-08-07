@@ -86,46 +86,126 @@ captures it).
 
 Any cell you deliberately skip gets **logged as skipped**. A silent gap reads as coverage.
 
-## Step 3 — Author threads, not rows
+## Step 3 — Author TRAJECTORIES. This is the whole skill.
 
-Every case is part of a conversation (`AdmissionCase::history`). A follow-up is the second
-thing anyone types, and single-turn data trains a model that answers two different asks with a
-byte-identical sentence — which shipped
-([#942](https://github.com/oramasearch/zetta/issues/942)).
+An AI builder does not answer questions. It **calls a tool, reads what came back, and decides
+the next call from it.** That is the behaviour we are training, and the corpus contains almost
+none of it.
 
-Include the **bare turns** — `"yes"`, `"go ahead"`, `"what?"`, `"no, a new one"` — each paired
-with a specific antecedent, and make the SAME word train toward DIFFERENT behaviour depending
-on what precedes it.
+What `tool_use_family` teaches today:
 
-### The negative-control rule — the hard part, and where quality is won
+```
+ask: "list the models on this node"
+  -> call list_models
+  -> report the result
+```
+
+One ask, one call, one report. That is a **lookup**. It cannot teach building, because nothing
+in it is *conditioned on an observation*.
+
+### What an exceptional case looks like
+
+A trajectory, where every call after the first is decided by what the previous one returned,
+and the final pipeline is **derivable only from what the schema actually showed**:
+
+```
+USER  "predict which accounts are likely to churn"
+
+  -> list_datasets                     # what is even here?
+     <- motive.accounts (48 cols, 1.2M rows), motive.comm_events (31 cols, 84M rows)
+
+  -> get_dataset motive.accounts       # what does it support?
+     <- sfdc_account_id (string, 11.4% null), churn_date (date, 8% non-null),
+        last_churn_reason (string), mrr (float), event_updated_datetime_pt (timestamp)
+
+AGENT "`churn_date` gives us a label and `event_updated_datetime_pt` gives us a cutoff, so
+       this can be point-in-time. Two things first: `sfdc_account_id` is null on 11.4% of
+       rows, and `event_updated_datetime_pt` is the pipeline load date rather than the
+       source change date - joining on it would leak the future. Restrict to completed
+       rows and drop the null-id rows, or impute them?"
+
+USER  "drop them"
+
+  -> connect(motive.accounts)          # NOW the pipeline is shaped by what was read
+  -> clean(drop_null: sfdc_account_id, as_of: event_updated_datetime_pt, completed_only)
+  -> model(gbdt, label: churn_date IS NOT NULL, calibrate: true, holdout: 0.3)
+  -> index(shap)
+  -> serve
+
+AGENT "Built. Point-in-time on `event_updated_datetime_pt`, calibrated, 30% held out so the
+       quality figure is measured on accounts it never saw. Run it?"
+
+USER  "yes"                            # a bare turn, resolvable only against the proposal
+```
+
+Four properties make that case worth training on, and all four are checkable:
+
+1. **Every call after the first is conditioned on an observation.** `get_dataset` was called
+   *because* `list_datasets` returned a candidate; `clean` carries `drop_null` *because*
+   `get_dataset` reported 11.4% nulls.
+2. **The pipeline is underivable from the ask alone.** "Predict churn" does not tell you to
+   drop null ids or which column is the cutoff. **This is the anti-fabrication signal applied
+   to building** — the same reason grounded-QA cases vary the context. A case whose pipeline
+   could be emitted without reading the schema teaches the model to emit from the use-case
+   *name*, which is how one pipeline shape ended up serving churn, lead scoring and
+   collections alike.
+3. **It surfaces the domain's real trap before building**, not after the run fails. The traps
+   are in the research from step 1 and in the customer's own docs.
+4. **It ends in a bare turn** that only resolves against the proposal.
+
+### The quality bar, stated as a test
+
+> **Could a model produce this pipeline without the observations?**
+> If yes, the case is a lookup wearing a trajectory's clothes. Rewrite it so the schema
+> decides something.
+
+Concretely: change one fact in the grounding — make `churn_date` absent, make the null rate
+0.05%, make the cutoff column missing — and the correct trajectory **must** change. If it does
+not, the case is not teaching building.
+
+### The catalogue is the action space
+
+Each `S-n` has a **specific pipeline shape**, and the trajectory must arrive at *that* one:
+churn is point-in-time, leakage-free, calibrated; forecasting is **backtested, not
+calibrated**; retrieval is indexed with no supervised label at all. Getting this wrong is not
+a near miss — it trains the agent to build the neighbouring solution fluently.
+
+So the strongest negative control for any trajectory is **the neighbouring solution's pipeline
+on this ask**. It is well-formed, it passes the correctness gate, and it answers the wrong
+question — which is exactly what the model produces when it emits from the use-case name
+rather than from the schema.
+
+### Threads, and the bare turn
+
+Every case is part of a conversation (`AdmissionCase::history`), carrying prior tool outcomes
+(`PriorTurn::tools`) — so *"why did that fail?"* is answerable from the **call that ran**, not
+from the prose. Include the bare turns (`"yes"`, `"go ahead"`, `"what?"`, `"no, a new one"`),
+each against a specific antecedent, and make the same word train toward different behaviour
+depending on what precedes it ([#942](https://github.com/oramasearch/zetta/issues/942)).
+
+### The negative-control rule
 
 **The best negative control is a correct answer to a neighbouring question.** A straw man
-("the model outputs gibberish") discriminates nothing and inflates the pass rate. Build
-controls from the real confusions:
+discriminates nothing and inflates the pass rate. Build them from the real confusions:
 
+- the **neighbouring solution's pipeline** (calibration on a forecasting ask),
 - the behaviour correct for a **different autonomy class** (runs when A1 required approval),
 - the behaviour correct for a **different verb** (builds when asked to monitor),
-- the pipeline correct for a **different methodology** (churn's calibrated shape on a
-  forecasting ask),
+- **the pipeline emitted without the observations** — the right shape reached by guessing,
 - the reply correct for a **different antecedent** (the previous turn repeated verbatim).
-
-Each of these is fluent, plausible, and wrong — which is exactly what the model will otherwise
-produce.
 
 ### Facts must be ones the grader computes
 
-`response_solution_facts` is the list. An invented key (`tool_called`,
-`abandoned_prior_proposal`) makes the reference **unsatisfiable** and the case silently
-untrainable. This has happened twice. `EveryReferencePassesItsOwnGrader` catches it — run it.
+`response_solution_facts` is the list. An invented key makes the reference unsatisfiable and
+the case silently untrainable — twice already. `EveryReferencePassesItsOwnGrader` catches it.
 
 ### No case may assert an unshipped capability
 
-The corpus is a **claim surface**: `product_knowledge_family` states what the product can do,
-in our voice, in the weights, to every customer, forever. Check every product assertion against
-`docs/projects/motive-fde-engagement/product-claims.md` (orama-bridge). The corpus currently
-says *"You can run Python in a Pipeline step"* while the engine has `PythonFrontend` —
-**simulated** Python — and the customer meeting said "simulated Python". **The meeting was more
-honest than the training data.** Do not add to that.
+The corpus is a **claim surface** — `product_knowledge_family` states what the product can do,
+in our voice, in the weights, to every customer. Check every assertion against
+`docs/projects/motive-fde-engagement/product-claims.md`. The corpus says *"You can run Python
+in a Pipeline step"*; the engine has `PythonFrontend` — **simulated** Python — and the customer
+meeting said "simulated Python". **The meeting was more honest than the training data.**
 
 ## Step 4 — Admit, measure, report
 
@@ -150,6 +230,13 @@ Not "cases were generated". The slice is done when:
 - every existing invariant passes;
 - a held-out probe for this use case — written **without** reference to the cases authored —
   answers in the right **kind** and the right **pipeline shape**;
+- **the perturbation test passes**: for a sample of trajectories, change one fact in the
+  grounding (remove the label column, drop the null rate to 0.05%, remove the cutoff) and the
+  correct trajectory changes. If it does not, those cases teach emission from the use-case
+  name, not from the data, and they are the reason one pipeline shape once served churn, lead
+  scoring and collections alike;
+- **every multi-call trajectory has each call after the first conditioned on an observation** —
+  a trajectory whose calls are a fixed script is a lookup with extra steps;
 - the dataset card names its provenance and its gaps honestly.
 
 ## Never
@@ -157,7 +244,12 @@ Not "cases were generated". The slice is done when:
 - ❌ More than one use case per run. Breadth per run is how you get generic cases.
 - ❌ Generating before the four research questions are answered in writing.
 - ❌ Retyping the tool list, the interaction kinds, or the pipeline verbs.
-- ❌ Straw-man negative controls.
+- ❌ Straw-man negative controls. The strongest control is the **neighbouring solution's
+  pipeline on this ask** — well-formed, correctness-gate-passing, and answering the wrong
+  question.
+- ❌ A trajectory whose pipeline is derivable from the ask alone. That is a lookup wearing a
+  trajectory's clothes, and it trains emission from the use-case name.
+- ❌ A tool call that is not conditioned on what the previous call returned.
 - ❌ A case asserting a capability the claims register does not carry as shipped.
 - ❌ Bare "gate" — say **admission gate** or **correctness gate**.
 - ❌ Generating the graders. A model proposing its own success criterion is how a corpus
@@ -172,6 +264,12 @@ Not "cases were generated". The slice is done when:
 - **nibble-dev** — one matrix row per bite, admitted before the next.
 
 ## Version History
+- v1.1.0 (2026-08-06): Rewrote Step 3 around **trajectories**. The corpus's tool use was one
+  ask → one call → one report, which is a lookup and cannot teach building. An exceptional case
+  is a trajectory where every call after the first is conditioned on an observation and the
+  pipeline is **underivable from the ask alone** — the anti-fabrication signal applied to
+  building. Added the perturbation test as the quality bar, and the neighbouring solution's
+  pipeline as the strongest negative control.
 - v1.0.0 (2026-08-06): Initial. Per-use-case research, the verb × autonomy coverage matrix, the
   neighbouring-answer rule for negative controls, the claim-surface check, and the
   admission-gate / correctness-gate distinction. Written for
