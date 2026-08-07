@@ -10,6 +10,34 @@ Tracking: [zetta#983](https://github.com/oramasearch/zetta/issues/983) (the epic
 Load **rlvr-training-data** first — it owns the method; this skill owns the *per-use-case*
 research and coverage discipline that makes the output accurate rather than merely fluent.
 
+## This is the bootstrap. Say so.
+
+**Decision (Steve, 2026-08-06): bootstrap with SFT now, add RLVR later.**
+
+The corpus this skill produces is **supervised fine-tuning data — hand-anticipated scenarios**.
+That is the right thing to build now, and it is explicitly *not* the coverage strategy.
+
+The coverage strategy is the RLVR loop, and the machinery already exists: `run_rollout`
+(`agent/rollout.cpp`) has the policy propose a call, `Sandbox::apply` execute it, and the
+outcome feed the next decision — which is the "every call conditioned on the previous
+observation" property Step 3 asks you to author **by hand**. The loop generates it at whatever
+variety the policy explores, including scenarios nobody wrote down. Wiring the real neural
+Qwen policy to it is [#859](https://github.com/oramasearch/zetta/issues/859), open.
+
+Two consequences for how you use this skill:
+
+1. **Size the corpus as a bootstrap** — enough for the policy to be competent enough to explore
+   usefully. Do not try to hand-cover the variety of ways people will talk to the agent; that
+   is the job RLVR exists to do, and attempting it by hand is how the corpus reached 14.9k
+   cases while missing the word `"yes"`.
+2. **The Step 3 quality bar is reward-shaping in disguise.** *"Could a model produce this
+   pipeline without the observations?"* is a better **reward** question than an authoring rule.
+   When #859 closes, carry it across rather than re-deriving it.
+
+Until then, every checkpoint we ship is SFT-only — which is worth stating plainly wherever the
+product claims the agent "plays the game and learns"
+(`docs/projects/motive-fde-engagement/product-claims.md`).
+
 ## Why one use case at a time
 
 A prompt spanning all 33 solution templates produces generic cases — the same failure as the
