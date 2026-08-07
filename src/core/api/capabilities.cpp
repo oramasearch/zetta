@@ -837,6 +837,106 @@ ApiResult handle_model_health(const nlohmann::json& input, ApiContext& context) 
     return ApiResult::success(std::move(output));
 }
 
+// --- propose_improvement (Improve, #983) ------------------------------------------------------
+//
+// The Improve verb, and the one property that makes it gradeable: a proposal MUST carry its
+// predicted effect. Kernel D7-2 — the metric the customer pays for is the metric the agent learns
+// on — so "retrain it" with no predicted effect is not a proposal, it is a suggestion, and
+// nothing can score it or hold it to account afterwards.
+//
+// It refuses rather than guesses. A proposal whose effect cannot be predicted from what the model
+// actually carries returns `predictable: false` with the reason, because an invented number here
+// would be worse than silence: it would be a number the customer plans against.
+const nlohmann::json& propose_improvement_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "change"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}, {"minLength", 1}}},
+          {"change",
+           {{"type", "string"},
+            {"enum", {"add_holdout", "calibrate", "retrain"}},
+            {"description", "the change being proposed"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& propose_improvement_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "change", "predictable", "rationale"}},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"change", {{"type", "string"}}},
+          {"predictable", {{"type", "boolean"}}},
+          {"predicted_effect", {{"type", "string"}}},
+          {"rationale", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_propose_improvement(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const std::string change = input.at("change").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) return ApiResult::failure("not_found", "no model with id '" + id + "'");
+
+    const nlohmann::json metadata = model->metadata();
+    const nlohmann::json metrics =
+        metadata.contains("metrics") ? metadata.at("metrics") : nlohmann::json::object();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto entry = metrics.find(key);
+        if (entry == metrics.end() || !entry->is_number()) return std::nullopt;
+        return entry->get<double>();
+    };
+
+    nlohmann::json output;
+    output["model_id"] = id;
+    output["change"] = change;
+
+    const std::optional<double> held_out = number("held_out_auc");
+    const std::optional<double> in_sample = number("in_sample_auc");
+
+    if (change == "add_holdout") {
+        if (held_out) {
+            output["predictable"] = false;
+            output["rationale"] =
+                "This model already has a held-out figure, so adding a holdout changes nothing.";
+        } else if (in_sample) {
+            // The one effect that IS predictable, because it is not a guess about the model — it
+            // is a statement about what the current number means.
+            output["predictable"] = true;
+            output["predicted_effect"] =
+                "The reported quality will FALL, and that fall is the point: the current figure "
+                "of " + std::to_string(*in_sample) +
+                " was measured on the rows the model was fit on. A held-out figure describes "
+                "accounts it has never seen, and it is the only one that can be quoted.";
+            output["rationale"] =
+                "Retrain with holdout_fraction set. Expect a lower number and a truthful one.";
+        } else {
+            output["predictable"] = false;
+            output["rationale"] =
+                "This model carries no quality figure at all, so there is nothing to compare a "
+                "holdout against.";
+        }
+    } else if (change == "calibrate") {
+        output["predictable"] = false;
+        output["rationale"] =
+            "Calibration changes what the scores MEAN, not how well they rank, so the ranking "
+            "metric will not move. Whether the resulting probabilities are honest can only be "
+            "measured after fitting the calibrator on held-out rows.";
+    } else {
+        // "retrain" with no stated reason. Refusing here is the point: an agent that predicts an
+        // improvement from a retrain it has no evidence for is the failure this capability
+        // exists to prevent.
+        output["predictable"] = false;
+        output["rationale"] =
+            "A retrain with no change to the data or the pipeline has no predictable effect. Say "
+            "what would differ - more history, a new feature, a different cutoff - and the effect "
+            "of THAT can be reasoned about.";
+    }
+    return ApiResult::success(std::move(output));
+}
+
 const nlohmann::json& get_job_schema() {
     static const nlohmann::json schema =
         id_input_schema("job_id", "the compute job's uuid (system.jobs.job_id)");
@@ -4795,6 +4895,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
          "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
+        {"propose_improvement",
+         "propose a change to a model and state its predicted effect, or say why the effect "
+         "cannot be predicted: {\"model_id\": \"<uuid>\", \"change\": \"add_holdout\"}"},
         {"model_health",
          "check whether a deployed model can still be trusted - the held-out figure, the "
          "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
@@ -5473,6 +5576,18 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_get_run_report});
 
+    registry.add(Capability{
+        "propose_improvement",
+        "Propose an improvement",
+        "Propose a change to a deployed model and state its PREDICTED EFFECT, or refuse and say "
+        "why the effect cannot be predicted. No side effects - it proposes, it does not act.",
+        propose_improvement_schema(),
+        propose_improvement_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_propose_improvement});
     registry.add(Capability{
         "model_health",
         "Model health",

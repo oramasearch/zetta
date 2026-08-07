@@ -436,3 +436,51 @@ TEST_F(ServingFixture, ModelHealthReadsWhetherAModelCanStillBeTrusted) {
     }
     EXPECT_TRUE(warned_about_calibration);
 }
+
+// --- propose_improvement (#983, the Improve verb) --------------------------------------------
+//
+// The property that makes Improve gradeable: a proposal MUST carry its predicted effect. Kernel
+// D7-2 — the metric the customer pays for is the metric the agent learns on — so "retrain it"
+// with no predicted effect is a suggestion, not a proposal, and nothing can score it or hold it
+// to account afterwards.
+TEST_F(ServingFixture, ProposeImprovementCarriesAPredictedEffectOrRefuses) {
+    const auto install = [this](const nlohmann::json& metrics, const std::string& name) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = name;
+        value.metrics = metrics;
+        auto model = node.create_model(std::move(value));
+        return model ? model->id() : std::string{};
+    };
+
+    // Adding a holdout to a model that has none is the one effect that IS predictable — not a
+    // guess about the model, but a statement about what its current number means.
+    const std::string in_sample_only = install({{"in_sample_auc", 0.868}}, "in-sample-only");
+    ASSERT_FALSE(in_sample_only.empty());
+    auto result =
+        call("propose_improvement", {{"model_id", in_sample_only}, {"change", "add_holdout"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(result.value.at("predictable").get<bool>());
+    const std::string effect = result.value.at("predicted_effect").get<std::string>();
+    EXPECT_NE(effect.find("FALL"), std::string::npos)
+        << "the honest prediction is that the number goes DOWN, and that is the point";
+
+    // A bare retrain must be REFUSED. An agent predicting an improvement from a retrain it has no
+    // evidence for is exactly the failure this capability exists to prevent.
+    result = call("propose_improvement", {{"model_id", in_sample_only}, {"change", "retrain"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("predictable").get<bool>());
+    EXPECT_FALSE(result.value.contains("predicted_effect"))
+        << "refusing must mean refusing — a rationale plus an invented number is worse than "
+           "silence, because the customer plans against the number";
+    EXPECT_NE(result.value.at("rationale").get<std::string>().find("what would differ"),
+              std::string::npos)
+        << "the refusal must say what would make the effect predictable";
+
+    // Proposing a holdout to a model that already has one changes nothing, and it says so.
+    const std::string has_holdout =
+        install({{"in_sample_auc", 0.78}, {"held_out_auc", 0.75}}, "has-holdout");
+    result = call("propose_improvement", {{"model_id", has_holdout}, {"change", "add_holdout"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("predictable").get<bool>());
+}
