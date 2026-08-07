@@ -230,3 +230,21 @@ TEST(SolutionGraph, ToolCallsAndPipelineAreInverses) {
 }
 
 }  // namespace
+
+// B1c (#983) — response-grading facts must not reach the graph — is DEFERRED, not forgotten.
+//
+// `build_solution_graph` sweeps every unrecognised fact into an attribute bag on the serve
+// node, so `grounded`, `numbers_from_context` and `built_nothing` — judgements about the TURN —
+// ride on the artifact that deploys. That is a category error, and the same silent absorption
+// is how `model_kind` looked wired for as long as it did.
+//
+// The straightforward fix (deny those keys at sweep time) breaks the round-trip contract this
+// file owes the corpus: `graph_solution_facts(build_solution_graph(required))` must recover
+// the facts a reference requires, and action cases (bare/affirm, follow/build, follow/modify)
+// fail their own graders when keys are dropped. Fixing it properly means separating "facts the
+// grader projects from a response" from "facts a graph must round-trip" at the type level
+// rather than by key name — a change to EndState's contract, not a filter.
+//
+// Tracked on https://github.com/oramasearch/zetta/issues/984. B1a (model_kind rides the model
+// step) and B1b (the correctness gate refuses an unimplemented methodology) are landed and
+// carry the load; this is hygiene on top of them.
