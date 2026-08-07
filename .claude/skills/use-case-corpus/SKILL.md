@@ -1,164 +1,195 @@
 ---
 name: use-case-corpus
-description: "Research ONE use case (UC-n / S-n) to the depth where you can author accurate training cases for it, then generate a multi-turn corpus slice covering the agent's five verbs and four autonomy classes, and admit it through admit_corpus. Use when growing the base agent's corpus for a specific solution module, when a use case answers in the wrong pipeline shape, or when a verb (Monitor, Improve) has no training data. Triggers - 'corpus for UC-n', 'training data for churn/forecasting/collections', 'research a use case', 'the agent gets this use case wrong', 'cover Monitor and Improve', 'grow the corpus'."
+description: "Author an excellent multi-turn, tool-calling training corpus slice for ONE solution module (S-n/UC-n) from the solutions catalogue, then admit it through admit_corpus. Carries the scenario-enumeration strategy (five verbs x four autonomy classes x five personas x seven conversation arcs), the trajectory anatomy that teaches building rather than lookup, the fact vocabulary a reference may require, and the C++ authoring recipe. Use when growing the base agent's corpus, when a use case answers in the wrong pipeline shape, when a verb like Monitor or Improve has no training data, or when the agent repeats itself across turns. Triggers - 'corpus for UC-n', 'training data for churn/forecasting/collections', 'the agent gets this use case wrong', 'multi-turn samples', 'cover Monitor and Improve', 'grow the corpus', 'make the agent better at X'."
 ---
 
-# use-case-corpus — one use case, researched, then a corpus slice for it
+# use-case-corpus — one module, enumerated, authored as trajectories, admitted
 
-Tracking: [zetta#983](https://github.com/oramasearch/zetta/issues/983) (the epic) ·
-[zetta#982](https://github.com/oramasearch/zetta/issues/982) (the generator).
-Load **rlvr-training-data** first — it owns the method; this skill owns the *per-use-case*
-research and coverage discipline that makes the output accurate rather than merely fluent.
+**This file is the roadmap. Follow it in order.** Tables you must not paraphrase from memory —
+the fact vocabulary, the tool surface, the C++ recipe, the commands — are in
+[reference.md](reference.md). Load it before authoring.
 
-## This is the bootstrap. Say so.
+Epic: [#983](https://github.com/oramasearch/zetta/issues/983) ·
+generator: [#982](https://github.com/oramasearch/zetta/issues/982) ·
+method: **rlvr-training-data** (load first).
 
-**Decision (Steve, 2026-08-06): bootstrap with SFT now, add RLVR later.**
+---
 
-The corpus this skill produces is **supervised fine-tuning data — hand-anticipated scenarios**.
-That is the right thing to build now, and it is explicitly *not* the coverage strategy.
+## 0 · Two things to be honest about before starting
 
-The coverage strategy is the RLVR loop, and the machinery already exists: `run_rollout`
-(`agent/rollout.cpp`) has the policy propose a call, `Sandbox::apply` execute it, and the
-outcome feed the next decision — which is the "every call conditioned on the previous
-observation" property Step 3 asks you to author **by hand**. The loop generates it at whatever
-variety the policy explores, including scenarios nobody wrote down. Wiring the real neural
-Qwen policy to it is [#859](https://github.com/oramasearch/zetta/issues/859), open.
+**This is the bootstrap.** *(Decision, Steve, 2026-08-06: bootstrap with SFT now, add RLVR
+later.)* What you produce here is hand-anticipated supervised data. It is **not** the coverage
+strategy — `run_rollout` + `Sandbox::apply` (`agent/rollout.cpp`) already implement the loop
+that generates observation-conditioned trajectories at whatever variety a policy explores;
+wiring the neural Qwen policy to it is [#859](https://github.com/oramasearch/zetta/issues/859).
+So: **size this as a bootstrap.** Make the policy good enough to explore usefully. Do not try to
+hand-cover the variety of ways humans talk — attempting that is how the corpus reached 14,889
+cases while missing the word `"yes"`.
 
-Two consequences for how you use this skill:
-
-1. **Size the corpus as a bootstrap** — enough for the policy to be competent enough to explore
-   usefully. Do not try to hand-cover the variety of ways people will talk to the agent; that
-   is the job RLVR exists to do, and attempting it by hand is how the corpus reached 14.9k
-   cases while missing the word `"yes"`.
-2. **The Step 3 quality bar is reward-shaping in disguise.** *"Could a model produce this
-   pipeline without the observations?"* is a better **reward** question than an authoring rule.
-   When #859 closes, carry it across rather than re-deriving it.
-
-Until then, every checkpoint we ship is SFT-only — which is worth stating plainly wherever the
-product claims the agent "plays the game and learns"
-(`docs/projects/motive-fde-engagement/product-claims.md`).
-
-## Why one use case at a time
-
-A prompt spanning all 33 solution templates produces generic cases — the same failure as the
-hand-authored corpus, reached faster. **Depth per use case is the entire point.** A churn case
-that names `sfdc_account_id` and `LAST_CHURN_REASON` is grounded in a real schema; one that
-names `customers.churn_flag` is invented, and the model learns to invent.
-
-One run of this skill = **one `UC-n`/`S-n`**, researched, covered, admitted, committed.
-
-## Vocabulary — two different gates, never "the gate"
+**Say which gate you mean.** Two unrelated mechanisms:
 
 | Say | Mechanism | Judges |
 |---|---|---|
-| **admission gate** | `admit_corpus(vector<AdmissionCase>)` (`agent/admission_gate.cpp`) | a **training case** |
-| **correctness gate** | `zetta::pipeline::CorrectnessGate` + `Check` (`pipeline/gate.hpp`) | an **ExecutionGraph** before deploy |
+| **admission gate** | `admit_corpus(vector<AdmissionCase>)` | a **training case** |
+| **correctness gate** | `zetta::pipeline::CorrectnessGate` + `Check` | an **ExecutionGraph** before deploy |
 
-This skill runs the **admission gate**. It never runs the correctness gate. Conflating them
-borrows a safety argument about graphs and applies it to training data, where it does not hold
-([#983](https://github.com/oramasearch/zetta/issues/983)).
+This skill runs the **admission gate**, never the correctness gate.
 
-## Step 1 — Research, in this order
+---
 
-Do not write a single case until all four are answered in writing. Skipping straight to
-generation is how the corpus got here.
+## 1 · Scope: one module per run
 
-**1. What this module IS** — `modules/solutions-designs/docs/plan/04-solutions-catalog.md`
-(⚠️ internal-confidential), the twelve-field spec: methodology composition · correctness
-adaptations · business wiring (actions and decision policy, systems of action, people and
-cadence) · ROI contract · agent operating definition · data plan · capability levels ·
-deployment shapes · governance and failure modes. **The module is not the model.** "Who acts
-on this score, and in which system?" is a first-class ask.
+A prompt spanning all 33 catalogue entries produces generic cases — the current failure,
+reached faster. **Depth is the point.** A churn case naming `sfdc_account_id` and
+`last_churn_reason` is grounded in a real schema; one naming `customers.churn_flag` is invented,
+and the model learns to invent.
 
-**2. Its methodology and correctness profile** — `03-methodology-portfolio.md`, the `M-n`
-composition and what must be true for it to be *correct* here. This is what separates
-use cases that look alike: forecasting is **backtested, not calibrated**; churn is
-**point-in-time, leakage-free, calibrated**. A case that gets this wrong teaches the agent to
-build the neighbouring solution.
+One run = one `S-n`/`UC-n`. Catalogue: `S-2`…`S-12`, `M-10`…`M-21`, `UC-13`…`UC-24`
+(`plan_templates.cpp`), specified in `modules/solutions-designs/docs/plan/04-solutions-catalog.md`
+(⚠️ internal-confidential).
 
-**3. The engine's real surface — rendered from source, never retyped.** The live tools
-(`kAgentTools` in `capabilities.cpp`), the four `InteractionKind` contracts, and the pipeline
-construction verbs (`connect` · `clean` · `model` · `index` · `serve` · `act`,
-`solution_graph.hpp`). A retyped tool list is wrong the day someone adds a tool, and a case
-calling a tool that does not exist is a case that trains a hallucination.
+## 2 · Research before authoring — four questions, answered in writing
 
-**4. The real world** — use the **perplexity** skill. What are the *actual* table and column
-names in this domain, the actual data shapes, the actual leakage traps, the actual systems of
-action? For a customer engagement, prefer their own documentation over research: the Motive
-churn work is grounded in real column names from their schema
-(`docs/projects/motive-fde-engagement/`), which is why its cases are accurate.
+Write the answers into `docs/agent/cards/datasets/`. **Research nobody recorded gets redone.**
 
-Write the answers into `docs/agent/cards/datasets/` alongside the corpus. **Research nobody
-recorded is research that gets redone.**
+1. **What is this module?** The twelve-field spec (`04-solutions-catalog.md` §2.6): methodology
+   composition · correctness adaptations · business wiring (actions, systems of action, people
+   and cadence) · ROI contract · agent operating definition · data plan · capability levels ·
+   deployment shapes · governance and failure modes. **A module is not a model.** *"Who acts on
+   this score, and in which system?"* is a first-class ask.
+2. **What makes it CORRECT here?** (`03-methodology-portfolio.md`.) This is what separates
+   use cases that look alike: churn is point-in-time, leakage-free, **calibrated**; forecasting
+   is **backtested, not calibrated**; retrieval is indexed with no supervised label at all. Get
+   this wrong and you train the agent to build the neighbouring solution, fluently.
+3. **What is the engine's real surface?** Re-derive `kAgentTools`, the four `InteractionKind`
+   contracts, and the pipeline verbs **from source** ([reference.md](reference.md) §2–3). Never
+   retype a tool list — it is wrong the day someone adds a tool.
+4. **What does this domain's data actually look like?** Real table and column names, real null
+   rates, real leakage traps, real systems of action. Use the **perplexity** skill, or better,
+   the customer's own docs — the Motive churn slice is grounded in real columns from their
+   schema (`docs/projects/motive-fde-engagement/`), which is why its cases are accurate.
 
-## Step 2 — Build the coverage matrix before generating
+## 3 · Enumerate the scenario space — do not imagine it
 
-Coverage is **enumerated, not imagined** — that is the whole correction this skill exists to
-make. For the use case in hand, the matrix is mechanical:
+**This is the section that answers "how do you anticipate the huge variety of ways people
+interact?"** You do not brainstorm. You take the cross-product of six axes, each read off the
+product, and you author the cells.
 
-**Five verbs** (`04-solutions-catalog.md` §2.4) — **Build** · **Run** · **Monitor** ·
-**Explain** · **Improve**. Today's corpus is almost entirely Build and Explain; a slice that
-adds only more Build is not progress.
+### Axis A — the five verbs (`04-solutions-catalog.md` §2.4)
 
-**Four autonomy classes** — **A0 draft** · **A1 approval-gated** · **A2 autonomous-under-audit**
-· **A3 self-tuning**. The class **changes the correct reply to an identical ask**: under A1
-*"rerun it with the new threshold"* must produce an approval request; under A2 it must run.
-Every verb that acts needs at least the A1/A2 pair, or the agent learns one behaviour and acts
-when it should ask.
+**Build** · **Run** · **Monitor** · **Explain** · **Improve**.
 
-**Register** — how people actually type. Mine `docs/meetings/*charles*` for verbatim asks from
-a real technical buyer rather than inventing them. **Known limit:** those transcripts are
-pre-sales and contain no deployed-operator register, so **Monitor and Improve register must be
-designed from the solution spec** until someone is deployed and generating it (then #943
-captures it).
+Today's corpus is almost entirely **Build** and **Explain**. **Monitor** (drift/PSI,
+calibration over time, per-segment realized performance, holdout integrity, connector and
+schema health) and **Improve** (retrain on trigger, propose a threshold change *with its
+predicted ROI effect*, run a designed experiment) are **absent** — and they are where a
+deployed customer spends most of their turns. A slice that adds only more Build is not progress.
 
-Any cell you deliberately skip gets **logged as skipped**. A silent gap reads as coverage.
+### Axis B — the four autonomy classes
 
-## Step 3 — Author TRAJECTORIES. This is the whole skill.
+**A0 draft** · **A1 approval-gated** · **A2 autonomous-under-audit** · **A3 self-tuning**.
+
+**The class changes the correct reply to an identical ask.** Under A1, *"rerun it with the new
+threshold"* must produce an approval request; under A2 it must run. Every acting verb needs at
+least the A1/A2 pair, or the agent learns one behaviour and acts when it should ask — which
+makes governed self-serve unsellable.
+
+### Axis C — five personas, because the same question wants a different answer
+
+| Persona | Asks like | Wants |
+|---|---|---|
+| **Analyst** | *"can you tell me who's likely to leave"* | the answer, not the method |
+| **ML engineer** | *"what's the cutoff column and is this leakage-free?"* | the mechanism, and will check it |
+| **Ops owner** | *"it flagged 400 accounts, who's supposed to call them?"* | the business wiring |
+| **Executive** | *"is this actually working?"* | the ROI readout, one number, no jargon |
+| **Skeptic** | *"how do I know that number isn't overfit?"* | the held-out figure and its caveat |
+
+The skeptic is the most valuable and the least represented. An agent that answers *"how do I
+know this isn't overfit"* by quoting the held-out figure **and naming the in-sample gap** is the
+difference between a demo and a sale.
+
+### Axis D — seven conversation arcs (the shape of a whole thread)
+
+1. **Happy path** — ask → propose → approve → build → run → read the report.
+2. **Blocked by data** — the ask is good, the data cannot support it. The agent must say so
+   *before* building, naming which column is missing.
+3. **Wrong thing asked** — the user asks for X; the data supports Y and Y is what they actually
+   want. Propose Y, explain why, do not silently substitute.
+4. **Mid-thread pivot** — three turns about churn, then *"actually, what's our disk usage?"*.
+   Answer the new thing without dragging the old context in.
+5. **Repair after failure** — a run failed; the follow-up is answerable only from the **tool
+   outcome** in the history, not from the prose of the previous reply.
+6. **Skeptical interrogation** — four turns of "prove it", each drilling into a number.
+7. **Scope refusal** — the ask is out of scope, or in scope and unsupported. Decline, name why,
+   offer the nearest thing that *is* supported.
+
+### Axis E — register: how people actually type
+
+Bare turns (`"yes"`, `"go ahead"`, `"what?"`, `"no, a new one"`, `"the second one"`) · lowercase
+and typos (`"can u build me a chrun model"`) · frustration (`"that's not what I asked"`,
+`"you already said that"`) · compound asks (`"build it and tell me who's worst"`) · thinking
+aloud (`"hmm"`, `"ok so"`) · pasted artifacts (a SQL snippet, an n8n node, a stack trace, with
+no sentence around it).
+
+**Mine real register rather than inventing it** — `docs/meetings/*charles*` is verbatim from a
+real technical buyer. **Known limit:** those are pre-sales and contain **no deployed-operator
+register**, so Monitor and Improve register must be *designed* from the solution spec until
+someone is deployed and generating it (then #943 captures it).
+
+### Axis F — the failure library (this is where the negative controls come from)
+
+For each cell, name what a plausible-but-wrong agent does. See §5.
+
+### Working the matrix
+
+Full enumeration is 5 × 4 × 5 × 7 = 700 cells before register. **Do not author all of them.**
+Author in this priority order, and **log every cell you skip with the reason** — a silent gap
+reads as coverage:
+
+1. Every **verb** at least once (fixes the Monitor/Improve hole).
+2. Every **A1/A2 pair** for each acting verb (fixes the autonomy hole).
+3. Arcs 2, 5 and 7 — **blocked-by-data, repair-after-failure, scope refusal**. These are what
+   make an agent trustworthy, and they are the arcs a happy-path corpus never contains.
+4. The **skeptic** persona on the module's headline number.
+5. Register variants over the cells you already authored — cheap, and it is where the bare-turn
+   failure lived.
+
+---
+
+## 4 · Author TRAJECTORIES, not lookups
 
 An AI builder does not answer questions. It **calls a tool, reads what came back, and decides
-the next call from it.** That is the behaviour we are training, and the corpus contains almost
-none of it.
+the next call from it.**
 
-What `tool_use_family` teaches today:
+What the corpus teaches today (`tool_use_family`): `"list the models"` → call `list_models` →
+report. One ask, one call, one report. That is a **lookup**. Nothing in it is conditioned on an
+observation, so it cannot teach building.
 
-```
-ask: "list the models on this node"
-  -> call list_models
-  -> report the result
-```
-
-One ask, one call, one report. That is a **lookup**. It cannot teach building, because nothing
-in it is *conditioned on an observation*.
-
-### What an exceptional case looks like
-
-A trajectory, where every call after the first is decided by what the previous one returned,
-and the final pipeline is **derivable only from what the schema actually showed**:
+### The shape to author
 
 ```
 USER  "predict which accounts are likely to churn"
 
-  -> list_datasets                     # what is even here?
-     <- motive.accounts (48 cols, 1.2M rows), motive.comm_events (31 cols, 84M rows)
+  → list_datasets                      # what is even here?
+     ← motive.accounts (48 cols, 1.2M rows), motive.comm_events (31 cols, 84M rows)
 
-  -> get_dataset motive.accounts       # what does it support?
-     <- sfdc_account_id (string, 11.4% null), churn_date (date, 8% non-null),
-        last_churn_reason (string), mrr (float), event_updated_datetime_pt (timestamp)
+  → get_dataset motive.accounts        # what does it support?
+     ← sfdc_account_id (string, 11.4% null), churn_date (date, 8% non-null),
+       last_churn_reason (string), mrr (float), event_updated_datetime_pt (timestamp)
 
 AGENT "`churn_date` gives us a label and `event_updated_datetime_pt` gives us a cutoff, so
        this can be point-in-time. Two things first: `sfdc_account_id` is null on 11.4% of
        rows, and `event_updated_datetime_pt` is the pipeline load date rather than the
-       source change date - joining on it would leak the future. Restrict to completed
+       source change date — joining on it would leak the future. Restrict to completed
        rows and drop the null-id rows, or impute them?"
 
 USER  "drop them"
 
-  -> connect(motive.accounts)          # NOW the pipeline is shaped by what was read
-  -> clean(drop_null: sfdc_account_id, as_of: event_updated_datetime_pt, completed_only)
-  -> model(gbdt, label: churn_date IS NOT NULL, calibrate: true, holdout: 0.3)
-  -> index(shap)
-  -> serve
+  → connect(motive.accounts)           # the pipeline is shaped by what was READ
+  → clean(drop_null: sfdc_account_id, as_of: event_updated_datetime_pt, completed_only)
+  → model(gbdt, label: churn_date IS NOT NULL, calibrate: true, holdout: 0.3)
+  → index(shap)
+  → serve
 
 AGENT "Built. Point-in-time on `event_updated_datetime_pt`, calibrated, 30% held out so the
        quality figure is measured on accounts it never saw. Run it?"
@@ -166,139 +197,124 @@ AGENT "Built. Point-in-time on `event_updated_datetime_pt`, calibrated, 30% held
 USER  "yes"                            # a bare turn, resolvable only against the proposal
 ```
 
-Four properties make that case worth training on, and all four are checkable:
-
-1. **Every call after the first is conditioned on an observation.** `get_dataset` was called
-   *because* `list_datasets` returned a candidate; `clean` carries `drop_null` *because*
-   `get_dataset` reported 11.4% nulls.
-2. **The pipeline is underivable from the ask alone.** "Predict churn" does not tell you to
-   drop null ids or which column is the cutoff. **This is the anti-fabrication signal applied
-   to building** — the same reason grounded-QA cases vary the context. A case whose pipeline
-   could be emitted without reading the schema teaches the model to emit from the use-case
-   *name*, which is how one pipeline shape ended up serving churn, lead scoring and
-   collections alike.
-3. **It surfaces the domain's real trap before building**, not after the run fails. The traps
-   are in the research from step 1 and in the customer's own docs.
-4. **It ends in a bare turn** that only resolves against the proposal.
-
-### The quality bar, stated as a test
+### The quality bar, as a test you can run
 
 > **Could a model produce this pipeline without the observations?**
-> If yes, the case is a lookup wearing a trajectory's clothes. Rewrite it so the schema
-> decides something.
 
-Concretely: change one fact in the grounding — make `churn_date` absent, make the null rate
-0.05%, make the cutoff column missing — and the correct trajectory **must** change. If it does
-not, the case is not teaching building.
+If yes, it is a lookup wearing a trajectory's clothes. **Perturb one fact in the grounding** —
+remove `churn_date`, drop the null rate to 0.05%, remove the cutoff column — and the correct
+trajectory **must change**. If it does not, the case teaches emission from the use-case *name*,
+which is how one pipeline shape once served churn, lead scoring and collections alike.
 
-### The catalogue is the action space
+This is the anti-fabrication signal applied to **building** — the same reason grounded-QA cases
+hold the question fixed and vary the context.
 
-Each `S-n` has a **specific pipeline shape**, and the trajectory must arrive at *that* one:
-churn is point-in-time, leakage-free, calibrated; forecasting is **backtested, not
-calibrated**; retrieval is indexed with no supervised label at all. Getting this wrong is not
-a near miss — it trains the agent to build the neighbouring solution fluently.
+### Threads
 
-So the strongest negative control for any trajectory is **the neighbouring solution's pipeline
-on this ask**. It is well-formed, it passes the correctness gate, and it answers the wrong
-question — which is exactly what the model produces when it emits from the use-case name
-rather than from the schema.
+Every case carries `history` (`AdmissionCase::history`), including prior **tool outcomes**
+(`PriorTurn::tools`) — so *"why did that fail?"* is answerable from the call that ran, not from
+prose. Include bare turns against specific antecedents, and make the same word train toward
+different behaviour depending on what precedes it
+([#942](https://github.com/oramasearch/zetta/issues/942)).
 
-### Threads, and the bare turn
+---
 
-Every case is part of a conversation (`AdmissionCase::history`), carrying prior tool outcomes
-(`PriorTurn::tools`) — so *"why did that fail?"* is answerable from the **call that ran**, not
-from the prose. Include the bare turns (`"yes"`, `"go ahead"`, `"what?"`, `"no, a new one"`),
-each against a specific antecedent, and make the same word train toward different behaviour
-depending on what precedes it ([#942](https://github.com/oramasearch/zetta/issues/942)).
+## 5 · Negative controls — where quality is actually won
 
-### The negative-control rule
+**The best negative control is a correct answer to a NEIGHBOURING question.** A straw man
+("the model outputs gibberish") discriminates nothing and inflates the pass rate. Build controls
+from the real confusions:
 
-**The best negative control is a correct answer to a neighbouring question.** A straw man
-discriminates nothing and inflates the pass rate. Build them from the real confusions:
+| Control | Why it is the right one |
+|---|---|
+| The **neighbouring solution's pipeline** on this ask | Well-formed, passes the correctness gate, answers the wrong question. Exactly what a model that emits from the use-case name produces. |
+| The behaviour correct for a **different autonomy class** | Runs when A1 required approval. |
+| The behaviour correct for a **different verb** | Builds when asked to monitor. |
+| **The right pipeline reached without the observations** | Guessed correctly. Punishing this is what forces attention onto the schema. |
+| The reply correct for a **different antecedent** | The previous turn repeated verbatim (`repeated_prior_turn`). |
 
-- the **neighbouring solution's pipeline** (calibration on a forecasting ask),
-- the behaviour correct for a **different autonomy class** (runs when A1 required approval),
-- the behaviour correct for a **different verb** (builds when asked to monitor),
-- **the pipeline emitted without the observations** — the right shape reached by guessing,
-- the reply correct for a **different antecedent** (the previous turn repeated verbatim).
+## 6 · Hard constraints
 
-### Facts must be ones the grader computes
-
-`response_solution_facts` is the list. An invented key makes the reference unsatisfiable and
-the case silently untrainable — twice already. `EveryReferencePassesItsOwnGrader` catches it.
-
-### No case may assert an unshipped capability
-
-The corpus is a **claim surface** — `product_knowledge_family` states what the product can do,
-in our voice, in the weights, to every customer. Check every assertion against
-`docs/projects/motive-fde-engagement/product-claims.md`. The corpus says *"You can run Python
-in a Pipeline step"*; the engine has `PythonFrontend` — **simulated** Python — and the customer
-meeting said "simulated Python". **The meeting was more honest than the training data.**
-
-## Step 4 — Admit, measure, report
-
-1. **Run the admission gate.** `admit_corpus` must admit every case; assert each negative
-   control fails **individually**.
-2. **Report the rejection rate as the headline.** It says how much verification is doing. A 0%
-   rejection rate means the admission gate is not biting and is a bug in the gate, not a win.
-3. **Run every corpus invariant** (`CorpusInvariants.*`). This slice is additive; it does not
-   get to lower the bar that caught the last four regressions.
-4. **Measure diversity** — target entropy and dominant-shape share, per
-   `docs/agent/corpus-diversity-runbook.md`. A model-authored slice mode-collapses as easily as
-   a hand-authored one, and more expensively.
-5. **Update the dataset card** — what generated this slice (model id, prompt version, sampling
-   parameters, accept/reject counts), and what it still does not cover.
-
-## Definition of done
-
-Not "cases were generated". The slice is done when:
-
-- every matrix cell is covered **or logged as skipped, with the reason**;
-- the admission gate admits every case and the rejection rate is reported;
-- every existing invariant passes;
-- a held-out probe for this use case — written **without** reference to the cases authored —
-  answers in the right **kind** and the right **pipeline shape**;
-- **the perturbation test passes**: for a sample of trajectories, change one fact in the
-  grounding (remove the label column, drop the null rate to 0.05%, remove the cutoff) and the
-  correct trajectory changes. If it does not, those cases teach emission from the use-case
-  name, not from the data, and they are the reason one pipeline shape once served churn, lead
-  scoring and collections alike;
-- **every multi-call trajectory has each call after the first conditioned on an observation** —
-  a trajectory whose calls are a fixed script is a lookup with extra steps;
-- the dataset card names its provenance and its gaps honestly.
-
-## Never
-
-- ❌ More than one use case per run. Breadth per run is how you get generic cases.
-- ❌ Generating before the four research questions are answered in writing.
-- ❌ Retyping the tool list, the interaction kinds, or the pipeline verbs.
-- ❌ Straw-man negative controls. The strongest control is the **neighbouring solution's
-  pipeline on this ask** — well-formed, correctness-gate-passing, and answering the wrong
-  question.
-- ❌ A trajectory whose pipeline is derivable from the ask alone. That is a lookup wearing a
-  trajectory's clothes, and it trains emission from the use-case name.
-- ❌ A tool call that is not conditioned on what the previous call returned.
-- ❌ A case asserting a capability the claims register does not carry as shipped.
-- ❌ Bare "gate" — say **admission gate** or **correctness gate**.
-- ❌ Generating the graders. A model proposing its own success criterion is how a corpus
+- **Only require facts the grader computes.** [reference.md](reference.md) §1 is the list. An
+  invented key makes the reference unsatisfiable and the case silently untrainable — twice
+  already (`tool_called`, `abandoned_prior_proposal`).
+- **Never assert an unshipped capability.** The corpus is a **claim surface**:
+  `product_knowledge_family` states what the product can do, in our voice, in the weights, to
+  every customer, forever. Check every assertion against
+  `docs/projects/motive-fde-engagement/product-claims.md`. The corpus currently says *"You can
+  run Python in a Pipeline step"* while the engine has `PythonFrontend` — **simulated** Python —
+  and the customer meeting said "simulated Python". **The meeting was more honest than the
+  training data.** Do not add to that.
+- **Never generate the graders.** A model proposing its own success criterion is how a corpus
   quietly stops measuring anything. Criteria stay in C++.
+- **Vocabulary contract** in every user-facing string: **Pipeline** (never "execution graph"),
+  **Verification**, **Workspace Profile**, **Saved Version**, **Proposed Solution**,
+  **Ask Orama**.
+
+## 7 · Emit, admit, measure
+
+The recipe and commands are [reference.md](reference.md) §4–5. In short: a family function in
+`interaction_families.cpp`, registered in `interaction_families(...)`, then:
+
+```sh
+cmake --build build --target zetta-tests
+./build/tests/zetta-tests --gtest_filter='CorpusInvariants.*:DatasetGenerator.*'
+ZETTA_CORPUS_OUT=data/corpora/interaction-corpus-vN.jsonl \
+  ./build/tests/zetta-tests --gtest_filter='InteractionContract.WriteCorpusJsonl'
+```
+
+Then report — **these numbers are the deliverable, not the case count**:
+
+- **Admission-gate rejection rate.** It says how much verification is doing. **0% means the
+  admission gate is not biting** and is a bug in the gate, not a win.
+- **Coverage**: cells authored, cells skipped, each skip with its reason.
+- **Perturbation result**: of N trajectories perturbed, how many changed. Any that did not are
+  lookups and must be rewritten.
+- **Diversity**: target entropy and dominant-shape share
+  (`docs/agent/corpus-diversity-runbook.md`). A model-authored slice mode-collapses as easily as
+  a hand-authored one, and more expensively.
+
+## 8 · Definition of done
+
+Not "cases were generated".
+
+- [ ] Every verb covered; every acting verb has its A1/A2 pair.
+- [ ] Arcs 2, 5, 7 (blocked-by-data, repair-after-failure, scope refusal) present.
+- [ ] Every skipped cell logged **with its reason**.
+- [ ] Every trajectory: each call after the first conditioned on an observation.
+- [ ] Perturbation test passes on a sample.
+- [ ] `admit_corpus` admits every case; each negative control fails **individually**.
+- [ ] Every `CorpusInvariants.*` passes — this slice is additive and does not get to lower the
+      bar that caught the last four regressions.
+- [ ] A held-out probe for this module, written **without** reference to the authored cases,
+      answers in the right **kind** and the right **pipeline shape**.
+- [ ] The dataset card names its provenance and its gaps honestly.
+
+## 9 · Never
+
+- ❌ More than one module per run.
+- ❌ Authoring before the four research questions are answered in writing.
+- ❌ Retyping the tool list, the kinds, or the fact keys instead of reading them from source.
+- ❌ Straw-man negative controls.
+- ❌ A trajectory whose pipeline is derivable from the ask alone.
+- ❌ A tool call not conditioned on what the previous call returned.
+- ❌ A bare turn with no `history`.
+- ❌ Asserting a capability the claims register does not carry as shipped.
+- ❌ Bare "gate" — say **admission gate** or **correctness gate**.
 
 ## Related
 
 - **rlvr-training-data** — the method (grow by generation, admit by verification). Load first.
-- **perplexity** — real-world grounding for step 1.4.
+- **perplexity** — real-world grounding for research question 4.
 - **add-use-case** — building the `UC-n` in the engine; this skill trains the agent on it.
 - **zetta-walkthrough** — the follow-up row is the acceptance this corpus is authored against.
-- **nibble-dev** — one matrix row per bite, admitted before the next.
+- **nibble-dev** — one matrix cell per bite, admitted before the next.
 
 ## Version History
-- v1.1.0 (2026-08-06): Rewrote Step 3 around **trajectories**. The corpus's tool use was one
-  ask → one call → one report, which is a lookup and cannot teach building. An exceptional case
-  is a trajectory where every call after the first is conditioned on an observation and the
-  pipeline is **underivable from the ask alone** — the anti-fabrication signal applied to
-  building. Added the perturbation test as the quality bar, and the neighbouring solution's
-  pipeline as the strongest negative control.
-- v1.0.0 (2026-08-06): Initial. Per-use-case research, the verb × autonomy coverage matrix, the
-  neighbouring-answer rule for negative controls, the claim-surface check, and the
-  admission-gate / correctness-gate distinction. Written for
-  https://github.com/oramasearch/zetta/issues/983.
+- **v2.0.0 (2026-08-06)** — Rewritten as the roadmap Claude Code follows, not a checklist that
+  points elsewhere. Adds the six-axis enumeration strategy (verbs × autonomy × personas × arcs ×
+  register × failures) as the systematic answer to "anticipate the variety", the priority order
+  for working the matrix, the trajectory anatomy with the perturbation test as its quality bar,
+  and the neighbouring-answer rule for negative controls. Tables moved to `reference.md`.
+- v1.1.0 (2026-08-06) — Trajectories over lookups.
+- v1.0.0 (2026-08-06) — Initial.
