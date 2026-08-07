@@ -5,6 +5,8 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/agent/solution_graph.hpp"
+#include "zetta/agent/end_state.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
@@ -454,4 +456,91 @@ TEST(TemporalValidationCheck, TheChurnShapeAndTheForecastShapeAreNotInterchangea
               zetta::pipeline::CheckStatus::Fail)
         << "the churn recipe under a forecasting name is the exact confusion the corpus's "
            "neighbouring-solution control is trying to teach against";
+}
+
+// --- B7: a methodology travels intact from facts to gate verdict ---------------------------
+//
+// The end-to-end property #983 turns on: an ask for one methodology must produce that
+// methodology's pipeline, and the neighbouring one must be refused. Before this epic the two
+// were indistinguishable — `model_kind` never reached the IR, so a forecasting graph and a churn
+// graph were byte-identical and no check could tell them apart.
+//
+// This composes the whole chain: agent facts → build_solution_graph → the correctness gate.
+
+namespace {
+
+zetta::pipeline::ValidationReport gate_over(const zetta::ir::ExecutionGraph& graph) {
+    zetta::pipeline::CorrectnessGate gate;
+    gate.add_check(std::make_shared<zetta::pipeline::MethodologyCheck>());
+    gate.add_check(std::make_shared<zetta::pipeline::TemporalValidationCheck>());
+    return gate.run(graph);
+}
+
+}  // namespace
+
+TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
+    zetta::agent::EndState facts;
+    facts.set("connect", true);
+    facts.set("clean", true);
+    facts.set("model", true);
+    facts.set("serve", true);
+    facts.set("model_kind", std::string("gbdt"));
+    facts.set("calibrated", true);
+
+    const auto graph = zetta::agent::build_solution_graph(facts);
+    const auto report = gate_over(graph);
+    EXPECT_FALSE(report.block_deploy)
+        << "the one methodology that ships must still pass end to end";
+}
+
+// The honest state of M-4 today. Its primitives exist and are tested — temporal split, backtest,
+// lag features, the squared-error objective — but nothing wires them into a run, so `forecast` is
+// deliberately NOT in MethodologyCheck::implemented(). The gate therefore refuses it, loudly,
+// with a reason that names what is implemented.
+//
+// A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
+// proposing a forecast the engine silently runs as a classifier.
+TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRunPathExists) {
+    zetta::agent::EndState facts;
+    facts.set("connect", true);
+    facts.set("model", true);
+    facts.set("serve", true);
+    facts.set("model_kind", std::string("forecast"));
+    facts.set("temporal_validation", true);
+
+    const auto graph = zetta::agent::build_solution_graph(facts);
+    const auto report = gate_over(graph);
+    EXPECT_TRUE(report.block_deploy)
+        << "a methodology with no run path must be refused, not silently run as something else";
+
+    bool named_the_way_forward = false;
+    for (const auto& result : report.checks) {
+        if (result.status == zetta::pipeline::CheckStatus::Fail &&
+            result.reason.find("gbdt") != std::string::npos) {
+            named_the_way_forward = true;
+        }
+    }
+    EXPECT_TRUE(named_the_way_forward)
+        << "the refusal must say what IS implemented, or the author only learns they are stuck";
+}
+
+// And the property that makes the corpus's neighbouring-solution negative control meaningful:
+// the two shapes are not interchangeable. Swap the methodologies and the verdicts swap with them.
+TEST(MethodologyEndToEnd, TheTwoShapesAreNotInterchangeable) {
+    const auto build = [](const std::string& model_kind, bool calibrated) {
+        zetta::agent::EndState facts;
+        facts.set("connect", true);
+        facts.set("model", true);
+        facts.set("serve", true);
+        facts.set("model_kind", model_kind);
+        facts.set("temporal_validation", true);
+        if (calibrated) facts.set("calibrated", true);
+        return zetta::agent::build_solution_graph(facts);
+    };
+
+    // Churn calibrates and is fine. The identical shape under a forecasting name is not.
+    EXPECT_FALSE(gate_over(build("gbdt", true)).block_deploy);
+    EXPECT_TRUE(gate_over(build("forecast", true)).block_deploy)
+        << "the churn recipe wearing a forecasting name is the exact confusion the corpus's "
+           "neighbouring-solution control exists to teach against, and the gate must catch it";
 }
