@@ -690,3 +690,19 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
     EXPECT_FALSE(rejected.ok);
     EXPECT_EQ(rejected.error.code, "invalid_input");
 }
+
+
+// #983 acceptance criteria 3 and 4: the Monitor and Improve verbs must be REACHABLE by the agent.
+//
+// A capability that ships and is invisible to chat may as well not exist — `score` shipped,
+// worked, and left "which accounts are most at risk" unanswerable until it was allowlisted. The
+// agent could previously only DESCRIBE monitoring, which is #976 at the methodology level.
+TEST_F(RegistryFixture, TheMonitorAndImproveVerbsAreReachableReads) {
+    for (const char* name : {"model_health", "propose_improvement"}) {
+        const std::shared_ptr<const Capability> capability = registry.find(name);
+        ASSERT_NE(capability, nullptr) << name << " is not registered";
+        EXPECT_EQ(capability->kind, CapabilityKind::Read)
+            << name << " must be a read — reads are GET, actions are POST (#954)";
+        EXPECT_FALSE(capability->mutates) << name << " reports; it does not act";
+    }
+}

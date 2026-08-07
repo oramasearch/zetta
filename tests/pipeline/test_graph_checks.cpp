@@ -551,3 +551,56 @@ TEST(MethodologyEndToEnd, TheTwoShapesAreNotInterchangeable) {
         << "the churn recipe wearing a forecasting name is the exact confusion the corpus's "
            "neighbouring-solution control exists to teach against, and the gate must catch it";
 }
+
+// --- #983 acceptance criteria, demonstrated -------------------------------------------------
+//
+// The epic lists six behavioural criteria. Four are decidable at the engine level and are
+// demonstrated here; two (the three-turn walk, and an agent CALLING these tools rather than
+// describing them) need a trained checkpoint and a live node, and are not claimed by this test.
+//
+// Naming that split matters: a green engine test is not evidence the agent does the right thing,
+// and this epic has already had one acceptance test pass a model that was differently wrong each
+// turn.
+
+// Criterion 1: a forecasting ask produces the forecasting pipeline; a churn ask still produces
+// the calibrated one. Before this epic both produced byte-identical graphs.
+TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
+    const auto build = [](const std::string& model_kind, bool calibrated, bool temporal) {
+        zetta::agent::EndState facts;
+        facts.set("connect", true);
+        facts.set("clean", true);
+        facts.set("model", true);
+        facts.set("serve", true);
+        facts.set("model_kind", model_kind);
+        if (calibrated) facts.set("calibrated", true);
+        if (temporal) facts.set("temporal_validation", true);
+        return zetta::agent::build_solution_graph(facts);
+    };
+
+    const auto churn = build("gbdt", true, false);
+    const auto forecast = build("forecast", false, true);
+
+    EXPECT_FALSE(gate_over(churn).block_deploy) << "churn calibrates and is accepted";
+    EXPECT_FALSE(gate_over(forecast).block_deploy) << "forecast is backtested and is accepted";
+
+    // And they are not interchangeable — the neighbouring shape under the other name is refused.
+    EXPECT_TRUE(gate_over(build("forecast", true, true)).block_deploy)
+        << "the churn recipe under a forecasting name must be blocked";
+    EXPECT_TRUE(gate_over(build("forecast", false, false)).block_deploy)
+        << "a forecast that is not validated over time must be blocked";
+}
+
+// Criterion 6: the corpus invariants still pass. Asserted by CorpusInvariants.* running green;
+// recorded here so the epic's acceptance is readable in one place rather than inferred from a
+// suite name.
+TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
+    const std::vector<std::string>& implemented =
+        zetta::pipeline::MethodologyCheck::implemented();
+    // What ships, ships. What does not, is refused rather than silently run as something else.
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end());
+    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster", "graph"}) {
+        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
+            << unshipped << " has no run path; listing it would make the gate a lie";
+    }
+}
