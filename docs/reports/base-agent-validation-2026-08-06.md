@@ -153,3 +153,60 @@ ZETTA_QWEN_DIR=$(pwd)/data/checkpoints/base-agent-0.6b-interaction-v14 \
 ZETTA_CANARY=$(pwd)/data/corpora/interaction-corpus-v14.jsonl.canary ZETTA_EVAL_CASES=120 \
   ./build/tests/zetta-tests --gtest_filter=QwenRealCheckpoint.EvaluateBaseAgentOnCanary
 ```
+
+
+---
+
+# v15 — the rephrasing hypothesis, tested
+
+**Checkpoint:** `base-agent-0.6b-interaction-v15` · **Corpus:** `interaction-corpus-v15` (the v14
+corpus with the `bare/redirect` reply rephrased to share register with the clarify family).
+
+Same three turns, same node, same history as v13 and v14:
+
+```
+USER  create me a churn project
+v15   What should the new Project predict, and over which table? Right now churn-uc1 is
+      what's loaded, on `customers`.
+
+USER  yes
+v15   What should the new Project predict, and over which table? Right now churn-uc1 is
+      what's loaded, on `customers`.                                          <- IDENTICAL
+
+USER  what?
+v15   Any time. Ask whenever you need something from churn-uc1.
+```
+
+## Across three checkpoints
+
+| | v13 | v14 | v15 |
+|---|---|---|---|
+| Says *"Dropped that one"* on a substantive ask | no | **yes** | **no** |
+| Turn 1 sensible | yes | **no** | **yes** |
+| Repeats consecutively | yes (2–3) | yes (1–2) | yes (1–2) |
+| Three-turn walk | FAIL | FAIL | **FAIL** |
+
+## What this settles, and what it does not
+
+**Settled — the phrasing hypothesis was right, and the fix works.** *"Dropped that one"* is gone
+and turn 1 is sensible again. 180 cases (1.1% of the corpus) carrying an opening that appeared
+nowhere else in 16,239 were enough to capture an ask form they were never meant for; phrasing the
+redirect like the clarifying question it actually is removed the effect entirely. **A corpus
+family's REGISTER is a load-bearing property, not a style choice** — and no invariant checks it.
+
+**Not fixed — the repeat.** v15 gives the identical reply to *"create me a churn project"* and to
+*"yes"*. The model is not attending to the history it is given. This is exactly what the v13
+control predicted: the repeat was never caused by `bare_turn`, so removing its side effect could
+not fix it.
+
+**The actionable number is 2.2%.** Only 360 of 16,239 cases carry `history`. Three checkpoints now
+say the same thing: bare turns can be taught *individually* — v15 handles the words without
+mangling neighbouring asks — while *attending to the thread* cannot be taught at that density. The
+next attempt should raise multi-turn density substantially, not add another family.
+
+**And this is the anticipation ceiling, measured.** Two rounds of hand-authored corpus work,
+each verified against invariants and the admission gate, each scoring well on the canary, neither
+producing the behaviour it was written for. That is the argument for
+[#859](https://github.com/oramasearch/zetta/issues/859) stated as evidence rather than as an
+opinion: the loop generates observation-conditioned multi-turn experience at whatever density the
+policy explores, which is the one thing hand-authoring has now failed twice to supply.
