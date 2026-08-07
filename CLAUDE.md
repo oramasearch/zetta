@@ -648,6 +648,12 @@ ZETTA_QWEN_DIR=$(pwd)/data/checkpoints/base-agent-0.6b-interaction-v10
 
 ### Datasets and models are published to HuggingFace, with cards
 
+**Run `python3 scripts/check_published.py` after any training run.** It lists local checkpoints
+and corpora that are not on the Hub, and warns loudly if a repo is public. The rule below was
+already written here and in the skill, and three checkpoints in a row were still missed — a rule
+you have to remember is not a control. The version must be readable from the **filename**
+(`interaction-corpus-v16.jsonl`), not only from the card.
+
 **Every corpus version and every checkpoint goes to the private `OramaSearch` org on the Hub, with
 a dataset card / model card** — see the **hf-ops** skill for the procedure and the card rules.
 
