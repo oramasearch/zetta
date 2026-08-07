@@ -450,6 +450,75 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // The motivating instance: the corpus says "You can run Python in a Pipeline step"; the engine
 // has PythonFrontend, documented as SIMULATED Python; and in the customer meeting the claim was
 // made accurately. The meeting was more honest than the training data.
+// The invariant that would have caught the v14 regression, and did not exist to.
+//
+// The `bare_turn` family's redirect reply opened with "Dropped that one." — a sentence appearing
+// nowhere else in 16,239 cases. The trained model reached for it on "create me a churn project",
+// a substantive request that is not a redirect, regressing a turn v13 had answered correctly.
+// 180 cases (1.1% of the corpus) captured an ask form they were never meant for, purely by
+// carrying a high-signal opening with nothing competing for the same surface.
+//
+// Every other invariant passed: the family carried history, trained two behaviours per word,
+// admitted through the gate, and scored 85% on the canary. None of them look at DISTINCTIVENESS,
+// which is what actually decided the outcome.
+//
+// So: an opening phrase used by one family must not be unique to it. Either other families use
+// the same register, or the model has nothing to weigh it against.
+// A DIAGNOSTIC, not an assertion — and the distinction is the finding.
+//
+// The `bare_turn` redirect opened with "Dropped that one." — a sentence appearing nowhere else in
+// 16,239 cases. The trained model reached for it on "create me a churn project", a substantive
+// request that is not a redirect, regressing a turn v13 answered correctly. 180 cases (1.1% of
+// the corpus) captured an ask form they were never meant for, purely by carrying a high-signal
+// opening with nothing competing for the same surface.
+//
+// Every other invariant passed. The family carried history, trained two behaviours per word,
+// admitted through the gate, and scored 85% on the canary. None of them look at DISTINCTIVENESS,
+// which is what actually decided the outcome.
+//
+// The obvious test — "no opening may be exclusive to one family" — FAILS ON LEGITIMATE CASES.
+// Greetings should open distinctively ("Hello. I can…"); `tool_use` replies naturally begin
+// "From `explain` on…". Exclusivity is not the defect. The defect is an opening that is exclusive
+// AND semantically generic enough to attach to a different ask — "Dropped that one" is a decision
+// phrase that fits anywhere, while "Hello." only answers a greeting. That distinction is not
+// mechanically decidable here, and a test that fails on eight correct families is one the next
+// person deletes.
+//
+// So this REPORTS the distribution rather than gating on it. Read it when a family regresses
+// behaviour it did not touch: the suspect is usually an exclusive, generic opening.
+TEST_F(CorpusInvariants, ReplyOpeningsAreReportedForDistinctiveness) {
+    const auto opening = [](const std::string& message) {
+        std::size_t cut = 0;
+        int words = 0;
+        while (cut < message.size() && words < 3) {
+            if (message[cut] == ' ') ++words;
+            ++cut;
+        }
+        return message.substr(0, cut);
+    };
+
+    std::map<std::string, std::set<std::string>> families_by_opening;
+    std::map<std::string, std::size_t> uses;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string& message = admission_case.reference_action->message;
+        if (message.size() < 12) continue;
+        const std::string& id = admission_case.task.id();
+        families_by_opening[opening(message)].insert(id.substr(0, id.find('/')));
+        ++uses[opening(message)];
+    }
+
+    std::size_t exclusive_and_learnable = 0;
+    for (const auto& [head, families] : families_by_opening) {
+        if (families.size() == 1 && uses[head] >= 50) ++exclusive_and_learnable;
+    }
+    // No threshold to pass — the count is recorded so a jump is visible in the diff of a run.
+    EXPECT_GE(families_by_opening.size(), exclusive_and_learnable)
+        << "sanity only; this test reports rather than gates";
+    std::cout << "[corpus] reply openings: " << families_by_opening.size() << " distinct, "
+              << exclusive_and_learnable << " exclusive to one family and used >=50x\n";
+}
+
 TEST_F(CorpusInvariants, NoCaseAssertsACapabilityWeDoNotHave) {
     std::map<std::string, std::size_t> offences;
     for (const AdmissionCase& admission_case : cases()) {

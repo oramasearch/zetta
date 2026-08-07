@@ -1348,8 +1348,15 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                                        {"repeated_prior_turn", false}});
             AdmissionCase no = make_case(
                 "bare/redirect/" + index, ask, data_view, InteractionKind::Clarify,
-                std::string("Dropped that one. What should the new Project predict, and over "
-                            "which table? `") + context.table + "` is here if you want it.",
+                // Phrased to share surface with the clarify family, NOT to stand out from it.
+                // The first version opened "Dropped that one." - a sentence appearing nowhere
+                // else in 16,239 cases - and the trained model reached for it on substantive
+                // requests it was never meant for, regressing a turn v13 answered correctly
+                // (docs/reports/base-agent-validation-2026-08-06.md). 180 cases carrying a
+                // unique high-signal phrase captured an ask form by having nothing to compete
+                // with. A redirect must READ like the clarifying question it is.
+                std::string("What should the new Project predict, and over which table? `") +
+                    context.table + "` is here if you want it.",
                 required);
             no.history = {{"Create a churn project please",
                            std::string("I can base it on the ") + context.project +
