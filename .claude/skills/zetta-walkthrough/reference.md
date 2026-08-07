@@ -149,13 +149,30 @@ their own:
 3. "what?"                        <- must NOT repeat turn 2's reply
 ```
 
-Two assertions, both cheap:
+**Four assertions. The first one alone is not enough, and a checkpoint proved it.**
 
-- **No two consecutive replies are byte-identical.** Identical output to different
-  input is the signature of a model classifying each message standalone.
-- **The request carries `history`.** Watch the network call, not the screen. The
-  `chat` capability accepts `history`; a client that omits it makes even a
-  multi-turn-capable model answer blind, and the screen looks the same either way.
+`base-agent-0.6b-interaction-v16` passed a walk asserting only distinctness while
+answering *"create me a churn project"* with a description of what Studio *can* do,
+answering *"yes"* with an unprompted non sequitur about `list_models`, and
+fabricating *"`list_models` has over 100 entries, so anything that can make an HTTP
+request can drive it."* **A model passes a distinctness-only check by being
+differently wrong each turn.** Assert all four:
+
+1. **No two consecutive replies are byte-identical.** Identical output to different
+   input is the signature of a model classifying each message standalone. Necessary,
+   and nowhere near sufficient.
+2. **Turn 2 resolves against turn 1.** `"yes"` after a proposal must act on *that*
+   proposal — not introduce a new subject. A reply that changes the topic has not
+   read the thread, it has merely avoided repeating itself.
+3. **Turn 3 restates rather than answers anew.** `"what?"` asks for the previous turn
+   in plainer words. `restated_prior_turn` is already a computed fact — assert it.
+4. **Every claim is grounded.** `numbers_from_context` is already computed. A figure
+   the context does not contain fails it; *"over 100 entries"* would have.
+
+Three of these four are computable with machinery that already exists and were simply
+not being asserted. Also confirm **the request carries `history`** — watch the network
+call, not the screen; a client that omits it makes even a multi-turn-capable model
+answer blind, and the screen looks identical either way.
 
 A single-turn suite cannot see either. That is why this row exists.
 
