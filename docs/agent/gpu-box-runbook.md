@@ -188,6 +188,22 @@ ZETTA_SFT_LOG=data/sft-logs/interaction-v1.jsonl \
   ./build/tests/zetta-tests --gtest_filter='SftCudaResident.TrainsTheInteractionCorpusOnTheGpu'
 ```
 
+> **The GPU box can train but CANNOT evaluate.** The eval harness lives in
+> `tests/tokenizer/test_qwen_real_checkpoint.cpp`, inside the same
+> `#if defined(ZETTA_WITH_MLX)` guard as the MLX training test — so on a CUDA box the eval
+> filter matches zero tests and reports `[ PASSED ] 0 tests` with exit 0, exactly like the
+> training filter did. You produce a checkpoint on the GPU and have no way to measure it there.
+>
+> Until a CUDA eval exists, **pull the checkpoint and evaluate on a Mac**:
+>
+> ```sh
+> rsync -a ubuntu@<box>:zetta/data/checkpoints/<name> data/checkpoints/
+> ```
+>
+> ~2.3 GB per checkpoint. Budget for it — and note that `ZETTA_SFT_SAVE_EVERY` intermediate
+> checkpoints are worth pulling too when the final loss suggests overfitting, since the best
+> checkpoint is frequently not the last one.
+
 Then evaluate against the **canary** (the 763 held-out cases over Projects whose numbers the model
 never saw) and write the dated report — the report is the deliverable, the checkpoint is not:
 
