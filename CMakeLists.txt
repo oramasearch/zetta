@@ -662,6 +662,7 @@ add_library(zetta-core STATIC
   src/core/dataset/dataset_generator_factory.cpp
   src/core/dataset/interaction_families.cpp
   src/core/dataset/plan_templates.cpp
+  src/core/dataset/product_claims.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
   src/core/agent/inference_runner.cpp

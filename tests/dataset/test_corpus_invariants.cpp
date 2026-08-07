@@ -35,6 +35,7 @@
 #include "zetta/dataset/base_agent_generator.hpp"
 #include "zetta/dataset/dataset_generator.hpp"
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/dataset/product_claims.hpp"
 
 namespace {
 
@@ -438,6 +439,37 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // It exists because the generator did NOT anticipate this class and nothing caught that. The
 // corpus had a follow_up family, every case in it was a full sentence, and the second thing a real
 // person types is one word. The result shipped: "yes" and "what?" returned a byte-identical reply.
+// The corpus is a CLAIM SURFACE, and until this it was the only unguarded one. Every other
+// property here is checked; the one that reaches a customer's ears in our own voice was not.
+//
+// A false claim in a meeting is made once, to one person, and can be corrected in the next call.
+// A false claim in the corpus is made by the model, to every customer, forever — fluent,
+// confident, grounded-looking, which is exactly what goes unnoticed. And it compounds: it becomes
+// training data for the next checkpoint.
+//
+// The motivating instance: the corpus says "You can run Python in a Pipeline step"; the engine
+// has PythonFrontend, documented as SIMULATED Python; and in the customer meeting the claim was
+// made accurately. The meeting was more honest than the training data.
+TEST_F(CorpusInvariants, NoCaseAssertsACapabilityWeDoNotHave) {
+    std::map<std::string, std::size_t> offences;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string offence =
+            zetta::dataset::forbidden_claim_in(admission_case.reference_action->message);
+        if (!offence.empty()) ++offences[offence];
+    }
+
+    std::string report;
+    for (const auto& [phrase, count] : offences) {
+        report += "\n  \"" + phrase + "\" in " + std::to_string(count) + " case(s)";
+    }
+    EXPECT_TRUE(offences.empty())
+        << "these cases assert a capability the claims registry does not carry as shipped:"
+        << report
+        << "\n(a claim in the corpus is made by the model, in our voice, to every customer, on "
+           "every turn — and it becomes training data for the next checkpoint)";
+}
+
 TEST_F(CorpusInvariants, EveryBareTurnCarriesTheTurnItDependsOn) {
     // Exact strings, not substrings — a bare turn is defined by being the WHOLE ask.
     const std::vector<std::string> bare = {"yes", "ok", "sure", "go ahead", "do it",

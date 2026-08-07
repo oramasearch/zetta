@@ -558,9 +558,14 @@ InteractionFamily product_knowledge_family(int phrasings) {
          "Orama Studio is where you turn a question in plain language into a running Pipeline. "
          "You describe the outcome you want; Studio designs the steps, checks them with a "
          "Verification, and runs them on infrastructure you control."},
-        {"What languages can I write a step in?", "run Python in a Pipeline step",
-         "You can run Python in a Pipeline step for transforms and feature work, and SQL for "
-         "anything set-shaped. Most people mix the two across steps."},
+        // "Python" unqualified promises CPython — pandas, numpy, arbitrary imports. The engine
+        // has `zetta::input::PythonFrontend`, documented in its own header as SIMULATED Python.
+        // The customer meeting said "simulated Python"; the corpus dropped the qualifier, and the
+        // model would have repeated the corpus version to everyone (ProductClaimsAreTrue, #983).
+        {"What languages can I write a step in?", "simulated Python in a Pipeline step",
+         "You can run simulated Python in a Pipeline step for transforms and feature work - a "
+         "Python-shaped subset the engine runs natively, not CPython, so arbitrary imports are "
+         "out. SQL covers anything set-shaped. Most people mix the two across steps."},
         {"Can I use SQL?", "query with Postgres-compatible SQL",
          "Yes. You can query with Postgres-compatible SQL, both inside a Pipeline step and "
          "directly against your data to look around."},
