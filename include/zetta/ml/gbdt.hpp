@@ -85,6 +85,14 @@ struct GbdtParams {
     // a single node and silently wrong on a cluster.
     //
     // Defaults to 0, so adding this moves no existing model's numbers.
+    // The loss the trees are grown against. `binary_logistic` is churn's — scores map to
+    // probabilities through a sigmoid and may be calibrated. `squared_error` is what a forecast
+    // needs (#984, M-4): the residual IS the gradient, the Hessian is constant, and the model's
+    // output is the prediction rather than something to squash.
+    //
+    // Nothing else in the learner changes — histogram building, split finding and the allreduce
+    // are objective-agnostic. That is why M-4 needed an objective, not a second learner.
+    std::string objective = "binary_logistic";  // or "squared_error"
     double holdout_fraction = 0.0;
 
     // The JSON form (only the fields above; all optional with the defaults).

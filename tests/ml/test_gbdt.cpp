@@ -848,3 +848,102 @@ TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
 }
 
 }  // namespace
+
+// --- squared-error objective (#984, M-4) ---------------------------------------------------
+//
+// Forecasting predicts a continuous value, and until this landed the learner had exactly one
+// objective: binary logistic. That is why M-4 needed learner work after all — not a second
+// learner, but a second LOSS. Everything else (histogram building, split finding, the allreduce)
+// is objective-agnostic, which is what made it a contained change.
+
+TEST(GbdtRegression, SquaredErrorFitsAContinuousTarget) {
+    // y = 3*x0 + 10, well outside [0,1] — a sigmoid-squashed model cannot express it.
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 200; ++value) {
+        feature.push_back(static_cast<double>(value % 20));
+        labels.push_back(3.0 * static_cast<double>(value % 20) + 10.0);
+    }
+    const std::vector<std::vector<double>> columns = {feature};
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 40;
+    params.learning_rate = 0.3;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt(columns, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(result.model.objective, "squared_error")
+        << "the model must record which loss grew it, or prediction cannot know how to read it";
+
+    double error = 0.0;
+    for (std::size_t row = 0; row < labels.size(); ++row) {
+        error += std::abs(result.model.predict_proba({feature[row]}) - labels[row]);
+    }
+    error /= static_cast<double>(labels.size());
+    EXPECT_LT(error, 3.0) << "mean absolute error " << error
+                          << " — a regression that cannot get within 3 of a linear target has "
+                             "not fit anything";
+}
+
+// The failure this would otherwise cause is silent and total: a forecast of 143.7 units comes
+// back as 1.0, because predict_proba squashed it.
+TEST(GbdtRegression, APredictionIsNotSquashedThroughASigmoid) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 100; ++value) {
+        feature.push_back(static_cast<double>(value));
+        labels.push_back(100.0 + static_cast<double>(value));
+    }
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 30;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt({feature}, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+
+    const double prediction = result.model.predict_proba({50.0});
+    EXPECT_GT(prediction, 10.0)
+        << "a squashed prediction lands in [0,1]; this must be on the scale of the target";
+}
+
+// Regression labels are continuous, so the classification guard would reject perfectly good
+// data — every daily-revenue series has all-positive labels.
+TEST(GbdtRegression, AllPositiveLabelsAreNotASingleClassError) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 80; ++value) {
+        feature.push_back(static_cast<double>(value % 8));
+        labels.push_back(500.0 + static_cast<double>(value % 8) * 7.0);
+    }
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 10;
+
+    EXPECT_TRUE(zetta::ml::train_gbdt({feature}, {"x0"}, labels, params).ok())
+        << "all-positive continuous labels are ordinary regression data, not a single class";
+}
+
+// And the objective that ships must be untouched.
+TEST(GbdtRegression, BinaryLogisticIsUnchanged) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 200; ++value) {
+        feature.push_back(static_cast<double>(value % 10));
+        labels.push_back(value % 10 >= 5 ? 1.0 : 0.0);
+    }
+
+    zetta::ml::GbdtParams params;  // default objective
+    params.num_trees = 20;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt({feature}, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(result.model.objective, "binary_logistic");
+    EXPECT_GT(result.model.predict_proba({9.0}), 0.5);
+    EXPECT_LT(result.model.predict_proba({0.0}), 0.5);
+}
