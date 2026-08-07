@@ -1234,7 +1234,14 @@ InteractionFamily follow_up_family(const std::vector<ProjectContext>& contexts, 
 // So each case below is (bare ask x a specific antecedent), and the negative controls are the
 // behaviors that are correct for a DIFFERENT antecedent. That is what forces attention onto the
 // history rather than onto the word.
-InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) {
+// `phrasings` multiplies the PARAPHRASES per context, not the contexts. That distinction is the
+// point: v14 and v15 both taught bare turns correctly on the exact words in the corpus and both
+// failed to attend to the thread, because only 360 of 16,239 cases (2.2%) carried history at all.
+// Three checkpoints agree that a bare turn can be learned individually at that density while
+// "condition on what came before" cannot. So this walks every paraphrase rather than one per
+// context — the cheapest way to raise multi-turn density without inventing new behaviours to
+// teach (docs/reports/base-agent-validation-2026-08-06.md).
+InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts, int phrasings) {
     InteractionFamily family{
         "bare_turn",
         "One- or two-word turns whose entire meaning is the turn before them - yes, go ahead, "
@@ -1261,11 +1268,12 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
         // The proposal named one thing, so the referent is unambiguous and asking again would be
         // the annoying failure, not the safe one.
         {
-            const std::string& ask = affirm[context_index % affirm.size()];
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = affirm[(context_index + phrasing) % affirm.size()];
             EndState required = solution;
             zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
             AdmissionCase yes = make_case(
-                "bare/affirm/" + index, ask, data_view, InteractionKind::Action,
+                "bare/affirm/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Action,
                 std::string("Building the ") + context.project + " Pipeline now. " + described,
                 required, std::move(graph));
             yes.history = {{std::string("Create a churn project over `") + context.table + "`.",
@@ -1278,18 +1286,20 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                 facts({{"kind", std::string("clarify")}, {"built_nothing", true}}),
             };
             family.cases.push_back(std::move(yes));
+            }
         }
 
         // --- 2. "yes" after an EITHER/OR question -> still clarify. -------------------------
         // The same word, the opposite correct behavior. Without this pair the model can satisfy
         // case 1 by learning "yes means build", which is wrong exactly when it matters.
         {
-            const std::string& ask = affirm[(context_index + 3) % affirm.size()];
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = affirm[(context_index + 3 + phrasing) % affirm.size()];
             EndState required = facts({{"clarify", true},
                                        {"asked_one_question", true},
                                        {"built_nothing", true}});
             AdmissionCase ambiguous = make_case(
-                "bare/affirm-ambiguous/" + index, ask, data_view, InteractionKind::Clarify,
+                "bare/affirm-ambiguous/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Clarify,
                 std::string("Which of the two - the churn Pipeline over `") + context.table +
                     "`, or the retention one? \"Yes\" fits either.",
                 required);
@@ -1302,6 +1312,7 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                 facts({{"kind", std::string("action")}, {"built_nothing", false}}),
             };
             family.cases.push_back(std::move(ambiguous));
+            }
         }
 
         // --- 3. "what?" -> restate the PREVIOUS turn, more plainly. -------------------------
@@ -1309,13 +1320,14 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
         // says the same thing in different words, and `restated_prior_turn` is the fact the
         // grader checks — not "answered something".
         {
-            const std::string& ask = confused[context_index % confused.size()];
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = confused[(context_index + 0 + phrasing) % confused.size()];
             EndState required = facts({{"restated_prior_turn", true},
                                        {"built_nothing", true},
                                        {"grounded", true},
                                        {"numbers_from_context", true}});
             AdmissionCase what = make_case(
-                "bare/confused/" + index, ask,
+                "bare/confused/" + index + "-" + std::to_string(phrasing), ask,
                 render_grounding(context, GroundingView::Results), InteractionKind::Answer,
                 std::string("Sorry - plainly: `") + context.table + "` has enough history to "
                     "train a model that flags which accounts look likely to leave. I have not "
@@ -1332,13 +1344,15 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                 facts({{"kind", std::string("action")}, {"built_nothing", false}}),
             };
             family.cases.push_back(std::move(what));
+            }
         }
 
         // --- 4. "no, a new one" -> abandon the proposal, do not edit it. --------------------
         // A redirect reads superficially like a modification, and treating it as one quietly
         // carries the rejected pipeline forward - the user says no and gets the thing anyway.
         {
-            const std::string& ask = redirect[context_index % redirect.size()];
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = redirect[(context_index + 0 + phrasing) % redirect.size()];
             // "Abandoned the proposal" is not mechanically checkable, so it is not a fact —
             // what IS checkable is that the turn asks rather than builds, and does not simply
             // repeat the proposal it was told to drop.
@@ -1347,7 +1361,7 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                                        {"built_nothing", true},
                                        {"repeated_prior_turn", false}});
             AdmissionCase no = make_case(
-                "bare/redirect/" + index, ask, data_view, InteractionKind::Clarify,
+                "bare/redirect/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Clarify,
                 // Phrased to share surface with the clarify family, NOT to stand out from it.
                 // The first version opened "Dropped that one." - a sentence appearing nowhere
                 // else in 16,239 cases - and the trained model reached for it on substantive
@@ -1366,6 +1380,7 @@ InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts) 
                 facts({{"kind", std::string("action")}, {"built_nothing", false}}),
             };
             family.cases.push_back(std::move(no));
+            }
         }
     }
     return family;
@@ -1990,7 +2005,7 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(discovery_family(contexts, phrasings));
     families.push_back(solution_build_family(contexts, phrasings));
     families.push_back(follow_up_family(contexts, phrasings));
-    families.push_back(bare_turn_family(contexts));
+    families.push_back(bare_turn_family(contexts, phrasings));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));
