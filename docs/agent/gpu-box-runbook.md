@@ -172,6 +172,12 @@ ZETTA_CORPUS_OUT=data/corpora/interaction-corpus-v1.jsonl \
 # Pull the base weights natively (ADR-17 -- no python, no curl).
 ZETTA_QWEN_DIR=$(./build/bin/zetta pull Qwen/Qwen3-0.6B)
 
+# The test name is NOT the same as on a Mac. `QwenRealCheckpoint.SftBaseAgentOnCorpus`
+# lives inside `#if defined(ZETTA_WITH_MLX)`, so on a CUDA box it does not exist and the
+# filter matches ZERO tests — which gtest reports as "[  PASSED  ] 0 tests." A launch that
+# trains nothing looks exactly like a launch that succeeded instantly. Always confirm with:
+#   ./build/tests/zetta-tests --gtest_list_tests | grep -A2 '^SftCudaResident\.'
+# and check `nvidia-smi` shows the GPU actually busy before walking away.
 # Train. SAVE_EVERY is not optional: a run that only saves at the end loses
 # everything to an interruption, which is exactly how ~90 steps were lost (#919).
 ZETTA_QWEN_DIR=$ZETTA_QWEN_DIR \
@@ -179,7 +185,7 @@ ZETTA_CORPUS=data/corpora/interaction-corpus-v1.jsonl \
 ZETTA_SFT_EXAMPLES=6030 ZETTA_SFT_STEPS=3000 ZETTA_SFT_SAVE_EVERY=250 \
 ZETTA_CHECKPOINT_OUT=data/checkpoints/base-agent-0.6b-interaction-v1 \
 ZETTA_SFT_LOG=data/sft-logs/interaction-v1.jsonl \
-  ./build/tests/zetta-tests --gtest_filter='*SftBaseAgentOnCorpus'
+  ./build/tests/zetta-tests --gtest_filter='SftCudaResident.TrainsTheInteractionCorpusOnTheGpu'
 ```
 
 Then evaluate against the **canary** (the 763 held-out cases over Projects whose numbers the model
