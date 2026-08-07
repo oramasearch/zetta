@@ -244,7 +244,8 @@ nlohmann::json GbdtParams::to_json() const {
                           {"l2_regularization", l2_regularization},
                           {"min_split_gain", min_split_gain},
                           {"min_child_hessian", min_child_hessian},
-                          {"holdout_fraction", holdout_fraction}};
+                          {"holdout_fraction", holdout_fraction},
+                          {"objective", objective}};
 }
 
 std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
@@ -252,7 +253,8 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     static const char* known[] = {"num_trees",         "max_depth",
                                   "max_bins",          "learning_rate",
                                   "l2_regularization", "min_split_gain",
-                                  "min_child_hessian", "holdout_fraction"};
+                                  "min_child_hessian", "holdout_fraction",
+                                  "objective"};
     for (const auto& [key, _] : value.items()) {
         bool recognized = false;
         for (const char* name : known) {
@@ -285,6 +287,15 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     // reads as true and rejects the default.
     if (!read_number(value, "holdout_fraction", params.holdout_fraction, 0.0, false))
         return std::nullopt;
+    // A closed set, rejected at the boundary. An unknown objective silently falling back to the
+    // default is how a caller asks for a forecast and is handed a classifier — the run succeeds,
+    // the metrics look reasonable, and nothing says the loss was not the one requested.
+    if (const auto objective = value.find("objective"); objective != value.end()) {
+        if (!objective->is_string()) return std::nullopt;
+        const std::string named = objective->get<std::string>();
+        if (named != "binary_logistic" && named != "squared_error") return std::nullopt;
+        params.objective = named;
+    }
     return params;
 }
 
@@ -296,7 +307,7 @@ const nlohmann::json& gbdt_params_schema() {
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.ml.GbdtParams",
-  "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic). All fields are optional; an omitted field takes its default.",
+  "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic or squared error). All fields are optional; an omitted field takes its default.",
   "type": "object",
   "properties": {
     "num_trees": { "type": "integer", "minimum": 1 },
@@ -306,6 +317,7 @@ const nlohmann::json& gbdt_params_schema() {
     "l2_regularization": { "type": "number", "minimum": 0 },
     "min_split_gain": { "type": "number", "minimum": 0 },
     "min_child_hessian": { "type": "number", "minimum": 0 },
+    "objective": { "type": "string", "enum": ["binary_logistic", "squared_error"] },
     "holdout_fraction": { "type": "number", "minimum": 0, "maximum": 1 }
   },
   "additionalProperties": false

@@ -947,3 +947,40 @@ TEST(GbdtRegression, BinaryLogisticIsUnchanged) {
     EXPECT_GT(result.model.predict_proba({9.0}), 0.5);
     EXPECT_LT(result.model.predict_proba({0.0}), 0.5);
 }
+
+// A parameter that is not on the schema is one no caller can set. `partition_only` lived on
+// AddDatasetOptions for a whole release and was never on `add_dataset`'s schema, so nothing
+// could reach it (#952). `objective` would have repeated that exactly: the learner supports
+// squared error and, without this, only C++ callers could ask for it.
+TEST(GbdtRegression, TheObjectiveIsReachableOverJson) {
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    const nlohmann::json encoded = params.to_json();
+    ASSERT_TRUE(encoded.contains("objective")) << "an unencoded field cannot round-trip";
+
+    const std::optional<zetta::ml::GbdtParams> decoded =
+        zetta::ml::GbdtParams::from_json(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->objective, "squared_error");
+}
+
+// An unknown objective must be REFUSED, not silently defaulted. Falling back is how a caller
+// asks for a forecast and receives a classifier: the run succeeds, the metrics look reasonable,
+// and nothing anywhere says the loss was not the one requested.
+TEST(GbdtRegression, AnUnknownObjectiveIsRefusedRatherThanDefaulted) {
+    nlohmann::json value = zetta::ml::GbdtParams{}.to_json();
+    value["objective"] = "poisson";
+    EXPECT_FALSE(zetta::ml::GbdtParams::from_json(value).has_value())
+        << "an unimplemented objective must fail loudly at the boundary";
+
+    value["objective"] = 7;
+    EXPECT_FALSE(zetta::ml::GbdtParams::from_json(value).has_value());
+}
+
+TEST(GbdtRegression, TheDefaultObjectiveIsUnchangedWhenAbsent) {
+    nlohmann::json value = zetta::ml::GbdtParams{}.to_json();
+    value.erase("objective");
+    const auto decoded = zetta::ml::GbdtParams::from_json(value);
+    ASSERT_TRUE(decoded.has_value()) << "objective is optional; omitting it must still parse";
+    EXPECT_EQ(decoded->objective, "binary_logistic");
+}
