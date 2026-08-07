@@ -1464,7 +1464,15 @@ TEST(QwenRlvrEndToEnd, ACampaignProducesANonZeroLearningSignal) {
     };
     const int steps = knob("ZETTA_RLVR_STEPS", 8);
     const int tokens = knob("ZETTA_RLVR_TOKENS", 128);
-    const int group = knob("ZETTA_RLVR_GROUP", 4);
+    // 16 is GrpoConfig's default and it is load-bearing, not a round number. At group 4 this
+    // campaign collapsed to zero by step 3: with rewards like [1,1,1,0] the single failure gets
+    // an advantage near -1.7 applied to all 128 of its tokens, and four samples cannot estimate
+    // a stable mean to normalize against. At 16 the same campaign is noisy but rises
+    // (0.52 -> 0.75 -> 0.56 -> 0.81) with the parse rate holding around 60-80%.
+    //
+    // Worth stating plainly because the first diagnosis was wrong: the collapse looked like a
+    // missing KL penalty and was a group size four times below the default.
+    const int group = knob("ZETTA_RLVR_GROUP", 16);
 
     std::string error;
     const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
