@@ -112,25 +112,11 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     // --- Forecasting + optimization (Family III / IV) ---
     templates.push_back(
         {"S-5", "Forecast demand per product/location for the coming weeks.",
-         facts({{"connect", true},
-                {"clean", true},
-                {"model", true},
-                {"serve", true},
-                {"leakage_free", true},
-                {"model_kind", "forecast"},
-                {"temporal_validation", true},
-                {"backtest", true}})});  // rolling-origin backtest, not a random split
+         forecast_core()});  // rolling-origin backtest, not a random split
     templates.push_back(
         {"S-6",
          "Turn the demand forecast into replenishment orders under our stock constraints.",
-         facts({{"connect", true},
-                {"model", true},
-                {"serve", true},
-                {"act", true},
-                {"model_kind", "forecast"},
-                {"temporal_validation", true},
-                {"optimization", true},
-                {"approval_gated", true}})});  // action layer is approval-gated
+         with_fact(with_fact(with_fact(forecast_core(), "act", true), "optimization", true), "approval_gated", true)});  // action layer is approval-gated
 
     // --- Anomaly / driver analysis, next-best-action (Family III / IV) ---
     templates.push_back(
@@ -229,9 +215,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
                          supervised_core("gbdt")});
     templates.push_back(
         {"UC-16", "Triage + route incoming support tickets automatically.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true}, {"act", true},
-                {"model_kind", "classifier"}, {"grounded_in_data", true},
-                {"approval_gated", true}})});
+         with_fact(with_fact(with_fact(supervised_core("classifier"), "act", true), "grounded_in_data", true), "approval_gated", true)});
     templates.push_back(
         {"UC-18", "Monitor our suppliers for emerging risk.",
          // Monitoring that notifies no one is a dashboard nobody opens.
@@ -242,18 +226,11 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          // The intervention (a reminder, a corrected claim) is where the value is.
          with_fact(with_fact(supervised_core("gbdt"), "act", true), "approval_gated", true)});
     templates.push_back({"UC-20", "Forecast cash flow + working capital.",
-                         facts({{"connect", true}, {"model", true}, {"serve", true},
-                                {"model_kind", "forecast"}, {"temporal_validation", true},
-                                {"backtest", true}})});
+                         forecast_core()});
     templates.push_back({"UC-21", "Detect + explain incidents across our systems (AIOps).",
-                         facts({{"connect", true}, {"model", true}, {"serve", true},
-                                {"act", true},  // an undetected-incident alert is the product
-                                {"model_kind", "anomaly"}, {"streaming", true},
-                                {"drivers", true}, {"drift_monitoring", true}})});
+                         with_fact(with_fact(with_fact(with_fact(unsupervised_core("anomaly"), "act", true), "streaming", true), "drivers", true), "drift_monitoring", true)});
     templates.push_back({"UC-22", "Find what drives scrap/quality/yield in our process.",
-                         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                                {"model_kind", "gbdt"}, {"explain", "shap"}, {"drivers", true},
-                                {"leakage_free", true}})});
+                         with_fact(supervised_core("gbdt"), "drivers", true)});
     templates.push_back({"UC-23", "Target our campaigns at who'll actually respond because of them.",
                          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
                                 {"act", true}, {"leakage_free", true}, {"model_kind", "uplift"},
