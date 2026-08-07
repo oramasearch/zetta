@@ -1,6 +1,6 @@
 ---
 name: use-case-corpus
-description: "Author an excellent multi-turn, tool-calling training corpus slice for ONE solution module (S-n/UC-n) from the solutions catalogue, then admit it through admit_corpus. Carries the scenario-enumeration strategy (five verbs x four autonomy classes x five personas x seven conversation arcs), the trajectory anatomy that teaches building rather than lookup, the fact vocabulary a reference may require, and the C++ authoring recipe. Use when growing the base agent's corpus, when a use case answers in the wrong pipeline shape, when a verb like Monitor or Improve has no training data, or when the agent repeats itself across turns. Triggers - 'corpus for UC-n', 'training data for churn/forecasting/collections', 'the agent gets this use case wrong', 'multi-turn samples', 'cover Monitor and Improve', 'grow the corpus', 'make the agent better at X'."
+description: "Author the base agent's multi-turn, tool-calling training corpus across the WHOLE solutions catalogue (every S-n/UC-n), so each solution's pipeline shape is distinct and every case has 32 neighbours to be discriminated from. Carries the scenario-enumeration strategy (five verbs x four autonomy classes x five personas x seven conversation arcs), the trajectory anatomy that teaches building rather than lookup, the neighbouring-solution negative control, the fact vocabulary a reference may require, and the C++ authoring recipe. Use when growing or regenerating the corpus, when a use case answers in the wrong pipeline shape, when a verb like Monitor or Improve has no training data, or when the agent repeats itself across turns. Triggers - 'corpus for the catalogue', 'training data for churn/forecasting/collections', 'the agent gets this use case wrong', 'multi-turn samples', 'cover Monitor and Improve', 'grow the corpus', 'make the agent better'."
 ---
 
 # use-case-corpus — one module, enumerated, authored as trajectories, admitted
@@ -37,20 +37,51 @@ This skill runs the **admission gate**, never the correctness gate.
 
 ---
 
-## 1 · Scope: one module per run
+## 1 · Scope: the WHOLE catalogue, swept
 
-A prompt spanning all 33 catalogue entries produces generic cases — the current failure,
-reached faster. **Depth is the point.** A churn case naming `sfdc_account_id` and
-`last_churn_reason` is grounded in a real schema; one naming `customers.churn_flag` is invented,
-and the model learns to invent.
+**Author across every solution in the catalogue — not one at a time.** `S-2`…`S-12`,
+`M-10`…`M-21`, `UC-13`…`UC-24` (`plan_templates.cpp`), specified in
+`modules/solutions-designs/docs/plan/04-solutions-catalog.md` (⚠️ internal-confidential).
 
-One run = one `S-n`/`UC-n`. Catalogue: `S-2`…`S-12`, `M-10`…`M-21`, `UC-13`…`UC-24`
-(`plan_templates.cpp`), specified in `modules/solutions-designs/docs/plan/04-solutions-catalog.md`
-(⚠️ internal-confidential).
+**Breadth is not a cost here — it is where the training signal comes from.** The single
+strongest negative control for any case is **the neighbouring solution's pipeline on this ask**:
+well-formed, passes the correctness gate, and answers the wrong question. That is precisely what
+a model produces when it emits from the use-case *name* rather than from the data — and it is
+the defect that once made one pipeline shape serve churn, lead scoring and collections alike.
+
+You cannot construct that control from one use case. With the full catalogue, **every case has
+32 neighbours to be discriminated from**, and the corpus teaches the distinctions that matter:
+
+| Solution | Its correctness profile | Confusable with |
+|---|---|---|
+| churn | point-in-time · leakage-free · **calibrated** | lead scoring (same shape, different label) |
+| forecasting | **backtested**, temporal validation, **NOT calibrated** | churn (calibration is wrong here) |
+| retrieval / search | indexed, **no supervised label at all** | anything supervised |
+| anomaly detection | unsupervised, threshold-governed | classification |
+| next-best-action | policy over outcomes, uplift | plain scoring |
+
+**The catalogue is also the research.** Each entry already carries the twelve-field spec, so
+per-solution grounding is *reading*, not investigating — which is what makes the sweep tractable.
+Reserve deep external research (§2.4) for the handful of solutions you will demo.
+
+**Sweep order.** Do not author 33 solutions to shallow depth, and do not perfect one. Go
+breadth-first in three passes:
+
+1. **Pass 1 — shape.** Every solution gets its **Build** trajectory with its *correct and
+   distinct* pipeline shape, plus the neighbouring-solution negative control. This is the pass
+   that fixes "one shape for every use case", and it must cover the catalogue completely.
+2. **Pass 2 — verbs and autonomy.** Every solution gets **Monitor** and **Improve** (absent
+   today), and every acting verb gets its **A1/A2 pair**.
+3. **Pass 3 — arcs, personas, register.** Depth on the solutions that will be demoed or
+   deployed — churn first (#969, Charles) — then outward.
+
+Log what each pass skipped. A silent gap reads as coverage.
 
 ## 2 · Research before authoring — four questions, answered in writing
 
-Write the answers into `docs/agent/cards/datasets/`. **Research nobody recorded gets redone.**
+Answer these **per solution**, and record them in `docs/agent/cards/datasets/`. For most of the
+catalogue this is reading the spec, not investigating — the catalogue did the work already.
+**Research nobody recorded gets redone.**
 
 1. **What is this module?** The twelve-field spec (`04-solutions-catalog.md` §2.6): methodology
    composition · correctness adaptations · business wiring (actions, systems of action, people
@@ -278,6 +309,8 @@ Then report — **these numbers are the deliverable, not the case count**:
 
 Not "cases were generated".
 
+- [ ] **Pass 1 complete: every solution in the catalogue has a Build trajectory with its own
+      correct pipeline shape**, and a neighbouring-solution negative control.
 - [ ] Every verb covered; every acting verb has its A1/A2 pair.
 - [ ] Arcs 2, 5, 7 (blocked-by-data, repair-after-failure, scope refusal) present.
 - [ ] Every skipped cell logged **with its reason**.
@@ -292,7 +325,7 @@ Not "cases were generated".
 
 ## 9 · Never
 
-- ❌ More than one module per run.
+- ❌ Authoring one solution to depth before every solution has its distinct pipeline shape (pass 1).
 - ❌ Authoring before the four research questions are answered in writing.
 - ❌ Retyping the tool list, the kinds, or the fact keys instead of reading them from source.
 - ❌ Straw-man negative controls.
@@ -311,6 +344,11 @@ Not "cases were generated".
 - **nibble-dev** — one matrix cell per bite, admitted before the next.
 
 ## Version History
+- **v2.1.0 (2026-08-06)** — Scope corrected to the **whole catalogue**. "One module per run" was
+  wrong: the strongest negative control is the neighbouring solution's pipeline, which is
+  unconstructible from a single use case. Breadth is where the discrimination signal comes from —
+  every case gets 32 neighbours. Adds the three-pass sweep (shape → verbs/autonomy → depth) and
+  the correctness-profile confusion table.
 - **v2.0.0 (2026-08-06)** — Rewritten as the roadmap Claude Code follows, not a checklist that
   points elsewhere. Adds the six-axis enumeration strategy (verbs × autonomy × personas × arcs ×
   register × failures) as the systematic answer to "anticipate the variety", the priority order
