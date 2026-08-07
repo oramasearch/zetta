@@ -74,6 +74,30 @@ hallucination and sets `called_unknown_tool`.
 Most corpus defects are **kind confusion**. An `Action` that should have been a `Clarify` is
 how you get an agent that builds when the user was choosing between two options.
 
+## 3b. The production cores — never hand-list a pipeline's facts
+
+**A template that spells out its own facts inline is how demoware gets into the corpus.** 33
+catalog templates existed and only churn had a production shape: `point_in_time` appeared in 2 of
+them, `shap` in 4, `holdout` in 6. The rest emitted `connect → clean → model → serve` — a number
+you cannot defend and nobody can act on — because each was hand-written rather than composed from
+a core that already knew the profile.
+
+Use the core for the methodology, then add the solution's specifics with `with_fact`:
+
+| Core | For | Carries | Deliberately omits |
+|---|---|---|---|
+| `supervised_core(kind)` | churn, lead scoring, propensity | `leakage_free` · `point_in_time` · `temporal_validation` · **`calibrated`** · **`holdout`** · `explain: shap` | — |
+| `forecast_core()` | demand, revenue, capacity | `temporal_validation` · **`backtest`** · `holdout` · `point_in_time` | **`calibrated`** — there is no probability to calibrate, and a calibrator fit on content-held-out rows re-introduces the leak temporal validation prevents |
+| `unsupervised_core(kind)` | anomaly, clustering, segmentation | `point_in_time` · **`threshold_governed`** · `explain: shap` | **`leakage_free`, `calibrated`** — no label to leak or calibrate |
+
+Two of these are enforced at the gate: `MethodologyCheck` refuses a methodology the engine cannot
+execute, and `TemporalValidationCheck` fails a forecast that calibrates. A template contradicting
+its core will be refused before it deploys.
+
+**`holdout` is the one most often missed and it matters most.** Without it the only metric is
+in-sample, measured on the rows the model was fit on. An in-sample AUC of 0.868 reached a client
+report as the headline once; the held-out figure for the same run was 0.726.
+
 ## 4. The authoring recipe (C++ today)
 
 A slice is a family function in `src/core/dataset/interaction_families.cpp`, registered in

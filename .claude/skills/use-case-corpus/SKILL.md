@@ -328,6 +328,10 @@ Not "cases were generated".
 - ❌ Authoring one solution to depth before every solution has its distinct pipeline shape (pass 1).
 - ❌ Authoring before the four research questions are answered in writing.
 - ❌ Retyping the tool list, the kinds, or the fact keys instead of reading them from source.
+- ❌ Hand-listing a pipeline's facts in a template. Compose from the methodology's core
+  (`supervised_core` / `forecast_core` / `unsupervised_core`, reference.md §3b) and add specifics
+  with `with_fact`. Inline lists are how 30 of 33 catalog solutions ended up emitting
+  connect → clean → model → serve with no holdout, no explanation, and nothing to act on.
 - ❌ Straw-man negative controls.
 - ❌ A trajectory whose pipeline is derivable from the ask alone.
 - ❌ A tool call not conditioned on what the previous call returned.
