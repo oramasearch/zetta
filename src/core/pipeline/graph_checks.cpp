@@ -226,6 +226,46 @@ std::string join_types(const std::vector<std::string>& types) {
 
 }  // namespace
 
+const std::vector<std::string>& MethodologyCheck::implemented() {
+    // M-1 tabular supervised ships (histogram GBDT + native TreeSHAP + calibration).
+    // Everything else in the catalogue is #984 and must NOT pass this check until its
+    // train/score path exists — passing it early is how the agent learns to propose work the
+    // engine silently will not do.
+    static const std::vector<std::string> kImplemented = {"gbdt"};
+    return kImplemented;
+}
+
+CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model) continue;
+        if (!node->attributes.is_object()) continue;
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end()) continue;  // opt-in, like every check here
+        if (!kind->is_string()) {
+            return CheckResult{name(), CheckStatus::Fail,
+                               node_label(*node) + ": model_kind must be a string"};
+        }
+        const std::string named = kind->get<std::string>();
+        const std::vector<std::string>& ok = implemented();
+        if (std::find(ok.begin(), ok.end(), named) == ok.end()) {
+            std::string supported;
+            for (const std::string& entry : ok) {
+                if (!supported.empty()) supported += ", ";
+                supported += entry;
+            }
+            // Say what to do, not just what is wrong (FEAT-3).
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) + ": this node names the methodology '" + named +
+                    "', which this engine cannot execute. Implemented today: " + supported +
+                    ". Either build the pipeline with an implemented methodology, or track the "
+                    "missing one on the methodology portfolio issue (#984)."};
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every model step names a methodology the engine can execute"};
+}
+
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     const auto fail = [this](std::string reason) {
         return CheckResult{name(), CheckStatus::Fail, std::move(reason)};

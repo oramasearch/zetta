@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -28,6 +29,26 @@ namespace zetta::pipeline {
 // the step's transitive data-flow ancestors. A required field that no upstream
 // source provides, or that is provided under a different type, fails the gate.
 // Type tokens are opaque strings compared case-insensitively.
+// Methodology check (#984): a model step must name a methodology the engine can actually
+// execute. Until `model_kind` rode the model step it was a string in a bag nothing read, so a
+// graph could name `forecast` and run the churn path — the failure was SILENT, and a silent
+// wrong pipeline is the product lying fluently. A loud refusal is the honest outcome.
+//
+// The set is deliberately narrow: what `src/core/ml/` implements TODAY, not what the catalogue
+// specifies. It widens as each M-n lands (#984). A model step with no `model_kind` is skipped
+// rather than failed — the annotation is opt-in, exactly like the other checks here — but a
+// model step that names an UNKNOWN methodology fails, because the alternative is the agent
+// proposing work the engine will silently not do.
+class MethodologyCheck final : public Check {
+public:
+    std::string name() const override { return "methodology"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+
+    // The methodologies the engine can execute today. Widened by #984, never by a caller —
+    // a per-call override is how "the engine supports it" becomes unfalsifiable.
+    static const std::vector<std::string>& implemented();
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

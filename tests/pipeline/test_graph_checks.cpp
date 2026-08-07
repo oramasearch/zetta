@@ -313,3 +313,64 @@ TEST(GraphChecksThroughGate, MistypedGraphBlocksDeploy) {
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);
 }
+
+// --- MethodologyCheck (#984) --------------------------------------------------------------
+//
+// A model step may not name a methodology the engine cannot execute. Before `model_kind` rode
+// the model step it was a string in a bag nothing read, so a graph could name `forecast` and
+// silently run the churn path. A silent wrong pipeline is the product lying fluently; a loud
+// refusal is the honest outcome, and this check is what makes it loud.
+
+TEST(MethodologyCheck, AnImplementedMethodologyPasses) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      nlohmann::json{{"model_kind", "gbdt"}});
+    graph.add_edge(connect->id, model->id);
+
+    const zetta::pipeline::CheckResult result =
+        zetta::pipeline::MethodologyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      nlohmann::json{{"model_kind", "forecast"}});
+    graph.add_edge(connect->id, model->id);
+
+    const zetta::pipeline::CheckResult result =
+        zetta::pipeline::MethodologyCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("forecast"), std::string::npos)
+        << "the reason must name the methodology that was refused";
+    EXPECT_NE(result.reason.find("gbdt"), std::string::npos)
+        << "the reason must name what IS implemented, so the author knows the way forward";
+}
+
+TEST(MethodologyCheck, AModelStepWithNoMethodologyIsSkippedNotFailed) {
+    // Opt-in, exactly like the other checks here: a graph that carries no annotation must not
+    // be penalised for it, or every pre-existing pipeline breaks the day this check lands.
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model");
+    graph.add_edge(connect->id, model->id);
+
+    EXPECT_EQ(zetta::pipeline::MethodologyCheck{}.evaluate(graph).status,
+              zetta::pipeline::CheckStatus::Pass);
+}
+
+TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
+    // This asserts the set is HONEST, not that it is large. It widens only as each M-n lands
+    // (#984); widening it early is exactly how the agent learns to propose work the engine
+    // silently will not do.
+    const std::vector<std::string>& implemented =
+        zetta::pipeline::MethodologyCheck::implemented();
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
+        << "M-1 tabular supervised ships today";
+    for (const char* unshipped : {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
+        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
+            << unshipped << " is not implemented; listing it here would make the check a lie";
+    }
+}
