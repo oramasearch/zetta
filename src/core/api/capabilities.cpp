@@ -744,6 +744,99 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- model_health (Monitor, #983) -------------------------------------------------------------
+//
+// The first Monitor capability. The agent is meant to watch a deployed model and say whether it
+// can still be trusted, and until now it had no tool that answers that — so it could only
+// describe monitoring, which is #976 at the methodology level.
+//
+// Deliberately computed from what a Model record ALREADY carries. A drift capability needing a
+// stored reference distribution is a schema change and a migration; this needs neither, and the
+// question it answers is the one asked first: **is the number I was given honest, and is it still
+// the number?**
+const nlohmann::json& model_health_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("model_id", "the model's uuid (system.models.model_id)");
+    return schema;
+}
+
+const nlohmann::json& model_health_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "trustworthy", "findings"}},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"trustworthy", {{"type", "boolean"}}},
+          {"held_out_auc", {{"type", "number"}}},
+          {"in_sample_auc", {{"type", "number"}}},
+          {"overfit_gap", {{"type", "number"}}},
+          {"calibrated", {{"type", "boolean"}}},
+          {"findings", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_model_health(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) return ApiResult::failure("not_found", "no model with id '" + id + "'");
+
+    const nlohmann::json metadata = model->metadata();
+    const nlohmann::json metrics =
+        metadata.contains("metrics") ? metadata.at("metrics") : nlohmann::json::object();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto entry = metrics.find(key);
+        if (entry == metrics.end() || !entry->is_number()) return std::nullopt;
+        return entry->get<double>();
+    };
+
+    nlohmann::json output;
+    output["model_id"] = id;
+    std::vector<std::string> findings;
+    bool trustworthy = true;
+
+    const std::optional<double> held_out = number("held_out_auc");
+    const std::optional<double> in_sample = number("in_sample_auc");
+    if (held_out) output["held_out_auc"] = *held_out;
+    if (in_sample) output["in_sample_auc"] = *in_sample;
+
+    if (!held_out) {
+        // The single most important thing this can say. Without a holdout the only figure is
+        // measured on the rows the model was fit on, and it flatters — an in-sample 0.868 reached
+        // a client report once where the held-out figure was 0.726.
+        trustworthy = false;
+        findings.push_back(
+            "No held-out metric. This model was trained without a holdout, so every quality "
+            "figure it carries was measured on the rows it learned from and cannot be quoted. "
+            "Retrain with holdout_fraction set.");
+    } else if (in_sample) {
+        const double gap = *in_sample - *held_out;
+        output["overfit_gap"] = gap;
+        if (gap > 0.1) {
+            trustworthy = false;
+            findings.push_back(
+                "In-sample exceeds held-out by " + std::to_string(gap) +
+                ". The model has memorized rather than generalized; the held-out figure is the "
+                "only one that describes new accounts.");
+        }
+    }
+
+    const auto calibrated = metadata.find("calibrated");
+    const bool is_calibrated =
+        calibrated != metadata.end() && calibrated->is_boolean() && calibrated->get<bool>();
+    output["calibrated"] = is_calibrated;
+    if (!is_calibrated) {
+        // Not disqualifying — ranking is a legitimate use — but a threshold set on an
+        // uncalibrated score means something different from what the person setting it expects.
+        findings.push_back(
+            "Scores are not calibrated: they rank accounts but are not probabilities, so a "
+            "threshold like 0.8 does not mean an 80% chance.");
+    }
+
+    output["trustworthy"] = trustworthy;
+    output["findings"] = findings;
+    return ApiResult::success(std::move(output));
+}
+
 const nlohmann::json& get_job_schema() {
     static const nlohmann::json schema =
         id_input_schema("job_id", "the compute job's uuid (system.jobs.job_id)");
@@ -4702,6 +4795,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
          "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
+        {"model_health",
+         "check whether a deployed model can still be trusted - the held-out figure, the "
+         "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
         {"get_run_report",
          "read what a finished run found — model quality (held-out first), the "
          "drivers, and the ranked at-risk list with the evidence behind each row: "
@@ -5377,6 +5473,19 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_get_run_report});
 
+    registry.add(Capability{
+        "model_health",
+        "Model health",
+        "Read whether a deployed model can still be trusted: the held-out figure, the "
+        "overfitting gap against in-sample, whether scores are calibrated, and what each "
+        "means. No side effects.",
+        model_health_schema(),
+        model_health_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_model_health});
     registry.add(Capability{
         "get_model",
         "Get one model",

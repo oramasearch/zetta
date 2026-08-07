@@ -376,3 +376,63 @@ TEST_F(ServingFixture, ExposeActionsFailClearlyAndAreIdempotent) {
 }
 
 }  // namespace
+
+// --- model_health (#983, the first Monitor capability) --------------------------------------
+//
+// The agent is meant to watch a deployed model and say whether it can still be trusted. Until
+// this it had no tool that answers that, so it could only DESCRIBE monitoring — which is #976 at
+// the methodology level: a verb the agent has no vocabulary for.
+//
+// Computed from what a Model record ALREADY carries. A drift capability needing a stored
+// reference distribution is a schema change and a migration; this needs neither, and it answers
+// the question asked first: is the number I was given honest?
+TEST_F(ServingFixture, ModelHealthReadsWhetherAModelCanStillBeTrusted) {
+    const auto install = [this](const nlohmann::json& metrics, const std::string& name) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = name;
+        value.metrics = metrics;
+        auto model = node.create_model(std::move(value));
+        return model ? model->id() : std::string{};
+    };
+
+    // No holdout: every figure was measured on the rows the model learned from. An in-sample
+    // 0.868 reached a client report once where the held-out figure was 0.726.
+    const std::string no_holdout = install({{"in_sample_auc", 0.868}}, "no-holdout");
+    ASSERT_FALSE(no_holdout.empty());
+    auto result = call("model_health", {{"model_id", no_holdout}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+    bool named_the_fix = false;
+    for (const auto& finding : result.value.at("findings")) {
+        if (finding.get<std::string>().find("holdout_fraction") != std::string::npos) {
+            named_the_fix = true;
+        }
+    }
+    EXPECT_TRUE(named_the_fix) << "a finding must say what to do, not only what is wrong";
+
+    // A wide gap is memorization; the held-out figure is the only one describing new accounts.
+    const std::string overfit =
+        install({{"in_sample_auc", 0.95}, {"held_out_auc", 0.72}}, "overfit");
+    result = call("model_health", {{"model_id", overfit}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_NEAR(result.value.at("overfit_gap").get<double>(), 0.23, 1e-9);
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+
+    // A model that generalizes is trusted.
+    const std::string healthy =
+        install({{"in_sample_auc", 0.78}, {"held_out_auc", 0.75}}, "healthy");
+    result = call("model_health", {{"model_id", healthy}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(result.value.at("trustworthy").get<bool>());
+
+    // Uncalibrated is not disqualifying — ranking is legitimate — but it must be SAID, because a
+    // threshold of 0.8 on an uncalibrated score does not mean an 80% chance.
+    bool warned_about_calibration = false;
+    for (const auto& finding : result.value.at("findings")) {
+        if (finding.get<std::string>().find("not calibrated") != std::string::npos) {
+            warned_about_calibration = true;
+        }
+    }
+    EXPECT_TRUE(warned_about_calibration);
+}
