@@ -104,6 +104,39 @@ EndState decisioning_core(const std::string& model_kind) {
                   {"explain", "shap"}});
 }
 
+// PERCEPTION (vision, speech, document intelligence) turns an artifact into structure, and its
+// failure mode is silent: a wrong extraction looks exactly like a right one downstream. So the
+// profile is not accuracy but VERIFIABILITY — the output is validated against a schema, and every
+// extracted value traces back to the region it came from. A defect nobody is told about ships.
+EndState perception_core(const std::string& model_kind, const std::string& explanation) {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"model_kind", model_kind},
+                  {"serve", true},
+                  {"extraction", true},
+                  {"grounded_in_data", true},
+                  {"holdout", true},
+                  {"explain", explanation}});
+}
+
+// UNCERTAINTY-FIRST methods (Bayesian, ensembling) exist to say how sure they are. A point
+// estimate from one of these is the methodology thrown away — so `uncertainty` is required, and
+// `calibrated` means the stated confidence is the observed frequency rather than decoration.
+EndState uncertainty_core(const std::string& model_kind) {
+    return facts({{"connect", true},
+                  {"clean", true},
+                  {"model", true},
+                  {"model_kind", model_kind},
+                  {"serve", true},
+                  {"leakage_free", true},
+                  {"point_in_time", true},
+                  {"calibrated", true},
+                  {"uncertainty", true},
+                  {"holdout", true},
+                  {"explain", "shap"}});
+}
+
 EndState with_fact(EndState state, const std::string& key, nlohmann::json value) {
     state.set(key, std::move(value));
     return state;
@@ -158,16 +191,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
         {"S-11",
          "Recommend the next best action per customer, and only act where it changes the "
          "outcome.",
-         facts({{"connect", true},
-                {"clean", true},
-                {"model", true},
-                {"serve", true},
-                {"act", true},
-                {"leakage_free", true},
-                {"model_kind", "uplift"},
-                {"incrementality", true},
-                {"holdout", true},
-                {"approval_gated", true}})});  // uplift/causal, held-out lift, approval-gated
+         with_fact(decisioning_core("uplift"), "leakage_free", true)});  // uplift/causal, held-out lift, approval-gated
 
     // --- Language / retrieval (Family V / M-10) ---
     templates.push_back(
@@ -178,22 +202,17 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     // --- The methods with no coverage yet (doc 03 §4) — each with its distinguishing checks ---
     templates.push_back(
         {"M-11", "Extract the key fields from our invoices/contracts (touchless AP).",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"index", true},
-                {"serve", true}, {"model_kind", "document_intelligence"}, {"extraction", true},
-                {"grounded_in_data", true},
-                {"index_kind", "semantic"}})});  // extracted fields have to be findable
+         with_fact(with_fact(perception_core("document_intelligence", "shap"), "index", true), "schema_validated", true)});  // extracted fields have to be findable
     templates.push_back(
         {"M-12", "Score risk across our account/transaction graph using its relationships.",
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
                 {"model_kind", "graph"}, {"entity_resolution", true}, {"leakage_free", true}})});
     templates.push_back(
         {"M-13", "Classify/inspect our images for defects.",
-         facts({{"connect", true}, {"model", true}, {"serve", true},
-                {"act", true},  // a defect nobody is told about is a defect that ships
-                {"model_kind", "vision"}, {"explain", "gradcam"}, {"approval_gated", true}})});
+         with_fact(perception_core("vision", "gradcam"), "act", true)});
     templates.push_back(
         {"M-14", "Transcribe + analyze our support calls.",
-         facts({{"connect", true}, {"model", true}, {"serve", true}, {"model_kind", "speech"}})});
+         with_fact(perception_core("speech", "shap"), "transcription", true)});
     templates.push_back(
         {"M-15", "Choose offers online + keep learning which works, safely.",
          with_fact(decisioning_core("bandit"), "exploration", true)});
@@ -202,13 +221,10 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          with_fact(decisioning_core("optimization"), "constraints", true)});
     templates.push_back(
         {"M-17", "Give predictions WITH calibrated uncertainty on sparse data.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"model_kind", "bayesian"}, {"calibrated", true}, {"uncertainty", true}})});
+         uncertainty_core("bayesian")});
     templates.push_back(
         {"M-18", "Squeeze the most accuracy out by combining models, honestly.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"leakage_free", true}, {"model_kind", "ensemble"}, {"temporal_validation", true},
-                {"calibrated", true}, {"explain", "shap"}})});
+         with_fact(uncertainty_core("ensemble"), "temporal_validation", true)});
     templates.push_back(
         {"M-19", "Get a good model with very few labels (label-efficient).",
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
@@ -251,10 +267,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
     templates.push_back({"UC-22", "Find what drives scrap/quality/yield in our process.",
                          with_fact(supervised_core("gbdt"), "drivers", true)});
     templates.push_back({"UC-23", "Target our campaigns at who'll actually respond because of them.",
-                         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                                {"act", true}, {"leakage_free", true}, {"model_kind", "uplift"},
-                                {"incrementality", true}, {"holdout", true},
-                                {"approval_gated", true}})});
+                         with_fact(decisioning_core("uplift"), "leakage_free", true)});
     templates.push_back(
         {"UC-24", "Read our contracts + flag obligation/renewal risk.",
          facts({{"connect", true}, {"clean", true}, {"model", true}, {"index", true},

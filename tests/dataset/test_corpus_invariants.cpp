@@ -855,8 +855,17 @@ TEST_F(CorpusInvariants, FollowUpCasesCarryTheTurnTheyFollow) {
 // shapes, so the model learned one pipeline and emitted it for churn, lead scoring and collections
 // alike — passing any grader whose facts that shape happens to satisfy and failing the rest.
 //
-// Measured on the SHAPE (the ordered step kinds), not on the attributes: two cases that differ only
-// in a config value still teach the same structure.
+// Measured on the ordered step kinds PLUS the methodology, not on the rest of the attributes.
+//
+// The methodology used to be a config value, and this invariant deliberately ignored it. Since
+// `model_kind` rides the model step (B1a) that is no longer true: a forecast and a churn model
+// are not the same structure with a different setting, because the correctness gate accepts
+// different things from each — `TemporalValidationCheck` requires temporal validation of one and
+// refuses calibration on it, and `MethodologyCheck` refuses a methodology the engine cannot
+// execute. Two cases whose steps match but whose methodologies differ teach genuinely different
+// pipelines and must count as such.
+//
+// Everything else stays excluded: a threshold or a column name really is a config value.
 TEST_F(CorpusInvariants, ActionCasesTeachMoreThanOnePipelineShape) {
     std::map<std::string, int> shapes;
     int actions = 0;
@@ -868,6 +877,13 @@ TEST_F(CorpusInvariants, ActionCasesTeachMoreThanOnePipelineShape) {
         for (const ToolCall& call : action.tool_calls) {
             shape += call.tool;
             shape += ">";
+        }
+        for (const auto& node : action.execution_graph.nodes()) {
+            if (node->kind != zetta::ir::StepKind::Model || !node->attributes.is_object()) continue;
+            if (const auto kind = node->attributes.find("model_kind");
+                kind != node->attributes.end() && kind->is_string()) {
+                shape += "[" + kind->get<std::string>() + "]";
+            }
         }
         if (shape.empty()) continue;
         ++actions;
