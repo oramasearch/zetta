@@ -210,3 +210,77 @@ producing the behaviour it was written for. That is the argument for
 [#859](https://github.com/oramasearch/zetta/issues/859) stated as evidence rather than as an
 opinion: the loop generates observation-conditioned multi-turn experience at whatever density the
 policy explores, which is the one thing hand-authoring has now failed twice to supply.
+
+
+---
+
+# v16 — the density hypothesis, and a flaw in the acceptance test
+
+**Checkpoint:** `base-agent-0.6b-interaction-v16` · **Corpus:** multi-turn density raised
+**2.2% → 5.1%** (360 → 855 threaded cases).
+
+```
+USER  create me a churn project
+v16   Yes. Studio can create a new Project from your data and your needs.
+
+USER  yes
+v16   Yes. Studio can list_models to show which models are trained and what each costs.
+
+USER  what?
+v16   Sorry - plainly: `list_models` has over 100 entries, so anything that can make an
+      HTTP request can drive it.
+```
+
+**THREE-TURN WALK: PASS.** No two consecutive replies are identical — the first PASS in four
+checkpoints.
+
+| | v13 | v14 | v15 | v16 |
+|---|---|---|---|---|
+| Multi-turn density | 2.2% | 2.2% | 2.2% | **5.1%** |
+| Repeats consecutively | yes | yes | yes | **no** |
+| Walk verdict | FAIL | FAIL | FAIL | **PASS** |
+
+**The density hypothesis holds.** Three checkpoints repeated at 2.2%; the one at 5.1% does not.
+That is the lever, and it was worth finding.
+
+## But the test I wrote is too weak, and v16 proves it
+
+Read the replies rather than the verdict:
+
+- Turn 1 does not create anything. It describes that Studio *can*.
+- Turn 2 answers `"yes"` with an unprompted claim about `list_models` — a **non sequitur**; nothing
+  in the thread was about listing models.
+- Turn 3 is **fabricated**: *"`list_models` has over 100 entries, so anything that can make an HTTP
+  request can drive it"* is not grounded in anything, and the two clauses do not follow from each
+  other.
+
+So v16 satisfies the acceptance criterion while being **plainly worse to talk to than v13**, whose
+turn 1 (*"Which pipeline would you like me to base this on?"*) was a sensible clarifying question.
+
+**This is a flaw in the criterion, and I wrote it.** *"No two consecutive replies are
+byte-identical"* was chosen because the observed failure was byte-identical repetition. It detects
+that one failure and nothing else — a model can pass it by being differently wrong each turn,
+which is exactly what v16 does. Distinctness is necessary and nowhere near sufficient.
+
+**What the criterion should be**, and what the next walk should assert:
+
+1. **No consecutive repeat** — keep it; it caught a real regression three times.
+2. **Turn 2 must resolve against turn 1.** `"yes"` after a proposal must act on *that* proposal, not
+   introduce a new subject.
+3. **Turn 3 must restate turn 2**, not answer a new question — `restated_prior_turn` already exists
+   as a gradeable fact and is not being asserted here.
+4. **Every claim must be grounded.** `numbers_from_context` exists; *"over 100 entries"* would fail
+   it, and the walk never checked.
+
+Facts 2–4 are all computable with machinery that already exists. The walk is checking one of four.
+
+## Honest summary across the four checkpoints
+
+Density fixed the repeat. It did not make the agent good, and the acceptance test could not tell
+the difference. **The corpus work to date has moved one measurable failure at a time while overall
+conversational quality has not clearly improved** — v13 remains the best turn-1 behaviour of the
+four, and it is the one trained without any of this session's changes.
+
+That is the case for [#859](https://github.com/oramasearch/zetta/issues/859) stated as evidence:
+four hand-authored rounds, four narrow fixes, no broad gain — because a hand-written corpus can
+only encode failures someone already observed.
