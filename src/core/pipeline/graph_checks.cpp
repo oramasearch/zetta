@@ -254,10 +254,20 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
             }
         }
 
-        const auto validated = node->attributes.find("temporal_validation");
-        const bool has_temporal_validation =
-            validated != node->attributes.end() && validated->is_boolean() &&
-            validated->get<bool>();
+        // Look across the whole graph, exactly as the calibration half above does. Looking only
+        // at the model node was an asymmetry bug: `build_solution_graph` puts non-step facts on
+        // the solution node, so a graph that legitimately declared temporal validation was
+        // refused for not declaring it.
+        bool has_temporal_validation = false;
+        for (const auto& other : graph.nodes()) {
+            if (!other->attributes.is_object()) continue;
+            const auto validated = other->attributes.find("temporal_validation");
+            if (validated != other->attributes.end() && validated->is_boolean() &&
+                validated->get<bool>()) {
+                has_temporal_validation = true;
+                break;
+            }
+        }
         if (!has_temporal_validation) {
             return CheckResult{
                 name(), CheckStatus::Fail,
@@ -276,7 +286,11 @@ const std::vector<std::string>& MethodologyCheck::implemented() {
     // Everything else in the catalogue is #984 and must NOT pass this check until its
     // train/score path exists — passing it early is how the agent learns to propose work the
     // engine silently will not do.
-    static const std::vector<std::string> kImplemented = {"gbdt"};
+    // "forecast" joined on 2026-08-07 when `train_forecast` landed (#984): lag featurization ->
+    // temporal split -> squared-error GBDT -> rolling-origin backtest, verified to beat
+    // predicting the mean on a seasonal series. Before that it was deliberately absent, so the
+    // gate refused it rather than silently running the churn path.
+    static const std::vector<std::string> kImplemented = {"gbdt", "forecast"};
     return kImplemented;
 }
 

@@ -339,13 +339,13 @@ TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
     zetta::ir::ExecutionGraph graph;
     const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
     const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
-                                      nlohmann::json{{"model_kind", "forecast"}});
+                                      nlohmann::json{{"model_kind", "survival"}});
     graph.add_edge(connect->id, model->id);
 
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("forecast"), std::string::npos)
+    EXPECT_NE(result.reason.find("survival"), std::string::npos)
         << "the reason must name the methodology that was refused";
     EXPECT_NE(result.reason.find("gbdt"), std::string::npos)
         << "the reason must name what IS implemented, so the author knows the way forward";
@@ -371,7 +371,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
-    for (const char* unshipped : {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end())
+        << "M-4 ships: train_forecast composes lag features, a temporal split, the squared-error "
+           "objective and a rolling-origin backtest";
+    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -500,7 +503,7 @@ TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
 //
 // A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
 // proposing a forecast the engine silently runs as a classifier.
-TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRunPathExists) {
+TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
     zetta::agent::EndState facts;
     facts.set("connect", true);
     facts.set("model", true);
@@ -509,19 +512,23 @@ TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRunPathExists) {
     facts.set("temporal_validation", true);
 
     const auto graph = zetta::agent::build_solution_graph(facts);
-    const auto report = gate_over(graph);
-    EXPECT_TRUE(report.block_deploy)
-        << "a methodology with no run path must be refused, not silently run as something else";
+    // This test asserted a REFUSAL for most of this epic, and that was correct: forecast had no
+    // run path, so passing it would have meant silently running the churn path under a
+    // forecasting name. `train_forecast` landing is what changed the expected answer.
+    EXPECT_FALSE(gate_over(graph).block_deploy)
+        << "forecast is implemented now - lag features, temporal split, squared-error objective, "
+           "rolling-origin backtest";
 
-    bool named_the_way_forward = false;
-    for (const auto& result : report.checks) {
-        if (result.status == zetta::pipeline::CheckStatus::Fail &&
-            result.reason.find("gbdt") != std::string::npos) {
-            named_the_way_forward = true;
-        }
-    }
-    EXPECT_TRUE(named_the_way_forward)
-        << "the refusal must say what IS implemented, or the author only learns they are stuck";
+    // And the profile is still enforced: the same methodology WITHOUT temporal validation, or
+    // WITH calibration, is refused.
+    zetta::agent::EndState uncalibrated_but_unvalidated;
+    uncalibrated_but_unvalidated.set("connect", true);
+    uncalibrated_but_unvalidated.set("model", true);
+    uncalibrated_but_unvalidated.set("serve", true);
+    uncalibrated_but_unvalidated.set("model_kind", std::string("forecast"));
+    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(uncalibrated_but_unvalidated))
+                    .block_deploy)
+        << "shipping the run path must not relax the correctness profile";
 }
 
 // And the property that makes the corpus's neighbouring-solution negative control meaningful:
