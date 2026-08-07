@@ -657,6 +657,7 @@ add_library(zetta-core STATIC
   src/core/agent/response_facts.cpp
   src/core/agent/solution_graph.cpp
   src/core/dataset/auto_suggest_generator.cpp
+  src/core/dataset/authored_generator.cpp
   src/core/dataset/base_agent_generator.cpp
   src/core/dataset/dataset_generator_factory.cpp
   src/core/dataset/interaction_families.cpp

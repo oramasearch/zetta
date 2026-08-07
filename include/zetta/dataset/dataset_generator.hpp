@@ -25,6 +25,15 @@ namespace zetta::dataset {
 struct DatasetGenSpec {
     int variants_per_subject = 1;     // task variants per plan subject (intent-invariance)
     double held_out_fraction = 0.0;   // fraction of subjects reserved as a canary (0 = none)
+    // Path to an AUTHORED corpus artifact (JSONL), for generators that load rather than
+    // synthesize. Empty for the synthesizing generators, which ignore it.
+    //
+    // This exists so a corpus slice can be DATA rather than C++. Today a slice means editing
+    // interaction_families.cpp, compiling, and reviewing a large diff — which does not scale to
+    // a catalogue-wide sweep, and leaves nothing publishable as the model's provenance. An
+    // artifact is reviewable, diffable, and goes to the Hub beside the checkpoint that learned
+    // from it.
+    std::string artifact_path;
 };
 
 // The result: the gated corpus + the plan subjects it covered (so a caller can see coverage

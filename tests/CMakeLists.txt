@@ -195,6 +195,7 @@ add_executable(zetta-tests
   agent/test_interaction_contract.cpp
   agent/test_sft_device_agnostic.cpp
   agent/test_solution_graph.cpp
+  dataset/test_authored_generator.cpp
   dataset/test_dataset_generator.cpp
   dataset/test_corpus_invariants.cpp
   agent/test_agent_record.cpp
