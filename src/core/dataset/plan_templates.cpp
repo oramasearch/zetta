@@ -205,8 +205,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          with_fact(with_fact(perception_core("document_intelligence", "shap"), "index", true), "schema_validated", true)});  // extracted fields have to be findable
     templates.push_back(
         {"M-12", "Score risk across our account/transaction graph using its relationships.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"model_kind", "graph"}, {"entity_resolution", true}, {"leakage_free", true}})});
+         with_fact(supervised_core("graph"), "entity_resolution", true)});
     templates.push_back(
         {"M-13", "Classify/inspect our images for defects.",
          with_fact(perception_core("vision", "gradcam"), "act", true)});
@@ -227,18 +226,13 @@ std::vector<SolutionTemplate> plan_solution_templates() {
          with_fact(uncertainty_core("ensemble"), "temporal_validation", true)});
     templates.push_back(
         {"M-19", "Get a good model with very few labels (label-efficient).",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"label_efficient", true}, {"active_learning", true}, {"calibrated", true}})});
+         with_fact(with_fact(supervised_core("classifier"), "label_efficient", true), "active_learning", true)});
     templates.push_back(
         {"M-20", "Train on sensitive data without exposing it (privacy-preserving).",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"serve", true},
-                {"privacy_preserving", true}, {"synthetic_data", true}})});
+         with_fact(with_fact(supervised_core("classifier"), "privacy_preserving", true), "synthetic_data", true)});
     templates.push_back(
         {"M-21", "Keep the model fresh as data streams in, watching for drift.",
-         facts({{"connect", true}, {"model", true}, {"serve", true},
-                {"act", true},  // drift that raises no alert is drift nobody noticed
-                {"model_kind", "online"}, {"streaming", true}, {"drift_monitoring", true},
-                {"approval_gated", true}})});
+         with_fact(with_fact(with_fact(supervised_core("online"), "streaming", true), "drift_monitoring", true), "act", true)});
 
     // --- Remaining use cases (doc 02, UC-13…24) mapped to their methodology ---
     templates.push_back(
@@ -270,11 +264,7 @@ std::vector<SolutionTemplate> plan_solution_templates() {
                          with_fact(decisioning_core("uplift"), "leakage_free", true)});
     templates.push_back(
         {"UC-24", "Read our contracts + flag obligation/renewal risk.",
-         facts({{"connect", true}, {"clean", true}, {"model", true}, {"index", true},
-                {"serve", true}, {"act", true},  // a renewal you are not told about is one you miss
-                {"model_kind", "document_intelligence"}, {"extraction", true},
-                {"grounded_in_data", true}, {"index_kind", "semantic"},
-                {"approval_gated", true}})});
+         with_fact(with_fact(perception_core("document_intelligence", "shap"), "index", true), "act", true)});
 
     // --- The data supply chain (doc 08, DSC-1…8) — the correct data path a pipeline honors ---
     templates.push_back(
