@@ -214,6 +214,7 @@ add_executable(zetta-tests
   agent/test_response_facts.cpp
   agent/test_goal.cpp
   agent/test_conversation.cpp
+  agent/test_conversation_walk.cpp
   agent/test_training_policy.cpp
   agent/test_corpus_native_gate.cpp
   agent/test_softmax_policy.cpp

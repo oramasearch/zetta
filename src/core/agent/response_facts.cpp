@@ -218,15 +218,13 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
         state.set("restated_prior_turn", !repeated && !current.empty());
     }
 
-    // --- the non-sequitur check ---------------------------------------------------------------
-    // Every handle the message names must have been named by the engine's grounding, by the user,
-    // or by an earlier reply. `numbers_from_context` stops a fluent answer inventing a figure; this
-    // stops it inventing a SUBJECT, which is the failure distinctness cannot see: v16 answered
-    // "yes" with an unprompted claim about `list_models`, a handle that appeared nowhere in the
-    // thread, and passed a walk asserting only that consecutive replies differ.
+    // --- the anti-fabrication checks ------------------------------------------------------------
+    // CONTEXT is the grounding the engine retrieved PLUS the thread so far — what the user said and
+    // what earlier replies said. Both are things the agent may legitimately refer back to: a figure
+    // the user themselves stated is not invented, and neither is a handle they named.
     //
-    // Emitted whenever there is any context to check against — grounding or history — so a
-    // single-turn case with neither grades exactly as it did before this existed.
+    // Emitted whenever there is any context at all, so a single-turn case with neither grounding
+    // nor history grades exactly as it did before this existed.
     if (!grounding.empty() || !history.empty()) {
         std::string thread(grounding);
         for (const PriorTurn& prior : history) {
@@ -239,6 +237,25 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
                 thread += outcome.tool;
             }
         }
+
+        // Every number the answer states must be one the context actually contains. This is what
+        // stops a fluent answer citing a plausible figure that was never retrieved.
+        bool numbers_from_context = true;
+        for (const std::string& literal : numeric_literals(action.message)) {
+            if (literal.size() < 2) continue;  // a bare digit is prose ("one of 3 drivers")
+            if (!states_literal(thread, literal)) {
+                numbers_from_context = false;
+                break;
+            }
+        }
+        state.set("numbers_from_context", numbers_from_context);
+        state.set("grounded", numbers_from_context && !action.message.empty());
+
+        // And every HANDLE it names must have been named by the grounding, by the user, or by an
+        // earlier reply. Numbers stop it inventing a figure; this stops it inventing a SUBJECT —
+        // the failure distinctness cannot see. v16 answered "yes" with an unprompted claim about
+        // `list_models`, a handle appearing nowhere in the thread, and passed a walk asserting
+        // only that consecutive replies differ.
         bool identifiers_from_context = true;
         for (const std::string& handle : quoted_handles(action.message)) {
             if (!contains(thread, handle)) {
@@ -273,18 +290,6 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
         }
     }
 
-    // --- the anti-fabrication check ---------------------------------------------------------
-    // Every number the answer states must be one the engine actually retrieved.
-    bool numbers_from_context = true;
-    for (const std::string& literal : numeric_literals(action.message)) {
-        if (literal.size() < 2) continue;  // a bare digit is prose ("one of 3 drivers"), not a claim
-        if (!states_literal(grounding, literal)) {
-            numbers_from_context = false;
-            break;
-        }
-    }
-    state.set("numbers_from_context", numbers_from_context);
-    state.set("grounded", numbers_from_context && !action.message.empty());
 
     // --- entity + value grounding -------------------------------------------------------------
     // Each fact is emitted ONLY when the message actually carries it, so a task requiring
