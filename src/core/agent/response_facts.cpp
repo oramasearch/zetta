@@ -58,6 +58,22 @@ std::vector<std::string> numeric_literals(std::string_view text) {
     return found;
 }
 
+// The handles a message ASSERTS. Backticked spans only: that is how the model names a concrete
+// engine handle (`list_models`, `churn-uc1`), and it is the one form that can be told apart from
+// English without a parser. Checking every word would fail on prose; checking none is what let a
+// reply invent a tool nobody had mentioned.
+std::vector<std::string> quoted_handles(std::string_view text) {
+    std::vector<std::string> handles;
+    for (std::size_t open = text.find('`'); open != std::string_view::npos;) {
+        const std::size_t close = text.find('`', open + 1);
+        if (close == std::string_view::npos) break;
+        std::string_view handle = text.substr(open + 1, close - open - 1);
+        if (!handle.empty() && handle.size() <= 64) handles.emplace_back(handle);
+        open = text.find('`', close + 1);
+    }
+    return handles;
+}
+
 bool contains(std::string_view haystack, std::string_view needle) {
     return !needle.empty() && haystack.find(needle) != std::string_view::npos;
 }
@@ -200,6 +216,37 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
         const bool repeated = !previous.empty() && current == previous;
         state.set("repeated_prior_turn", repeated);
         state.set("restated_prior_turn", !repeated && !current.empty());
+    }
+
+    // --- the non-sequitur check ---------------------------------------------------------------
+    // Every handle the message names must have been named by the engine's grounding, by the user,
+    // or by an earlier reply. `numbers_from_context` stops a fluent answer inventing a figure; this
+    // stops it inventing a SUBJECT, which is the failure distinctness cannot see: v16 answered
+    // "yes" with an unprompted claim about `list_models`, a handle that appeared nowhere in the
+    // thread, and passed a walk asserting only that consecutive replies differ.
+    //
+    // Emitted whenever there is any context to check against — grounding or history — so a
+    // single-turn case with neither grades exactly as it did before this existed.
+    if (!grounding.empty() || !history.empty()) {
+        std::string thread(grounding);
+        for (const PriorTurn& prior : history) {
+            thread += '\n';
+            thread += prior.ask;
+            thread += '\n';
+            thread += prior.reply;
+            for (const ToolOutcome& outcome : prior.tools) {
+                thread += '\n';
+                thread += outcome.tool;
+            }
+        }
+        bool identifiers_from_context = true;
+        for (const std::string& handle : quoted_handles(action.message)) {
+            if (!contains(thread, handle)) {
+                identifiers_from_context = false;
+                break;
+            }
+        }
+        state.set("identifiers_from_context", identifiers_from_context);
     }
 
     if (grounding.empty()) return state;

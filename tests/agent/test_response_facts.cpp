@@ -128,4 +128,70 @@ TEST(ResponseFacts, AnExplicitGraphIsStillTheSourceOfTruth) {
     EXPECT_TRUE(facts.matches("index", true));
 }
 
+// --- identifiers_from_context — the non-sequitur check -------------------------------------------
+//
+// The v16 three-turn walk PASSED on "no two consecutive replies are identical" while answering
+// "yes" with an unprompted claim about `list_models` — a handle that appeared nowhere in the
+// thread. Distinctness cannot see that. These cases pin the fact that can.
+
+zetta::agent::PriorTurn turn(std::string ask, std::string reply) {
+    zetta::agent::PriorTurn prior;
+    prior.ask = std::move(ask);
+    prior.reply = std::move(reply);
+    return prior;
+}
+
+// The failure verbatim from `docs/reports/base-agent-validation-2026-08-06.md`.
+TEST(ResponseFacts, AHandleThatAppearsNowhereInTheThreadIsANonSequitur) {
+    const std::vector<zetta::agent::PriorTurn> history{
+        turn("create me a churn project",
+             "Yes. Studio can create a new Project from your data and your needs.")};
+
+    const zetta::agent::EndState facts = zetta::agent::response_solution_facts(
+        answer_saying("Yes. Studio can `list_models` to show which models are trained."), "",
+        history);
+
+    EXPECT_TRUE(facts.matches("identifiers_from_context", false))
+        << "`list_models` was never mentioned by the user or by the prior reply";
+    // The check the walk had. It passes, which is the whole point — it cannot see this failure.
+    EXPECT_TRUE(facts.matches("repeated_prior_turn", false));
+}
+
+// Carrying the thread's own handle forward is what a continuing answer looks like.
+TEST(ResponseFacts, AHandleTheThreadAlreadyNamedIsGrounded) {
+    const std::vector<zetta::agent::PriorTurn> history{
+        turn("create me a churn project",
+             "Which pipeline would you like me to base this on? I'd apply it to `churn-uc1`.")};
+
+    EXPECT_TRUE(zetta::agent::response_solution_facts(
+                    answer_saying("Building `churn-uc1` now."), "", history)
+                    .matches("identifiers_from_context", true));
+}
+
+// The USER may introduce the handle. Answering with the word they used is not fabrication.
+TEST(ResponseFacts, AHandleTheUserIntroducedIsGrounded) {
+    const std::vector<zetta::agent::PriorTurn> history{
+        turn("run `list_models` for me", "Which project should I list them for?")};
+
+    EXPECT_TRUE(zetta::agent::response_solution_facts(
+                    answer_saying("Listing with `list_models`."), "", history)
+                    .matches("identifiers_from_context", true));
+}
+
+// Grounding counts as context too, so a first turn citing what the engine retrieved is fine.
+TEST(ResponseFacts, AHandleTheGroundingSuppliedIsGroundedWithNoHistory) {
+    EXPECT_TRUE(zetta::agent::response_solution_facts(
+                    answer_saying("The `accounts` table has 1200 rows."), kGrounding)
+                    .matches("identifiers_from_context", true));
+}
+
+// Prose is not a claim about a handle. Only backticked identifiers are checked, because that is
+// how the model asserts a concrete engine handle — checking every word would fail on English.
+TEST(ResponseFacts, PlainProseIsNotCheckedForHandles) {
+    EXPECT_TRUE(zetta::agent::response_solution_facts(
+                    answer_saying("I can list the models that are trained."), "",
+                    {turn("hello", "Hi.")})
+                    .matches("identifiers_from_context", true));
+}
+
 }  // namespace
