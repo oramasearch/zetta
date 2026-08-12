@@ -7,6 +7,14 @@ so the result is reproducible by someone who was not there when it was first don
 Distinct from the domain docs, which describe how something *works*, and from
 [reports/](../reports/README.md), which record what a run *found*.
 
+- [from-clone-to-deployed-model.md](from-clone-to-deployed-model.md) — the whole customer
+  path on `v0.1.0`: build (OpenSSL is the first gate, on every platform) → run a node →
+  connect a coding agent over MCP → train a model on your own data → `deployment_profile`
+  → a Helm chart. Every command and number in it was executed against a live node, including
+  the measurement that REST and MCP return the same figure to the last digit. Carries the
+  traps that stop an evaluator: the consent gate refusing a *local* Postgres, a compiled
+  Pipeline sitting `proposed` until `approve_plan`, `--listen` being the peer port, and the
+  complete build-time egress list a locked-down build template will ask for.
 - [regenerating-the-run-report.md](regenerating-the-run-report.md) — reproduce every figure
   in the churn reports from a clean checkout: generate the dataset, run the pipeline to emit
   its facts artifact, write the prose from those facts, and refresh the diagrams. Pairs with
