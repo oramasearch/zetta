@@ -5,6 +5,8 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/agent/solution_graph.hpp"
+#include "zetta/agent/end_state.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
@@ -312,4 +314,293 @@ TEST(GraphChecksThroughGate, MistypedGraphBlocksDeploy) {
     const ValidationReport report = zetta::pipeline::default_gate().run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);
+}
+
+// --- MethodologyCheck (#984) --------------------------------------------------------------
+//
+// A model step may not name a methodology the engine cannot execute. Before `model_kind` rode
+// the model step it was a string in a bag nothing read, so a graph could name `forecast` and
+// silently run the churn path. A silent wrong pipeline is the product lying fluently; a loud
+// refusal is the honest outcome, and this check is what makes it loud.
+
+TEST(MethodologyCheck, AnImplementedMethodologyPasses) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      nlohmann::json{{"model_kind", "gbdt"}});
+    graph.add_edge(connect->id, model->id);
+
+    const zetta::pipeline::CheckResult result =
+        zetta::pipeline::MethodologyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      nlohmann::json{{"model_kind", "survival"}});
+    graph.add_edge(connect->id, model->id);
+
+    const zetta::pipeline::CheckResult result =
+        zetta::pipeline::MethodologyCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("survival"), std::string::npos)
+        << "the reason must name the methodology that was refused";
+    EXPECT_NE(result.reason.find("gbdt"), std::string::npos)
+        << "the reason must name what IS implemented, so the author knows the way forward";
+}
+
+TEST(MethodologyCheck, AModelStepWithNoMethodologyIsSkippedNotFailed) {
+    // Opt-in, exactly like the other checks here: a graph that carries no annotation must not
+    // be penalised for it, or every pre-existing pipeline breaks the day this check lands.
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model");
+    graph.add_edge(connect->id, model->id);
+
+    EXPECT_EQ(zetta::pipeline::MethodologyCheck{}.evaluate(graph).status,
+              zetta::pipeline::CheckStatus::Pass);
+}
+
+TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
+    // This asserts the set is HONEST, not that it is large. It widens only as each M-n lands
+    // (#984); widening it early is exactly how the agent learns to propose work the engine
+    // silently will not do.
+    const std::vector<std::string>& implemented =
+        zetta::pipeline::MethodologyCheck::implemented();
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
+        << "M-1 tabular supervised ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end())
+        << "M-4 ships: train_forecast composes lag features, a temporal split, the squared-error "
+           "objective and a rolling-origin backtest";
+    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster"}) {
+        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
+            << unshipped << " is not implemented; listing it here would make the check a lie";
+    }
+}
+
+// --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
+//
+// This is the check that makes forecasting a different METHODOLOGY rather than churn with
+// different nouns, and it is the first place the engine can tell the two apart.
+
+namespace {
+
+zetta::ir::ExecutionGraph model_graph(nlohmann::json model_attributes) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model =
+        graph.add_node(zetta::ir::StepKind::Model, "model", std::move(model_attributes));
+    graph.add_edge(connect->id, model->id);
+    return graph;
+}
+
+}  // namespace
+
+TEST(TemporalValidationCheck, AForecastValidatedOverTimePasses) {
+    const auto graph =
+        model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(TemporalValidationCheck, AForecastWithoutTemporalValidationFails) {
+    const auto graph = model_graph({{"model_kind", "forecast"}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("temporal_validation"), std::string::npos)
+        << "the reason must name what to add";
+}
+
+// The counter-intuitive half. Calibration is correct and necessary for churn; on a forecast it is
+// the churn recipe applied to a problem it does not fit — there is no probability to calibrate,
+// and fitting a calibrator on rows held out by CONTENT re-introduces the leak temporal validation
+// exists to prevent, wearing a respectable name.
+TEST(TemporalValidationCheck, AForecastThatCalibratesFails) {
+    const auto graph = model_graph(
+        {{"model_kind", "forecast"}, {"temporal_validation", true}, {"calibrated", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("calibrat"), std::string::npos);
+    EXPECT_NE(result.reason.find("backtest"), std::string::npos)
+        << "the reason must say what to do instead, not only what is wrong";
+}
+
+// The other side of the same coin: churn MUST still be allowed to calibrate. A check that made
+// calibration suspicious everywhere would break the one methodology that ships.
+TEST(TemporalValidationCheck, ChurnMayStillCalibrate) {
+    const auto graph = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
+    const auto result = zetta::pipeline::TemporalValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
+    const auto graph = model_graph(nlohmann::json::object());
+    EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
+              zetta::pipeline::CheckStatus::Pass);
+}
+
+// The two checks together are what the corpus's neighbouring-solution negative control needs:
+// the forecasting shape and the churn shape must not both pass the same gate.
+TEST(TemporalValidationCheck, TheChurnShapeAndTheForecastShapeAreNotInterchangeable) {
+    const auto churn_shape = model_graph({{"model_kind", "gbdt"}, {"calibrated", true}});
+    const auto forecast_shape =
+        model_graph({{"model_kind", "forecast"}, {"temporal_validation", true}});
+
+    const zetta::pipeline::TemporalValidationCheck temporal;
+    EXPECT_EQ(temporal.evaluate(churn_shape).status, zetta::pipeline::CheckStatus::Pass);
+    EXPECT_EQ(temporal.evaluate(forecast_shape).status, zetta::pipeline::CheckStatus::Pass);
+
+    // Now swap the methodologies onto the wrong shapes. Both must be refused.
+    const auto churn_shape_as_forecast =
+        model_graph({{"model_kind", "forecast"}, {"calibrated", true}});
+    EXPECT_EQ(temporal.evaluate(churn_shape_as_forecast).status,
+              zetta::pipeline::CheckStatus::Fail)
+        << "the churn recipe under a forecasting name is the exact confusion the corpus's "
+           "neighbouring-solution control is trying to teach against";
+}
+
+// --- B7: a methodology travels intact from facts to gate verdict ---------------------------
+//
+// The end-to-end property #983 turns on: an ask for one methodology must produce that
+// methodology's pipeline, and the neighbouring one must be refused. Before this epic the two
+// were indistinguishable — `model_kind` never reached the IR, so a forecasting graph and a churn
+// graph were byte-identical and no check could tell them apart.
+//
+// This composes the whole chain: agent facts → build_solution_graph → the correctness gate.
+
+namespace {
+
+zetta::pipeline::ValidationReport gate_over(const zetta::ir::ExecutionGraph& graph) {
+    zetta::pipeline::CorrectnessGate gate;
+    gate.add_check(std::make_shared<zetta::pipeline::MethodologyCheck>());
+    gate.add_check(std::make_shared<zetta::pipeline::TemporalValidationCheck>());
+    return gate.run(graph);
+}
+
+}  // namespace
+
+TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
+    zetta::agent::EndState facts;
+    facts.set("connect", true);
+    facts.set("clean", true);
+    facts.set("model", true);
+    facts.set("serve", true);
+    facts.set("model_kind", std::string("gbdt"));
+    facts.set("calibrated", true);
+
+    const auto graph = zetta::agent::build_solution_graph(facts);
+    const auto report = gate_over(graph);
+    EXPECT_FALSE(report.block_deploy)
+        << "the one methodology that ships must still pass end to end";
+}
+
+// The honest state of M-4 today. Its primitives exist and are tested — temporal split, backtest,
+// lag features, the squared-error objective — but nothing wires them into a run, so `forecast` is
+// deliberately NOT in MethodologyCheck::implemented(). The gate therefore refuses it, loudly,
+// with a reason that names what is implemented.
+//
+// A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
+// proposing a forecast the engine silently runs as a classifier.
+TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
+    zetta::agent::EndState facts;
+    facts.set("connect", true);
+    facts.set("model", true);
+    facts.set("serve", true);
+    facts.set("model_kind", std::string("forecast"));
+    facts.set("temporal_validation", true);
+
+    const auto graph = zetta::agent::build_solution_graph(facts);
+    // This test asserted a REFUSAL for most of this epic, and that was correct: forecast had no
+    // run path, so passing it would have meant silently running the churn path under a
+    // forecasting name. `train_forecast` landing is what changed the expected answer.
+    EXPECT_FALSE(gate_over(graph).block_deploy)
+        << "forecast is implemented now - lag features, temporal split, squared-error objective, "
+           "rolling-origin backtest";
+
+    // And the profile is still enforced: the same methodology WITHOUT temporal validation, or
+    // WITH calibration, is refused.
+    zetta::agent::EndState uncalibrated_but_unvalidated;
+    uncalibrated_but_unvalidated.set("connect", true);
+    uncalibrated_but_unvalidated.set("model", true);
+    uncalibrated_but_unvalidated.set("serve", true);
+    uncalibrated_but_unvalidated.set("model_kind", std::string("forecast"));
+    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(uncalibrated_but_unvalidated))
+                    .block_deploy)
+        << "shipping the run path must not relax the correctness profile";
+}
+
+// And the property that makes the corpus's neighbouring-solution negative control meaningful:
+// the two shapes are not interchangeable. Swap the methodologies and the verdicts swap with them.
+TEST(MethodologyEndToEnd, TheTwoShapesAreNotInterchangeable) {
+    const auto build = [](const std::string& model_kind, bool calibrated) {
+        zetta::agent::EndState facts;
+        facts.set("connect", true);
+        facts.set("model", true);
+        facts.set("serve", true);
+        facts.set("model_kind", model_kind);
+        facts.set("temporal_validation", true);
+        if (calibrated) facts.set("calibrated", true);
+        return zetta::agent::build_solution_graph(facts);
+    };
+
+    // Churn calibrates and is fine. The identical shape under a forecasting name is not.
+    EXPECT_FALSE(gate_over(build("gbdt", true)).block_deploy);
+    EXPECT_TRUE(gate_over(build("forecast", true)).block_deploy)
+        << "the churn recipe wearing a forecasting name is the exact confusion the corpus's "
+           "neighbouring-solution control exists to teach against, and the gate must catch it";
+}
+
+// --- #983 acceptance criteria, demonstrated -------------------------------------------------
+//
+// The epic lists six behavioural criteria. Four are decidable at the engine level and are
+// demonstrated here; two (the three-turn walk, and an agent CALLING these tools rather than
+// describing them) need a trained checkpoint and a live node, and are not claimed by this test.
+//
+// Naming that split matters: a green engine test is not evidence the agent does the right thing,
+// and this epic has already had one acceptance test pass a model that was differently wrong each
+// turn.
+
+// Criterion 1: a forecasting ask produces the forecasting pipeline; a churn ask still produces
+// the calibrated one. Before this epic both produced byte-identical graphs.
+TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
+    const auto build = [](const std::string& model_kind, bool calibrated, bool temporal) {
+        zetta::agent::EndState facts;
+        facts.set("connect", true);
+        facts.set("clean", true);
+        facts.set("model", true);
+        facts.set("serve", true);
+        facts.set("model_kind", model_kind);
+        if (calibrated) facts.set("calibrated", true);
+        if (temporal) facts.set("temporal_validation", true);
+        return zetta::agent::build_solution_graph(facts);
+    };
+
+    const auto churn = build("gbdt", true, false);
+    const auto forecast = build("forecast", false, true);
+
+    EXPECT_FALSE(gate_over(churn).block_deploy) << "churn calibrates and is accepted";
+    EXPECT_FALSE(gate_over(forecast).block_deploy) << "forecast is backtested and is accepted";
+
+    // And they are not interchangeable — the neighbouring shape under the other name is refused.
+    EXPECT_TRUE(gate_over(build("forecast", true, true)).block_deploy)
+        << "the churn recipe under a forecasting name must be blocked";
+    EXPECT_TRUE(gate_over(build("forecast", false, false)).block_deploy)
+        << "a forecast that is not validated over time must be blocked";
+}
+
+// Criterion 6: the corpus invariants still pass. Asserted by CorpusInvariants.* running green;
+// recorded here so the epic's acceptance is readable in one place rather than inferred from a
+// suite name.
+TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
+    const std::vector<std::string>& implemented =
+        zetta::pipeline::MethodologyCheck::implemented();
+    // What ships, ships. What does not, is refused rather than silently run as something else.
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end());
+    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster", "graph"}) {
+        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
+            << unshipped << " has no run path; listing it would make the gate a lie";
+    }
 }

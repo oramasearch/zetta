@@ -41,9 +41,15 @@ std::string web_ui_login(std::string_view error);
 // Studio shell's one live count); pass -1 to omit it. `assist_agent` is the
 // served agent id the Ask Orama rail talks to (through POST /assist → the
 // `chat` capability); empty renders the rail's honest no-agent state.
+// `assist_agent_label` names WHICH agent the rail is talking to — the served
+// agent's name, and its checkpoint when they differ. A node can serve several,
+// and the rail silently picks one (#981), so a reply that looks like a
+// regression is often the wrong agent answering. Empty renders the old
+// unqualified line.
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content, long long project_count = -1,
-                         std::string_view assist_agent = {});
+                         std::string_view assist_agent = {},
+                         std::string_view assist_agent_label = {});
 
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);
@@ -63,6 +69,28 @@ std::string_view web_ui_content_type(std::string_view path);
 std::string web_ui_page_hero(std::string_view eyebrow, std::string_view title,
                              std::string_view sub, std::string_view meta_html,
                              std::string_view actions_html = {});
+
+// Render one run's report (#958, #960 item 4) — the Reports surface of Orama
+// Studio, from the JSON `get_run_report` returns. Pure: data in, HTML out.
+//
+// The design's Reports screens (oramasearch/orama-design, feat/reports-surface)
+// are React; this re-implements their information architecture, copy and states
+// in server-rendered HTML, and renders the ENGINE's numbers rather than the
+// design's fixtures.
+//
+// The report's discipline travels with it, because a surface that shows the
+// figures without it undoes the work that produced them:
+//   * the held-out figure leads and says what it was measured on; the in-sample
+//     one sits beside it, never alone;
+//   * accuracy appears next to the accuracy a constant answer would score;
+//   * `missing` is rendered, not skipped — a run that measured no held-out
+//     figure has to SAY so, or a reader takes the in-sample number for quality.
+std::string web_ui_run_report(const nlohmann::json& report);
+
+// Render the Reports index: one row per run that produced a report, newest
+// first. `runs` is an array of `{run_id, graph, project, status, updated,
+// model}` objects. Pure.
+std::string web_ui_reports_index(const nlohmann::json& runs);
 
 // Render a SQL/read result (an ordered `columns` array + a `rows` array of column-keyed objects) as
 // an on-brand, horizontally-scrollable HTML table. Column-name heuristics format status/bytes/bools.

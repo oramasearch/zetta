@@ -63,7 +63,7 @@ const nlohmann::json& schema_document() {
             "type": "object",
             "properties": {
               "kind": { "type": "string",
-                        "enum": ["dataset", "model", "index"] },
+                        "enum": ["dataset", "model", "index", "report"] },
               "name": { "type": "string" },
               "ref":  { "type": "string" }
             },

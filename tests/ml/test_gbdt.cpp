@@ -691,4 +691,296 @@ TEST(GbdtCheckpoint, ClearsCheckpointsOnSuccess) {
     cn.cluster.stop();
 }
 
+// =====================================================================
+// Held-out metrics (#953)
+// =====================================================================
+
+// Features that say nothing about the label. A model can only score above chance
+// on this by memorizing individual rows — which is exactly what an in-sample
+// metric rewards and a held-out metric exposes.
+Synthetic make_noise(std::size_t rows) {
+    Synthetic data;
+    data.columns.assign(3, {});
+    for (std::size_t i = 0; i < rows; ++i) {
+        // Deterministic, but with no relationship to the label below.
+        data.columns[0].push_back(static_cast<double>((i * 37) % 101) / 101.0);
+        data.columns[1].push_back(static_cast<double>((i * 53) % 97) / 97.0);
+        data.columns[2].push_back(static_cast<double>((i * 71) % 89) / 89.0);
+        data.labels.push_back(i % 2 == 0 ? 1.0 : 0.0);
+    }
+    return data;
+}
+
+// Asking for no holdout must leave the result saying so, not carrying zeros. A
+// zeroed AUC reads as a model that ranks backwards, which is a worse lie than
+// the in-sample number this exists to qualify.
+TEST(GbdtHoldout, AbsentHoldoutIsMarkedAbsentRatherThanZero) {
+    const Synthetic data = make_synthetic(80);
+    GbdtParams params;
+    params.num_trees = 8;
+
+    ComputeNode cn("node-hold-off", 22400, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    const auto result = run_single_node_train(
+        cn, synthetic_rows(data, "y"), data.names, "y", params, "hold-off", {});
+    ASSERT_TRUE(result.ok());
+
+    EXPECT_FALSE(result.has_held_out);
+    EXPECT_EQ(result.held_out_rows, 0u);
+    EXPECT_EQ(result.train_rows, 80u);  // every row trained AND was scored
+    EXPECT_GT(result.metrics.auc, 0.9);
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// The load-bearing test. On data with no signal, a model that genuinely never saw
+// the held-out rows cannot rank them: in-sample climbs by memorization, held-out
+// sits at chance. If the split leaked — if the "held-out" rows were trained on
+// after all — both figures would rise together and this fails.
+TEST(GbdtHoldout, HeldOutRowsWereNotTrainedOn) {
+    const Synthetic data = make_noise(400);
+    GbdtParams params;
+    params.num_trees = 40;   // deep enough, and enough of them, to memorize
+    params.max_depth = 6;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-on", 22410, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    const auto result = run_single_node_train(
+        cn, synthetic_rows(data, "y"), data.names, "y", params, "hold-on", {});
+    ASSERT_TRUE(result.ok());
+
+    ASSERT_TRUE(result.has_held_out);
+    // Every row is accounted for, and the split is near the fraction asked for
+    // (the row hash is content-based, so it lands close, not exactly).
+    EXPECT_EQ(result.train_rows + result.held_out_rows, 400u);
+    EXPECT_GT(result.held_out_rows, 80u);
+    EXPECT_LT(result.held_out_rows, 160u);
+
+    EXPECT_GT(result.metrics.auc, 0.75) << "in-sample should show memorization";
+    EXPECT_LT(result.held_out.auc, 0.65) << "held-out must sit near chance; a "
+                                            "high value here means the split "
+                                            "leaked training rows";
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// Whatever a run writes into the Model's `metrics` must survive the entity
+// boundary, because it is validated at the RECEIVING peer. A value the schema
+// rejects still registers on the root and still replicates — it simply fails to
+// materialize anywhere else, surfacing as "the model does not resolve on every
+// member" a long way from the code that wrote it. `metrics` is declared as
+// `additionalProperties: {type: number}`, so every value has to be a number: this
+// caught a nested `in_sample` object and a `headline_metric` string that had
+// passed every single-node test.
+TEST(GbdtHoldout, RegisteredModelMetricsSurviveTheEntityBoundary) {
+    const Synthetic data = make_synthetic(120);
+    GbdtParams params;
+    params.num_trees = 8;
+    params.holdout_fraction = 0.3;
+
+    ComputeNode cn("node-hold-entity", 22440, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "y")),
+                                 training_schema(data.names, "y"), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result =
+        run_train_job(cn.coordinator, *job, frame.frame, data.names, "y", params,
+                      &cn.node, "holdout-entity-model");
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.has_held_out);
+
+    std::shared_ptr<zetta::ml::Model> registered;
+    for (const auto& model : cn.node.models()) {
+        if (model->name() == "holdout-entity-model") registered = model;
+    }
+    ASSERT_TRUE(registered) << "the run registered no model";
+
+    std::string error;
+    EXPECT_TRUE(zetta::ml::parse_model_value(zetta::ml::to_json(registered->value()),
+                                            &error))
+        << "the registered model does not pass its own boundary schema, so it "
+           "would fail to materialize on every peer: " << error;
+
+    // And the held-out figure is actually carried, by presence.
+    const nlohmann::json& metrics = registered->metrics();
+    ASSERT_TRUE(metrics.contains("held_out_auc"));
+    EXPECT_DOUBLE_EQ(metrics["held_out_auc"].get<double>(), result.held_out.auc);
+    EXPECT_EQ(metrics["held_out_rows"].get<std::uint64_t>(), result.held_out_rows);
+    for (const auto& [key, entry] : metrics.items()) {
+        EXPECT_TRUE(entry.is_number()) << "metrics['" << key << "'] is not a number";
+    }
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
+// The holdout is decided by a content hash of the row, so WHICH rows are held out
+// does not depend on how the rows were spread over nodes. Two shardings of the
+// same data therefore report the same held-out figure — without this, a run's
+// headline metric would change when the cluster resized.
+TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
+    const Synthetic data = make_noise(300);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 12;
+    params.max_depth = 4;
+    params.holdout_fraction = 0.25;
+
+    const auto single =
+        run_distributed_train(rows, data.names, "y", params, 1, 22420, false);
+    const auto multi =
+        run_distributed_train(rows, data.names, "y", params, 3, 22430, false);
+
+    ASSERT_TRUE(single.has_held_out);
+    ASSERT_TRUE(multi.has_held_out);
+    EXPECT_EQ(single.held_out_rows, multi.held_out_rows);
+    EXPECT_EQ(single.train_rows, multi.train_rows);
+    EXPECT_NEAR(single.held_out.auc, multi.held_out.auc, 1e-9);
+    EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
+}
+
 }  // namespace
+
+// --- squared-error objective (#984, M-4) ---------------------------------------------------
+//
+// Forecasting predicts a continuous value, and until this landed the learner had exactly one
+// objective: binary logistic. That is why M-4 needed learner work after all — not a second
+// learner, but a second LOSS. Everything else (histogram building, split finding, the allreduce)
+// is objective-agnostic, which is what made it a contained change.
+
+TEST(GbdtRegression, SquaredErrorFitsAContinuousTarget) {
+    // y = 3*x0 + 10, well outside [0,1] — a sigmoid-squashed model cannot express it.
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 200; ++value) {
+        feature.push_back(static_cast<double>(value % 20));
+        labels.push_back(3.0 * static_cast<double>(value % 20) + 10.0);
+    }
+    const std::vector<std::vector<double>> columns = {feature};
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 40;
+    params.learning_rate = 0.3;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt(columns, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(result.model.objective, "squared_error")
+        << "the model must record which loss grew it, or prediction cannot know how to read it";
+
+    double error = 0.0;
+    for (std::size_t row = 0; row < labels.size(); ++row) {
+        error += std::abs(result.model.predict_proba({feature[row]}) - labels[row]);
+    }
+    error /= static_cast<double>(labels.size());
+    EXPECT_LT(error, 3.0) << "mean absolute error " << error
+                          << " — a regression that cannot get within 3 of a linear target has "
+                             "not fit anything";
+}
+
+// The failure this would otherwise cause is silent and total: a forecast of 143.7 units comes
+// back as 1.0, because predict_proba squashed it.
+TEST(GbdtRegression, APredictionIsNotSquashedThroughASigmoid) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 100; ++value) {
+        feature.push_back(static_cast<double>(value));
+        labels.push_back(100.0 + static_cast<double>(value));
+    }
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 30;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt({feature}, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+
+    const double prediction = result.model.predict_proba({50.0});
+    EXPECT_GT(prediction, 10.0)
+        << "a squashed prediction lands in [0,1]; this must be on the scale of the target";
+}
+
+// Regression labels are continuous, so the classification guard would reject perfectly good
+// data — every daily-revenue series has all-positive labels.
+TEST(GbdtRegression, AllPositiveLabelsAreNotASingleClassError) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 80; ++value) {
+        feature.push_back(static_cast<double>(value % 8));
+        labels.push_back(500.0 + static_cast<double>(value % 8) * 7.0);
+    }
+
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 10;
+
+    EXPECT_TRUE(zetta::ml::train_gbdt({feature}, {"x0"}, labels, params).ok())
+        << "all-positive continuous labels are ordinary regression data, not a single class";
+}
+
+// And the objective that ships must be untouched.
+TEST(GbdtRegression, BinaryLogisticIsUnchanged) {
+    std::vector<double> feature;
+    std::vector<double> labels;
+    for (int value = 0; value < 200; ++value) {
+        feature.push_back(static_cast<double>(value % 10));
+        labels.push_back(value % 10 >= 5 ? 1.0 : 0.0);
+    }
+
+    zetta::ml::GbdtParams params;  // default objective
+    params.num_trees = 20;
+
+    const zetta::ml::GbdtTrainResult result =
+        zetta::ml::train_gbdt({feature}, {"x0"}, labels, params);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    EXPECT_EQ(result.model.objective, "binary_logistic");
+    EXPECT_GT(result.model.predict_proba({9.0}), 0.5);
+    EXPECT_LT(result.model.predict_proba({0.0}), 0.5);
+}
+
+// A parameter that is not on the schema is one no caller can set. `partition_only` lived on
+// AddDatasetOptions for a whole release and was never on `add_dataset`'s schema, so nothing
+// could reach it (#952). `objective` would have repeated that exactly: the learner supports
+// squared error and, without this, only C++ callers could ask for it.
+TEST(GbdtRegression, TheObjectiveIsReachableOverJson) {
+    zetta::ml::GbdtParams params;
+    params.objective = "squared_error";
+    const nlohmann::json encoded = params.to_json();
+    ASSERT_TRUE(encoded.contains("objective")) << "an unencoded field cannot round-trip";
+
+    const std::optional<zetta::ml::GbdtParams> decoded =
+        zetta::ml::GbdtParams::from_json(encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->objective, "squared_error");
+}
+
+// An unknown objective must be REFUSED, not silently defaulted. Falling back is how a caller
+// asks for a forecast and receives a classifier: the run succeeds, the metrics look reasonable,
+// and nothing anywhere says the loss was not the one requested.
+TEST(GbdtRegression, AnUnknownObjectiveIsRefusedRatherThanDefaulted) {
+    nlohmann::json value = zetta::ml::GbdtParams{}.to_json();
+    value["objective"] = "poisson";
+    EXPECT_FALSE(zetta::ml::GbdtParams::from_json(value).has_value())
+        << "an unimplemented objective must fail loudly at the boundary";
+
+    value["objective"] = 7;
+    EXPECT_FALSE(zetta::ml::GbdtParams::from_json(value).has_value());
+}
+
+TEST(GbdtRegression, TheDefaultObjectiveIsUnchangedWhenAbsent) {
+    nlohmann::json value = zetta::ml::GbdtParams{}.to_json();
+    value.erase("objective");
+    const auto decoded = zetta::ml::GbdtParams::from_json(value);
+    ASSERT_TRUE(decoded.has_value()) << "objective is optional; omitting it must still parse";
+    EXPECT_EQ(decoded->objective, "binary_logistic");
+}

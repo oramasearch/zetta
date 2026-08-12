@@ -59,9 +59,17 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 69u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
-                                      // +agent_training_status +set_training_schedule (#941), +score (#948)
+    EXPECT_EQ(registry.size(), 75u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+                                      // +agent_training_status +set_training_schedule (#941), +score (#948),
+                                      // +get_run_report (#958), +explain (#960 item 5)
     EXPECT_TRUE(registry.find("server_info"));
+    // A run's report is readable through the control surface, not only from the
+    // node that ran it (#958).
+    EXPECT_TRUE(registry.find("get_run_report"));
+    // "Why is this one at risk" is answerable per account, not only per population.
+    EXPECT_TRUE(registry.find("explain"));
+    // A node can say how to deploy itself, over MCP (#974).
+    EXPECT_TRUE(registry.find("deployment_profile"));
     // The #849 agent CRUD surface (create/list/get/update/delete).
     for (const char* name :
          {"create_agent", "list_agents", "get_agent", "update_agent", "delete_agent"}) {
@@ -681,4 +689,20 @@ TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
     auto rejected = call("submit_feedback", nlohmann::json{{"description", ""}});
     EXPECT_FALSE(rejected.ok);
     EXPECT_EQ(rejected.error.code, "invalid_input");
+}
+
+
+// #983 acceptance criteria 3 and 4: the Monitor and Improve verbs must be REACHABLE by the agent.
+//
+// A capability that ships and is invisible to chat may as well not exist — `score` shipped,
+// worked, and left "which accounts are most at risk" unanswerable until it was allowlisted. The
+// agent could previously only DESCRIBE monitoring, which is #976 at the methodology level.
+TEST_F(RegistryFixture, TheMonitorAndImproveVerbsAreReachableReads) {
+    for (const char* name : {"model_health", "propose_improvement"}) {
+        const std::shared_ptr<const Capability> capability = registry.find(name);
+        ASSERT_NE(capability, nullptr) << name << " is not registered";
+        EXPECT_EQ(capability->kind, CapabilityKind::Read)
+            << name << " must be a read — reads are GET, actions are POST (#954)";
+        EXPECT_FALSE(capability->mutates) << name << " reports; it does not act";
+    }
 }

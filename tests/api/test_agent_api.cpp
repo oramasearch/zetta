@@ -141,6 +141,10 @@ TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
     ASSERT_TRUE(created.ok) << created.error.message;
     const std::string id = created.value.at("id").get<std::string>();
 
+    // The graph agent_run stores must come out APPROVED. `run` refuses a proposed
+    // plan (#969), and agent_run creates the graph itself — so without recording
+    // the caller's approval, agent_run refuses its own work. That regression
+    // shipped once and this guarded test was the only thing that could see it.
     ApiResult run = call("agent_run",
                          {{"agent", id},
                           {"message", "Summarize the sales table and export a weekly report."},
@@ -148,6 +152,23 @@ TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
     ASSERT_TRUE(run.ok) << run.error.message;
     EXPECT_FALSE(run.value.at("reply").get<std::string>().empty());
     EXPECT_FALSE(run.value.at("shape").get<std::string>().empty());
+
+    // The graph it built is approved, and the approval names the caller — the
+    // audit trail has to say who said yes, which is why the state exists.
+    bool found_approved = false;
+    for (const std::string& name : node.project_names()) {
+        const auto project = node.find_project(name);
+        if (!project) continue;
+        for (const auto& graph : project->graphs()) {
+            if (graph && graph->approved()) {
+                found_approved = true;
+                EXPECT_FALSE(graph->approved_by().empty())
+                    << "an approved plan must record who approved it";
+            }
+        }
+    }
+    EXPECT_TRUE(found_approved)
+        << "agent_run stored a plan it never approved, so `run` would refuse its own work";
     EXPECT_GE(run.value.at("steps").size(), 1u);
     EXPECT_FALSE(run.value.at("run").at("run_id").get<std::string>().empty());
 }

@@ -558,9 +558,14 @@ InteractionFamily product_knowledge_family(int phrasings) {
          "Orama Studio is where you turn a question in plain language into a running Pipeline. "
          "You describe the outcome you want; Studio designs the steps, checks them with a "
          "Verification, and runs them on infrastructure you control."},
-        {"What languages can I write a step in?", "run Python in a Pipeline step",
-         "You can run Python in a Pipeline step for transforms and feature work, and SQL for "
-         "anything set-shaped. Most people mix the two across steps."},
+        // "Python" unqualified promises CPython — pandas, numpy, arbitrary imports. The engine
+        // has `zetta::input::PythonFrontend`, documented in its own header as SIMULATED Python.
+        // The customer meeting said "simulated Python"; the corpus dropped the qualifier, and the
+        // model would have repeated the corpus version to everyone (ProductClaimsAreTrue, #983).
+        {"What languages can I write a step in?", "simulated Python in a Pipeline step",
+         "You can run simulated Python in a Pipeline step for transforms and feature work - a "
+         "Python-shaped subset the engine runs natively, not CPython, so arbitrary imports are "
+         "out. SQL covers anything set-shaped. Most people mix the two across steps."},
         {"Can I use SQL?", "query with Postgres-compatible SQL",
          "Yes. You can query with Postgres-compatible SQL, both inside a Pipeline step and "
          "directly against your data to look around."},
@@ -761,6 +766,177 @@ InteractionFamily capability_family(int phrasings) {
     return family;
 }
 
+// --- Class 9b: CALL the tool, then answer from what it returned -------------------------------
+//
+// Measured in the product, not on a canary (#976). Asked "list models", a served v10 agent
+// replied *"Yes - use the `list_models` capability…"* with `tool_calls: []`.
+//
+// It was not confused. That sentence is `capability_family`'s target verbatim. That family
+// answers QUESTIONS about the platform — "Can Orama {}?", "How do I {}?" — and teaches
+// description. No family owned an IMPERATIVE, so an instruction pattern-matched onto the
+// nearest thing. The corpus taught describing a capability and never taught invoking one.
+//
+// This family owns the imperative, and is deliberately adjacent to capability_discovery:
+// the pair is what makes the distinction learnable. "How do I list models" is a question
+// about the platform; "list models" is an instruction.
+InteractionFamily tool_use_family(const std::vector<ProjectContext>& contexts,
+                                  int phrasings) {
+    InteractionFamily family{
+        "tool_use",
+        "Answer an imperative by CALLING the tool and reporting what it returned - not by "
+        "describing the capability that could return it",
+        {}};
+
+    // Imperatives only. A question about the platform belongs to capability_discovery, and
+    // mixing the two is what produced the failure above.
+    //
+    // v11 measured this: with only `list_models` taught, "list models" called the tool and
+    // the other three imperatives did not. The family teaches per-tool, so every tool an
+    // agent is given needs its own imperatives here — a tool absent from this table is a
+    // tool the model will describe rather than call.
+    struct ToolAsks {
+        const char* tool;
+        std::array<const char*, 3> shapes;
+        const char* answer;  // answers FROM the result, never about where to get it
+    };
+    static const std::array<ToolAsks, 4> tools = {{
+        {"list_models",
+         {"list the models on this node", "show me the models", "what models are here"},
+         "The models on this node, from `list_models`: "},
+        {"score",
+         {"which accounts are most at risk", "rank the accounts by risk",
+          "show me the at-risk list"},
+         "The highest-risk accounts, from `score` over "},
+        {"explain",
+         {"why is the top one at risk", "explain the top account",
+          "what is driving the top one"},
+         "From `explain` on the top account of "},
+        {"get_run_report",
+         {"what did that run find", "show me the report for that run",
+          "how did the model do"},
+         "From `get_run_report` for "},
+    }};
+
+    for (const ProjectContext& context : contexts) {
+        // Grounding is the RETRIEVED RESULT the harness would already hold — the same
+        // thing a real tool call returns. A tool-use case with no context would teach the
+        // model to answer from memory, which is the failure next door.
+        const std::string grounding = render_grounding(context, GroundingView::Results);
+        for (const ToolAsks& entry_tool : tools)
+        for (int phrasing = 0; phrasing < phrasings && phrasing < 3; ++phrasing) {
+            const zetta::agent::ToolCall call{entry_tool.tool, nlohmann::json::object()};
+            EndState required = facts({{"grounded", true}, {"numbers_from_context", true}});
+
+            AdmissionCase entry = make_case(
+                std::string("tool_use/") + entry_tool.tool + "/" + context.project + "/" +
+                    std::to_string(phrasing),
+                entry_tool.shapes[static_cast<std::size_t>(phrasing)], grounding,
+                InteractionKind::Answer,
+                std::string(entry_tool.answer) + context.project + ", on `" +
+                    context.table + "` (" + context.model_kind + ").",
+                required, {}, {call});
+
+            // The load-bearing half. Showing only the right answer teaches a shape; the
+            // grader has to REJECT the failure that is actually happening.
+            entry.negative_controls = {
+                // Described the capability instead of calling it — the production failure.
+                facts({{"grounded", false}, {"numbers_from_context", false}}),
+                // Called it, then answered with a figure it never returned.
+                facts({{"grounded", true}, {"numbers_from_context", false}}),
+            };
+            family.cases.push_back(std::move(entry));
+        }
+    }
+    return family;
+}
+
+// --- Class 9c: greetings and orientation ------------------------------------------------------
+//
+// The third instance of one root cause (#976, #979). Asked `hello`, a served v12 agent
+// emitted a full action envelope — "I'll connect your source, build leakage-free
+// point-in-time features…" — 636 characters that failed to parse and reached the user as
+// raw JSON.
+//
+// It was not confused. NO FAMILY OWNED A GREETING, so the nearest thing claimed it, and
+// the nearest thing was a pipeline build. Same shape as an imperative landing on a
+// question family, and the fix is the same: give the ask form a family of its own.
+//
+// The targets are deliberately SHORT. A greeting answered with a paragraph is how a
+// checkpoint learns that every turn deserves a pipeline description.
+InteractionFamily greeting_family(const std::vector<ProjectContext>& contexts) {
+    InteractionFamily family{
+        "greeting",
+        "Answer a greeting or an orientation question briefly, and build nothing",
+        {}};
+
+    // Openings AND closings. Probing v12 found `thanks` answered with
+    // "I read `list_models` for churn-uc1 - here's what its records show" — an
+    // acknowledgement is not a request, and nothing owned it either. Same root cause,
+    // fourth instance.
+    static const std::array<const char*, 10> greetings = {
+        "hello", "hi", "hey there", "good morning", "morning", "hi, are you there?",
+        "thanks", "thank you", "got it, thanks", "perfect, thanks"};
+
+    for (std::size_t index = 0; index < contexts.size(); ++index) {
+        const ProjectContext& context = contexts[index];
+        const std::string grounding = render_grounding(context, GroundingView::Results);
+        for (std::size_t ask = 0; ask < greetings.size(); ++ask) {
+            // Short, and oriented: it says where you are, which is the useful thing a
+            // greeting can be answered with. It does NOT propose work — offering to
+            // build something in response to "hello" is the failure being fixed.
+            // An acknowledgement gets acknowledged, not answered with a result. Doing
+            // work in response to "thanks" is the failure this half fixes.
+            std::string message;
+            if (ask >= 6) {
+                switch ((index + ask) % 3) {
+                    case 0:  message = "Any time. Ask whenever you need something from " +
+                                       context.project + "."; break;
+                    case 1:  message = "You're welcome."; break;
+                    default: message = "Happy to help - " + context.project +
+                                       " is here when you need it."; break;
+                }
+                EndState ack_required = facts({{"built_nothing", true}});
+                AdmissionCase ack = make_case(
+                    "greeting/ack/" + std::to_string(index) + "/" + std::to_string(ask),
+                    greetings[ask], grounding, InteractionKind::Answer, message,
+                    ack_required);
+                ack.negative_controls = {facts({{"built_nothing", false}})};
+                family.cases.push_back(std::move(ack));
+                continue;
+            }
+            switch ((index + ask) % 3) {
+                case 0:
+                    message = "Hello. You're in " + context.project +
+                              ", working on `" + context.table + "`. What would you like "
+                              "to know about it?";
+                    break;
+                case 1:
+                    message = "Hi. " + context.project + " is what's loaded here. Ask me "
+                              "about its results, or tell me what you'd like to build.";
+                    break;
+                default:
+                    message = "Hello. I can answer questions about " + context.project +
+                              " or start something new - what do you need?";
+                    break;
+            }
+
+            EndState required = facts({{"built_nothing", true}});
+            AdmissionCase entry =
+                make_case("greeting/" + std::to_string(index) + "/" + std::to_string(ask),
+                          greetings[ask], grounding, InteractionKind::Answer, message,
+                          required);
+
+            // A greeting that builds something, or answers with a pipeline description,
+            // is the production failure. The grader must reject it.
+            entry.negative_controls = {
+                facts({{"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(entry));
+        }
+    }
+    return family;
+}
+
 // --- Class 10a: abstain when the context cannot support an answer -----------------------------
 InteractionFamily abstain_family(const std::vector<ProjectContext>& contexts) {
     InteractionFamily family{
@@ -833,16 +1009,44 @@ InteractionFamily clarify_family(const std::vector<ProjectContext>& contexts) {
                                       "the current Saved Version?"},
     }};
     for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
-        const std::string grounding =
-            render_grounding(contexts[context_index], GroundingView::Results);
+        const ProjectContext& context = contexts[context_index];
+        const std::string grounding = render_grounding(context, GroundingView::Results);
         for (std::size_t ask_index = 0; ask_index < asks.size(); ++ask_index) {
             EndState required = facts({{"clarify", true},
                                        {"asked_one_question", true},
                                        {"built_nothing", true}});
+
+            // The question NAMES what it would act on. Two reasons, and the second is
+            // why this is not decoration:
+            //
+            // 1. A clarifying question that says which Project and table it would touch
+            //    is a better question — the person answering can tell whether the agent
+            //    is even looking at the right thing.
+            // 2. Every case previously carried the SAME eight sentences: 8 distinct
+            //    messages across 400 cases, 2%. The corpus-wide diversity invariant is
+            //    green at that number because fifteen other families dilute it, and a
+            //    family that templated is memorizable on its own — which is exactly how
+            //    a checkpoint came to reproduce a corpus sentence verbatim for an ask it
+            //    did not fit (#976). Grounding the question in the context makes each
+            //    case distinct as a side effect of making it better.
+            std::string closer;
+            switch ((context_index + ask_index) % 3) {
+                case 0:
+                    closer = " I'd apply it to " + context.project + ".";
+                    break;
+                case 1:
+                    closer = " That would run against `" + context.table + "`.";
+                    break;
+                default:
+                    closer = " Right now " + context.project + " is what's loaded, on `" +
+                             context.table + "`.";
+                    break;
+            }
+
             family.cases.push_back(make_case(
                 "clarify/" + std::to_string(context_index) + "/" + std::to_string(ask_index),
                 asks[ask_index].first, grounding, InteractionKind::Clarify,
-                asks[ask_index].second, required));
+                std::string(asks[ask_index].second) + closer, required));
         }
     }
     return family;
@@ -995,6 +1199,286 @@ InteractionFamily follow_up_family(const std::vector<ProjectContext>& contexts, 
                 required);
             vague.history = {{"Build me that pipeline.", described}};
             family.cases.push_back(std::move(vague));
+        }
+    }
+    return family;
+}
+
+// --- Class 10b: the BARE turn -----------------------------------------------------------------
+// "yes". "go ahead". "what?". "no, a new one." One or two words that carry no content at all —
+// the entire meaning is in the turn before them.
+//
+// This is the SECOND thing almost everyone types, and until now no family emitted it. The
+// follow-up family above covers *contentful* follow-ups ("Add calibration to that", "Why did that
+// fail?"), all of which are full sentences that a single-turn model can still partially parse. A
+// bare turn cannot be parsed at all standalone — so the model classified it by surface form,
+// landed every one of them in the same family, and answered:
+//
+//     "Create a new churn project please" -> "Which pipeline would you like me to base this on?"
+//     "yes"                               -> "Yes. Studio will list the trained models ..."
+//     "what?"                             -> "Yes. Studio will list the trained models ..."
+//
+// Two different asks, one byte-identical reply. That is the signature of a model that never saw a
+// second turn, and it shipped because every walkthrough beat was one ask and one reply.
+//
+// The training signal that matters here is not "handle short input" — it is that the SAME word
+// demands DIFFERENT behavior depending on what it follows:
+//
+//   "yes" after a concrete proposal      -> DO it (Action). The referent is unambiguous.
+//   "yes" after an either/or question    -> still Clarify. "Yes" does not choose between two
+//                                           options, and guessing is worse than asking.
+//   "what?"                              -> RESTATE the previous turn more plainly. Never repeat
+//                                           it verbatim, and never treat it as a new question.
+//   "no, a new one"                      -> abandon the proposal, do not modify it.
+//
+// So each case below is (bare ask x a specific antecedent), and the negative controls are the
+// behaviors that are correct for a DIFFERENT antecedent. That is what forces attention onto the
+// history rather than onto the word.
+// `phrasings` multiplies the PARAPHRASES per context, not the contexts. That distinction is the
+// point: v14 and v15 both taught bare turns correctly on the exact words in the corpus and both
+// failed to attend to the thread, because only 360 of 16,239 cases (2.2%) carried history at all.
+// Three checkpoints agree that a bare turn can be learned individually at that density while
+// "condition on what came before" cannot. So this walks every paraphrase rather than one per
+// context — the cheapest way to raise multi-turn density without inventing new behaviours to
+// teach (docs/reports/base-agent-validation-2026-08-06.md).
+InteractionFamily bare_turn_family(const std::vector<ProjectContext>& contexts, int phrasings) {
+    InteractionFamily family{
+        "bare_turn",
+        "One- or two-word turns whose entire meaning is the turn before them - yes, go ahead, "
+        "what?, no a new one",
+        {}};
+
+    // Paraphrases per intent. Held small and deliberately mundane: these are the exact strings
+    // people type, and inventing elaborate ones would train a register nobody uses.
+    const std::vector<std::string> affirm = {"yes", "yes please", "ok", "sure", "go ahead",
+                                             "do it", "okay... go ahead", "yep", "please do"};
+    const std::vector<std::string> confused = {"what?", "huh?", "sorry what", "what do you mean",
+                                               "I don't follow"};
+    const std::vector<std::string> redirect = {"no", "no... start a new project", "new one",
+                                               "not that", "no, a different one"};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        const EndState solution = solution_facts(context);
+        const std::string described = zetta::agent::describe_pipeline(solution);
+        const std::string data_view = render_grounding(context, GroundingView::Data);
+        const std::string index = std::to_string(context_index);
+
+        // --- 1. "yes" after a CONCRETE proposal -> build it. --------------------------------
+        // The proposal named one thing, so the referent is unambiguous and asking again would be
+        // the annoying failure, not the safe one.
+        {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = affirm[(context_index + phrasing) % affirm.size()];
+            EndState required = solution;
+            zetta::ir::ExecutionGraph graph = zetta::agent::build_solution_graph(required);
+            AdmissionCase yes = make_case(
+                "bare/affirm/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Action,
+                std::string("Building the ") + context.project + " Pipeline now. " + described,
+                required, std::move(graph));
+            yes.history = {{std::string("Create a churn project over `") + context.table + "`.",
+                            std::string("I can build the ") + context.project +
+                                " Pipeline over `" + context.table + "`. Shall I?"}};
+            // The controls are the two ways this actually failed: answering a question nobody
+            // asked, and re-asking what was just confirmed.
+            yes.negative_controls = {
+                facts({{"kind", std::string("answer")}, {"built_nothing", true}}),
+                facts({{"kind", std::string("clarify")}, {"built_nothing", true}}),
+            };
+            family.cases.push_back(std::move(yes));
+            }
+        }
+
+        // --- 2. "yes" after an EITHER/OR question -> still clarify. -------------------------
+        // The same word, the opposite correct behavior. Without this pair the model can satisfy
+        // case 1 by learning "yes means build", which is wrong exactly when it matters.
+        {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = affirm[(context_index + 3 + phrasing) % affirm.size()];
+            EndState required = facts({{"clarify", true},
+                                       {"asked_one_question", true},
+                                       {"built_nothing", true}});
+            AdmissionCase ambiguous = make_case(
+                "bare/affirm-ambiguous/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Clarify,
+                std::string("Which of the two - the churn Pipeline over `") + context.table +
+                    "`, or the retention one? \"Yes\" fits either.",
+                required);
+            ambiguous.history = {
+                {"Set something up for me.",
+                 std::string("Two obvious starts on `") + context.table +
+                     "`: a churn Pipeline, or a retention one. Which do you want?"}};
+            // Building SOMETHING is the failure: it looks helpful and silently picks for the user.
+            ambiguous.negative_controls = {
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(ambiguous));
+            }
+        }
+
+        // --- 3. "what?" -> restate the PREVIOUS turn, more plainly. -------------------------
+        // The observed failure was repeating the previous reply verbatim. So the reference here
+        // says the same thing in different words, and `restated_prior_turn` is the fact the
+        // grader checks — not "answered something".
+        {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = confused[(context_index + 0 + phrasing) % confused.size()];
+            EndState required = facts({{"restated_prior_turn", true},
+                                       {"built_nothing", true},
+                                       {"grounded", true},
+                                       {"numbers_from_context", true}});
+            AdmissionCase what = make_case(
+                "bare/confused/" + index + "-" + std::to_string(phrasing), ask,
+                render_grounding(context, GroundingView::Results), InteractionKind::Answer,
+                std::string("Sorry - plainly: `") + context.table + "` has enough history to "
+                    "train a model that flags which accounts look likely to leave. I have not "
+                    "built anything yet. Do you want me to?",
+                required);
+            what.history = {
+                {"What can you do with this data?",
+                 std::string("`") + context.table + "` supports a supervised churn Pipeline with "
+                     "point-in-time featurization and a calibrated gradient-boosted model."}};
+            // Repeating the prior reply is the exact regression this case exists to catch, and it
+            // must be scored as a FAILURE rather than as a harmless retry.
+            what.negative_controls = {
+                facts({{"repeated_prior_turn", true}}),
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(what));
+            }
+        }
+
+        // --- 4. "no, a new one" -> abandon the proposal, do not edit it. --------------------
+        // A redirect reads superficially like a modification, and treating it as one quietly
+        // carries the rejected pipeline forward - the user says no and gets the thing anyway.
+        {
+            for (int phrasing = 0; phrasing < phrasings && phrasing < 4; ++phrasing) {
+            const std::string& ask = redirect[(context_index + 0 + phrasing) % redirect.size()];
+            // "Abandoned the proposal" is not mechanically checkable, so it is not a fact —
+            // what IS checkable is that the turn asks rather than builds, and does not simply
+            // repeat the proposal it was told to drop.
+            EndState required = facts({{"clarify", true},
+                                       {"asked_one_question", true},
+                                       {"built_nothing", true},
+                                       {"repeated_prior_turn", false}});
+            AdmissionCase no = make_case(
+                "bare/redirect/" + index + "-" + std::to_string(phrasing), ask, data_view, InteractionKind::Clarify,
+                // Phrased to share surface with the clarify family, NOT to stand out from it.
+                // The first version opened "Dropped that one." - a sentence appearing nowhere
+                // else in 16,239 cases - and the trained model reached for it on substantive
+                // requests it was never meant for, regressing a turn v13 answered correctly
+                // (docs/reports/base-agent-validation-2026-08-06.md). 180 cases carrying a
+                // unique high-signal phrase captured an ask form by having nothing to compete
+                // with. A redirect must READ like the clarifying question it is.
+                std::string("What should the new Project predict, and over which table? `") +
+                    context.table + "` is here if you want it.",
+                required);
+            no.history = {{"Create a churn project please",
+                           std::string("I can base it on the ") + context.project +
+                               " Pipeline. Shall I?"}};
+            no.negative_controls = {
+                // Carrying the rejected proposal forward - the failure that looks like progress.
+                facts({{"kind", std::string("action")}, {"built_nothing", false}}),
+            };
+            family.cases.push_back(std::move(no));
+            }
+        }
+    }
+    return family;
+}
+
+// --- Class 10c: MONITOR and IMPROVE -----------------------------------------------------------
+//
+// Two of the agent's five verbs (04-solutions-catalog.md 2.4) had no training data at all, because
+// until `model_health` and `propose_improvement` shipped they had no vocabulary either - and
+// training a verb the agent cannot perform teaches it to DESCRIBE the action, which is #976.
+//
+// These are where a deployed customer actually lives. Build and Explain are the first week;
+// Monitor and Improve are every week after.
+//
+// Register note: the replies here deliberately read like the answer families around them. The
+// bare_turn family once opened with a phrase appearing nowhere else in 16,239 cases and the
+// trained model applied it to substantive requests it was never meant for
+// (docs/reports/base-agent-validation-2026-08-06.md). Distinctiveness is a defect, not a feature.
+InteractionFamily monitor_improve_family(const std::vector<ProjectContext>& contexts) {
+    InteractionFamily family{
+        "monitor_improve",
+        "Watching a deployed model and proposing changes to it - the two verbs a customer uses "
+        "after the first week",
+        {}};
+
+    for (std::size_t context_index = 0; context_index < contexts.size(); ++context_index) {
+        const ProjectContext& context = contexts[context_index];
+        if (context.auc <= 0.0) continue;  // nothing deployed to monitor
+        const std::string index = std::to_string(context_index);
+        const std::string results = render_grounding(context, GroundingView::Results);
+
+        // 1. MONITOR - answered by CALLING the tool, not by describing monitoring. The negative
+        //    control is the failure this whole family exists to prevent: prose about what the
+        //    system could check, with no call behind it.
+        {
+            // No `built_nothing` here: the harness assembles a pipeline from `tool_calls` when
+            // no graph is supplied, so a case that CALLS a tool cannot also assert it built
+            // nothing. What matters is that the tool was called and no number was invented.
+            EndState required = facts({{"numbers_from_context", true},
+                                       {"called_model_health", true}});
+            AdmissionCase health = make_case(
+                "monitor/health/" + index, "is this model still good?", results,
+                InteractionKind::Answer,
+                std::string("From `model_health`: it measures AUC ") + number(context.auc, 3) +
+                    " on held-out accounts, and the scores are calibrated, so a threshold means "
+                    "what it says. Nothing here says it has drifted.",
+                required, {},
+                {zetta::agent::ToolCall{"model_health", nlohmann::json::object()}});
+            health.negative_controls = {
+                // Describing the capability instead of calling it - #976, exactly.
+                facts({{"called_model_health", false}, {"built_nothing", true}}),
+            };
+            family.cases.push_back(std::move(health));
+        }
+
+        // 2. IMPROVE - a proposal must carry its predicted effect. Kernel D7-2: the metric the
+        //    customer pays for is the metric the agent learns on, so a proposal without a
+        //    predicted effect is a suggestion nobody can score.
+        {
+            EndState required = facts({{"numbers_from_context", true},
+                                       {"called_propose_improvement", true}});
+            AdmissionCase improve = make_case(
+                "improve/propose/" + index, "how could we make it better?", results,
+                InteractionKind::Answer,
+                std::string("From `propose_improvement` on ") + context.project +
+                    ": adding a holdout is the change worth making, and the honest prediction is "
+                    "that the reported quality falls below AUC " + number(context.auc, 3) +
+                    " - the current figure was measured on the rows the model learned from, so a "
+                    "lower number would be a truer one.",
+                required, {},
+                {zetta::agent::ToolCall{"propose_improvement", nlohmann::json::object()}});
+            improve.negative_controls = {
+                // A proposal with no call behind it is prose about improving, which is the
+                // failure this family exists to train against.
+                facts({{"called_propose_improvement", false}}),
+            };
+            family.cases.push_back(std::move(improve));
+        }
+
+        // 3. IMPROVE, refusing. An agent that predicts a gain from a retrain it has no evidence
+        //    for is worse than one that says it cannot predict - the customer plans against the
+        //    number either way.
+        {
+            EndState required = facts({{"grounded", true},
+                                       {"built_nothing", true},
+                                       {"asked_one_question", true},
+                                       {"clarify", true}});
+            AdmissionCase retrain = make_case(
+                "improve/retrain-unclear/" + index, "just retrain it", results,
+                InteractionKind::Clarify,
+                std::string("A retrain of ") + context.project +
+                    " over the same data and the same steps has no predictable effect. What "
+                    "would change - more history, a new feature, a different cutoff?",
+                required);
+            retrain.history = {{"how could we make it better?",
+                                std::string("Adding a holdout to ") + context.project +
+                                    " is the change worth making."}};
+            family.cases.push_back(std::move(retrain));
         }
     }
     return family;
@@ -1608,11 +2092,19 @@ std::vector<InteractionFamily> interaction_families(const std::vector<ProjectCon
     families.push_back(qa_data_family(contexts, phrasings));
     families.push_back(platform_family(contexts, phrasings));
     families.push_back(capability_family(phrasings));
+    // Beside capability_discovery on purpose: one answers a question about the platform,
+    // the other responds to an instruction. The pair makes the distinction learnable (#976).
+    families.push_back(tool_use_family(contexts, phrasings));
+    // A greeting is its own ask form. Without this family the nearest one claims it,
+    // and the nearest one built a pipeline (#979).
+    families.push_back(greeting_family(contexts));
     families.push_back(product_knowledge_family(phrasings));
     families.push_back(migration_family(contexts, phrasings));
     families.push_back(discovery_family(contexts, phrasings));
     families.push_back(solution_build_family(contexts, phrasings));
     families.push_back(follow_up_family(contexts, phrasings));
+    families.push_back(bare_turn_family(contexts, phrasings));
+    families.push_back(monitor_improve_family(contexts));
     families.push_back(abstain_family(contexts));
     families.push_back(clarify_family(contexts));
     families.push_back(feature_family(contexts, phrasings));

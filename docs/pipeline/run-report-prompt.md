@@ -54,6 +54,11 @@ alternative — letting the writer work it out — is exactly the computation th
 **When the prose needs a number the artifact lacks, the artifact is what changes.** That is
 the general rule this field is the first instance of.
 
+**A field the run cannot supply is named in `missing`, with the reason.** Left blank, an
+absent held-out figure invites the writer to lead with the in-sample number and call it
+quality. Stated — *"this run set no holdout_fraction, so every figure below is in-sample
+and flatters"* — it does not. Quote the reason; do not paper over it.
+
 ## The prompt
 
 > You are writing the report for a completed pipeline run. You are given a JSON facts
@@ -172,7 +177,20 @@ a number that has to be checked twice.
 
 ## Status
 
-The facts artifact is emitted today by
-`tests/usecases/churn/test_motive_demo_dataset.cpp`. Emitting it from the run itself — as a
-`RunOutput` of kind `report` alongside `model` and `dataset` — is the remaining engine work
-for #948 step 4.
+**The engine emits it.** A finished run carries a `RunOutput` of kind `report`, and
+`get_run_report` returns the facts —
+[`docs/pipeline/run-report.md`](run-report.md) (#958). It is assembled at query time from
+the Model record and the run's at-risk table, so a report written a month later quotes the
+same numbers as one written the moment the run ended.
+
+```sh
+curl "$ZETTA/v1/get_run_report?run_id=<uuid>&limit=20"
+```
+
+`tests/usecases/churn/test_motive_demo_dataset.cpp` still writes its own artifact for the
+Motive demo dataset, which is generated outside any run. For anything the engine actually
+ran, `get_run_report` is the source.
+
+**The held-out figure no longer has to be measured outside the engine.** A run that sets
+`holdout_fraction` reports `held_out_*` beside `in_sample_*`, with the row count behind
+each ([`docs/ml/held-out-metrics.md`](../ml/held-out-metrics.md), #953).

@@ -46,7 +46,7 @@
 // distributed `train` ComputeJob (gbdt_train_job.hpp).
 //
 // **Host-side reference, device-backed data.** Like the as-of / group-by ops, the
-// trainer reads its feature columns back through the `ComputeDevice` download seam
+// trainer reads its feature columns back through `ComputeDevice::download`
 // (so it runs the same over a CPU or CUDA frame — see gbdt_train_job.hpp) and
 // accumulates the gradient/Hessian histograms host-side via `runtime::parallel_for`
 // — the numerical reference. A device-native weighted-histogram kernel is a later
@@ -69,6 +69,31 @@ struct GbdtParams {
     double l2_regularization = 1.0;   // λ: ridge penalty in the split gain / leaf
     double min_split_gain = 0.0;      // γ: minimum gain to make a split
     double min_child_hessian = 1e-3;  // minimum Σh in either child of a split
+
+    // Fraction of rows held OUT of training and measured separately (#953).
+    // Without it the reported metrics are in-sample: every node scores the rows it
+    // trained on, which is the standard way a model flatters itself and has already
+    // reached a client-facing report here.
+    //
+    // Separate from CalibrationConfig::holdout_fraction — a run may want either,
+    // both, or neither, and one shared fraction would couple two decisions.
+    //
+    // **Must round-trip through to_json/from_json.** Every participant in a
+    // coordinated run splits its own shard with this value, so a peer that parsed
+    // a different one trains on rows its peers held back — and the "held-out"
+    // figure is then measured partly on rows some node fit. That is invisible on
+    // a single node and silently wrong on a cluster.
+    //
+    // Defaults to 0, so adding this moves no existing model's numbers.
+    // The loss the trees are grown against. `binary_logistic` is churn's — scores map to
+    // probabilities through a sigmoid and may be calibrated. `squared_error` is what a forecast
+    // needs (#984, M-4): the residual IS the gradient, the Hessian is constant, and the model's
+    // output is the prediction rather than something to squash.
+    //
+    // Nothing else in the learner changes — histogram building, split finding and the allreduce
+    // are objective-agnostic. That is why M-4 needed an objective, not a second learner.
+    std::string objective = "binary_logistic";  // or "squared_error"
+    double holdout_fraction = 0.0;
 
     // The JSON form (only the fields above; all optional with the defaults).
     nlohmann::json to_json() const;

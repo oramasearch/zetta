@@ -24,6 +24,7 @@
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/compute/cpu_device.hpp"
+#include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
@@ -130,6 +131,78 @@ ApiResult handle_server_info(const nlohmann::json&, ApiContext& context) {
     output["runs"] = context.node.runs().size();
     output["models"] = context.node.models().size();
     output["jobs"] = context.node.jobs().size();
+    return ApiResult::success(std::move(output));
+}
+
+// --- versions ----------------------------------------------------------------
+
+// "Which version am I actually talking to" — asked of the SOFTWARE and of the
+// MODEL, and the two answers come from different places. Four checkpoints were
+// served side by side for comparison once and the Ask Orama rail answered from
+// the oldest; the replies read as a model regression for an hour before anyone
+// suspected the wrong agent was answering. `server_info` reports the binary and
+// nothing about the agents, so it could not have settled that. This can.
+//
+// `assist_agent` is the one the rail picks, and it is deliberately reported the
+// same way the rail picks it (first served) rather than described, so this
+// cannot drift away from the truth it exists to report — see #981 for making
+// that choice explicit rather than positional.
+
+const nlohmann::json& versions_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& versions_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"software", "agents"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"software",
+           {{"type", "object"},
+            {"required", {"zetta", "node_id"}},
+            {"properties",
+             {{"zetta", {{"type", "string"}}}, {"node_id", {{"type", "string"}}}}}}},
+          {"agents",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "name", "model", "checkpoint"}},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"model", {{"type", "string"}}},
+                {"checkpoint", {{"type", "string"}}}}}}}}},
+          {"assist_agent", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_versions(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json output;
+    output["software"] = {{"zetta", zetta::kVersion}, {"node_id", context.node.node_id()}};
+
+    nlohmann::json agents = nlohmann::json::array();
+    std::string assist;
+    if (context.node.replication() != nullptr) {
+        zetta::agent::AgentStore store(*context.node.replication());
+        for (const zetta::agent::AgentRecord& agent : store.list()) {
+            // The checkpoint is the last path element of `model` — that is what
+            // distinguishes v12 from v13 when both are named "Base agent".
+            std::string checkpoint = agent.model;
+            if (const std::size_t slash = checkpoint.find_last_of('/');
+                slash != std::string::npos && slash + 1 < checkpoint.size()) {
+                checkpoint = checkpoint.substr(slash + 1);
+            }
+            agents.push_back({{"id", agent.id},
+                              {"name", agent.name},
+                              {"model", agent.model},
+                              {"checkpoint", std::move(checkpoint)}});
+            if (assist.empty()) assist = agent.id;
+        }
+    }
+    output["agents"] = std::move(agents);
+    if (!assist.empty()) output["assist_agent"] = assist;
     return ApiResult::success(std::move(output));
 }
 
@@ -387,6 +460,267 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// ---------------------------------------------------------------------------
+// get_run_report (#958) — the facts a run FOUND, assembled at query time.
+//
+// The artifact a report is written from. Deliberately NOT a stored document: every
+// number here already lives in replicated state — the Model record carries the
+// metrics and what the model was trained from, the at-risk table carries the
+// ranked list with its evidence — so assembling it on read means there is no
+// second copy to drift from the first, and a report generated a month later
+// reflects the same facts as one generated at the end of the run.
+//
+// The rule this serves: **the engine computes every number and the narrator only
+// arranges them.** A field a writer has to work out is a field this artifact is
+// missing. `majority_class_accuracy` is here because exactly that happened once.
+// ---------------------------------------------------------------------------
+
+const nlohmann::json& get_run_report_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
+          {"limit",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "how many at-risk entities to return, highest risk first (default 20). "
+             "The whole population is ranked; this caps what comes back"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_run_report_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run", "model"}},
+        {"properties",
+         {{"run", {{"type", "object"},
+                   {"description", "run id, graph, status, and when it finished"}}},
+          {"dataset",
+           {{"type", "object"},
+            {"description",
+             "what the model was built from: accounts, events, churn_rate, "
+             "majority_class_accuracy (the accuracy a constant answer scores), and "
+             "the feature columns. Absent when the model records no dataset facts"}}},
+          {"model",
+           {{"type", "object"},
+            {"description",
+             "id, name, and the metrics. `held_out_*` is present only when the run "
+             "asked for a holdout; when it is absent the only figures available are "
+             "in-sample and they flatter (#953)"}}},
+          {"drivers",
+           {{"type", "array"},
+            {"description", "feature -> weight, strongest first. A weight is what "
+                            "the model leaned on, not a cause"}}},
+          {"at_risk",
+           {{"type", "array"},
+            {"description",
+             "the ranked entities with their risk and their evidence values, "
+             "capped by `limit`"}}},
+          {"caveats",
+           {{"type", "array"},
+            {"description",
+             "figures that are PRESENT but must not be read as results — a holdout "
+             "too small to mean anything, a perfect score. `missing` says what the "
+             "run cannot tell you; this says what it can and you should not believe"}}},
+          {"missing",
+           {{"type", "array"},
+            {"description",
+             "fields a report would want that this run cannot supply, each saying "
+             "why. Stated rather than omitted so a writer does not quietly "
+             "substitute its own number"}}}}}};
+    return schema;
+}
+
+// The at-risk table this run wrote, by the run's own `dataset` outputs. Named
+// `churn_results.at_risk_*`, which is what run_act materializes.
+std::shared_ptr<zetta::data::Table> run_at_risk_table(
+    Node& node, const zetta::pipeline::Run& run) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        const std::size_t dot = output.ref.find('.');
+        if (output.kind != "dataset" || dot == std::string::npos) continue;
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (!database) continue;
+        if (auto table = database->find_table(output.ref.substr(dot + 1))) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+// A row count as a plain integer string — "4", not "4.000000".
+std::string fixed_rows(double value) {
+    return std::to_string(static_cast<long long>(value));
+}
+
+ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("run_id").get<std::string>();
+    const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
+    if (!run) {
+        return ApiResult::failure("not_found", "no run with id '" + id + "'");
+    }
+    const std::size_t limit = input.value("limit", std::size_t{20});
+
+    nlohmann::json report;
+    nlohmann::json missing = nlohmann::json::array();
+    report["run"] = {{"id", run->id()},
+                     {"graph", run->graph()},
+                     {"project", run->project()},
+                     {"status", to_string(run->status())},
+                     {"finished", run->updated()}};
+
+    // The model output names the Model this run trained; everything numeric hangs
+    // off it.
+    std::shared_ptr<zetta::ml::Model> model;
+    for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+        if (output.kind == "model") model = context.node.find_model(output.ref);
+        if (model) break;
+    }
+    if (!model) {
+        return ApiResult::failure(
+            "not_found",
+            "run '" + id +
+                "' has no resolvable model output, so there are no measured "
+                "numbers to report");
+    }
+
+    const nlohmann::json& metrics = model->metrics();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto found = metrics.find(key);
+        if (found == metrics.end() || !found->is_number()) return std::nullopt;
+        return found->get<double>();
+    };
+
+    nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
+    if (const auto held = number("held_out_auc")) {
+        model_facts["held_out_auc"] = *held;
+        if (const auto value = number("held_out_log_loss")) model_facts["held_out_log_loss"] = *value;
+        if (const auto value = number("held_out_accuracy")) model_facts["held_out_accuracy"] = *value;
+        if (const auto value = number("held_out_rows")) model_facts["held_out_rows"] = *value;
+    } else {
+        // Said out loud rather than left blank. A report that leads with a
+        // held-out figure has to know when there isn't one, or it leads with the
+        // in-sample number instead and calls it quality (#953).
+        missing.push_back(
+            {{"field", "held_out_auc"},
+             {"why", "this run set no holdout_fraction, so nothing was measured on "
+                     "rows the model had not seen. Every figure below is in-sample "
+                     "and flatters. Re-run with holdout_fraction to get one"}});
+    }
+    if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
+    else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
+    if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
+    else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
+    if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
+    else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
+    if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    report["model"] = std::move(model_facts);
+
+    nlohmann::json dataset = nlohmann::json::object();
+    if (const auto value = number("dataset_accounts")) dataset["accounts"] = *value;
+    if (const auto value = number("dataset_events")) dataset["events"] = *value;
+    if (const auto value = number("dataset_churn_rate")) dataset["churn_rate"] = *value;
+    if (const auto value = number("dataset_majority_class_accuracy")) {
+        dataset["majority_class_accuracy"] = *value;
+    }
+    nlohmann::json features = nlohmann::json::array();
+    nlohmann::json drivers = nlohmann::json::array();
+    for (const zetta::ml::ModelDriver& driver : model->drivers()) {
+        drivers.push_back({{"feature", driver.feature}, {"weight", driver.importance}});
+        features.push_back(driver.feature);
+    }
+    if (!features.empty()) dataset["features"] = std::move(features);
+    if (!dataset.empty()) report["dataset"] = std::move(dataset);
+    else {
+        missing.push_back({{"field", "dataset"},
+                           {"why", "this run's model records no dataset facts; it "
+                                   "predates them being written (#958)"}});
+    }
+    if (!drivers.empty()) report["drivers"] = std::move(drivers);
+
+    // The ranked list, read back from the table the run materialized — so the
+    // report and anything querying `churn_results` cannot disagree.
+    if (const std::shared_ptr<zetta::data::Table> table =
+            run_at_risk_table(context.node, *run)) {
+        std::vector<nlohmann::json> rows;
+        const zetta::storage::StorageEngine& store = table->store();
+        for (std::size_t index = 0; index < store.size(); ++index) {
+            if (const auto row = store.at(index)) rows.push_back(*row);
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const nlohmann::json& left, const nlohmann::json& right) {
+                      return left.value("rank", 0.0) < right.value("rank", 0.0);
+                  });
+        nlohmann::json at_risk = nlohmann::json::array();
+        for (const nlohmann::json& row : rows) {
+            if (at_risk.size() >= limit) break;
+            nlohmann::json entry = {{"rank", row.value("rank", 0)},
+                                    {"entity", row.value("account", 0)},
+                                    {"risk", row.value("risk", 0.0)}};
+            // Evidence is whatever columns beyond the fixed ones the run wrote —
+            // the population's strongest drivers, the same columns on every row.
+            nlohmann::json evidence = nlohmann::json::object();
+            for (const auto& [key, value] : row.items()) {
+                if (key == "rank" || key == "account" || key == "risk" ||
+                    key == "dominant_driver" || key == "driver_effect" || key == "id") {
+                    continue;
+                }
+                evidence[key] = value;
+            }
+            if (!evidence.empty()) entry["evidence"] = std::move(evidence);
+            at_risk.push_back(std::move(entry));
+        }
+        report["at_risk"] = std::move(at_risk);
+    } else {
+        missing.push_back({{"field", "at_risk"},
+                           {"why", "this run materialized no at-risk table"}});
+    }
+
+    // Figures that are PRESENT but must not be read as results (#948 step 8's rule,
+    // applied to the report itself). `missing` says what the run cannot tell you;
+    // this says what it can tell you and you should not believe.
+    //
+    // The case that forced it: the built-in demo dataset produces a held-out AUC of
+    // 1.000 on FOUR rows. Nothing was wrong — the pipeline worked and the data is
+    // trivially separable — but a perfect score presented without objection is a
+    // number that invites a false conclusion, which is worse than a missing one.
+    nlohmann::json caveats = nlohmann::json::array();
+    if (const std::optional<double> rows = number("held_out_rows")) {
+        // Below this, a ranking metric is noise: one row changing side moves AUC by
+        // a visible amount, so the figure says more about the split than the model.
+        constexpr double kMeaningfulHoldout = 30.0;
+        if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
+            caveats.push_back(
+                {{"field", "held_out_auc"},
+                 {"why", "measured on only " + fixed_rows(*rows) +
+                             " held-out rows. Below about 30 a ranking metric is "
+                             "noise — one row changing side moves it visibly — so "
+                             "this figure describes the split more than the model. "
+                             "Do not quote it as a result"}});
+        }
+    }
+    if (const std::optional<double> auc = number("held_out_auc")) {
+        if (*auc >= 0.999) {
+            caveats.push_back(
+                {{"field", "held_out_auc"},
+                 {"why", "a perfect score. On real data this is almost always a "
+                         "trivially separable demo set or a leaked feature, not a "
+                         "model that solved the problem. Check what the top driver "
+                         "is before showing this to anyone"}});
+        }
+    }
+    if (!caveats.empty()) report["caveats"] = std::move(caveats);
+    if (!missing.empty()) report["missing"] = std::move(missing);
+    return ApiResult::success(std::move(report));
+}
+
 const nlohmann::json& get_model_schema() {
     static const nlohmann::json schema =
         id_input_schema("model_id", "the model's uuid (system.models.model_id)");
@@ -407,6 +741,199 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     }
     nlohmann::json output = model->metadata();
     output["id"] = model->id();
+    return ApiResult::success(std::move(output));
+}
+
+// --- model_health (Monitor, #983) -------------------------------------------------------------
+//
+// The first Monitor capability. The agent is meant to watch a deployed model and say whether it
+// can still be trusted, and until now it had no tool that answers that — so it could only
+// describe monitoring, which is #976 at the methodology level.
+//
+// Deliberately computed from what a Model record ALREADY carries. A drift capability needing a
+// stored reference distribution is a schema change and a migration; this needs neither, and the
+// question it answers is the one asked first: **is the number I was given honest, and is it still
+// the number?**
+const nlohmann::json& model_health_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("model_id", "the model's uuid (system.models.model_id)");
+    return schema;
+}
+
+const nlohmann::json& model_health_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "trustworthy", "findings"}},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"trustworthy", {{"type", "boolean"}}},
+          {"held_out_auc", {{"type", "number"}}},
+          {"in_sample_auc", {{"type", "number"}}},
+          {"overfit_gap", {{"type", "number"}}},
+          {"calibrated", {{"type", "boolean"}}},
+          {"findings", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_model_health(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) return ApiResult::failure("not_found", "no model with id '" + id + "'");
+
+    const nlohmann::json metadata = model->metadata();
+    const nlohmann::json metrics =
+        metadata.contains("metrics") ? metadata.at("metrics") : nlohmann::json::object();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto entry = metrics.find(key);
+        if (entry == metrics.end() || !entry->is_number()) return std::nullopt;
+        return entry->get<double>();
+    };
+
+    nlohmann::json output;
+    output["model_id"] = id;
+    std::vector<std::string> findings;
+    bool trustworthy = true;
+
+    const std::optional<double> held_out = number("held_out_auc");
+    const std::optional<double> in_sample = number("in_sample_auc");
+    if (held_out) output["held_out_auc"] = *held_out;
+    if (in_sample) output["in_sample_auc"] = *in_sample;
+
+    if (!held_out) {
+        // The single most important thing this can say. Without a holdout the only figure is
+        // measured on the rows the model was fit on, and it flatters — an in-sample 0.868 reached
+        // a client report once where the held-out figure was 0.726.
+        trustworthy = false;
+        findings.push_back(
+            "No held-out metric. This model was trained without a holdout, so every quality "
+            "figure it carries was measured on the rows it learned from and cannot be quoted. "
+            "Retrain with holdout_fraction set.");
+    } else if (in_sample) {
+        const double gap = *in_sample - *held_out;
+        output["overfit_gap"] = gap;
+        if (gap > 0.1) {
+            trustworthy = false;
+            findings.push_back(
+                "In-sample exceeds held-out by " + std::to_string(gap) +
+                ". The model has memorized rather than generalized; the held-out figure is the "
+                "only one that describes new accounts.");
+        }
+    }
+
+    const auto calibrated = metadata.find("calibrated");
+    const bool is_calibrated =
+        calibrated != metadata.end() && calibrated->is_boolean() && calibrated->get<bool>();
+    output["calibrated"] = is_calibrated;
+    if (!is_calibrated) {
+        // Not disqualifying — ranking is a legitimate use — but a threshold set on an
+        // uncalibrated score means something different from what the person setting it expects.
+        findings.push_back(
+            "Scores are not calibrated: they rank accounts but are not probabilities, so a "
+            "threshold like 0.8 does not mean an 80% chance.");
+    }
+
+    output["trustworthy"] = trustworthy;
+    output["findings"] = findings;
+    return ApiResult::success(std::move(output));
+}
+
+// --- propose_improvement (Improve, #983) ------------------------------------------------------
+//
+// The Improve verb, and the one property that makes it gradeable: a proposal MUST carry its
+// predicted effect. Kernel D7-2 — the metric the customer pays for is the metric the agent learns
+// on — so "retrain it" with no predicted effect is not a proposal, it is a suggestion, and
+// nothing can score it or hold it to account afterwards.
+//
+// It refuses rather than guesses. A proposal whose effect cannot be predicted from what the model
+// actually carries returns `predictable: false` with the reason, because an invented number here
+// would be worse than silence: it would be a number the customer plans against.
+const nlohmann::json& propose_improvement_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "change"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}, {"minLength", 1}}},
+          {"change",
+           {{"type", "string"},
+            {"enum", {"add_holdout", "calibrate", "retrain"}},
+            {"description", "the change being proposed"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& propose_improvement_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "change", "predictable", "rationale"}},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"change", {{"type", "string"}}},
+          {"predictable", {{"type", "boolean"}}},
+          {"predicted_effect", {{"type", "string"}}},
+          {"rationale", {{"type", "string"}}}}}};
+    return schema;
+}
+
+ApiResult handle_propose_improvement(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const std::string change = input.at("change").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) return ApiResult::failure("not_found", "no model with id '" + id + "'");
+
+    const nlohmann::json metadata = model->metadata();
+    const nlohmann::json metrics =
+        metadata.contains("metrics") ? metadata.at("metrics") : nlohmann::json::object();
+    const auto number = [&metrics](const char* key) -> std::optional<double> {
+        const auto entry = metrics.find(key);
+        if (entry == metrics.end() || !entry->is_number()) return std::nullopt;
+        return entry->get<double>();
+    };
+
+    nlohmann::json output;
+    output["model_id"] = id;
+    output["change"] = change;
+
+    const std::optional<double> held_out = number("held_out_auc");
+    const std::optional<double> in_sample = number("in_sample_auc");
+
+    if (change == "add_holdout") {
+        if (held_out) {
+            output["predictable"] = false;
+            output["rationale"] =
+                "This model already has a held-out figure, so adding a holdout changes nothing.";
+        } else if (in_sample) {
+            // The one effect that IS predictable, because it is not a guess about the model — it
+            // is a statement about what the current number means.
+            output["predictable"] = true;
+            output["predicted_effect"] =
+                "The reported quality will FALL, and that fall is the point: the current figure "
+                "of " + std::to_string(*in_sample) +
+                " was measured on the rows the model was fit on. A held-out figure describes "
+                "accounts it has never seen, and it is the only one that can be quoted.";
+            output["rationale"] =
+                "Retrain with holdout_fraction set. Expect a lower number and a truthful one.";
+        } else {
+            output["predictable"] = false;
+            output["rationale"] =
+                "This model carries no quality figure at all, so there is nothing to compare a "
+                "holdout against.";
+        }
+    } else if (change == "calibrate") {
+        output["predictable"] = false;
+        output["rationale"] =
+            "Calibration changes what the scores MEAN, not how well they rank, so the ranking "
+            "metric will not move. Whether the resulting probabilities are honest can only be "
+            "measured after fitting the calibrator on held-out rows.";
+    } else {
+        // "retrain" with no stated reason. Refusing here is the point: an agent that predicts an
+        // improvement from a retrain it has no evidence for is the failure this capability
+        // exists to prevent.
+        output["predictable"] = false;
+        output["rationale"] =
+            "A retrain with no change to the data or the pipeline has no predictable effect. Say "
+            "what would differ - more history, a new feature, a different cutoff - and the effect "
+            "of THAT can be reasoned about.";
+    }
     return ApiResult::success(std::move(output));
 }
 
@@ -1736,7 +2263,7 @@ ApiResult handle_import_n8n(const nlohmann::json& input, ApiContext& context) {
 const nlohmann::json& compile_intent_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"project", "input_id"}},
+        {"required", {"project"}},
         {"additionalProperties", false},
         {"properties",
          {{"project",
@@ -1746,7 +2273,10 @@ const nlohmann::json& compile_intent_schema() {
           {"input_id",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the captured intent input's uuid (capture_intent)"}}},
+            {"description",
+             "the captured intent's uuid (capture_intent). Optional: omit it and the "
+             "project's most recently captured intent compiles, which is what you want "
+             "in the common case of describing a goal and building it"}}},
           {"name",
            {{"type", "string"},
             {"description",
@@ -1761,7 +2291,24 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
         return ApiResult::failure("not_found",
                                   "no project named '" + name + "' (or with that id)");
     }
-    const std::string input_id = input.at("input_id").get<std::string>();
+    // Threading a uuid from capture_intent into compile_intent made two calls out of
+    // one act, and forgetting it failed with a schema error naming a property rather
+    // than anything about intents. Omit it and the project's most recent intent
+    // compiles — the common case by a wide margin.
+    std::string input_id = input.value("input_id", std::string{});
+    if (input_id.empty()) {
+        for (const std::shared_ptr<zetta::pipeline::ProjectInput>& candidate :
+             project->inputs()) {
+            if (candidate) input_id = candidate->id();  // inputs() is insertion order
+        }
+        if (input_id.empty()) {
+            return ApiResult::failure(
+                "not_found",
+                "project '" + project->name() +
+                    "' has no captured intent to compile — describe the goal first "
+                    "(capture_intent)");
+        }
+    }
     auto intent_input = project->find_input(input_id);
     if (!intent_input) {
         return ApiResult::failure("not_found", "no input with id '" + input_id +
@@ -2082,6 +2629,14 @@ const nlohmann::json& run_schema() {
            {{"type", "integer"},
             {"minimum", 0},
             {"description", "at-risk list / playbook cap (0 = all)"}}},
+          {"holdout_fraction",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description",
+             "hold this fraction of rows OUT of training and measure the model "
+             "on them separately (e.g. 0.3). Without it the run's only metrics "
+             "are in-sample — scored on the rows it trained on — and flatter"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
@@ -2230,6 +2785,8 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
     options.model_name = input.value("model_name", options.model_name);
     options.top_k = input.value("top_k", options.top_k);
     options.coordinate = input.value("coordinate", true);
+    options.params.holdout_fraction =
+        input.value("holdout_fraction", options.params.holdout_fraction);
 
     std::set<std::string> prior;
     for (const auto& existing : context.node.runs()) {
@@ -2440,6 +2997,294 @@ ApiResult handle_score(const nlohmann::json& input, ApiContext& context) {
     output["rows_scored"] = scored.rows_scored;
     output["partitions_read"] = scored.partitions_read;
     return ApiResult::success(std::move(output));
+}
+
+// --- explain -----------------------------------------------------------------------
+//
+// "Why is THIS one at risk" (#948 step 6, #960 item 5). `score`'s drivers are the
+// POPULATION ranking — the same list for every account — so they cannot answer the
+// question a person asks when they open the at-risk list. Two accounts with the same
+// score can be there for opposite reasons.
+// -----------------------------------------------------------------------------------
+
+const nlohmann::json& explain_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the registered model's id, or its name"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"description",
+             "`database.table` holding the entity; pair with `entity`"}}},
+          {"dataset", zetta::data::dataset_contract_schema()},
+          {"entity",
+           {{"type", "integer"},
+            {"description",
+             "the entity key to explain, read from `dataset_path`"}}},
+          {"row",
+           {{"type", "object"},
+            {"description",
+             "explain this row instead of a dataset entity — an account that is not "
+             "in the data at all. Keyed by the model's own feature columns"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& explain_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"contributions", "base_value", "raw", "risk"}},
+        {"properties",
+         {{"entity",
+           {{"type", "integer"},
+            {"description", "present when a dataset entity was explained"}}},
+          {"base_value",
+           {{"type", "number"},
+            {"description",
+             "the model's expected raw score — what an account with nothing notable "
+             "about it would get. Contributions are movements away from this"}}},
+          {"raw",
+           {{"type", "number"},
+            {"description",
+             "this row's raw score. Equals base_value + the sum of contributions"}}},
+          {"risk",
+           {{"type", "number"},
+            {"description",
+             "the same prediction as a probability, comparable with a ranked list. "
+             "NOT the sum of the contributions — probabilities are not additive"}}},
+          {"residual",
+           {{"type", "number"},
+            {"description",
+             "raw - (base_value + sum of contributions); ~0 when the explanation is "
+             "exact. Exposed so a caller can check the arithmetic rather than trust it"}}},
+          {"contributions",
+           {{"type", "array"},
+            {"description",
+             "every feature, strongest influence first. `contribution` is signed in "
+             "raw-score space: positive pushed this row's score up. A contribution "
+             "says how much this row's value moved the model relative to a typical "
+             "row — it does not say the column caused the outcome"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"feature", {{"type", "string"}}},
+                {"value", {{"type", "number"}}},
+                {"contribution", {{"type", "number"}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_explain(const nlohmann::json& input, ApiContext& context) {
+    const std::string wanted = input.at("model").get<std::string>();
+    std::shared_ptr<zetta::ml::Model> model = context.node.find_model(wanted);
+    if (!model) {
+        for (const std::shared_ptr<zetta::ml::Model>& candidate : context.node.models()) {
+            if (candidate && candidate->value().name == wanted) {
+                model = candidate;
+                break;
+            }
+        }
+    }
+    if (!model) {
+        return ApiResult::failure("not_found", "no model '" + wanted + "' (or with that id)");
+    }
+
+    const auto row = input.find("row");
+    const auto entity = input.find("entity");
+    if (row == input.end() && entity == input.end()) {
+        return ApiResult::failure(
+            "invalid_input",
+            "give either `entity` with `dataset_path` (explain one account in the "
+            "data) or `row` (explain an account that is not in it)");
+    }
+
+    zetta::ml::RowExplanation explained;
+    if (row != input.end()) {
+        explained = zetta::ml::explain_row(*model, *row);
+    } else {
+        const auto dataset_path = input.find("dataset_path");
+        if (dataset_path == input.end()) {
+            return ApiResult::failure("invalid_input",
+                                      "`entity` needs `dataset_path` to read it from");
+        }
+        const zetta::data::DatasetPath path =
+            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
+        if (path.kind != zetta::data::DatasetPathKind::Table) {
+            return ApiResult::failure(
+                "invalid_input",
+                "explain reads a `database.table` dataset; a dataset directory has no "
+                "partitions to read near");
+        }
+        zetta::data::DatasetContract overrides;
+        if (const auto given = input.find("dataset"); given != input.end()) {
+            std::string reason;
+            const std::optional<zetta::data::DatasetContract> parsed =
+                zetta::data::dataset_contract_from_json(*given, &reason);
+            if (!parsed) return ApiResult::failure("invalid_input", reason);
+            overrides = *parsed;
+        }
+        const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
+            context.node, path, overrides,
+            zetta::data::default_dataset_sampler(context.node, context.cluster));
+        if (!resolved.ok()) return ApiResult::failure("engine_error", resolved.error);
+
+        compute::CpuDevice device;
+        explained = zetta::ml::explain_entity(context.node, *model, resolved.table_id,
+                                              resolved.contract, device,
+                                              entity->get<std::int64_t>());
+    }
+    if (!explained.ok()) return ApiResult::failure("engine_error", explained.error);
+
+    nlohmann::json contributions = nlohmann::json::array();
+    for (const zetta::ml::FeatureContribution& contribution : explained.contributions) {
+        contributions.push_back({{"feature", contribution.feature},
+                                 {"value", contribution.value},
+                                 {"contribution", contribution.contribution}});
+    }
+    nlohmann::json output;
+    if (explained.entity) output["entity"] = *explained.entity;
+    output["base_value"] = explained.base_value;
+    output["raw"] = explained.raw;
+    output["risk"] = explained.risk;
+    output["residual"] = explained.residual;
+    output["contributions"] = std::move(contributions);
+    return ApiResult::success(std::move(output));
+}
+
+// --- deployment_profile (#974) ------------------------------------------------------
+//
+// Charles's ask, on the 2026-08-05 call: "given a Helm chart dependency, this is how
+// you should configure this deployment instance… at that point I don't need anything
+// from you." The goal is not that we write a customer a chart — it is that a coding
+// agent pointed at a node over MCP can produce one without asking us anything.
+//
+// Computed from the LIVE node, never from a document. That is the whole value: a
+// deployment doc drifts from the binary, and the drift is only discovered in someone
+// else's cluster. Same rule as the `system.*` read views.
+//
+// It never emits a credential. It says how to seed one.
+// -----------------------------------------------------------------------------------
+
+const nlohmann::json& deployment_profile_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"target",
+           {{"type", "string"},
+            {"enum", {"generic", "helm"}},
+            {"description",
+             "`helm` adds a values-shaped block a chart can consume directly, instead "
+             "of prose an agent has to interpret. Default `generic`"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& deployment_profile_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"ports", "storage", "clustering", "security", "requires"}},
+        {"properties",
+         {{"ports", {{"type", "array"}, {"description", "every port, and what it carries"}}},
+          {"storage", {{"type", "object"}}},
+          {"clustering", {{"type", "object"}}},
+          {"security", {{"type", "object"}}},
+          {"identity", {{"type", "object"}}},
+          {"requires",
+           {{"type", "object"},
+            {"description",
+             "what this node needs from the cluster — and, as `none_of`, the "
+             "dependencies people assume it needs and it does not"}}},
+          {"helm", {{"type", "object"}, {"description", "present when target=helm"}}}}}};
+    return schema;
+}
+
+ApiResult handle_deployment_profile(const nlohmann::json& input, ApiContext& context) {
+    const std::string target = input.value("target", std::string("generic"));
+
+    nlohmann::json ports = nlohmann::json::array();
+    ports.push_back(
+        {{"port", context.cluster != nullptr ? 7777 : 7777},
+         {"name", "peer"},
+         {"carries", "cluster traffic between nodes"},
+         {"flag", "--listen"},
+         {"note",
+          "`--listen` moves THIS port, not the API. Setting it and then calling the "
+          "port you chose returns nothing, which reads exactly like a dead node — the "
+          "most common misconfiguration we see"}});
+    ports.push_back({{"port", 4800},
+                     {"name", "api"},
+                     {"carries", "REST /v1, MCP at /mcp, and the web UI"},
+                     {"flag", "--mcp-listen"},
+                     {"note", "what a client Service should target"}});
+
+    nlohmann::json profile;
+    profile["ports"] = std::move(ports);
+    profile["storage"] = {
+        {"data_dir", "--data-dir"},
+        {"durable", true},
+        {"note",
+         "the node's durable state. A StatefulSet wants one PersistentVolumeClaim per "
+         "member; it is not shareable between members"}};
+    profile["clustering"] = {
+        {"model", "equal peers — no leader, no election"},
+        {"join", "--peer HOST:PORT (repeatable) plus --join-token"},
+        {"members_now", context.cluster != nullptr
+                            ? static_cast<long long>(context.cluster->peer_count() + 1)
+                            : 1},
+        {"dial_out_only",
+         "--dial-out-only for a member with no routable address (NAT, private VNet). "
+         "It must never advertise a private pod IP: when two clusters share a pod CIDR "
+         "the dial reaches the wrong node and membership undercounts"}};
+    profile["security"] = {
+        {"peer_transport", "mTLS, always"},
+        {"plaintext_mode", false},
+        {"note",
+         "there is no plaintext mode to disable or justify to a reviewer; one shared "
+         "join token per cluster"},
+        {"external_egress_required", false},
+        {"egress_note",
+         "the web UI serves no external assets — no CDN, no external fonts — so an "
+         "air-gapped node works"}};
+    profile["identity"] = {
+        {"seed", "--admin-token, or ZETTA_ADMIN_TOKEN"},
+        {"why",
+         "a fresh node otherwise generates its owner token and prints it once, which an "
+         "automated deploy cannot capture. Seeding makes the deploy deterministic"},
+        {"never_emitted",
+         "this capability reports how to seed a credential and never a credential"}};
+    profile["requires"] = {
+        {"runtime", nlohmann::json::array({"one statically linked binary", "a data directory"})},
+        {"none_of",
+         nlohmann::json::array({"external Postgres", "Redis", "Python at runtime",
+                                "Node.js at runtime", "a package manager at runtime"})},
+        {"note",
+         "the `none_of` list is the point: enterprise build templates commonly carry all "
+         "of these, and zetta uses none of them"}};
+
+    if (target == "helm") {
+        // Values-shaped, so a chart consumes it rather than an agent interpreting prose.
+        profile["helm"] = {
+            {"values",
+             {{"image", {{"repository", "<your registry>/zetta"}, {"tag", "<version>"}}},
+              {"service",
+               {{"api", {{"port", 4800}}},
+                {"peer", {{"port", 7777}, {"clusterIP", "None"}}}}},
+              {"persistence", {{"enabled", true}, {"mountPath", "/var/lib/zetta"}}},
+              {"env",
+               {{"ZETTA_ADMIN_TOKEN", "<from a Secret — never inline>"},
+                {"ZETTA_CLUSTER_TOKEN", "<from a Secret>"},
+                {"ZETTA_SEED_PEER", "<headless-service>:7777"}}},
+              {"args", nlohmann::json::array({"--headless", "--data-dir",
+                                              "/var/lib/zetta"})}}},
+            {"shape", "StatefulSet + a headless Service on the peer port + a client Service on the API port"},
+            {"probes",
+             {{"readiness", "GET /v1/server_info on the API port"},
+              {"note", "the API answering is the readiness signal; the peer port is not"}}}};
+    }
+    return ApiResult::success(std::move(profile));
 }
 
 // --- add_dataset -------------------------------------------------------------------
@@ -3843,6 +4688,12 @@ const nlohmann::json& chat_output_schema() {
         {"properties",
          {{"reply", {{"type", "string"}}},
           {"rounds", {{"type", "integer"}}},
+          {"grounded_project",
+           {{"type", "string"},
+            {"description",
+             "the Project this reply was grounded in. Present whenever grounding "
+             "happened — including when the engine chose it, because the caller "
+             "named none and the most recent successful run's Project was used"}}},
           {"grounded",
            {{"type", "boolean"},
             {"description",
@@ -3860,7 +4711,14 @@ const nlohmann::json& chat_output_schema() {
             {"description",
              "the mode the agent declared for this turn: answer renders as prose, clarify is a "
              "question awaiting a reply, abstain is a refusal to present as such, action carries "
-             "a proposed Pipeline. `unparsed` means the generation was not a valid envelope"}}},
+             "a proposed Pipeline. `unparsed` means the generation was not a valid "
+             "envelope - `reply` then carries an honest failure sentence and the raw "
+             "generation moves to `raw`, so it never reaches a chat window (#979)"}}},
+          {"raw",
+           {{"type", "string"},
+            {"description",
+             "the raw generation, present only when `kind` is `unparsed`. For "
+             "developers and traces - never render it to a user"}}},
           {"pipeline",
            {{"type", "object"},
             {"description", "the proposed Pipeline, when the turn built one"}}},
@@ -4037,9 +4895,32 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
          "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
+        {"propose_improvement",
+         "propose a change to a model and state its predicted effect, or say why the effect "
+         "cannot be predicted: {\"model_id\": \"<uuid>\", \"change\": \"add_holdout\"}"},
+        {"model_health",
+         "check whether a deployed model can still be trusted - the held-out figure, the "
+         "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
+        {"get_run_report",
+         "read what a finished run found — model quality (held-out first), the "
+         "drivers, and the ranked at-risk list with the evidence behind each row: "
+         "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
+        {"explain",
+         "explain WHY one account scored as it did — every feature's signed "
+         "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
+         "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
+         "data: {\"model\": \"<id>\", \"row\": {...}}"},
+        {"deployment_profile",
+         "ask this node how to deploy it — ports, storage, peering, security, and what "
+         "it does NOT need: {\"target\": \"helm\"} returns chart values"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
+        // "which version are you" is asked of the model as often as of the binary,
+        // and the agent is the only surface a person asks it on.
+        {"versions",
+         "report the software version and WHICH agent version is answering, "
+         "including its checkpoint"},
     };
     // OPT-IN per agent: an agent only gets live tools it explicitly declares in its
     // record. This matters — naming tools in the prompt changes what the model
@@ -4084,8 +4965,46 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     std::string grounding;
     bool grounded = false;
     std::string grounding_warning;
+    std::string grounded_project;
+    // The caller may name a Project. When it does not, fall back to the one whose
+    // run finished most recently (#969): after `agent_run`, "which accounts are
+    // most at risk" and "why that one" are about the run that just happened, and
+    // making the user restate its name every turn is how a conversation stops
+    // being one.
+    //
+    // This is grounding, not memory. It carries ONE referent — the active
+    // Project — onto the retrieval path the model was actually trained on
+    // (#914), rather than threading a conversation history the corpus has almost
+    // no examples of.
+    //
+    // Whichever way it resolves, the reply reports `grounded_project`. A silent
+    // guess about which Project an answer came from is the provenance failure in
+    // #942 wearing a different hat.
+    std::string project_hint;
     if (input.contains("project")) {
-        const std::string project_name = input.at("project").get<std::string>();
+        project_hint = input.at("project").get<std::string>();
+    } else {
+        std::string newest_at;
+        for (const std::shared_ptr<zetta::pipeline::Run>& run : context.node.runs()) {
+            if (!run || run->project().empty()) continue;
+            if (run->status() != zetta::pipeline::RunStatus::Succeeded) continue;
+            if (newest_at.empty() || run->updated() > newest_at) {
+                newest_at = run->updated();
+                // find_project_by_id is private to Node; resolve by scanning the
+                // public name list, which is small and already how other handlers
+                // do it.
+                for (const std::string& name : context.node.project_names()) {
+                    const auto owner = context.node.find_project(name);
+                    if (owner && owner->id() == run->project()) {
+                        project_hint = owner->name();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!project_hint.empty()) {
+        const std::string project_name = project_hint;
         if (auto project = resolve_project(context, project_name)) {
             std::shared_ptr<zetta::ml::Model> newest;
             for (const auto& candidate : context.node.models()) {
@@ -4099,6 +5018,7 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
                 // is answered with real accounts rather than invented ones (#915).
                 grounding += at_risk_grounding_text(context.node, project->graphs());
                 grounded = true;
+                grounded_project = project->name();
             } else {
                 // Deliberately NOT a prompt instruction. Measured behavior: told plainly
                 // that a Project has no model and not to estimate, the base agent ignored
@@ -4168,6 +5088,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     // generated number as a fact (#914). `grounded` is true only when a Project was
     // named AND it has a trained model whose real measure + drivers were supplied.
     output["grounded"] = grounded;
+    // Always say WHICH Project the answer was grounded in. When the caller did not
+    // name one, this is the only way to see that the engine chose the most
+    // recently-run Project rather than the one you had in mind (#969).
+    if (!grounded_project.empty()) output["grounded_project"] = grounded_project;
     if (!grounding_warning.empty()) output["grounding_warning"] = grounding_warning;
     // The mode the agent DECLARED for this turn (#918), so a caller switches on an explicit
     // value instead of inferring intent from the payload's shape. `answer` renders as prose,
@@ -4188,6 +5112,22 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         // The generation did not parse as a response envelope. Say so explicitly: an unparsed
         // turn is an error state, not an `action` that happened to carry no pipeline.
         output["kind"] = "unparsed";
+
+        // And do NOT hand the raw generation back as the reply (#979). It was reaching
+        // the Studio chat window verbatim: asked "hello", a user saw 636 characters of
+        // `{"kind":"answer","message":…,"tool":"serve"}`.
+        //
+        // A model that emits garbage is a training problem. A harness that SHOWS the
+        // garbage to a customer is a serving problem, and it is the one that has to be
+        // right, because it bounds the blast radius of every future parse failure —
+        // including ones nobody has seen yet.
+        //
+        // The payload is not discarded: it moves to `raw`, which a developer reads and a
+        // chat window does not render.
+        output["raw"] = output.value("reply", std::string{});
+        output["reply"] =
+            "I could not produce a well-formed answer to that. Nothing was built and "
+            "nothing was changed. Try rephrasing, or ask something more specific.";
     }
     return ApiResult::success(std::move(output));
 }
@@ -4310,6 +5250,22 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::failure(
             "engine_error", "could not store the graph '" + graph_name + "' on project '" +
                                 project->name() + "' (name clash or empty)");
+    }
+
+    // `run` refuses a plan nobody approved (#969), and a freshly stored graph is
+    // `proposed`. Calling agent_run IS the approval: the caller asked, in one
+    // act, to build this and run it. So record that approval against the caller
+    // rather than bypass the gate — the audit trail then says who said yes,
+    // which is the whole point of the state existing.
+    //
+    // The conversational path is different and deliberately so: an agent that
+    // PROPOSES a run stops here, and a human approves separately. That is the
+    // `propose` half of #969 and it does not come through this handler.
+    if (!project->approve_graph(stored->name(), actor_of(context),
+                                zetta::util::now_iso8601())) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not record approval for the plan agent_run just built");
     }
 
     // 3. Run it through the gate + the real engine — the exact path `run` uses (DRY).
@@ -4444,6 +5400,18 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
+    registry.add(Capability{
+        "versions",
+        "Show version",
+        "Read the software version and the version of every agent this node "
+        "serves, including which one answers in Studio. No side effects.",
+        versions_schema(),
+        versions_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_versions});
     registry.add(Capability{
         "server_info",
         "Server info",
@@ -4591,6 +5559,48 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_get_run});
 
+    registry.add(Capability{
+        "get_run_report",
+        "Get a run's report facts",
+        "Read the facts a finished run produced — how good the model is (held-out "
+        "first, in-sample beside it), what drives the outcome, and the ranked "
+        "at-risk list with its evidence. Assembled at query time from the run's "
+        "model and its at-risk table, so it cannot drift from them. Anything a "
+        "report would want and this run cannot supply is listed in `missing` with "
+        "the reason, rather than left blank. No side effects. (#958)",
+        get_run_report_schema(),
+        get_run_report_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_run_report});
+
+    registry.add(Capability{
+        "propose_improvement",
+        "Propose an improvement",
+        "Propose a change to a deployed model and state its PREDICTED EFFECT, or refuse and say "
+        "why the effect cannot be predicted. No side effects - it proposes, it does not act.",
+        propose_improvement_schema(),
+        propose_improvement_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_propose_improvement});
+    registry.add(Capability{
+        "model_health",
+        "Model health",
+        "Read whether a deployed model can still be trusted: the held-out figure, the "
+        "overfitting gap against in-sample, whether scores are calibrated, and what each "
+        "means. No side effects.",
+        model_health_schema(),
+        model_health_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_model_health});
     registry.add(Capability{
         "get_model",
         "Get one model",
@@ -4907,6 +5917,38 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false,
         handle_score});
     registry.add(Capability{
+        "deployment_profile",
+        "How to deploy this node",
+        "Ask a node how to deploy itself: every port and what it carries, what it needs "
+        "from the cluster and — as important — the dependencies people assume it needs "
+        "and it does not, the storage and peering model, and the security posture. "
+        "`target=helm` returns values a chart can consume directly. Computed from the "
+        "live node, so it cannot drift from what the binary does. Never emits a "
+        "credential; it says how to seed one. Read-only. (#974)",
+        deployment_profile_schema(),
+        deployment_profile_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_deployment_profile});
+    registry.add(Capability{
+        "explain",
+        "Explain one row's score",
+        "Answer WHY one account scored as it did: the exact signed contribution of "
+        "every feature, strongest first, for a single entity of a dataset or for a "
+        "row you supply. This is the per-account answer — `score`'s drivers are the "
+        "population ranking, identical for every row, so two accounts with the same "
+        "score look the same there even when they are at risk for opposite reasons. "
+        "Read-only.",
+        explain_schema(),
+        explain_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Data, "predict"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_explain});
+    registry.add(Capability{
         "delete_agent",
         "Delete an agent",
         "Remove an agent by id (a CRDT tombstone; replicates). Idempotent.",
@@ -4938,6 +5980,15 @@ void register_core_capabilities(Registry& registry) {
     // response hangs (MCP, which runs on the owner loop, is unaffected). Until the
     // offload/executor resumption is fixed, serve chat on the owner loop — correct,
     // at the cost of briefly occupying the tick during a decode. See #731.
+    // NOT offloadable, and the reason changed in 2026-08 (#975). The flag is only
+    // safe for a handler touching no main-thread-only Node state — and grounding a
+    // reply on the active Project (#969) reads `node.runs()` and
+    // `node.project_names()`, which are exactly that. So offloading chat today would
+    // race the Node tree.
+    //
+    // That also means the REST hang in #975 cannot be fixed by flipping this flag:
+    // whoever fixes it has to either move the grounding read behind the owner gate
+    // or fix the offload/executor resumption the comment below describes.
     chat_capability.offloadable = false;
     registry.add(std::move(chat_capability));
     registry.add(Capability{

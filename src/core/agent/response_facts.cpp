@@ -58,6 +58,22 @@ std::vector<std::string> numeric_literals(std::string_view text) {
     return found;
 }
 
+// The handles a message ASSERTS. Backticked spans only: that is how the model names a concrete
+// engine handle (`list_models`, `churn-uc1`), and it is the one form that can be told apart from
+// English without a parser. Checking every word would fail on prose; checking none is what let a
+// reply invent a tool nobody had mentioned.
+std::vector<std::string> quoted_handles(std::string_view text) {
+    std::vector<std::string> handles;
+    for (std::size_t open = text.find('`'); open != std::string_view::npos;) {
+        const std::size_t close = text.find('`', open + 1);
+        if (close == std::string_view::npos) break;
+        std::string_view handle = text.substr(open + 1, close - open - 1);
+        if (!handle.empty() && handle.size() <= 64) handles.emplace_back(handle);
+        open = text.find('`', close + 1);
+    }
+    return handles;
+}
+
 bool contains(std::string_view haystack, std::string_view needle) {
     return !needle.empty() && haystack.find(needle) != std::string_view::npos;
 }
@@ -140,7 +156,8 @@ std::string first_ranked_name(std::string_view grounding, std::string_view secti
 
 }  // namespace
 
-EndState response_solution_facts(const StudioAction& action, const std::string& grounding) {
+EndState response_solution_facts(const StudioAction& action, const std::string& grounding,
+                                 const std::vector<PriorTurn>& history) {
     // Start from the pipeline's own facts so an `action` turn grades exactly as it always has.
     //
     // A MODEL's response carries tool calls and no graph — the agent is a tool-calling harness, so
@@ -180,6 +197,75 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
         state.set("called_" + call.tool, true);
     }
 
+    // Repeating the previous reply word for word is the failure a bare follow-up actually
+    // produced ("what?" -> the same sentence again). Compare on a normalized form so trailing
+    // punctuation or casing cannot make a verbatim repeat read as a fresh answer.
+    if (!history.empty()) {
+        auto normalized = [](std::string_view text) {
+            std::string out;
+            for (const char character : text) {
+                if (std::isalnum(static_cast<unsigned char>(character)) != 0) {
+                    out.push_back(static_cast<char>(
+                        std::tolower(static_cast<unsigned char>(character))));
+                }
+            }
+            return out;
+        };
+        const std::string previous = normalized(history.back().reply);
+        const std::string current = normalized(action.message);
+        const bool repeated = !previous.empty() && current == previous;
+        state.set("repeated_prior_turn", repeated);
+        state.set("restated_prior_turn", !repeated && !current.empty());
+    }
+
+    // --- the anti-fabrication checks ------------------------------------------------------------
+    // CONTEXT is the grounding the engine retrieved PLUS the thread so far — what the user said and
+    // what earlier replies said. Both are things the agent may legitimately refer back to: a figure
+    // the user themselves stated is not invented, and neither is a handle they named.
+    //
+    // Emitted whenever there is any context at all, so a single-turn case with neither grounding
+    // nor history grades exactly as it did before this existed.
+    if (!grounding.empty() || !history.empty()) {
+        std::string thread(grounding);
+        for (const PriorTurn& prior : history) {
+            thread += '\n';
+            thread += prior.ask;
+            thread += '\n';
+            thread += prior.reply;
+            for (const ToolOutcome& outcome : prior.tools) {
+                thread += '\n';
+                thread += outcome.tool;
+            }
+        }
+
+        // Every number the answer states must be one the context actually contains. This is what
+        // stops a fluent answer citing a plausible figure that was never retrieved.
+        bool numbers_from_context = true;
+        for (const std::string& literal : numeric_literals(action.message)) {
+            if (literal.size() < 2) continue;  // a bare digit is prose ("one of 3 drivers")
+            if (!states_literal(thread, literal)) {
+                numbers_from_context = false;
+                break;
+            }
+        }
+        state.set("numbers_from_context", numbers_from_context);
+        state.set("grounded", numbers_from_context && !action.message.empty());
+
+        // And every HANDLE it names must have been named by the grounding, by the user, or by an
+        // earlier reply. Numbers stop it inventing a figure; this stops it inventing a SUBJECT —
+        // the failure distinctness cannot see. v16 answered "yes" with an unprompted claim about
+        // `list_models`, a handle appearing nowhere in the thread, and passed a walk asserting
+        // only that consecutive replies differ.
+        bool identifiers_from_context = true;
+        for (const std::string& handle : quoted_handles(action.message)) {
+            if (!contains(thread, handle)) {
+                identifiers_from_context = false;
+                break;
+            }
+        }
+        state.set("identifiers_from_context", identifiers_from_context);
+    }
+
     if (grounding.empty()) return state;
 
     // A capability answer is grounded in the registry listing the harness supplied: the fact is
@@ -204,18 +290,6 @@ EndState response_solution_facts(const StudioAction& action, const std::string& 
         }
     }
 
-    // --- the anti-fabrication check ---------------------------------------------------------
-    // Every number the answer states must be one the engine actually retrieved.
-    bool numbers_from_context = true;
-    for (const std::string& literal : numeric_literals(action.message)) {
-        if (literal.size() < 2) continue;  // a bare digit is prose ("one of 3 drivers"), not a claim
-        if (!states_literal(grounding, literal)) {
-            numbers_from_context = false;
-            break;
-        }
-    }
-    state.set("numbers_from_context", numbers_from_context);
-    state.set("grounded", numbers_from_context && !action.message.empty());
 
     // --- entity + value grounding -------------------------------------------------------------
     // Each fact is emitted ONLY when the message actually carries it, so a task requiring

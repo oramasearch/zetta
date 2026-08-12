@@ -7,6 +7,7 @@
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/corpus_io.hpp"
 #include "zetta/agent/curriculum.hpp"
+#include "zetta/dataset/base_agent_generator.hpp"
 
 // Nibble 4 of #866: the training corpus's on-disk JSONL format — what the frontier-model
 // generators emit and the native loader consumes before `admit_corpus` gates it. The
@@ -137,3 +138,86 @@ TEST(CorpusIo, HistorySurvivesTheRoundTrip) {
 }
 
 }  // namespace
+
+// C1 (#983) — the round-trip that has to hold before an authored corpus slice can be DATA rather
+// than C++. Today a slice means editing `interaction_families.cpp`, compiling, and reviewing a
+// large diff; a loader (C2) makes it an artifact that can be published as the model's provenance.
+// None of that is safe unless every field survives the trip.
+//
+// The fields most likely to be dropped are the newest ones, and they are exactly the ones the
+// bare-turn work depends on: `history`, the tool OUTCOMES inside it (so "why did that fail?" is
+// answerable from the call that ran rather than from prose), and `reference_action`.
+TEST(CorpusIo, AMultiTurnCaseWithToolOutcomesSurvivesTheRoundTrip) {
+    zetta::agent::EndState required;
+    required.set("kind", std::string("answer"));
+    required.set("grounded", true);
+    required.set("built_nothing", true);
+
+    zetta::agent::StudioAction action;
+    action.kind = zetta::agent::InteractionKind::Answer;
+    action.message = "The connect step didn't finish - the credential was rejected.";
+
+    zetta::agent::AdmissionCase original{
+        zetta::agent::Task{"follow/failure/0", "why did that fail?", zetta::agent::EndState{},
+                           {}, required},
+        required,
+        {zetta::agent::EndState{}},
+        action,
+        "Project: Churn\nLast run: failed\n",
+        {{"Run it.", "Started the run.", {{"run", "failed", "credential rejected"}}}}};
+
+    std::string error;
+    const auto decoded = zetta::agent::admission_case_from_json(
+        zetta::agent::to_json(original), &error);
+    ASSERT_TRUE(decoded.has_value()) << error;
+
+    EXPECT_EQ(decoded->task.description(), "why did that fail?");
+    EXPECT_EQ(decoded->grounding, original.grounding);
+
+    ASSERT_EQ(decoded->history.size(), 1u) << "history is what makes a follow-up a follow-up";
+    EXPECT_EQ(decoded->history[0].ask, "Run it.");
+    ASSERT_EQ(decoded->history[0].tools.size(), 1u)
+        << "the tool OUTCOME must survive - 'why did that fail?' is answerable from the call "
+           "that ran, not from the prose of the previous reply";
+    EXPECT_EQ(decoded->history[0].tools[0].tool, "run");
+    EXPECT_EQ(decoded->history[0].tools[0].status, "failed");
+    EXPECT_EQ(decoded->history[0].tools[0].detail, "credential rejected");
+
+    ASSERT_TRUE(decoded->reference_action.has_value())
+        << "the action is the SFT training target; losing it silently trains on nothing";
+    EXPECT_EQ(decoded->reference_action->message, action.message);
+    EXPECT_EQ(decoded->negative_controls.size(), original.negative_controls.size())
+        << "discrimination is the product; a dropped control is a case that measures nothing";
+}
+
+// A whole corpus, not one case — the shape a loader will actually consume.
+TEST(CorpusIo, AMultiTurnCorpusSurvivesJsonlAndStillAdmits) {
+    const zetta::dataset::BaseAgentDatasetGenerator generator;
+    zetta::dataset::DatasetGenSpec spec;
+    const zetta::dataset::GeneratedDataset dataset = generator.generate(spec);
+    ASSERT_FALSE(dataset.cases.empty());
+
+    std::size_t with_history = 0;
+    for (const auto& entry : dataset.cases) {
+        if (!entry.history.empty()) ++with_history;
+    }
+    ASSERT_GT(with_history, 0u) << "the corpus must contain multi-turn cases to test this at all";
+
+    std::string error;
+    const auto reloaded =
+        zetta::agent::load_corpus_jsonl(zetta::agent::dump_corpus_jsonl(dataset.cases), &error);
+    ASSERT_TRUE(reloaded.has_value()) << error;
+    ASSERT_EQ(reloaded->size(), dataset.cases.size());
+
+    std::size_t reloaded_with_history = 0;
+    for (const auto& entry : *reloaded) {
+        if (!entry.history.empty()) ++reloaded_with_history;
+    }
+    EXPECT_EQ(reloaded_with_history, with_history)
+        << "a corpus that loses its history on reload trains single-turn no matter what was "
+           "authored";
+
+    EXPECT_TRUE(zetta::agent::admit_corpus(*reloaded).admitted)
+        << "a corpus that no longer admits after a round trip cannot be published as the "
+           "model's provenance";
+}

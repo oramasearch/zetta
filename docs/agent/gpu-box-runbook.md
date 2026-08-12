@@ -172,6 +172,12 @@ ZETTA_CORPUS_OUT=data/corpora/interaction-corpus-v1.jsonl \
 # Pull the base weights natively (ADR-17 -- no python, no curl).
 ZETTA_QWEN_DIR=$(./build/bin/zetta pull Qwen/Qwen3-0.6B)
 
+# The test name is NOT the same as on a Mac. `QwenRealCheckpoint.SftBaseAgentOnCorpus`
+# lives inside `#if defined(ZETTA_WITH_MLX)`, so on a CUDA box it does not exist and the
+# filter matches ZERO tests — which gtest reports as "[  PASSED  ] 0 tests." A launch that
+# trains nothing looks exactly like a launch that succeeded instantly. Always confirm with:
+#   ./build/tests/zetta-tests --gtest_list_tests | grep -A2 '^SftCudaResident\.'
+# and check `nvidia-smi` shows the GPU actually busy before walking away.
 # Train. SAVE_EVERY is not optional: a run that only saves at the end loses
 # everything to an interruption, which is exactly how ~90 steps were lost (#919).
 ZETTA_QWEN_DIR=$ZETTA_QWEN_DIR \
@@ -179,8 +185,24 @@ ZETTA_CORPUS=data/corpora/interaction-corpus-v1.jsonl \
 ZETTA_SFT_EXAMPLES=6030 ZETTA_SFT_STEPS=3000 ZETTA_SFT_SAVE_EVERY=250 \
 ZETTA_CHECKPOINT_OUT=data/checkpoints/base-agent-0.6b-interaction-v1 \
 ZETTA_SFT_LOG=data/sft-logs/interaction-v1.jsonl \
-  ./build/tests/zetta-tests --gtest_filter='*SftBaseAgentOnCorpus'
+  ./build/tests/zetta-tests --gtest_filter='SftCudaResident.TrainsTheInteractionCorpusOnTheGpu'
 ```
+
+> **The GPU box can train but CANNOT evaluate.** The eval harness lives in
+> `tests/tokenizer/test_qwen_real_checkpoint.cpp`, inside the same
+> `#if defined(ZETTA_WITH_MLX)` guard as the MLX training test — so on a CUDA box the eval
+> filter matches zero tests and reports `[ PASSED ] 0 tests` with exit 0, exactly like the
+> training filter did. You produce a checkpoint on the GPU and have no way to measure it there.
+>
+> Until a CUDA eval exists, **pull the checkpoint and evaluate on a Mac**:
+>
+> ```sh
+> rsync -a ubuntu@<box>:zetta/data/checkpoints/<name> data/checkpoints/
+> ```
+>
+> ~2.3 GB per checkpoint. Budget for it — and note that `ZETTA_SFT_SAVE_EVERY` intermediate
+> checkpoints are worth pulling too when the final loss suggests overfitting, since the best
+> checkpoint is frequently not the last one.
 
 Then evaluate against the **canary** (the 763 held-out cases over Projects whose numbers the model
 never saw) and write the dated report — the report is the deliverable, the checkpoint is not:
@@ -192,6 +214,35 @@ ZETTA_EVAL=data/corpora/interaction-corpus-v1.jsonl.canary \
 ```
 
 Retrieve the checkpoint (~2.2 GB) with `rsync -a`, and **destroy the instance**.
+
+## Launching a run that outlives your shell
+
+`nohup … &` over ssh is not enough — the job is SIGHUP'd when the ssh session ends, and the
+log freezes mid-run looking exactly like a stall. Use `setsid`:
+
+```sh
+ssh <box> 'cd ~/zetta && setsid nohup env \
+  ZETTA_QWEN_DIR=$HOME/qwen3-0.6b ZETTA_CORPUS=… ZETTA_SFT_STEPS=3000 … \
+  ./build/tests/zetta-tests --gtest_filter=SftCudaResident.TrainsTheInteractionCorpusOnTheGpu \
+  > $HOME/sft.log 2>&1 < /dev/null &'
+```
+
+**Put the completion marker in the same command as the work.** A wrapper that appends
+`echo SFT_DONE` is easy to drop when the launch is rewritten, and then every wait-loop
+watches for a sentinel that can never appear — a 40-minute run reads as hung. Either grep
+the test harness's own `[  PASSED  ]` line, or keep the marker inside the `setsid` command.
+
+**Distinguishing stalled from finished, without a marker:**
+
+```sh
+a=$(tail -1 ~/sft.log); sleep 25; b=$(tail -1 ~/sft.log)
+[ "$a" = "$b" ] && echo STALLED || echo advancing
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+```
+
+A live process at 0% GPU and 0 MiB is wedged, not working — that is what a `pkill -9`
+mid-run leaves behind. Kill it, confirm `pgrep -f zetta-tests` is empty and GPU memory is
+released, then relaunch.
 
 ## Hard rules
 

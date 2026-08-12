@@ -376,3 +376,111 @@ TEST_F(ServingFixture, ExposeActionsFailClearlyAndAreIdempotent) {
 }
 
 }  // namespace
+
+// --- model_health (#983, the first Monitor capability) --------------------------------------
+//
+// The agent is meant to watch a deployed model and say whether it can still be trusted. Until
+// this it had no tool that answers that, so it could only DESCRIBE monitoring — which is #976 at
+// the methodology level: a verb the agent has no vocabulary for.
+//
+// Computed from what a Model record ALREADY carries. A drift capability needing a stored
+// reference distribution is a schema change and a migration; this needs neither, and it answers
+// the question asked first: is the number I was given honest?
+TEST_F(ServingFixture, ModelHealthReadsWhetherAModelCanStillBeTrusted) {
+    const auto install = [this](const nlohmann::json& metrics, const std::string& name) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = name;
+        value.metrics = metrics;
+        auto model = node.create_model(std::move(value));
+        return model ? model->id() : std::string{};
+    };
+
+    // No holdout: every figure was measured on the rows the model learned from. An in-sample
+    // 0.868 reached a client report once where the held-out figure was 0.726.
+    const std::string no_holdout = install({{"in_sample_auc", 0.868}}, "no-holdout");
+    ASSERT_FALSE(no_holdout.empty());
+    auto result = call("model_health", {{"model_id", no_holdout}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+    bool named_the_fix = false;
+    for (const auto& finding : result.value.at("findings")) {
+        if (finding.get<std::string>().find("holdout_fraction") != std::string::npos) {
+            named_the_fix = true;
+        }
+    }
+    EXPECT_TRUE(named_the_fix) << "a finding must say what to do, not only what is wrong";
+
+    // A wide gap is memorization; the held-out figure is the only one describing new accounts.
+    const std::string overfit =
+        install({{"in_sample_auc", 0.95}, {"held_out_auc", 0.72}}, "overfit");
+    result = call("model_health", {{"model_id", overfit}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_NEAR(result.value.at("overfit_gap").get<double>(), 0.23, 1e-9);
+    EXPECT_FALSE(result.value.at("trustworthy").get<bool>());
+
+    // A model that generalizes is trusted.
+    const std::string healthy =
+        install({{"in_sample_auc", 0.78}, {"held_out_auc", 0.75}}, "healthy");
+    result = call("model_health", {{"model_id", healthy}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(result.value.at("trustworthy").get<bool>());
+
+    // Uncalibrated is not disqualifying — ranking is legitimate — but it must be SAID, because a
+    // threshold of 0.8 on an uncalibrated score does not mean an 80% chance.
+    bool warned_about_calibration = false;
+    for (const auto& finding : result.value.at("findings")) {
+        if (finding.get<std::string>().find("not calibrated") != std::string::npos) {
+            warned_about_calibration = true;
+        }
+    }
+    EXPECT_TRUE(warned_about_calibration);
+}
+
+// --- propose_improvement (#983, the Improve verb) --------------------------------------------
+//
+// The property that makes Improve gradeable: a proposal MUST carry its predicted effect. Kernel
+// D7-2 — the metric the customer pays for is the metric the agent learns on — so "retrain it"
+// with no predicted effect is a suggestion, not a proposal, and nothing can score it or hold it
+// to account afterwards.
+TEST_F(ServingFixture, ProposeImprovementCarriesAPredictedEffectOrRefuses) {
+    const auto install = [this](const nlohmann::json& metrics, const std::string& name) {
+        zetta::ml::ModelValue value;
+        value.kind = "classifier";
+        value.name = name;
+        value.metrics = metrics;
+        auto model = node.create_model(std::move(value));
+        return model ? model->id() : std::string{};
+    };
+
+    // Adding a holdout to a model that has none is the one effect that IS predictable — not a
+    // guess about the model, but a statement about what its current number means.
+    const std::string in_sample_only = install({{"in_sample_auc", 0.868}}, "in-sample-only");
+    ASSERT_FALSE(in_sample_only.empty());
+    auto result =
+        call("propose_improvement", {{"model_id", in_sample_only}, {"change", "add_holdout"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_TRUE(result.value.at("predictable").get<bool>());
+    const std::string effect = result.value.at("predicted_effect").get<std::string>();
+    EXPECT_NE(effect.find("FALL"), std::string::npos)
+        << "the honest prediction is that the number goes DOWN, and that is the point";
+
+    // A bare retrain must be REFUSED. An agent predicting an improvement from a retrain it has no
+    // evidence for is exactly the failure this capability exists to prevent.
+    result = call("propose_improvement", {{"model_id", in_sample_only}, {"change", "retrain"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("predictable").get<bool>());
+    EXPECT_FALSE(result.value.contains("predicted_effect"))
+        << "refusing must mean refusing — a rationale plus an invented number is worse than "
+           "silence, because the customer plans against the number";
+    EXPECT_NE(result.value.at("rationale").get<std::string>().find("what would differ"),
+              std::string::npos)
+        << "the refusal must say what would make the effect predictable";
+
+    // Proposing a holdout to a model that already has one changes nothing, and it says so.
+    const std::string has_holdout =
+        install({{"in_sample_auc", 0.78}, {"held_out_auc", 0.75}}, "has-holdout");
+    result = call("propose_improvement", {{"model_id", has_holdout}, {"change", "add_holdout"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(result.value.at("predictable").get<bool>());
+}

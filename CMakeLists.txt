@@ -631,11 +631,16 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/backtest.cpp
+  src/core/ml/forecast.cpp
+  src/core/ml/lag_features.cpp
+  src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp
   src/core/ml/calibration.cpp
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
+  src/core/ml/explain_row.cpp
   src/core/ml/score_table.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
@@ -645,6 +650,7 @@ add_library(zetta-core STATIC
   src/core/agent/action.cpp
   src/core/agent/goal.cpp
   src/core/agent/conversation.cpp
+  src/core/agent/conversation_walk.cpp
   src/core/agent/training_policy.cpp
   src/core/agent/agent_record.cpp
   src/core/agent/agent_store.cpp
@@ -653,10 +659,12 @@ add_library(zetta-core STATIC
   src/core/agent/response_facts.cpp
   src/core/agent/solution_graph.cpp
   src/core/dataset/auto_suggest_generator.cpp
+  src/core/dataset/authored_generator.cpp
   src/core/dataset/base_agent_generator.cpp
   src/core/dataset/dataset_generator_factory.cpp
   src/core/dataset/interaction_families.cpp
   src/core/dataset/plan_templates.cpp
+  src/core/dataset/product_claims.cpp
   src/core/agent/chat.cpp
   src/core/agent/model_cache.cpp
   src/core/agent/inference_runner.cpp
@@ -840,6 +848,7 @@ add_executable(zetta
   src/gui/app_traces.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
+  src/gui/app_reports.cpp
   src/gui/app_agents.cpp
   src/gui/app_chat.cpp
   src/gui/app_datagen.cpp

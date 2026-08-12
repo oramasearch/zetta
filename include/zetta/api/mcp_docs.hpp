@@ -22,4 +22,12 @@ namespace zetta::api {
 // token configured.
 std::string render_mcp_md(std::string_view origin, bool token_required);
 
+// Render the /cli.md body — the node's own command-line reference, so the
+// Documentation nav can point at a real page instead of an entry that 404s.
+//
+// The flags here mirror `print_usage` in src/main.cpp. Two lists can drift, so
+// `CliDocsDrift.EveryFlagIsDocumented` reads main.cpp and asserts every `--flag`
+// it offers appears below. If you add a flag there, this fails until it is here.
+std::string render_cli_md(std::string_view origin);
+
 }  // namespace zetta::api

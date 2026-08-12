@@ -135,6 +135,10 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize.cpp
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
+  ml/test_backtest.cpp
+  ml/test_forecast.cpp
+  ml/test_lag_features.cpp
+  ml/test_temporal_split.cpp
   ml/test_gbdt_train_partitions.cpp
   ml/test_gbdt_featurize_train_partitions.cpp
   ml/test_calibration.cpp
@@ -192,6 +196,7 @@ add_executable(zetta-tests
   agent/test_interaction_contract.cpp
   agent/test_sft_device_agnostic.cpp
   agent/test_solution_graph.cpp
+  dataset/test_authored_generator.cpp
   dataset/test_dataset_generator.cpp
   dataset/test_corpus_invariants.cpp
   agent/test_agent_record.cpp
@@ -209,6 +214,7 @@ add_executable(zetta-tests
   agent/test_response_facts.cpp
   agent/test_goal.cpp
   agent/test_conversation.cpp
+  agent/test_conversation_walk.cpp
   agent/test_training_policy.cpp
   agent/test_corpus_native_gate.cpp
   agent/test_softmax_policy.cpp

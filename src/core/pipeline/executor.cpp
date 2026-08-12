@@ -250,7 +250,14 @@ ExecutionResult GraphExecutor::execute(Node& node,
             });
             break;  // fail-fast: downstream steps do not run
         }
-        for (const RunOutput& output : outcome.outputs) outputs.push_back(output);
+        for (RunOutput& output : outcome.outputs) {
+            // A `report` names what the run FOUND, and it is assembled from the
+            // run, so the run's own id is its ref. A StepExecutor cannot fill this
+            // itself — the Run is created here, after the executor was built — so
+            // it leaves the ref empty and this stamps it.
+            if (output.kind == "report" && output.ref.empty()) output.ref = run.id();
+            outputs.push_back(std::move(output));
+        }
     }
 
     lineage.freshness = zetta::util::now_iso8601();

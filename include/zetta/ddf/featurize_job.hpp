@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 
 #include "zetta/compute/job_coordinator.hpp"
@@ -61,6 +62,10 @@ struct DistributedFeaturizeResult {
     // Whether this node was the deterministic collective root (lowest node id).
     // Informational; the broadcast means `table` is set on every node regardless.
     bool is_root = false;
+    // CLUSTER-WIDE count of the event rows this featurization read (#958). Each
+    // node only sees its own shard, and a run report that says how much data the
+    // model was built from cannot be assembled from one shard's view.
+    std::uint64_t events_read = 0;
 
     bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };

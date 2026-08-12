@@ -1,6 +1,6 @@
 ---
 name: run-report
-description: Generate or regenerate the report a pipeline run produces — model quality, what drives the outcome, and the ranked at-risk list — from the run's facts artifact. Use when asked to "write the run report", "generate the churn report", "regenerate the report", "what did this run find", or when a run has finished and someone needs the artifact rather than the logs. Enforces the rule that makes the report trustworthy: the engine computes every number and the narrator only arranges them, verified mechanically.
+description: Generate or regenerate the report a pipeline run produces — model quality, what drives the outcome, and the ranked at-risk list — from the run's facts artifact. Use when asked to "write the run report", "generate the churn report", "regenerate the report", "what did this run find", or when a run has finished and someone needs the artifact rather than the logs. Enforces the rule that makes the report trustworthy — the engine computes every number and the narrator only arranges them, verified mechanically.
 ---
 
 # Run report
@@ -26,7 +26,16 @@ The rule is enforced mechanically — see step 4. Do not skip it.
 
 ### 1 · Get the facts artifact
 
-If a run has produced one, use it. To generate one for the churn demo:
+**Ask the run.** A finished run carries a `report` output, and the facts come back from
+the engine:
+
+```sh
+curl "$ZETTA/v1/get_run_report?run_id=<uuid>&limit=20"
+```
+
+Details: [`docs/pipeline/run-report.md`](../../../docs/pipeline/run-report.md).
+
+For the Motive demo dataset, which is generated outside any run:
 
 ```sh
 python3 scripts/gen_motive_demo_dataset.py --out data/demo/motive --accounts 15000
@@ -37,10 +46,16 @@ ZETTA_MOTIVE_DEMO_DIR=data/demo/motive ./build/tests/zetta-tests \
 Writes `data/demo/motive/run-report.json`. Full detail:
 [`docs/runbooks/regenerating-the-run-report.md`](../../../docs/runbooks/regenerating-the-run-report.md).
 
-The artifact carries `dataset`, `model` (both AUCs), `drivers`, and `at_risk` with per-entity
-`evidence`. **If a field you want is missing, that is a gap in the artifact to fix in the
-engine — not a number to work out yourself.** `majority_class_accuracy` exists for exactly
-that reason: the prose needed it, computing it was forbidden, so the artifact grew.
+Either way the artifact carries `dataset`, `model` (both AUCs), `drivers`, and `at_risk`
+with per-entity `evidence`. **If a field you want is missing, that is a gap in the artifact
+to fix in the engine — not a number to work out yourself.** `majority_class_accuracy` exists
+for exactly that reason: the prose needed it, computing it was forbidden, so the artifact
+grew.
+
+**Read `missing` first.** The engine lists there anything a report would want and this run
+cannot supply, with the reason — most often a held-out figure the run never asked for. Say
+what it says. An absent held-out figure that goes unmentioned turns into an in-sample number
+presented as quality, which is the exact failure this whole discipline exists to prevent.
 
 ### 2 · Read the prompt
 
@@ -109,6 +124,9 @@ It passes step 4 against `data/demo/motive/run-report.json`.
 Python 3 (stdlib only), a built `zetta-tests`, and `graphviz` if diagrams need re-rendering.
 
 ## Version history
+
+- v1.2.0 (2026-08-05): the facts come from the engine — `get_run_report` on a finished run,
+  not only from a test. Records the `missing` field and the rule for reporting it.
 
 - v1.1.0 (2026-08-04): prose is required, not optional. Every figure gets its meaning, rate
   metrics get their trivial baseline, and the length cap that caused the first version to

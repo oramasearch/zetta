@@ -1,6 +1,6 @@
 ---
 name: rlvr-training-data
-description: Generate verifiable-reward (RLVR) training data — the task/game corpora that train zetta's native agents — following blender-rl's "grow by generation, gate by verification" method. Use when creating or growing a training corpus for the base agent or a per-customer fork, synthesizing tasks from a solutions catalog or a customer's data, authoring reference solutions + negative controls, running the admission gate, tagging difficulty, holding out a generalization slice, pushing to a HuggingFace dataset, or generating synthetic data (e.g. into Postgres) in a customer's schema. Triggers: "training data", "generate a corpus", "RLVR games", "reference solution", "admission gate", "synthetic data", "curriculum", "push to HF dataset", "train a future model".
+description: Generate verifiable-reward (RLVR) training data — the task/game corpora that train zetta's native agents — following blender-rl's "grow by generation, gate by verification" method. Use when creating or growing a training corpus for the base agent or a per-customer fork, synthesizing tasks from a solutions catalog or a customer's data, authoring reference solutions + negative controls, running the admission gate, tagging difficulty, holding out a generalization slice, pushing to a HuggingFace dataset, or generating synthetic data (e.g. into Postgres) in a customer's schema. Grounds every corpus in the solutions-designs portfolio (methodologies, S-n modules, the agent's five verbs and four autonomy classes) so it trains the agent to COMPOSE solutions, not answer questions about one. Triggers — "training data", "generate a corpus", "RLVR games", "reference solution", "admission gate", "synthetic data", "curriculum", "push to HF dataset", "train a future model", "multi-turn corpus", "corpus coverage".
 ---
 
 # rlvr-training-data — build verifiable-reward training corpora
@@ -35,6 +35,20 @@ Non-negotiable, straight from blender-rl's dataset strategy:
    without gating poisons the reward signal.**
 5. **Hold out to measure generalization.** Some difficulty must never appear in training,
    or you can't tell learning from memorization.
+6. **A turn is part of a thread, not a standalone row.** The second thing a person types
+   is usually meaningless on its own — `"yes"`, `"what?"`, `"go ahead"`, `"the second one"`.
+   A corpus of self-contained (ask, reply) pairs teaches the model to classify by surface
+   form, and it then answers two different asks with a byte-identical sentence. Every case
+   carries the turns it depends on (`AdmissionCase::history`), and the SAME word must train
+   toward DIFFERENT behavior depending on what precedes it — `"yes"` after a concrete
+   proposal builds; `"yes"` after an either/or question must still ask which one. Without
+   that pair the model passes by memorizing the word, which is wrong exactly when it matters.
+7. **Coverage is enumerated from the product, not from imagination.** Every ask form the
+   corpus omits is claimed by the nearest family, and the model then behaves *correctly for
+   the wrong family* — fluent, grounded, and answering a different question, so every
+   aggregate metric stays green. This has shipped four times (#904 tool-use, #942 greetings,
+   #942 bare turns, #939 ungrounded blending). Enumerate from the surfaces below rather than
+   from what occurs to you while writing families.
 
 ## The zetta mapping (the native contract)
 
@@ -49,6 +63,84 @@ Non-negotiable, straight from blender-rl's dataset strategy:
 
 A task with **no required facts is untrainable** (nothing to verify) — the constraint #554
 (Auto-Suggest) enforces before a task may enter the curriculum.
+
+## What the corpus must cover — enumerate from the portfolio
+
+**We are building an AI agent that builds AI systems.** That is the product thesis, and it
+is what the corpus has to teach. The binding source is
+`modules/solutions-designs/docs/plan/` (⚠️ internal-confidential) — read
+[`00-strategy-kernel.md`](../../../../solutions-designs/docs/plan/00-strategy-kernel.md)
+first; D2 puts the agent at the center: **methodologies are the agent's tools, and the
+use-case catalog is its action space.**
+
+A corpus that teaches "answer questions about a churn model" is not a thin version of that
+— it is a different product. Enumerate coverage across four axes, all of which exist in the
+plan docs and none of which the engine's own `plan_templates.cpp` (33 ids) captures:
+
+**1. The agent's five verbs** (`04-solutions-catalog.md` §2.4 — the agent operating
+definition). Every module is agent-operated across: **Build** (compose the graph, discover
+features inside the leakage blocklist, propose label/window definitions, configure
+connectors) · **Run** (scoring cadences, push into systems of action, execute policy
+decisions inside caps, manage holdout randomization) · **Monitor** (drift/PSI, calibration,
+per-segment realized performance, holdout integrity, connector and schema health) ·
+**Explain** (reason codes per score, driver reports, "what changed since last cycle", the
+assembled ROI readout) · **Improve** (retrain on schedule and trigger, propose
+threshold/policy changes *with predicted ROI effect*, run designed experiments).
+
+Today's corpus is almost entirely **Build** and **Explain**. Monitor and Improve are absent,
+and they are where a deployed customer spends most of their turns.
+
+**2. The four autonomy classes** (same section) — **A0 draft** (recommend only, a human
+executes) · **A1 approval-gated** (execute after a named human approves *this instance*) ·
+**A2 autonomous-under-audit** (execute inside the policy envelope) · **A3 self-tuning**
+(adjust thresholds inside pre-approved bounds, logging predicted and realized ROI effect).
+The class changes the correct reply for an identical ask: under A1, "rerun it with the new
+threshold" must produce an approval request, not a run. A corpus blind to autonomy trains an
+agent that acts when it should ask — the failure that makes governed self-serve unsellable.
+
+**3. The 21 methodologies and the 11 components** (`03-methodology-portfolio.md` §3–4).
+M-1…M-21 across six families (tabular decision core · identity & structure · time &
+vigilance · action & decision · language/documents/perception · the data supply chain), and
+C-1…C-11 as the shared components the agent composes (connectors · entity resolution ·
+point-in-time feature layer · labeling/outcome capture · training · tuning · explanation ·
+evaluation harness · serving · monitoring/retraining · index/retrieval).
+
+**Every generated Project must BE a real module with its real pipeline shape.** This already
+fixed a serious bug once: without it, 92% of action cases taught two pipeline shapes and the
+trained agent emitted the same pipeline for churn, lead scoring and collections alike. A
+forecasting Project produces the **forecasting** pipeline — backtested, no calibration — not
+the churn skeleton with the nouns swapped.
+
+**4. The solution anatomy** (`04-solutions-catalog.md` §2.6, twelve fields). A module is not
+a model: it is methodology composition + correctness adaptations + business wiring (actions
+and decision policy, systems of action, people and cadence) + ROI contract + the agent's
+operating definition + data plan + capability levels + deployment shapes + governance and
+failure modes. Asks land on **all** of it. "Who acts on this score, and in which system?" is
+a first-class ask, not an aside.
+
+### The reward is ROI, and the gate does not relax for the agent
+
+Two constraints from the kernel that bind corpus authoring directly:
+
+- **D7-2 — the metric the customer pays for is the metric the agent learns on.** Where a
+  case can express the solution's measured ROI signal, that is the reward, not a proxy for
+  it. An `Improve` case that proposes a threshold change must carry its **predicted ROI
+  effect** as a checkable fact, because that is what the agent is actually optimizing.
+- **"One gate for three authors"** (`03-methodology-portfolio.md` §5.4) — human-authored,
+  compiled-from-intent, and agent-initiated graphs clear the *same* correctness gate;
+  `author_kind` is recorded and never consulted by any rule. This is why agent autonomy is
+  governable at all, and it means a corpus case must never train the agent to expect
+  leniency, shortcut a check, or treat its own proposal as pre-verified.
+
+### The vocabulary is load-bearing, not stylistic
+
+`modules/solutions-designs/docs/vocabulary.md`: **use case** = the problem · **methodology**
+= the arranged AI methods · **solution** = the methodology applied correctly *and wired to
+the business action*. Cardinality: many use cases ≈ many solutions ≫ few methodologies. A
+reply that calls a methodology a solution has told the customer the work is done when the
+business wiring — the part that realizes the value — has not been started. Combine with the
+product's user-facing contract (**Pipeline**, **Verification**, **Workspace Profile**,
+**Saved Version**, **Proposed Solution**, **Ask Orama**) from the root `CLAUDE.md`.
 
 ## Workflow
 
@@ -86,6 +178,17 @@ Each a red → green → build → atomic-commit bite. See **nibble-dev**.
 - ❌ A corpus with no negative controls (the gate catches nothing).
 - ❌ Volume without gating (poisons the reward signal).
 - ❌ A generator that pushes to HF **before** the admission gate.
+- ❌ A corpus of standalone (ask, reply) pairs for a conversational surface — a follow-up is
+  the second thing anyone types, and single-turn data cannot teach it.
+- ❌ A bare turn with no `history`. Worse than omitting it: the case's correct answer is not
+  derivable from its own input, so it teaches the model to answer the word.
+- ❌ Declaring facts the grader does not compute. `response_solution_facts` is the list; an
+  invented key (`tool_called`, `abandoned_prior_proposal`) makes the reference unsatisfiable
+  and the case silently untrainable. `EveryReferencePassesItsOwnGrader` catches it — run it.
+- ❌ Generating the graders. A model proposing its own success criterion is how a corpus
+  quietly stops measuring anything. Criteria stay in C++.
+- ❌ A Project that is not a real module from the catalog, or a pipeline shape borrowed from
+  a different methodology.
 - ❌ Hardcoded secrets — creds are env vars. Foreign models/services are **authoring aids
   only**, never in the train/infer path (ADR-17: the model is the product).
 
@@ -93,7 +196,15 @@ Each a red → green → build → atomic-commit bite. See **nibble-dev**.
 - **native-ai-dev** — build the model / RLVR loop the corpus trains (load with this).
 - **nibble-dev** — the atomic-commit discipline for the corpus machinery.
 - **new-connector** / **new-input** — real data sources / input formats a task may consume.
+- **zetta-walkthrough** — walks the trained agent's surfaces; its follow-up row (three turns,
+  no two consecutive replies byte-identical) is the acceptance this corpus is authored against.
 
 ## Version History
+- v2.0.0 (2026-08-06): Grounded the corpus in the solutions-designs portfolio — the agent's
+  five verbs and four autonomy classes, M-1…M-21 + C-1…C-11, the twelve-field solution
+  anatomy, ROI-as-reward (D7-2), and "one gate for three authors". Added principles 6
+  (a turn is part of a thread) and 7 (enumerate coverage from the product), after the
+  bare-turn failure in #942 shipped a model that answered `"yes"` and `"what?"` identically.
+  Corpus generator redesign: https://github.com/oramasearch/zetta/issues/982
 - v1.0.0 (2026-07-21): Initial — distilled from blender-rl's dataset strategy + the
   base-agent training-corpus build (#866 → #863 → #862; Charles/Motive churn as sample #1).

@@ -226,6 +226,105 @@ std::string join_types(const std::vector<std::string>& types) {
 
 }  // namespace
 
+bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
+    return model_kind == "forecast" || model_kind == "survival" || model_kind == "streaming";
+}
+
+CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) continue;
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) continue;
+        const std::string named = kind->get<std::string>();
+        if (!is_time_ordered(named)) continue;
+
+        // Calibration on a time-ordered model is the churn recipe misapplied — see the header.
+        for (const auto& other : graph.nodes()) {
+            if (!other->attributes.is_object()) continue;
+            const auto calibrated = other->attributes.find("calibrated");
+            if (calibrated != other->attributes.end() && calibrated->is_boolean() &&
+                calibrated->get<bool>()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) + ": '" + named +
+                        "' is time-ordered, so calibration does not apply — there is no "
+                        "probability to calibrate, and fitting a calibrator on rows held out by "
+                        "content re-introduces exactly the leak temporal validation prevents. "
+                        "Drop `calibrated` and backtest over rolling origins instead."};
+            }
+        }
+
+        // Look across the whole graph, exactly as the calibration half above does. Looking only
+        // at the model node was an asymmetry bug: `build_solution_graph` puts non-step facts on
+        // the solution node, so a graph that legitimately declared temporal validation was
+        // refused for not declaring it.
+        bool has_temporal_validation = false;
+        for (const auto& other : graph.nodes()) {
+            if (!other->attributes.is_object()) continue;
+            const auto validated = other->attributes.find("temporal_validation");
+            if (validated != other->attributes.end() && validated->is_boolean() &&
+                validated->get<bool>()) {
+                has_temporal_validation = true;
+                break;
+            }
+        }
+        if (!has_temporal_validation) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) + ": '" + named +
+                    "' is time-ordered and must be validated over time. Add "
+                    "`temporal_validation` to this step — a figure measured on rows held out by "
+                    "content is not comparable to anything this model will see in production."};
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every time-ordered model is validated over time and uncalibrated"};
+}
+
+const std::vector<std::string>& MethodologyCheck::implemented() {
+    // M-1 tabular supervised ships (histogram GBDT + native TreeSHAP + calibration).
+    // Everything else in the catalogue is #984 and must NOT pass this check until its
+    // train/score path exists — passing it early is how the agent learns to propose work the
+    // engine silently will not do.
+    // "forecast" joined on 2026-08-07 when `train_forecast` landed (#984): lag featurization ->
+    // temporal split -> squared-error GBDT -> rolling-origin backtest, verified to beat
+    // predicting the mean on a seasonal series. Before that it was deliberately absent, so the
+    // gate refused it rather than silently running the churn path.
+    static const std::vector<std::string> kImplemented = {"gbdt", "forecast"};
+    return kImplemented;
+}
+
+CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model) continue;
+        if (!node->attributes.is_object()) continue;
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end()) continue;  // opt-in, like every check here
+        if (!kind->is_string()) {
+            return CheckResult{name(), CheckStatus::Fail,
+                               node_label(*node) + ": model_kind must be a string"};
+        }
+        const std::string named = kind->get<std::string>();
+        const std::vector<std::string>& ok = implemented();
+        if (std::find(ok.begin(), ok.end(), named) == ok.end()) {
+            std::string supported;
+            for (const std::string& entry : ok) {
+                if (!supported.empty()) supported += ", ";
+                supported += entry;
+            }
+            // Say what to do, not just what is wrong (FEAT-3).
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) + ": this node names the methodology '" + named +
+                    "', which this engine cannot execute. Implemented today: " + supported +
+                    ". Either build the pipeline with an implemented methodology, or track the "
+                    "missing one on the methodology portfolio issue (#984)."};
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every model step names a methodology the engine can execute"};
+}
+
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     const auto fail = [this](std::string reason) {
         return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
