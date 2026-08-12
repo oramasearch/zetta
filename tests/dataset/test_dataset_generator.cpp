@@ -54,8 +54,8 @@ TEST(DatasetGenerator, BaseAgentProducesAGatedCorpus) {
         // message and in what the model did NOT do. This also enforces the corpus rule that a
         // required fact must be projectable — you cannot verify what you cannot check.
         EXPECT_TRUE(admission_case.task.grader()
-                        .grade(zetta::agent::response_solution_facts(
-                            *admission_case.reference_action, admission_case.grounding))
+                        .grade(zetta::agent::response_solution_facts(*admission_case.reference_action, admission_case.grounding,
+                                            admission_case.history))
                         .passed)
             << "case " << admission_case.task.id() << " reference must pass its own grader";
     }

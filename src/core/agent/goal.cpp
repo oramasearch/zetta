@@ -187,13 +187,14 @@ double goal_reward_for_execution(const std::vector<Goal>& goals, const StudioAct
 }
 
 double goal_reward_for_generation(const std::vector<Goal>& goals, const std::string& generation,
-                                  const std::string& grounding) {
+                                  const std::string& grounding,
+                                  const std::vector<PriorTurn>& history) {
     // A generation the harness cannot parse is worth nothing, whatever it says. Scoring it on the
     // goals it happens to mention would reward text that reads well and does not run — which is
     // precisely the failure RLVR exists to avoid.
     const std::optional<StudioAction> action = parse_studio_action(generation);
     if (!action) return 0.0;
-    return goal_reward(goals, response_solution_facts(*action, grounding));
+    return goal_reward(goals, response_solution_facts(*action, grounding, history));
 }
 
 double goal_reward_for_rollout(const std::vector<Goal>& goals, const std::string& generation,

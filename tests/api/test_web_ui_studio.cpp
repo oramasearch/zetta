@@ -13,6 +13,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <fstream>
+#include <regex>
+#include <set>
+#include "zetta/api/mcp_docs.hpp"
 #include "zetta/api/web_ui.hpp"
 
 namespace {
@@ -265,6 +270,39 @@ TEST(WebUiReports, ReportsIsOneItemInTheWorkspaceGroup) {
     EXPECT_LT(data, reports);
     EXPECT_LT(reports, html.find("Operate", nav));
     EXPECT_FALSE(contains(html, "<div class=\"group\">Reports</div>"));
+}
+
+// The CLI reference is a second list of the node's flags, and two lists drift.
+// This reads main.cpp and asserts every `--flag` it offers is documented — so
+// adding a flag there fails here until /cli.md mentions it.
+TEST(CliDocs, EveryFlagMainOffersIsDocumented) {
+    const char* source = std::getenv("ZETTA_SOURCE_DIR");
+    const std::filesystem::path main_cpp =
+        std::filesystem::path(source ? source : ".") / "src" / "main.cpp";
+    if (!std::filesystem::exists(main_cpp)) {
+        GTEST_SKIP() << "set ZETTA_SOURCE_DIR to the repo root to run the drift check";
+    }
+
+    std::ifstream file(main_cpp);
+    const std::string usage((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+    const std::string docs = zetta::api::render_cli_md("http://127.0.0.1:4800");
+
+    // Custom delimiter: the pattern itself contains )" and would close R"( early.
+    static const std::regex flag(R"RX("(--[a-z][a-z-]+)")RX");
+    std::set<std::string> missing;
+    for (std::sregex_iterator it(usage.begin(), usage.end(), flag), end; it != end; ++it) {
+        const std::string name = (*it)[1].str();
+        // --dir and --revision are internal build/test plumbing, not user flags.
+        if (name == "--dir" || name == "--revision") continue;
+        if (docs.find(name) == std::string::npos) missing.insert(name);
+    }
+
+    std::string report;
+    for (const std::string& name : missing) report += name + " ";
+    EXPECT_TRUE(missing.empty())
+        << "/cli.md does not document: " << report
+        << "\n(main.cpp offers them; the CLI page is what a user reads)";
 }
 
 }  // namespace

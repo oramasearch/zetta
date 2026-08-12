@@ -1790,7 +1790,12 @@ struct ApiServer::Impl {
                "Profile \xE2\x80\x94 the data you hold, your connections, and your daily "
                "work \xE2\x80\x94 and recommends what you could create from it.</div>"
                "<div class=\"pnote\"><span class=\"dot\"></span>Auto-Suggest is in training "
-               "\xC2\xB7 not available on this node yet</div></div>";
+               "\xC2\xB7 not available on this node yet</div>"
+               // The design gives both entry cards an action. Ours had one, so this
+               // card explained something you could not begin. The profile is real
+               // and useful before Auto-Suggest ships: it is the input it will read.
+               "<div class=\"pact\"><a href=\"/?view=profile\">Set up profile " +
+               web_ui_icon("chevron") + "</a></div></div>";
         out += "</div>";
 
         // Continue your work — live Projects with the next useful action. The
@@ -2242,6 +2247,36 @@ struct ApiServer::Impl {
                     out += web_ui_run_report(report.value);
                 }
             }
+        } else if (view == "profile") {
+            // The Workspace Profile (#886) — the destination "Discover
+            // Opportunities" needed. Without it that card explained something you
+            // could not begin, which is worse than not offering it.
+            out += web_ui_page_hero(
+                "Workspace", "Workspace Profile",
+                "What you hold, what you connect, and what your work looks like. "
+                "Auto-Suggest reads this to recommend what you could create.", "");
+            ApiResult existing = capability_registry.call(
+                "get_workspace_profile", nlohmann::json::object(), context);
+            std::string body;
+            if (existing.ok && existing.value.is_object() && !existing.value.empty()) {
+                nlohmann::json rows = nlohmann::json::array();
+                for (const auto& [key, value] : existing.value.items()) {
+                    rows.push_back({{"field", key},
+                                    {"value", value.is_string()
+                                                  ? value.get<std::string>()
+                                                  : value.dump()}});
+                }
+                body = web_ui_table(nlohmann::json{"field", "value"}, rows);
+            } else {
+                body =
+                    "<div class=\"empty\">No Workspace Profile yet. Creating one "
+                    "records your role, your daily work, and the sources you approve "
+                    "&mdash; the input Auto-Suggest reads.</div>";
+            }
+            out += render_action_panel(
+                context, view, "data", "Your profile",
+                "role Â· daily work Â· approved sources",
+                {"create_workspace_profile", "update_workspace_profile"}, body);
         } else if (view == "models") {
             out += web_ui_page_hero(
                 "Developer", "Models",
@@ -2569,6 +2604,7 @@ struct ApiServer::Impl {
             std::string content;
             std::string meta;
             std::string assist_agent;
+            std::string assist_agent_label;
             long long project_count = 0;
             co_await bridge.run_on_owner([&] {
                 project_count = static_cast<long long>(node.project_names().size());
@@ -2578,7 +2614,22 @@ struct ApiServer::Impl {
                 if (node.replication() != nullptr) {
                     const auto agents =
                         zetta::agent::AgentStore(*node.replication()).list();
-                    if (!agents.empty()) assist_agent = agents.front().id;
+                    if (!agents.empty()) {
+                        assist_agent = agents.front().id;
+                        // Name the agent the rail will use, and its checkpoint. A node can
+                        // serve several and this picks one silently (#981) — unnamed, a
+                        // reply from an older agent reads as a model regression rather
+                        // than as the wrong agent answering.
+                        assist_agent_label = agents.front().name;
+                        const std::string& served = agents.front().model;
+                        if (const std::size_t slash = served.find_last_of('/');
+                            slash != std::string::npos && slash + 1 < served.size()) {
+                            const std::string checkpoint = served.substr(slash + 1);
+                            if (checkpoint != assist_agent_label) {
+                                assist_agent_label += " (" + checkpoint + ")";
+                            }
+                        }
+                    }
                 }
                 ApiContext context{node, cluster, user_id,
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
@@ -2598,7 +2649,7 @@ struct ApiServer::Impl {
                 content = render_dashboard_content(context, view, route);
             });
             body = web_ui_shell(view, user_name.empty() ? user_id : user_name, meta, content,
-                                project_count, assist_agent);
+                                project_count, assist_agent, assist_agent_label);
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "text/html; charset=utf-8");
@@ -3330,6 +3381,31 @@ bool ApiServer::start() {
     // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
     // wins. Deliberately NOT bearer-gated (you must be able to read the connect
     // instructions without already holding the token) and it NEVER prints the token.
+    // GET /cli.md — public, like /mcp.md: the node's own command-line reference.
+    // Public because you must be able to read how to run a node without already
+    // holding a token from one.
+    router.add(http::method::get, "/cli.md",
+               [&impl](http::route_params& route) -> http::route_task {
+                   std::string host;
+                   if (route.req.count(http::field::host)) {
+                       host = std::string(route.req.at(http::field::host));
+                   }
+                   if (host.empty()) {
+                       host = impl.options.listen_address + ":" +
+                              std::to_string(impl.options.port);
+                   }
+                   const std::string origin =
+                       (request_is_https(route) ? "https://" : "http://") + host;
+                   const std::string body = render_cli_md(origin);
+                   route.status(http::status::ok);
+                   route.res.set(http::field::content_type,
+                                 "text/markdown; charset=utf-8");
+                   stamp_response_headers(route, body);
+                   auto [error] = co_await route.send(body);
+                   if (error) co_return http::route_error(error);
+                   co_return http::route_done;
+               });
+
     router.add(http::method::get, "/mcp.md",
                [&impl](http::route_params& route) -> http::route_task {
                    std::string host;

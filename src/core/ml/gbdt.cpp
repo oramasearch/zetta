@@ -244,7 +244,8 @@ nlohmann::json GbdtParams::to_json() const {
                           {"l2_regularization", l2_regularization},
                           {"min_split_gain", min_split_gain},
                           {"min_child_hessian", min_child_hessian},
-                          {"holdout_fraction", holdout_fraction}};
+                          {"holdout_fraction", holdout_fraction},
+                          {"objective", objective}};
 }
 
 std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
@@ -252,7 +253,8 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     static const char* known[] = {"num_trees",         "max_depth",
                                   "max_bins",          "learning_rate",
                                   "l2_regularization", "min_split_gain",
-                                  "min_child_hessian", "holdout_fraction"};
+                                  "min_child_hessian", "holdout_fraction",
+                                  "objective"};
     for (const auto& [key, _] : value.items()) {
         bool recognized = false;
         for (const char* name : known) {
@@ -285,6 +287,15 @@ std::optional<GbdtParams> GbdtParams::from_json(const nlohmann::json& value) {
     // reads as true and rejects the default.
     if (!read_number(value, "holdout_fraction", params.holdout_fraction, 0.0, false))
         return std::nullopt;
+    // A closed set, rejected at the boundary. An unknown objective silently falling back to the
+    // default is how a caller asks for a forecast and is handed a classifier — the run succeeds,
+    // the metrics look reasonable, and nothing says the loss was not the one requested.
+    if (const auto objective = value.find("objective"); objective != value.end()) {
+        if (!objective->is_string()) return std::nullopt;
+        const std::string named = objective->get<std::string>();
+        if (named != "binary_logistic" && named != "squared_error") return std::nullopt;
+        params.objective = named;
+    }
     return params;
 }
 
@@ -296,7 +307,7 @@ const nlohmann::json& gbdt_params_schema() {
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zetta.ml.GbdtParams",
-  "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic). All fields are optional; an omitted field takes its default.",
+  "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic or squared error). All fields are optional; an omitted field takes its default.",
   "type": "object",
   "properties": {
     "num_trees": { "type": "integer", "minimum": 1 },
@@ -306,6 +317,7 @@ const nlohmann::json& gbdt_params_schema() {
     "l2_regularization": { "type": "number", "minimum": 0 },
     "min_split_gain": { "type": "number", "minimum": 0 },
     "min_child_hessian": { "type": "number", "minimum": 0 },
+    "objective": { "type": "string", "enum": ["binary_logistic", "squared_error"] },
     "holdout_fraction": { "type": "number", "minimum": 0, "maximum": 1 }
   },
   "additionalProperties": false
@@ -336,6 +348,10 @@ double GbdtModel::predict_raw(const std::vector<double>& features) const {
 
 double GbdtModel::predict_proba(const std::vector<double>& features) const {
     const double raw = predict_raw(features);
+    // A regression model's output IS the prediction. Squashing it through a sigmoid would turn
+    // a forecast of 143.7 units into 1.0, silently — and calibrating it would be worse, since a
+    // regression has no probability to calibrate (see TemporalValidationCheck).
+    if (objective == "squared_error") return raw;
     if (calibration) return calibration->calibrate(raw);
     return sigmoid(raw);
 }
@@ -566,13 +582,22 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
             ComputeStatus::invalid_argument("train_gbdt: no training rows");
         return result;
     }
-    if (global_pos <= 0.0 || global_pos >= global_count) {
+    // "A single class" is a classification concept. Regression labels are continuous, so
+    // `global_pos` is their SUM and this guard would reject perfectly good data — a forecast of
+    // daily revenue would fail because every value is positive.
+    const bool regression_objective = params.objective == "squared_error";
+    if (!regression_objective && (global_pos <= 0.0 || global_pos >= global_count)) {
         result.status = ComputeStatus::invalid_argument(
             "train_gbdt: training labels are a single class");
         return result;
     }
-    const double mean = std::clamp(global_pos / global_count, kProbEpsilon,
-                                   1.0 - kProbEpsilon);
+    // The starting point the trees correct from: the mean label for regression, its logit for
+    // classification. Starting a regression at the logit of a mean revenue figure would make the
+    // first several trees do nothing but climb back to the right order of magnitude.
+    const double mean = regression_objective
+                            ? global_pos / global_count
+                            : std::clamp(global_pos / global_count, kProbEpsilon,
+                                         1.0 - kProbEpsilon);
 
     // Establish the bin layout, then pre-bin every local row per feature.
     FeatureBins binner;
@@ -595,8 +620,8 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
 
     // Initialize the model + per-row running raw scores.
     GbdtModel& model = result.model;
-    model.objective = "binary_logistic";
-    model.base_score = logit(mean);
+    model.objective = params.objective;
+    model.base_score = regression_objective ? mean : logit(mean);
     model.learning_rate = params.learning_rate;
     model.feature_names = feature_names;
     result.feature_importances.assign(feature_count, 0.0);
@@ -632,13 +657,25 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
 
     const std::size_t node_stride = feature_count * bin_count * 2;
 
+    const bool regression = params.objective == "squared_error";
     for (int tree_index = start_tree; tree_index < params.num_trees;
          ++tree_index) {
         // Gradients + Hessians at the current predictions.
-        for (std::size_t row = 0; row < local_rows; ++row) {
-            const double p = sigmoid(raw[row]);
-            gradient[row] = p - labels[row];
-            hessian[row] = p * (1.0 - p);
+        // The objective decides the gradient and Hessian, and nothing else in the tree-growing
+        // machinery changes — histogram building, split finding and the allreduce are identical.
+        // That is why forecasting (#984, M-4) does not need a second learner: it needs squared
+        // error, where the residual IS the gradient and the Hessian is constant.
+        if (regression) {
+            for (std::size_t row = 0; row < local_rows; ++row) {
+                gradient[row] = raw[row] - labels[row];
+                hessian[row] = 1.0;
+            }
+        } else {
+            for (std::size_t row = 0; row < local_rows; ++row) {
+                const double p = sigmoid(raw[row]);
+                gradient[row] = p - labels[row];
+                hessian[row] = p * (1.0 - p);
+            }
         }
 
         // Grow one tree, level by level. The root is a leaf placeholder until it

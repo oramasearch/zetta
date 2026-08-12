@@ -382,3 +382,4 @@ reproduces the numbers.
 - [`training-agents-runbook.md`](training-agents-runbook.md) — **runbook**: how an agent is trained today
   (corpus → SFT → canary + demo smoke → dated report), how it is operated over MCP (goals, cadence,
   staleness), and the future state marked as design rather than fact.
+- [`eval-profiles.md`](eval-profiles.md) — **eval profiles**: what a profile is (a situation plus its data), the `profile.json` schema, discovery vs capture, and the rules that make one worth running. The artifact Auto-Suggest and project creation are scored against.

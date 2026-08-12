@@ -922,7 +922,8 @@ std::string web_ui_login(std::string_view error) {
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content, long long project_count,
-                         std::string_view assist_agent) {
+                         std::string_view assist_agent,
+                         std::string_view assist_agent_label) {
     // The Studio shell (#874): the five sidebar groups from the Orama Studio design —
     // Workspace / Operate / Developer / Documentation / Advanced. Every destination maps to a
     // capability or read view the engine actually serves; infrastructure is demoted to Advanced.
@@ -934,6 +935,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "data") return "Data library \xE2\x80\x94 databases, tables, rows, and files";
         if (key == "reports")
             return "Reports \xE2\x80\x94 what a finished run found: model quality, drivers, who is most at risk";
+        if (key == "profile")
+            return "Workspace Profile \xE2\x80\x94 what you hold and how you work; Auto-Suggest reads it";
         if (key == "models") return "Trained models + serving";
         if (key == "agents") return "Served agents: a model + prompt + tools you can chat with";
         if (key == "chat") return "Talk to a selected agent, with tool-calling";
@@ -988,6 +991,7 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         if (key == "projects") return "Projects";
         if (key == "data") return "Data";
         if (key == "reports") return "Reports";
+        if (key == "profile") return "Workspace Profile";
         if (key == "models") return "Models";
         if (key == "pipeline") return "Operate";
         if (key == "observability") return "Observability";
@@ -1021,15 +1025,20 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     out += "<div class=\"group\">Workspace</div>" + link("overview", "Home") +
            link("projects", "Projects",
                 project_count >= 0 ? std::to_string(project_count) : std::string()) +
-           link("data", "Data library") + link("reports", "Reports");
+           link("agents", "Agents") + link("data", "Data library") +
+           link("reports", "Reports");
     out += "<div class=\"group\">Operate</div>" + link("pipeline", "Runs and activity") +
            link("observability", "Observability");
+    // Agents sits in Workspace, beside Projects, as the design has it: an agent is
+    // something you create and own, not a developer tool. Chat stays in Developer —
+    // it is where you talk to one you have already served.
     out += "<div class=\"group\">Developer</div>" + link("connections", "Connections") +
            link("models", "Models") + link("shell", "Shell") + link("notebooks", "Notebooks") +
-           link("agents", "Agents") + link("chat", "Chat") + link("datagen", "Data generators");
+           link("chat", "Chat") + link("datagen", "Data generators");
     out += "<div class=\"group\">Documentation</div>" +
            doc_link("/llms.txt", "docs", "Overview", "llms.txt \xE2\x80\x94 the documentation index") +
            doc_link("/mcp.md", "mcp", "MCP", "Connect an MCP client to this node") +
+           doc_link("/cli.md", "shell", "CLI", "How to run a node: every flag, and the two that get confused") +
            doc_link("/v1/openapi.json", "api", "API", "The OpenAPI description of the REST surface");
     out += "<div class=\"group\">Advanced</div>" + link("governance", "Governance") +
            link("cluster", "Infrastructure");
@@ -1060,8 +1069,13 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
         out += "<div class=\"railempty\">No served agent on this node yet. Create one in "
                "<a href=\"/?view=agents\">Agents</a> and Ask Orama comes to life here.</div>";
     } else {
-        out += "<div class=\"railnote\">Replies come from this node's served agent \xC2\xB7 "
-               "every call is audited and traced.</div>";
+        // Name the agent. "this node's served agent" is singular and a node can
+        // serve several — a reply that reads as a regression is usually a
+        // different agent answering than the reader assumed (#981).
+        out += "<div class=\"railnote\">Replies come from <b>";
+        out += assist_agent_label.empty() ? "this node's served agent"
+                                          : web_ui_escape(assist_agent_label);
+        out += "</b> \xC2\xB7 every call is audited and traced.</div>";
         out += "<div class=\"railbubble\">I can explain the current Studio state, or draft "
                "the intent for a new Project \xE2\x80\x94 ask below.</div>";
         out += "<div class=\"railchat\" id=\"railchat\"></div>";
@@ -1076,13 +1090,24 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 function esc(s){return String(s==null?'':s);}
 function bubble(cls,text){var d=document.createElement('div');d.className='rmsg '+cls;d.textContent=esc(text);chat.appendChild(d);chat.scrollTop=chat.scrollHeight;return d;}
 var busy=false;
+// The thread so far. `chat` accepts `history` and threads it into the prompt, but
+// the rail used to send only the current message — so "yes", "go ahead" and
+// "what?" arrived with no antecedent, were classified standalone, and produced
+// the SAME reply turn after turn (#942). The transcript lives here because it is
+// the browser's; /clear drops it, and nothing is written server-side.
+var history=[];
+var HISTORY_TURNS=8;  // enough for a follow-up chain; bounded so the prompt cannot grow without limit
 async function ask(){var m=q.value.trim();if(!m||busy)return;busy=true;q.value='';bubble('rme',m);
   var t=bubble('ragent rthinking','thinking…');
-  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m})});
+  try{var res=await fetch('/assist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:agent,message:m,history:history.slice(-HISTORY_TURNS)})});
     var j=await res.json();
     var v=j&&j.value?j.value:{};
     t.classList.remove('rthinking');
-    t.textContent=esc(j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed')));
+    var reply=j&&j.ok?(v.reply||v.message||v.text||JSON.stringify(v)):('error: '+(j&&j.error?j.error:'request failed'));
+    t.textContent=esc(reply);
+    // Only a real exchange joins the thread. Recording an error as if the agent
+    // had said it would make the next turn refer back to our own failure text.
+    if(j&&j.ok)history.push({ask:m,reply:String(v.reply||'')});
   }catch(e){t.classList.remove('rthinking');t.textContent='error: '+e;}
   busy=false;chat.scrollTop=chat.scrollHeight;}
 send.onclick=ask;
@@ -1395,6 +1420,17 @@ std::string web_ui_run_report(const nlohmann::json& report) {
     // Rendered, never skipped. A missing held-out figure that goes unshown is a
     // reader quoting the in-sample number as quality.
     std::string caveats;
+    // Figures that are present and must not be read as results come FIRST — a
+    // held-out AUC of 1.000 on four rows is the number a reader will quote, so the
+    // objection has to reach them before the praise does.
+    if (const auto flagged = report.find("caveats");
+        flagged != report.end() && flagged->is_array()) {
+        for (const nlohmann::json& entry : *flagged) {
+            caveats += "<li><b>Do not quote " +
+                       web_ui_escape(entry.value("field", "")) + "</b> &mdash; " +
+                       web_ui_escape(entry.value("why", "")) + "</li>";
+        }
+    }
     if (const auto missing = report.find("missing");
         missing != report.end() && missing->is_array()) {
         for (const nlohmann::json& entry : *missing) {

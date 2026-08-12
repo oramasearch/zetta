@@ -41,9 +41,15 @@ std::string web_ui_login(std::string_view error);
 // Studio shell's one live count); pass -1 to omit it. `assist_agent` is the
 // served agent id the Ask Orama rail talks to (through POST /assist → the
 // `chat` capability); empty renders the rail's honest no-agent state.
+// `assist_agent_label` names WHICH agent the rail is talking to — the served
+// agent's name, and its checkpoint when they differ. A node can serve several,
+// and the rail silently picks one (#981), so a reply that looks like a
+// regression is often the wrong agent answering. Empty renders the old
+// unqualified line.
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content, long long project_count = -1,
-                         std::string_view assist_agent = {});
+                         std::string_view assist_agent = {},
+                         std::string_view assist_agent_label = {});
 
 // A titled panel wrapper (card). `sub` is an optional subtitle.
 std::string web_ui_panel(std::string_view title, std::string_view sub, std::string_view body);

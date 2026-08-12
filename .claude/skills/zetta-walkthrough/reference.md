@@ -63,6 +63,118 @@ the gap.
 | "Why is this one at risk?" | `explain` | Reports · evidence columns |
 | Score a row not in the data | `score` with `rows` | — |
 | Ask what the data cannot support | `chat` declines | Chat view |
+| **A follow-up that depends on the turn before it** | `chat` with `history` | **Ask Orama rail · three turns** |
+
+**Every row below is an acceptance criterion of [#983](https://github.com/oramasearch/zetta/issues/983).**
+Several name capabilities that do not exist yet. **Walk them anyway** — a row that cannot be
+reached is the single most valuable finding this suite produces, and a row quietly dropped
+because "that isn't built" is how a gap survives to a customer call. Record it as *unreachable*
+with what was missing; never delete the row.
+
+| Step | A (MCP) | B (browser) |
+|---|---|---|
+| **The pipeline shape matches the METHODOLOGY, not the noun** — a forecasting ask returns backtested + temporal validation and **no calibration**; a churn ask still returns the calibrated one | `agent_run` twice, diff the graphs | Chat → two Projects |
+| **The neighbouring solution's shape is refused** — ask for forecasting, assert the churn skeleton with the nouns swapped is *not* what comes back | inspect `model_kind` + step kinds | Pipeline view |
+| **A `model_kind` the engine cannot execute fails with a clear reason** | `run` a graph naming an unimplemented methodology | error surface |
+| **The same ask under A1 and A2 differs** — A1 returns an approval request, A2 executes | `chat` with the autonomy class set | Chat · approval affordance |
+| **Monitor: drift, calibration over time, per-segment performance, holdout integrity** — answered from a real tool call, not prose about monitoring | the Monitor read capabilities | Reports · monitoring panel |
+| **Improve: a proposal carries its predicted ROI effect**, grounded | the proposal verb | Chat · proposal card |
+| **The agent calls a tool it was asked to use**, rather than describing it (#976) | `chat` "list the models" → asserts `called_list_models` | Chat |
+| **A trajectory is conditioned on observations** — the schema decides the pipeline; perturb the dataset and the proposal changes | `agent_run` over two datasets | Chat |
+| **Propose-and-approve in the thread** — the agent proposes a run, `"yes"` in the next turn executes it | `chat` → `chat` | Chat, not a button |
+| **The agent's stated capabilities are TRUE** — ask "can you run Python in a Pipeline step?" and the answer matches the engine (simulated Python), not the marketing line | `chat` vs `product-claims.md` | Chat |
+| **The agent names which version is answering** | `versions` | Ask Orama rail header |
+
+### Every methodology, walked — the full-system matrix
+
+**A methodology absent from this table is a methodology nobody is checking.** The catalogue
+(`03-methodology-portfolio.md` §4) specifies **M-1…M-21**; the engine ships **M-1** and part of
+**M-10** ([#984](https://github.com/oramasearch/zetta/issues/984)). Walk **all twenty-one** every
+run. The unreachable ones are the standing gap list, and it should shrink visibly as #984 lands.
+
+For each: ask in plain language, then assert **the shape it must produce** and **the shape it must
+not be confused with**. The second column is the whole point — a methodology that produces a
+plausible pipeline belonging to its neighbour is the defect that once made one shape serve churn,
+lead scoring and collections alike.
+
+| | Methodology | Must produce | Must NOT be |
+|---|---|---|---|
+| **M-1** | Tabular supervised | point-in-time · leakage-free · calibrated · SHAP | uncalibrated; leaky joins |
+| **M-2** | Entity resolution | blocking + pairwise scoring + a resolved id, **no target label** | a classifier over accounts |
+| **M-3** | Segmentation / clustering | unsupervised · **no label column at all** · cluster profiles | a supervised classifier with invented labels |
+| **M-4** | Time-series forecasting | temporal validation · backtested over rolling origins · **NOT calibrated** | the churn skeleton with nouns swapped |
+| **M-5** | Survival / time-to-event | censoring handled · hazard/time-to-event output | binary churn classification |
+| **M-6** | Causal inference / uplift | treatment vs control · uplift per unit · **not** raw propensity | a propensity score presented as causal effect |
+| **M-7** | Anomaly detection | unsupervised · threshold-governed · no label | a supervised fraud classifier |
+| **M-8** | Recommendation / NBA | candidate generation + ranking + a **policy over outcomes** | a single score with no action path |
+| **M-9** | Learning-to-rank | pairwise/listwise objective · ranking metric (NDCG/MRR) | pointwise regression scored as ranking |
+| **M-10** | NLP / embeddings / RAG | index + retrieve + ground · **no supervised label** | a supervised classifier over text |
+| **M-11** | Document intelligence | extract → structure → validate against a schema | free-text summarization presented as extraction |
+| **M-12** | Graph ML | graph construction + neighbourhood features | a flat tabular join |
+| **M-13** | Computer vision | image pipeline + vision-appropriate validation | tabular features over image metadata |
+| **M-14** | Speech / audio | transcription + audio features | text-only NLP over a transcript, silently |
+| **M-15** | Bandits / sequential decisioning | exploration policy · regret tracking · online update | a static ranked list |
+| **M-16** | Optimization / OR | objective + constraints + a feasible solution | a prediction with no optimizer |
+| **M-17** | Bayesian / UQ | posterior or interval · **uncertainty reported** | a point estimate with no interval |
+| **M-18** | Ensembling / stacking | multiple base models + a combiner | one model called an ensemble |
+| **M-19** | Label efficiency | active/weak supervision · label budget respected | assuming full labels exist |
+| **M-20** | Privacy / synthetic | synthetic generation or a privacy mechanism, with its guarantee stated | raw data with a privacy claim attached |
+| **M-21** | Online / streaming | incremental update · drift response | a batch retrain called streaming |
+
+**How to walk a row.** Ask for it in plain language over `agent_run` (avenue A) and in Chat
+(avenue B). Assert `model_kind` and the step kinds; assert the "must NOT be" shape is **absent**.
+Then perturb the dataset (remove the label, remove the timestamp, remove the treatment flag) and
+assert the proposal **changes** — a shape that survives the perturbation was emitted from the
+noun, not from the data.
+
+**Recording an unreachable row.** State the methodology, what the ask returned instead (usually
+the M-1 skeleton), and whether the failure was *silent* (a plausible wrong pipeline) or *loud* (a
+clear refusal). **Silent is the more serious finding** and should be reported first — a loud
+refusal is honest; a plausible wrong pipeline is the product lying fluently.
+
+
+#### The follow-up row is not optional, and it is the one this suite kept missing
+
+Every other row is **one ask, one reply**, and a conversation that repeats itself
+passes all of them. It did: the rail answered three different asks —
+`"yes"`, `"what?"`, `"no… start a new project"` — with the *identical* sentence, and
+the whole matrix was green (#942).
+
+So walk it as **at least three turns**, where turn 2 and turn 3 are meaningless on
+their own:
+
+```
+1. "create me a churn project"
+2. "yes"                          <- resolves only against turn 1
+3. "what?"                        <- must NOT repeat turn 2's reply
+```
+
+**Four assertions. The first one alone is not enough, and a checkpoint proved it.**
+
+`base-agent-0.6b-interaction-v16` passed a walk asserting only distinctness while
+answering *"create me a churn project"* with a description of what Studio *can* do,
+answering *"yes"* with an unprompted non sequitur about `list_models`, and
+fabricating *"`list_models` has over 100 entries, so anything that can make an HTTP
+request can drive it."* **A model passes a distinctness-only check by being
+differently wrong each turn.** Assert all four:
+
+1. **No two consecutive replies are byte-identical.** Identical output to different
+   input is the signature of a model classifying each message standalone. Necessary,
+   and nowhere near sufficient.
+2. **Turn 2 resolves against turn 1.** `"yes"` after a proposal must act on *that*
+   proposal — not introduce a new subject. A reply that changes the topic has not
+   read the thread, it has merely avoided repeating itself.
+3. **Turn 3 restates rather than answers anew.** `"what?"` asks for the previous turn
+   in plainer words. `restated_prior_turn` is already a computed fact — assert it.
+4. **Every claim is grounded.** `numbers_from_context` is already computed. A figure
+   the context does not contain fails it; *"over 100 entries"* would have.
+
+Three of these four are computable with machinery that already exists and were simply
+not being asserted. Also confirm **the request carries `history`** — watch the network
+call, not the screen; a client that omits it makes even a multi-turn-capable model
+answer blind, and the screen looks identical either way.
+
+A single-turn suite cannot see either. That is why this row exists.
 
 The report step has one assertion that matters more than the others: the held-out
 figure is present, **or** `missing` names `held_out_auc` with a reason. A report that

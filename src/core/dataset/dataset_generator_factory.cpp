@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "zetta/dataset/auto_suggest_generator.hpp"
+#include "zetta/dataset/authored_generator.hpp"
 #include "zetta/dataset/base_agent_generator.hpp"
 
 namespace zetta::dataset {
@@ -13,6 +14,7 @@ const DatasetGeneratorFactory& DatasetGeneratorFactory::builtin() {
     // Register every native dataset generator here — a new kind shows up in the capability + the
     // GUI/web listing by adding one line (the seam rule).
     static const DatasetGeneratorFactory factory({
+        std::make_shared<const AuthoredDatasetGenerator>(),
         std::make_shared<const BaseAgentDatasetGenerator>(),
         std::make_shared<const AutoSuggestDatasetGenerator>(),
     });

@@ -35,6 +35,7 @@
 #include "zetta/dataset/base_agent_generator.hpp"
 #include "zetta/dataset/dataset_generator.hpp"
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/dataset/product_claims.hpp"
 
 namespace {
 
@@ -286,8 +287,8 @@ TEST_F(CorpusInvariants, NoReferenceMessageCitesANumberItsGroundingDoesNotContai
     for (const AdmissionCase& admission_case : cases()) {
         if (!admission_case.reference_action) continue;
         if (admission_case.grounding.empty()) continue;  // covered by the ungrounded rule below
-        const zetta::agent::EndState facts = zetta::agent::response_solution_facts(
-            *admission_case.reference_action, admission_case.grounding);
+        const zetta::agent::EndState facts = zetta::agent::response_solution_facts(*admission_case.reference_action, admission_case.grounding,
+                                            admission_case.history);
         ++grounded;
         EXPECT_TRUE(facts.matches("numbers_from_context", true))
             << "case " << admission_case.task.id() << " fabricates a number.\n  message: "
@@ -338,8 +339,8 @@ TEST_F(CorpusInvariants, EveryReferencePassesItsOwnGrader) {
     for (const AdmissionCase& admission_case : cases()) {
         ASSERT_TRUE(admission_case.reference_action.has_value());
         EXPECT_TRUE(admission_case.task.grader()
-                        .grade(zetta::agent::response_solution_facts(
-                            *admission_case.reference_action, admission_case.grounding))
+                        .grade(zetta::agent::response_solution_facts(*admission_case.reference_action, admission_case.grounding,
+                                            admission_case.history))
                         .passed)
             << "case " << admission_case.task.id() << " reference fails its own grader";
     }
@@ -412,6 +413,270 @@ TEST_F(CorpusInvariants, NoSingleInteractionKindDominates) {
 // cheapest thing a model can learn is to emit a template verbatim — and that is precisely what the
 // first checkpoint did, reproducing a corpus message word for word for an unrelated ask. Distinct
 // messages relative to corpus size is the direct measure of that risk.
+// The corpus-wide ratio above is necessary and not sufficient: a 10% floor is satisfiable
+// while ANY SINGLE family is fully templated, because 15 other families dilute the average.
+// That is not hypothetical — it is how #976 shipped. `capability_family` emits one sentence
+// shape across every capability, the corpus-wide check stayed green, and a served checkpoint
+// reproduced that sentence word for word for an ask the family did not own.
+//
+// So measure each family on its own. The family is the id's first segment.
+// Every ask FORM the product accepts must be owned by a family. This is the check that
+// would have caught all four agent-quality failures found by walking the product, none of
+// which any diversity metric could see:
+//
+//   `list models`  (imperative)      -> landed on capability_discovery, was DESCRIBED
+//   `hello`        (greeting)        -> landed on a pipeline build, emitted raw JSON
+//   `thanks`       (acknowledgement) -> landed on tool_use, answered with a tool result
+//
+// An unowned form does not fail loudly. It produces a fluent, well-formed answer to a
+// different question — which is the worst failure mode a corpus has, because every
+// aggregate metric stays green through it.
+// The ask-form invariant above asks "does SOME case use this wording". That is not enough for a
+// BARE turn, because a bare turn can be present and still untrainable: "yes" with no history
+// teaches the model to answer from the word alone, which is precisely the defect. So this asserts
+// two stronger things the generator must keep true.
+//
+// It exists because the generator did NOT anticipate this class and nothing caught that. The
+// corpus had a follow_up family, every case in it was a full sentence, and the second thing a real
+// person types is one word. The result shipped: "yes" and "what?" returned a byte-identical reply.
+// The corpus is a CLAIM SURFACE, and until this it was the only unguarded one. Every other
+// property here is checked; the one that reaches a customer's ears in our own voice was not.
+//
+// A false claim in a meeting is made once, to one person, and can be corrected in the next call.
+// A false claim in the corpus is made by the model, to every customer, forever — fluent,
+// confident, grounded-looking, which is exactly what goes unnoticed. And it compounds: it becomes
+// training data for the next checkpoint.
+//
+// The motivating instance: the corpus says "You can run Python in a Pipeline step"; the engine
+// has PythonFrontend, documented as SIMULATED Python; and in the customer meeting the claim was
+// made accurately. The meeting was more honest than the training data.
+// The invariant that would have caught the v14 regression, and did not exist to.
+//
+// The `bare_turn` family's redirect reply opened with "Dropped that one." — a sentence appearing
+// nowhere else in 16,239 cases. The trained model reached for it on "create me a churn project",
+// a substantive request that is not a redirect, regressing a turn v13 had answered correctly.
+// 180 cases (1.1% of the corpus) captured an ask form they were never meant for, purely by
+// carrying a high-signal opening with nothing competing for the same surface.
+//
+// Every other invariant passed: the family carried history, trained two behaviours per word,
+// admitted through the gate, and scored 85% on the canary. None of them look at DISTINCTIVENESS,
+// which is what actually decided the outcome.
+//
+// So: an opening phrase used by one family must not be unique to it. Either other families use
+// the same register, or the model has nothing to weigh it against.
+// A DIAGNOSTIC, not an assertion — and the distinction is the finding.
+//
+// The `bare_turn` redirect opened with "Dropped that one." — a sentence appearing nowhere else in
+// 16,239 cases. The trained model reached for it on "create me a churn project", a substantive
+// request that is not a redirect, regressing a turn v13 answered correctly. 180 cases (1.1% of
+// the corpus) captured an ask form they were never meant for, purely by carrying a high-signal
+// opening with nothing competing for the same surface.
+//
+// Every other invariant passed. The family carried history, trained two behaviours per word,
+// admitted through the gate, and scored 85% on the canary. None of them look at DISTINCTIVENESS,
+// which is what actually decided the outcome.
+//
+// The obvious test — "no opening may be exclusive to one family" — FAILS ON LEGITIMATE CASES.
+// Greetings should open distinctively ("Hello. I can…"); `tool_use` replies naturally begin
+// "From `explain` on…". Exclusivity is not the defect. The defect is an opening that is exclusive
+// AND semantically generic enough to attach to a different ask — "Dropped that one" is a decision
+// phrase that fits anywhere, while "Hello." only answers a greeting. That distinction is not
+// mechanically decidable here, and a test that fails on eight correct families is one the next
+// person deletes.
+//
+// So this REPORTS the distribution rather than gating on it. Read it when a family regresses
+// behaviour it did not touch: the suspect is usually an exclusive, generic opening.
+TEST_F(CorpusInvariants, ReplyOpeningsAreReportedForDistinctiveness) {
+    const auto opening = [](const std::string& message) {
+        std::size_t cut = 0;
+        int words = 0;
+        while (cut < message.size() && words < 3) {
+            if (message[cut] == ' ') ++words;
+            ++cut;
+        }
+        return message.substr(0, cut);
+    };
+
+    std::map<std::string, std::set<std::string>> families_by_opening;
+    std::map<std::string, std::size_t> uses;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string& message = admission_case.reference_action->message;
+        if (message.size() < 12) continue;
+        const std::string& id = admission_case.task.id();
+        families_by_opening[opening(message)].insert(id.substr(0, id.find('/')));
+        ++uses[opening(message)];
+    }
+
+    std::size_t exclusive_and_learnable = 0;
+    for (const auto& [head, families] : families_by_opening) {
+        if (families.size() == 1 && uses[head] >= 50) ++exclusive_and_learnable;
+    }
+    // No threshold to pass — the count is recorded so a jump is visible in the diff of a run.
+    EXPECT_GE(families_by_opening.size(), exclusive_and_learnable)
+        << "sanity only; this test reports rather than gates";
+    std::cout << "[corpus] reply openings: " << families_by_opening.size() << " distinct, "
+              << exclusive_and_learnable << " exclusive to one family and used >=50x\n";
+}
+
+TEST_F(CorpusInvariants, NoCaseAssertsACapabilityWeDoNotHave) {
+    std::map<std::string, std::size_t> offences;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string offence =
+            zetta::dataset::forbidden_claim_in(admission_case.reference_action->message);
+        if (!offence.empty()) ++offences[offence];
+    }
+
+    std::string report;
+    for (const auto& [phrase, count] : offences) {
+        report += "\n  \"" + phrase + "\" in " + std::to_string(count) + " case(s)";
+    }
+    EXPECT_TRUE(offences.empty())
+        << "these cases assert a capability the claims registry does not carry as shipped:"
+        << report
+        << "\n(a claim in the corpus is made by the model, in our voice, to every customer, on "
+           "every turn — and it becomes training data for the next checkpoint)";
+}
+
+TEST_F(CorpusInvariants, EveryBareTurnCarriesTheTurnItDependsOn) {
+    // Exact strings, not substrings — a bare turn is defined by being the WHOLE ask.
+    const std::vector<std::string> bare = {"yes", "ok", "sure", "go ahead", "do it",
+                                           "what?", "huh?", "no", "new one", "not that"};
+
+    std::vector<std::string> missing;
+    std::vector<std::string> without_history;
+    for (const std::string& probe : bare) {
+        bool seen = false;
+        for (const AdmissionCase& admission_case : cases()) {
+            if (admission_case.task.description() != probe) continue;
+            seen = true;
+            // A bare ask with no history is worse than an absent one: it is a training example
+            // whose correct answer is not derivable from its own input.
+            if (admission_case.history.empty()) without_history.push_back(probe);
+        }
+        if (!seen) missing.push_back(probe);
+    }
+
+    std::string missing_report;
+    for (const std::string& form : missing) missing_report += "\"" + form + "\" ";
+    EXPECT_TRUE(missing.empty())
+        << "no case trains these bare turns: " << missing_report
+        << "\n(a one-word turn is the second thing most people type; unowned, it is classified "
+           "by surface form and every one of them gets the same reply)";
+
+    std::string history_report;
+    for (const std::string& form : without_history) history_report += "\"" + form + "\" ";
+    EXPECT_TRUE(without_history.empty())
+        << "these bare turns appear with NO history: " << history_report
+        << "\n(the answer is not derivable from the ask, so the case teaches the model to "
+           "respond to the word rather than to what it follows)";
+}
+
+// The pairing invariant. A bare word means different things after different turns, and a corpus
+// that only ever pairs "yes" with "build it" teaches "yes -> build" — which is wrong exactly when
+// it matters, because "yes" after an either/or question must still ask which one.
+//
+// Without this, the family above could be silently weakened to one case per word and every count
+// in the coverage report would stay green.
+TEST_F(CorpusInvariants, TheSameBareWordTrainsMoreThanOneBehavior) {
+    std::map<std::string, std::set<std::string>> kinds_by_ask;
+    for (const AdmissionCase& admission_case : cases()) {
+        const std::string& ask = admission_case.task.description();
+        // Bare = short enough that the ask carries no referent of its own.
+        if (ask.size() > 12 || admission_case.history.empty()) continue;
+        if (!admission_case.reference_action) continue;
+        kinds_by_ask[ask].insert(std::string(zetta::agent::to_string(admission_case.reference_action->kind)));
+    }
+
+    // At least one bare word must be trained toward two different behaviors. Requiring it of
+    // EVERY word would be wrong — "what?" legitimately has one correct shape.
+    bool any_polysemous = false;
+    for (const auto& [ask, kinds] : kinds_by_ask) {
+        if (kinds.size() > 1) { any_polysemous = true; break; }
+    }
+    EXPECT_TRUE(any_polysemous)
+        << "every bare turn in the corpus maps to exactly one behavior"
+        << "\n(then the model can pass by memorizing the word — \"yes\" means build — and it will "
+           "build when the previous turn offered a choice, which is the failure that matters)";
+}
+
+TEST_F(CorpusInvariants, EveryAskFormIsOwnedByAFamily) {
+    // A representative ask per form the product actually accepts. If a form has no case
+    // whose ask matches it, no family owns it and the nearest one will claim it.
+    struct Form {
+        const char* name;
+        std::vector<std::string> probes;
+    };
+    const std::vector<Form> forms = {
+        {"greeting", {"hello", "hi"}},
+        {"acknowledgement", {"thanks", "thank you"}},
+        {"imperative", {"list the models on this node", "show me the models"}},
+        {"platform question", {"Can Orama", "How do I"}},
+        {"ambiguous", {"Make it better.", "Fix this."}},
+        {"out of scope", {"What's the capital of France?"}},
+    };
+
+    std::vector<std::string> asks;
+    for (const AdmissionCase& admission_case : cases()) {
+        asks.push_back(admission_case.task.description());
+    }
+
+    std::vector<std::string> unowned;
+    for (const Form& form : forms) {
+        bool owned = false;
+        for (const std::string& probe : form.probes) {
+            for (const std::string& ask : asks) {
+                if (ask.find(probe) != std::string::npos) { owned = true; break; }
+            }
+            if (owned) break;
+        }
+        if (!owned) unowned.push_back(form.name);
+    }
+
+    std::string report;
+    for (const std::string& form : unowned) report += form + " ";
+    EXPECT_TRUE(unowned.empty())
+        << "no family owns these ask forms: " << report
+        << "\n(an unowned form is claimed by the nearest family, which answers a "
+           "different question fluently — every aggregate metric stays green)";
+}
+
+TEST_F(CorpusInvariants, NoSingleFamilyIsOneTemplate) {
+    std::map<std::string, std::set<std::string>> distinct_by_family;
+    std::map<std::string, int> total_by_family;
+    for (const AdmissionCase& admission_case : cases()) {
+        if (!admission_case.reference_action) continue;
+        const std::string id = admission_case.task.id();
+        const std::string family = id.substr(0, id.find('/'));
+        distinct_by_family[family].insert(admission_case.reference_action->message);
+        total_by_family[family]++;
+    }
+
+    // Deliberately lenient — this is a floor against "one template, a thousand cases",
+    // not a style rule. A family below it is memorizable on its own however diverse the
+    // corpus looks in aggregate.
+    constexpr double kFloor = 0.05;
+    std::string worst_family;
+    double worst_ratio = 1.0;
+    for (const auto& [family, distinct] : distinct_by_family) {
+        const int total = total_by_family[family];
+        if (total < 20) continue;  // too few cases for the ratio to mean anything
+        const double ratio =
+            static_cast<double>(distinct.size()) / static_cast<double>(total);
+        if (ratio < worst_ratio) {
+            worst_ratio = ratio;
+            worst_family = family;
+        }
+    }
+
+    EXPECT_GE(worst_ratio, kFloor)
+        << "family '" << worst_family << "' has "
+        << distinct_by_family[worst_family].size() << " distinct messages across "
+        << total_by_family[worst_family] << " cases (" << 100.0 * worst_ratio
+        << "%) — memorizable on its own, however diverse the corpus looks in aggregate";
+}
+
 TEST_F(CorpusInvariants, ReferenceMessagesAreNotMemorizable) {
     std::set<std::string> distinct;
     std::map<std::string, int> frequency;
@@ -590,8 +855,17 @@ TEST_F(CorpusInvariants, FollowUpCasesCarryTheTurnTheyFollow) {
 // shapes, so the model learned one pipeline and emitted it for churn, lead scoring and collections
 // alike — passing any grader whose facts that shape happens to satisfy and failing the rest.
 //
-// Measured on the SHAPE (the ordered step kinds), not on the attributes: two cases that differ only
-// in a config value still teach the same structure.
+// Measured on the ordered step kinds PLUS the methodology, not on the rest of the attributes.
+//
+// The methodology used to be a config value, and this invariant deliberately ignored it. Since
+// `model_kind` rides the model step (B1a) that is no longer true: a forecast and a churn model
+// are not the same structure with a different setting, because the correctness gate accepts
+// different things from each — `TemporalValidationCheck` requires temporal validation of one and
+// refuses calibration on it, and `MethodologyCheck` refuses a methodology the engine cannot
+// execute. Two cases whose steps match but whose methodologies differ teach genuinely different
+// pipelines and must count as such.
+//
+// Everything else stays excluded: a threshold or a column name really is a config value.
 TEST_F(CorpusInvariants, ActionCasesTeachMoreThanOnePipelineShape) {
     std::map<std::string, int> shapes;
     int actions = 0;
@@ -603,6 +877,13 @@ TEST_F(CorpusInvariants, ActionCasesTeachMoreThanOnePipelineShape) {
         for (const ToolCall& call : action.tool_calls) {
             shape += call.tool;
             shape += ">";
+        }
+        for (const auto& node : action.execution_graph.nodes()) {
+            if (node->kind != zetta::ir::StepKind::Model || !node->attributes.is_object()) continue;
+            if (const auto kind = node->attributes.find("model_kind");
+                kind != node->attributes.end() && kind->is_string()) {
+                shape += "[" + kind->get<std::string>() + "]";
+            }
         }
         if (shape.empty()) continue;
         ++actions;

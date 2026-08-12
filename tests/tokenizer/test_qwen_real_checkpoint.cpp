@@ -26,7 +26,8 @@
 #include "zetta/agent/corpus_io.hpp"       // load_corpus_jsonl, to_json
 #include "zetta/agent/goal.hpp"            // goal-anchored RLVR reward (#941)
 #include "zetta/agent/sandbox.hpp"         // the world a rollout acts in (#941)
-#include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
+#include "zetta/agent/qwen_rlvr.hpp"
+#include "zetta/agent/action.hpp"       // CPU agent::grpo_step
 #include "zetta/agent/interaction.hpp"
 #include "zetta/agent/response_facts.hpp"
 #include "zetta/agent/solution_graph.hpp"  // render_action_example, graph_solution_facts (#873)
@@ -1309,6 +1310,368 @@ TEST(QwenRealCheckpoint, EvalGraderPassRate) {
               << "  mode accuracy:            " << mode_correct << "/" << mode_tasks << "\n"
               << "  grounded (no invented #):  " << grounded_hit << "/" << grounded_tasks
               << "\n";
+}
+
+
+// --- #859: the environment drives the REAL policy with a DETERMINISTIC-GRADER reward -------
+//
+// Everything below already existed and had never been composed in one place. The RLVR loop was
+// validated with a TOY reward ("does the completion contain the word 'cat'"), and the graders,
+// sandbox and end-state machinery were validated without a neural policy. This is the bridge:
+//
+//   real Qwen weights -> sampled completion -> parse_studio_action -> response_solution_facts
+//   -> the task's own grader -> reward -> GRPO update
+//
+// Why it matters more than another corpus family. Four hand-authored rounds each fixed the one
+// failure someone had already observed and produced no broad gain, because a written corpus can
+// only encode what its author thought of. This loop scores what the model ACTUALLY DID against a
+// check that runs — so it generates its own variety rather than inheriting mine.
+TEST(QwenRlvrEndToEnd, TheGraderRewardsTheRealPolicy) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    // The goal is a real check over facts the grader computes, not a string match.
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Never state a number the retrieved context does not contain.", 5.0,
+         {"numbers_from_context"}}};
+    const std::string grounding = "Project: Churn\nTable: accounts\nMeasure: AUC 0.880\n";
+
+    // THE bridge. The reward is the deterministic grader applied to whatever the policy emitted:
+    // an unparseable generation is worth nothing, and a parsed one is scored on the facts it
+    // actually projects. No toy reward, no stand-in policy.
+    int parsed = 0;
+    int scored = 0;
+    const auto grader_reward = [&](const std::string&, const std::string& completion) -> double {
+        if (zetta::agent::parse_studio_action(completion)) ++parsed;
+        const double reward =
+            zetta::agent::goal_reward_for_generation(goals, completion, grounding);
+        ++scored;
+        return reward;
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = 4;
+    config.max_new_tokens = 8;
+    config.temperature = 1.0F;
+    std::mt19937 rng(11);
+
+    const double mean_reward = zetta::agent::grpo_step_text(
+        *model, optimizer, *tokenizer,
+        "What is the model's measure?", grader_reward, config, rng);
+
+    // The claim is that the loop RUNS with a real grader in the reward position and produces a
+    // finite learning signal — not that one step improves anything. A step that scored nothing
+    // would mean the grader was never reached.
+    // What this proves and what it does not.
+    //
+    // PROVES: the environment drives the real policy with a deterministic grader in the reward
+    // position. Every completion reaches `goal_reward_for_generation`, which parses the action
+    // and grades the facts it projects. No toy reward, no stand-in policy.
+    //
+    // DOES NOT PROVE a campaign will learn. At `max_new_tokens = 8` the model cannot emit a
+    // complete `{"kind":...,"message":...,"tool_calls":[...]}` action, so `parsed` is 0 and every
+    // reward is 0 — and a group whose rewards are all equal has ZERO advantage, so GRPO takes a
+    // null step. The wiring is correct and the signal is empty.
+    //
+    // A real campaign needs `max_new_tokens` large enough for a parseable action (~128+), which
+    // is minutes per step rather than seconds. That is the campaign's cost, not a defect here —
+    // but nobody should read this test as evidence the loop learns.
+    EXPECT_EQ(scored, config.group_size)
+        << "every completion in the group must reach the grader";
+    EXPECT_TRUE(std::isfinite(mean_reward)) << "mean reward must be a real number";
+    EXPECT_GE(mean_reward, 0.0);
+    EXPECT_LE(mean_reward, 1.0);
+    std::cout << "[rlvr] group=" << config.group_size << " parsed=" << parsed
+              << " mean_reward=" << mean_reward << "\n";
+}
+
+// The same loop with the SANDBOX in the reward path: what the tool calls actually did outranks
+// what the response claimed. `goal_reward_for_rollout` merges execution facts over response
+// facts, so a generation asserting a step ran, whose call failed, grades on the failure.
+TEST(QwenRlvrEndToEnd, ExecutionOutranksAssertionInTheReward) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    zetta::agent::Sandbox sandbox;
+    // A tool that always fails. A response CLAIMING connect ran must not be rewarded for it.
+    sandbox.register_tool("connect",
+                          [](zetta::agent::EndState&, const nlohmann::json&) {
+                              return zetta::agent::ToolResult::failure("connect refused");
+                          });
+
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Only claim a step ran if it ran.", 5.0, {"tools_ran"}}};
+
+    int scored = 0;
+    const auto rollout_reward = [&](const std::string&, const std::string& completion) -> double {
+        ++scored;
+        return zetta::agent::goal_reward_for_rollout(goals, completion,
+                                                     "Project: Churn\n", sandbox);
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = 4;
+    config.max_new_tokens = 8;
+    std::mt19937 rng(13);
+
+    const double mean_reward = zetta::agent::grpo_step_text(
+        *model, optimizer, *tokenizer, "Connect to the accounts table.", rollout_reward, config,
+        rng);
+
+    EXPECT_EQ(scored, config.group_size);
+    EXPECT_TRUE(std::isfinite(mean_reward));
+    // Every tool call fails in this sandbox, so nothing may score for having "run" a step.
+    EXPECT_LT(mean_reward, 0.5)
+        << "a sandbox where every call fails must not reward a response that claims success — "
+           "that is the whole difference between a verifiable reward and a plausible one";
+    std::cout << "[rlvr] sandbox-failing mean_reward=" << mean_reward << "\n";
+}
+
+
+// D2 (#859) — a real campaign: enough tokens to emit a parseable action, several steps, and the
+// mean reward recorded per step so a rise is visible rather than assumed.
+//
+// The wiring test above deliberately proves nothing about learning: at 8 tokens every reward is
+// 0, and a group with equal rewards has zero advantage. This one gives the policy room to
+// actually produce `{"kind":...,"message":...}` and watches what the grader pays it.
+//
+// Env-gated because it is minutes, not seconds. ZETTA_RLVR_STEPS / ZETTA_RLVR_TOKENS /
+// ZETTA_RLVR_GROUP tune it; ZETTA_RLVR_OUT writes the per-step rewards for a report.
+TEST(QwenRlvrEndToEnd, ACampaignProducesANonZeroLearningSignal) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_RLVR_CAMPAIGN") == nullptr) {
+        GTEST_SKIP() << "set ZETTA_RLVR_CAMPAIGN=1 (minutes, not seconds)";
+    }
+
+    const auto knob = [](const char* name, int fallback) {
+        const char* value = std::getenv(name);
+        return value ? std::atoi(value) : fallback;
+    };
+    const int steps = knob("ZETTA_RLVR_STEPS", 8);
+    const int tokens = knob("ZETTA_RLVR_TOKENS", 128);
+    // 16 is GrpoConfig's default and it is load-bearing, not a round number. At group 4 this
+    // campaign collapsed to zero by step 3: with rewards like [1,1,1,0] the single failure gets
+    // an advantage near -1.7 applied to all 128 of its tokens, and four samples cannot estimate
+    // a stable mean to normalize against. At 16 the same campaign is noisy but rises
+    // (0.52 -> 0.75 -> 0.56 -> 0.81) with the parse rate holding around 60-80%.
+    //
+    // Worth stating plainly because the first diagnosis was wrong: the collapse looked like a
+    // missing KL penalty and was a group size four times below the default.
+    const int group = knob("ZETTA_RLVR_GROUP", 16);
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Answer in the action shape the harness can execute.", 3.0, {"kind"}},
+        {"Never state a number the retrieved context does not contain.", 5.0,
+         {"numbers_from_context"}}};
+    const std::string grounding = "Project: Churn\nTable: accounts\nMeasure: AUC 0.880\n";
+
+    int parsed_total = 0, scored_total = 0;
+    const auto reward = [&](const std::string&, const std::string& completion) -> double {
+        ++scored_total;
+        if (zetta::agent::parse_studio_action(completion)) ++parsed_total;
+        return zetta::agent::goal_reward_for_generation(goals, completion, grounding);
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = group;
+    config.max_new_tokens = tokens;
+    config.temperature = 1.0F;
+    std::mt19937 rng(17);
+
+    std::vector<double> per_step;
+    for (int step = 0; step < steps; ++step) {
+        const double mean = zetta::agent::grpo_step_text(
+            *model, optimizer, *tokenizer, "What is the model's measure?", reward, config, rng);
+        per_step.push_back(mean);
+        std::cout << "[rlvr] step " << step << " mean_reward=" << mean
+                  << " parsed=" << parsed_total << "/" << scored_total << std::endl;
+    }
+
+    if (const char* out = std::getenv("ZETTA_RLVR_OUT")) {
+        std::ofstream file(out);
+        nlohmann::json report{{"steps", steps}, {"tokens", tokens}, {"group", group},
+                              {"per_step_mean_reward", per_step},
+                              {"parsed", parsed_total}, {"scored", scored_total}};
+        file << report.dump(2);
+    }
+
+    // The claim: with room to emit an action, the grader pays SOMETHING. A campaign that is
+    // uniformly zero has no advantage signal and cannot learn, whatever the loss curve says —
+    // that is the failure this test exists to make visible rather than infer.
+    EXPECT_GT(parsed_total, 0)
+        << "no completion parsed as an action across " << scored_total
+        << " rollouts at " << tokens << " tokens — the policy cannot reach the reward at all";
+    const double best = *std::max_element(per_step.begin(), per_step.end());
+    EXPECT_GT(best, 0.0)
+        << "every step scored zero; with equal rewards GRPO has zero advantage and takes a null "
+           "step, so this campaign cannot learn regardless of how long it runs";
+
+    // COLLAPSE CHECK. The first campaign run scored 0.75, 0.75, 0.5, 0, 0, 0 with the parse rate
+    // falling 3/4 -> 2/4 -> 0/4: the updates destroyed the policy's ability to emit a parseable
+    // action at all. `best > 0` passed anyway, because it only looks at the maximum.
+    //
+    // That is the same too-weak-criterion mistake as the three-turn walk, and it is worth naming:
+    // a check written around the failure you already saw ("is the signal zero?") stays blind to
+    // the failure you have not ("does the signal fall off a cliff?").
+    if (per_step.size() >= 4) {
+        const std::size_t half = per_step.size() / 2;
+        const double early =
+            std::accumulate(per_step.begin(), per_step.begin() + half, 0.0) /
+            static_cast<double>(half);
+        const double late =
+            std::accumulate(per_step.begin() + half, per_step.end(), 0.0) /
+            static_cast<double>(per_step.size() - half);
+        EXPECT_GE(late, early * 0.5)
+            << "mean reward collapsed from " << early << " to " << late
+            << " — the updates are degrading the policy, not improving it. Suspect the learning "
+               "rate, a group size too small for a stable advantage estimate, or the missing KL "
+               "penalty that normally keeps a policy near its reference.";
+    }
+}
+
+
+// The campaign that trains the agent's ACTUAL JOB: build and mutate pipelines.
+//
+// The first campaign rewarded `kind` and `numbers_from_context` on a question — it proved the
+// loop learns, and it trained the wrong thing. The agent does not exist to answer questions about
+// a model; it exists to compose a correct Pipeline for a use case and to change one on request.
+// So the reward here is PIPELINE CORRECTNESS: the emitted tool calls are assembled into a graph
+// (`build_pipeline_from_tool_calls`, the same path the harness uses) and scored on the shape that
+// use case actually requires.
+//
+// This is what makes the reward verifiable rather than plausible. "Did it say something sensible
+// about churn" is a judgement; "does the graph it built connect, clean leakage-free, train a
+// calibrated gbdt, and serve" is a check that runs.
+TEST(QwenRlvrEndToEnd, ACampaignTrainsPipelineConstruction) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_RLVR_CAMPAIGN") == nullptr) {
+        GTEST_SKIP() << "set ZETTA_RLVR_CAMPAIGN=1 (minutes, not seconds)";
+    }
+
+    const auto knob = [](const char* name, int fallback) {
+        const char* value = std::getenv(name);
+        return value ? std::atoi(value) : fallback;
+    };
+    const int steps = knob("ZETTA_RLVR_STEPS", 16);
+    const int tokens = knob("ZETTA_RLVR_TOKENS", 128);
+    const int group = knob("ZETTA_RLVR_GROUP", 16);
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    // The churn pipeline's required shape — the same facts the corpus's reference solutions
+    // carry, so the campaign optimizes toward what the admission gate already calls correct.
+    // PRODUCTION-GRADE, not demoware. connect -> clean -> model -> serve is a demo: it produces a
+    // number and nothing you can defend or act on. The catalogue's definition of a solution is
+    // the methodology applied CORRECTLY and **wired to a business action** (kernel D6), so the
+    // reward requires the whole profile:
+    //
+    //   point_in_time    features dated strictly before the label, or the metric is fiction
+    //   leakage_free     no feature derived from the target
+    //   calibrated       churn scores must be probabilities, not ranks, to threshold on
+    //   shap             reason codes per account - a score nobody can explain is a score
+    //                    nobody acts on, which is how a model gets built and ignored
+    //   holdout          a quality figure measured on rows the model never saw
+    //   act              wired to a named business action; without it there is no ROI to measure
+    //
+    // Every one of these is a fact the grader computes, so "production-grade" is a check that
+    // runs rather than an adjective.
+    const std::vector<zetta::agent::Goal> goals = {
+        {"Read the source data.", 1.0, {"connect"}},
+        {"Build features dated strictly before the outcome.", 3.0,
+         {"clean", "leakage_free", "point_in_time"}},
+        {"Train a model whose scores are probabilities, not ranks.", 3.0,
+         {"model", "calibrated"}},
+        {"Measure quality on rows the model never saw.", 2.0, {"holdout"}},
+        {"Explain every score, so someone can act on it.", 3.0, {"shap"}},
+        {"Serve it and wire it to a business action.", 3.0, {"serve", "act"}},
+    };
+    const std::string grounding =
+        "Project: Churn risk\nTable: accounts\nColumns: account_id, mrr, churn_date, "
+        "last_seen_at\nRows: 1,240,000\n";
+    const std::string ask =
+        "Build a production pipeline that predicts which accounts are likely to churn, with "
+        "calibrated scores, explanations, and a held-out quality figure.";
+
+    int built = 0, scored = 0;
+    const auto pipeline_reward = [&](const std::string&, const std::string& completion) -> double {
+        ++scored;
+        // `response_solution_facts` assembles the pipeline from `tool_calls` when the model
+        // supplies no graph — exactly what the harness does at serving time — so this scores the
+        // Pipeline the turn would actually produce.
+        if (const std::optional<zetta::agent::StudioAction> action =
+                zetta::agent::parse_studio_action(completion)) {
+            if (!action->tool_calls.empty() || !action->execution_graph.nodes().empty()) ++built;
+        }
+        return zetta::agent::goal_reward_for_generation(goals, completion, grounding);
+    };
+
+    zetta::autograd::Adam optimizer(1e-5F);
+    zetta::agent::GrpoConfig config;
+    config.group_size = group;
+    config.max_new_tokens = tokens;
+    config.temperature = 1.0F;
+    std::mt19937 rng(23);
+
+    std::vector<double> per_step;
+    for (int step = 0; step < steps; ++step) {
+        const double mean = zetta::agent::grpo_step_text(*model, optimizer, *tokenizer, ask,
+                                                         pipeline_reward, config, rng);
+        per_step.push_back(mean);
+        std::cout << "[rlvr-pipeline] step " << step << " mean_reward=" << mean
+                  << " built=" << built << "/" << scored << std::endl;
+    }
+
+    if (const char* out = std::getenv("ZETTA_RLVR_OUT")) {
+        std::ofstream file(out);
+        file << nlohmann::json{{"task", "pipeline_construction"}, {"steps", steps},
+                               {"tokens", tokens}, {"group", group},
+                               {"per_step_mean_reward", per_step},
+                               {"built", built}, {"scored", scored}}.dump(2);
+    }
+
+    EXPECT_GT(built, 0)
+        << "no completion produced any tool calls or graph across " << scored
+        << " rollouts — the policy is not attempting the job at all, so no amount of training "
+           "on this reward can teach it";
+    const double best = *std::max_element(per_step.begin(), per_step.end());
+    EXPECT_GT(best, 0.0) << "the pipeline reward never fired; a uniformly-zero group has zero "
+                            "advantage and GRPO takes a null step";
+    if (per_step.size() >= 4) {
+        const std::size_t half = per_step.size() / 2;
+        const double early = std::accumulate(per_step.begin(), per_step.begin() + half, 0.0) /
+                             static_cast<double>(half);
+        const double late = std::accumulate(per_step.begin() + half, per_step.end(), 0.0) /
+                            static_cast<double>(per_step.size() - half);
+        EXPECT_GE(late, early * 0.5)
+            << "pipeline reward collapsed from " << early << " to " << late;
+    }
 }
 
 #endif  // ZETTA_WITH_MLX
