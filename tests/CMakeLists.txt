@@ -13,6 +13,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
+# gtest v1.15.2's own gtest-printers.h trips -Wcharacter-conversion under
+# newer Clang (char8_t -> char32_t in PrintTo); it's vendored code we don't
+# own, so silence it on gtest's own target rather than repo-wide.
+if(TARGET gtest)
+  target_compile_options(gtest PRIVATE -Wno-character-conversion)
+endif()
+
 add_executable(zetta-tests
   api/test_registry.cpp
   api/test_agent_api.cpp
@@ -267,7 +274,11 @@ target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
   # registered input/output schema actually loads (test_openapi.cpp).
-  PRIVATE nlohmann_json_schema_validator)
+  PRIVATE nlohmann_json_schema_validator
+  # OpenSSL is only linked PRIVATE inside zetta-core (its adapters), so its
+  # headers don't propagate here — test_clerk_auth.cpp signs a JWT directly
+  # against libcrypto (bn.h/evp.h/rsa.h) and needs its own link.
+  PRIVATE OpenSSL::Crypto)
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)

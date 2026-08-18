@@ -18,7 +18,7 @@ runtime::task<> MainThreadBridge::run_on_owner(std::function<void()> work) {
     // headed frame loop's event wait.
     work_ready_.notify_one();
     if (wakeup) wakeup();
-    co_await completed->wait();
+    [[maybe_unused]] auto ready = co_await completed->wait();  // io_result: completion only
 }
 
 void MainThreadBridge::drain() {

@@ -438,7 +438,9 @@ void Node::run_on_owner(const std::function<void()>& work) {
     // synchronously because a background-action worker is not a coroutine.
     zetta::runtime::block_on(
         [](std::shared_ptr<zetta::runtime::async_event> event)
-            -> zetta::runtime::task<> { co_await event->wait(); }(completed));
+            -> zetta::runtime::task<> {
+                [[maybe_unused]] auto ready = co_await event->wait();  // io_result: completion only
+            }(completed));
 }
 
 bool Node::on_owner_thread() const {

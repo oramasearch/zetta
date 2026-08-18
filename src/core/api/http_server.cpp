@@ -2664,7 +2664,8 @@ struct ApiServer::Impl {
     boost::http::route_task serve_web_login(boost::http::route_params& route) {
         namespace http = boost::http;
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         const std::string token = form_field(parse_form(sink.data), "token");
         bool ok = false;
         if (!token.empty())
@@ -2710,7 +2711,8 @@ struct ApiServer::Impl {
     boost::http::route_task serve_session_login(boost::http::route_params& route) {
         namespace http = boost::http;
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string token;
         if (nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
             input.is_object() && input.contains("token") && input["token"].is_string())
@@ -2769,7 +2771,8 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string body;
         if (user_id.empty()) {
             body = web_ui_login("");
@@ -2857,7 +2860,8 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"ok":false,"error":"unauthorized"})";
@@ -2900,7 +2904,8 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"ok":false,"error":"unauthorized"})";
@@ -2940,7 +2945,8 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
@@ -3018,7 +3024,8 @@ struct ApiServer::Impl {
         const std::string db = query_param(route, "db", "");
         const std::string name = query_param(route, "name", "");
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
@@ -3062,7 +3069,8 @@ struct ApiServer::Impl {
         const std::string db = query_param(route, "db", "");
         const std::string id = query_param(route, "id", "");
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        if (auto [body_ec, body_n] = co_await boost::capy::push_to(route.req_body, sink); body_ec)
+            co_return http::route_error(body_ec);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
