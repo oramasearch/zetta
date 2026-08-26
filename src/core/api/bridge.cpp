@@ -18,7 +18,10 @@ runtime::task<> MainThreadBridge::run_on_owner(std::function<void()> work) {
     // headed frame loop's event wait.
     work_ready_.notify_one();
     if (wakeup) wakeup();
-    co_await completed->wait();
+    // The owner ran the work; the wait's io_result carries only whether the
+    // event was cancelled, which cannot happen here (the event is set by
+    // drain() before this resumes). Bound, like runtime::offload().
+    [[maybe_unused]] auto ready = co_await completed->wait();
 }
 
 void MainThreadBridge::drain() {

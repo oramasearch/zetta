@@ -433,12 +433,15 @@ void Node::run_on_owner(const std::function<void()>& work) {
             OwnerWork{work, [completed] { completed->set(); }});
     }
     // Block this worker until the owner loop has executed the work. The wait
-    // rides the runtime seam (the queued async_event awaited to completion) —
-    // the same completion signaling as the API MainThreadBridge, entered
-    // synchronously because a background-action worker is not a coroutine.
+    // goes through the runtime's async_event, awaited to completion — the same
+    // completion signaling as the API MainThreadBridge, entered synchronously
+    // because a background-action worker is not a coroutine. The wait's
+    // io_result is bound rather than discarded (the runtime::offload() idiom).
     zetta::runtime::block_on(
         [](std::shared_ptr<zetta::runtime::async_event> event)
-            -> zetta::runtime::task<> { co_await event->wait(); }(completed));
+            -> zetta::runtime::task<> {
+            [[maybe_unused]] auto ready = co_await event->wait();
+        }(completed));
 }
 
 bool Node::on_owner_thread() const {
