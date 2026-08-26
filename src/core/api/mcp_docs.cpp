@@ -85,7 +85,14 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--data-dir PATH` | the database directory |\n";
     out += "| `--no-preflight` | skip the startup data integrity check |\n";
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
+    out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
+    out += "**Consent gating is off by default.** A consent-gated capability\n";
+    out += "(`create_dataset_from_query`, `cloud_inspect`, `detect_provisioners`,\n";
+    out += "a cloud `add_nodes`) executes on the first call, and the ungated call\n";
+    out += "is recorded as a `consent_bypassed` audit event naming what ran.\n";
+    out += "`--governance` restores the challenge: the first call issues a\n";
+    out += "one-time consent request that a **different** principal must approve.\n\n";
 
     out += "## Cluster\n\n| Flag | Meaning |\n|---|---|\n";
     out += "| `--peer HOST:PORT` | a node to connect to. Repeatable; all peers are equal |\n";
@@ -112,7 +119,8 @@ std::string render_cli_md(std::string_view origin) {
     out += "| Variable | Maps to |\n|---|---|\n";
     out += "| `ZETTA_SEED_PEER` | `--peer` (comma or space separated) |\n";
     out += "| `ZETTA_CLUSTER_TOKEN` | `--join-token` |\n";
-    out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n\n";
+    out += "| `ZETTA_ADMIN_TOKEN` | `--admin-token` |\n";
+    out += "| `ZETTA_GOVERNANCE` | `--governance` (`1`/`true`/`yes`/`on`) |\n\n";
 
     out += "## See also\n\n";
     out += "- [`/mcp.md`](/mcp.md) — connect an MCP client to this node\n";

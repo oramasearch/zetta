@@ -20,7 +20,9 @@ MCP/HTTP work.
 - [consent.md](consent.md) — remote consent for cloud-touching tools (#621):
   the challenge protocol (never executes on first call), the
   distinctly-privileged approval rule (approver key / headed surface), the
-  consent ledger + `system.consent_requests`, audit + spans on both sides.
+  consent ledger + `system.consent_requests`, audit + spans on both sides —
+  and why enforcement is **off by default** until a reachable approval surface
+  ships (#995).
 - [rest-openapi.md](rest-openapi.md) — the REST rendering (#618): reads →
   GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
   drift-checked OpenAPI document generated from the registry.
@@ -161,9 +163,9 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |
 | `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
-| `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
-| `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |
-| `add_nodes` | action | orchestration:add_nodes | add permanent cluster nodes via a wired provisioner; cloud targets **consent-gated** (billable), `local` executes directly |
+| `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated with `--governance`** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
+| `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated with `--governance`** re-detect of the local CLIs' deployment contexts → `system.provisioners` |
+| `add_nodes` | action | orchestration:add_nodes | add permanent cluster nodes via a wired provisioner; cloud targets **consent-gated with `--governance`** (billable), `local` executes directly |
 | `list_consent_requests` | read | api:query | the node's consent ledger — pending challenges, decisions, and executed results |
 | `approve_consent` | action | orchestration:approve_consent | approve one challenge and execute exactly the named action once — must be a **different principal** than the requester |
 | `deny_consent` | action | orchestration:deny_consent | refuse (or withdraw) a pending challenge; the action never runs |

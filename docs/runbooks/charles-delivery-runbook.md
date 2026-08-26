@@ -204,9 +204,10 @@ project:**
 Set `--listen`, then call the port you chose, and you get nothing — which reads exactly
 like a dead node.
 
-**Run it headed on his laptop, not headless.** The desktop app is the same node with a UI,
-and it is the only surface that can approve a consent challenge from a single operator —
-see [§4.2](#42--the-trap-a-local-postgres-query-is-consent-gated).
+**Run it headed on his laptop, not headless.** The desktop app is the same node with a UI
+— worth having in front of him for the walkthrough. It is no longer *required* to get a
+local Postgres query through: consent gating is off by default, see
+[§4.2](#42--the-consent-gate--fixed-and-off-by-default).
 
 The node documents itself, and all three routes are public (no token needed to read them):
 `$ZETTA/cli.md` (every flag) · `$ZETTA/mcp.md` (how to connect an MCP client) ·
@@ -333,10 +334,11 @@ curl -s -H "Authorization: Bearer $TOK" $ZETTA/v1/list_connections
 secret is stored and never serialized back out by any surface. Worth having him check
 himself — it is exactly the kind of claim a security reviewer will ask about.
 
-### 4.2 · The trap: a local Postgres query is consent-gated
+### 4.2 · The consent gate — fixed, and off by default
 
-`create_dataset_from_query` is consent-gated, and **the gate does not know that his
-Postgres is local**. Measured verbatim on v0.1.0:
+**On v0.1.0 this was a wall.** `create_dataset_from_query` was consent-gated per *tool*,
+so a query against a Postgres on `127.0.0.1` was refused as "touches a cloud provider",
+and the refusal pointed at an approval page that does not exist:
 
 ```
 consent_required — 'create_dataset_from_query' touches a cloud provider and did NOT
@@ -345,18 +347,27 @@ execute; consent challenge <id> was issued and is waiting for approval at /gover
 requested it … approving from the same session that made the request is refused by design.
 ```
 
-That is the two-person rule working as designed, and on a one-person laptop it is a wall.
-**Two ways through:**
+The web console's `/governance` page has no consent list, the desktop app's approval
+surface is on **Admin & audit** (not Governance), and a one-person laptop has no second
+principal — so the challenge could be issued and then decided by nobody. Filed as
+[#995](https://github.com/oramasearch/zetta/issues/995) /
+[#994](https://github.com/oramasearch/zetta/issues/994).
 
-1. **Run the node headed** and approve it in the desktop app: **Governance → Consent
-   requests → "Approve and run once."** The headed app is the trusted
-   human-in-front-of-the-machine surface and is exempt from the different-principal rule.
-2. **Use the file path in §4.1**, which is not consent-gated at all.
+**Three things changed, and none of them need a workaround now:**
 
-**Do not discover this live.** Either decide to run headed before the session, or land the
-data as a file. This is a genuine product finding from writing this runbook, and it should
-be filed against the engine — a `postgres` connector on `127.0.0.1` should not be
-described to the user as "touches a cloud provider."
+1. **Consent enforcement is off by default.** A node started without `--governance`
+   executes consent-gated capabilities on the first call. The call is not unrecorded —
+   it lands on the audit trail as `consent_bypassed`, naming exactly what ran. Start the
+   node with `--governance` (or `ZETTA_GOVERNANCE=1`) to require approval again.
+2. **A loopback source is not a cloud.** Even with `--governance` on, a `postgres`
+   connector whose host is `127.0.0.1` / `localhost` / `::1` or a unix socket is not
+   gated at all — nothing leaves the machine, so there is nothing to consent to.
+3. **A remote source's challenge names the real connector.** It used to describe every
+   source as Snowflake whatever the connector's `type` was; it now reads e.g.
+   `postgres db.example.com:5432/motive` and lists the caller's own query.
+
+**So for Charles: just run the query.** §4.1's file path still works and is still
+simplest, but it is no longer the way around a gate.
 
 ### 4.3 · Project → intent → Pipeline → Verification → run
 
@@ -680,7 +691,7 @@ Say these plainly rather than letting him find them.
   not papered over, but do not walk into it during a demo.
 - **Postgres and Snowflake are the shipped connectors.** Anything else is a connector to
   write, not a project.
-- **`create_dataset_from_query` on a local Postgres is consent-gated** — [§4.2](#42--the-trap-a-local-postgres-query-is-consent-gated).
+- **`create_dataset_from_query` on a local Postgres was consent-gated; fixed** — [§4.2](#42--the-consent-gate--fixed-and-off-by-default).
 - **One methodology is executable.** The Pipeline compiler produces the tabular-supervised
   shape (M-1) plus part of the NLP/embeddings shape; the other nineteen in the catalogue
   are specified and not built ([zetta#984](https://github.com/oramasearch/zetta/issues/984)).

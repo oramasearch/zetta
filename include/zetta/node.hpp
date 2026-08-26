@@ -69,6 +69,15 @@ namespace zetta {
 struct NodeConfig {
     std::string data_dir = "./zetta-data";  // database directory on disk
     bool preflight = true;  // run an integrity check on start() (--no-preflight)
+    // Consent gating for `requires_consent` capabilities (#621) — **OFF by
+    // default** (#995). The two approval surfaces the refusal points a caller
+    // at are incomplete: the web console's /governance page has no consent
+    // list at all, and the desktop app's is on Admin & audit, not Governance.
+    // With no reachable approver a one-person node cannot approve anything it
+    // requests, so the gate is a dead end rather than a two-person rule. Off,
+    // a gated capability executes like any other call and the bypass is
+    // audited. `--governance` (or ZETTA_GOVERNANCE=1) turns enforcement on.
+    bool enforce_consent = false;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound

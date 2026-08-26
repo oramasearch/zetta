@@ -18,6 +18,10 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   deny-by-default, ask-every-time, never-remembered consent, naming exactly
   what would be read/called before anything happens (the Cloud Inspector /
   Add-nodes consent grammar). This binds Claude while building, too.
+  **The GUI's own gates are unaffected by `--governance`.** That flag switches
+  the *remote* consent challenge for API/MCP callers, which is off by default
+  (#995). The in-app gates are the human clicking in front of the machine —
+  they stay on, always, and none of them may be made conditional.
 - **Heavy headers stay in `app.cpp`.** `app.hpp` forward-declares SDL/ImGui
   types; only `app.cpp` includes them. Panels are `App` member TUs split
   per view (`app_home` / `app_explorer` / `app_graph_workspace` /

@@ -3633,6 +3633,20 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
     return schema;
 }
 
+// Does this connector stay on the machine the node runs on? A loopback host or
+// a unix-socket path never crosses the network, so it is not "a cloud provider"
+// by any reading (#994). Kept deliberately narrow — loopback and sockets only.
+// A private-range address may still be a different machine across a VPN, and
+// that is a network reach worth naming.
+bool is_local_source(const zetta::connect::ConnectorConfig& config) {
+    if (config.type != "postgres") return false;  // warehouses are remote by construction
+    const std::string& host = config.host;
+    if (host.empty()) return true;          // libpq default: the local socket
+    if (host.front() == '/') return true;   // an explicit unix-socket directory
+    return host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+           host == "[::1]";
+}
+
 // Resolve the connector this call should use: either a saved connection by name
 // (the credential stays on the cluster) or an inline connector object. Exactly
 // one; `reason` explains the rejection.
@@ -3731,6 +3745,59 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
     output["coordinated"] = ingested.coordinated;
     output["participants"] = ingested.participants;
     return ApiResult::success(std::move(output));
+}
+
+// What `create_dataset_from_query` would actually reach, named per call rather
+// than per tool (#995). Two things the old generic challenge got wrong: it
+// described every source as Snowflake whatever the connector's `type` really
+// was, and it called a Postgres on `127.0.0.1` a cloud provider (#994).
+//
+// A loopback host is not a cloud: nothing leaves the machine, there is no
+// provider account and no bill, so returning std::nullopt lets the call
+// execute directly — the same input-aware exemption `add_nodes {target:
+// "local"}` already gets. Anything else names its real type and target so the
+// approver reads what would be queried, not a fixed sentence.
+std::optional<zetta::governance::ConsentAction> describe_create_dataset_from_query(
+    const nlohmann::json& input, ApiContext& context) {
+    std::string reason;
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        resolve_query_connector(input, context, reason);
+    if (!config) {
+        // The input does not resolve to a source. Fail closed: challenge with
+        // what we can say, and let the handler return the real rejection.
+        return zetta::governance::ConsentAction{
+            "Run a read-only query against an external source and load its "
+            "rows into a new partitioned table. The source could not be "
+            "resolved from this input (" + reason + ").",
+            {},
+            {}};
+    }
+
+    // The source as a human reads it: "postgres 127.0.0.1:5433/motive",
+    // "snowflake ab12345.us-east-1".
+    std::string target = config->type;
+    if (config->type == "postgres") {
+        target += " " + (config->host.empty() ? std::string{"localhost"} : config->host);
+        if (!config->port.empty()) target += ":" + config->port;
+        if (!config->database.empty()) target += "/" + config->database;
+    } else if (!config->account.empty()) {
+        target += " " + config->account;
+    }
+
+    if (is_local_source(*config)) {
+        return std::nullopt;  // stays on this machine — no cloud, no gate
+    }
+
+    const std::string query = input.value("query", std::string{});
+    zetta::governance::ConsentAction action;
+    action.summary =
+        "Run a read-only query against " + target +
+        " with the stored credential and load its rows into a new partitioned "
+        "table placed across the cluster. Only a single SELECT/WITH may run. "
+        "Reaches the source over the network (audited as dataset_added; "
+        "visible in system.datasets).";
+    if (!query.empty()) action.runs.push_back(query);
+    return action;
 }
 
 // --- promote_dataset ----------------------------------------------------------------
@@ -6285,11 +6352,13 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "create_dataset_from_query",
         "Create a dataset from a connector query",
-        "Run a read-only query against an external source (Snowflake) and load "
-        "its rows into a new partitioned table placed across the cluster — the "
-        "in-product path from a warehouse to a featurizable dataset, with no "
-        "manual export. Only a single SELECT/WITH may run. Reaches the source "
-        "over the network with your credentials, so it is consent-gated "
+        "Run a read-only query against an external source (Snowflake or "
+        "Postgres) and load its rows into a new partitioned table placed "
+        "across the cluster \u2014 the in-product path from a warehouse to a "
+        "featurizable dataset, with no manual export. Only a single "
+        "SELECT/WITH may run. A remote source is reached over the network with "
+        "your credentials, so it is consent-gated when the node enforces "
+        "governance; a loopback Postgres touches no cloud and runs directly "
         "(audited as dataset_added; visible in system.datasets).",
         create_dataset_from_query_schema(),
         create_dataset_from_query_output_schema(),
@@ -6297,7 +6366,8 @@ void register_core_capabilities(Registry& registry) {
         Operation{CapabilityDomain::Orchestration, "create_dataset_from_query"},
         /*mutates=*/true,
         /*requires_consent=*/true,
-        handle_create_dataset_from_query});
+        handle_create_dataset_from_query,
+        describe_create_dataset_from_query});
 
     registry.add(Capability{
         "promote_dataset",
