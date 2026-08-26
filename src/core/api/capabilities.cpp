@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -661,8 +662,14 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         nlohmann::json at_risk = nlohmann::json::array();
         for (const nlohmann::json& row : rows) {
             if (at_risk.size() >= limit) break;
+            // `value<T>` deduces T from the DEFAULT, so a bare `0` picks `int`
+            // and silently narrows the entity key to 32 bits (#1000). Entity
+            // keys are int64 the whole way through, and a derived key — the
+            // documented remedy for a string business id (#957) — is above
+            // 2^31 about half the time, which made the ranked list a customer
+            // is shown disagree with this node's own SQL table.
             nlohmann::json entry = {{"rank", row.value("rank", 0)},
-                                    {"entity", row.value("account", 0)},
+                                    {"entity", row.value("account", std::int64_t{0})},
                                     {"risk", row.value("risk", 0.0)}};
             // Evidence is whatever columns beyond the fixed ones the run wrote —
             // the population's strongest drivers, the same columns on every row.
@@ -4914,7 +4921,7 @@ std::string at_risk_grounding_text(Node& node,
     for (const nlohmann::json& row : rows) {
         if (shown++ >= kMaxRows) break;
         std::ostringstream line;
-        line << "- account " << row.value("account", 0) << ": risk " << std::fixed
+        line << "- account " << row.value("account", std::int64_t{0}) << ": risk " << std::fixed
              << std::setprecision(3) << row.value("risk", 0.0);
         if (const std::string driver = row.value("dominant_driver", std::string{});
             !driver.empty()) {

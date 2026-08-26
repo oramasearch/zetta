@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <limits>
 
 #include <algorithm>
 #include <chrono>
@@ -288,6 +289,37 @@ TEST(ChurnSolution, RunEmitsAReportOutputAndItsFactsReadBack) {
     EXPECT_EQ(at_risk[0].value("rank", 0), 1);
     ASSERT_TRUE(at_risk[0].contains("evidence")) << at_risk[0].dump(2);
     EXPECT_FALSE(at_risk[0].at("evidence").empty());
+    // The entity must survive as a 64-bit key (#1000) — see the dedicated test
+    // below for why a plausible-looking `0` default silently truncates it.
+    EXPECT_TRUE(at_risk[0].at("entity").is_number_integer()) << at_risk[0].dump(2);
+}
+
+// #1000: the ranked at-risk list is the artifact a customer is shown, and its
+// entity ids were wrapped to 32 bits — so the report disagreed with `score` and
+// with this node's own `churn_results.at_risk_*` table, and joining the list
+// back to account records returned nothing.
+//
+// The cause is a one-token trap worth pinning directly: `json::value<T>`
+// deduces T from the DEFAULT, so `row.value("account", 0)` asks for an `int`.
+// Entity keys are `std::int64_t` the whole way through the ML path, and a
+// derived key — the documented remedy for a string business id (#957) — is
+// above 2^31 about half the time.
+TEST(ChurnSolution, AnEntityKeyAboveTwoToThe31SurvivesTheReport) {
+    // The exact value from the measured failure: it read back as -1949009714.
+    constexpr std::int64_t kBigEntity = 2345957582;
+    static_assert(kBigEntity > std::numeric_limits<std::int32_t>::max());
+
+    const nlohmann::json row = {{"account", kBigEntity}, {"rank", 2},
+                                {"risk", 0.8807439523346903}};
+
+    // What the report builder must NOT do — kept as the guard, so anyone who
+    // "simplifies" the default back to a bare literal fails here.
+    EXPECT_NE(row.value("account", 0), kBigEntity)
+        << "an int default no longer truncates; the guard below is now vacuous";
+    EXPECT_EQ(row.value("account", 0), -1949009714);
+
+    // What it does.
+    EXPECT_EQ(row.value("account", std::int64_t{0}), kBigEntity);
 }
 
 // A run that asked for no holdout must SAY so where the held-out figure would
