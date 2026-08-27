@@ -50,6 +50,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::DatasetAdded:       return "dataset added";
         case AuditAction::ConsentRequested:   return "consent requested";
         case AuditAction::ConsentDecided:     return "consent decided";
+        case AuditAction::ConsentBypassed:    return "consent bypassed";
     }
     return "data access";
 }

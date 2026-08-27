@@ -9,9 +9,16 @@
 
 #include <cstdlib>
 #include <string>
+#include <vector>
 
+#include "temp_dir.hpp"
 #include "zetta/api/postgres_protocol.hpp"
 #include "zetta/connect/connector.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/node.hpp"
+#include "zetta/query/service.hpp"
 
 #if defined(ZETTA_WITH_POSTGRES)
 
@@ -91,6 +98,48 @@ TEST(PostgresConnector, MissingRequiredFieldsFailValidation) {
         nlohmann::json{{"type", "postgres"}, {"host", "h"}}));  // no user/database
     EXPECT_TRUE(zetta::connect::ConnectorConfig::from_json(nlohmann::json{
         {"type", "postgres"}, {"host", "h"}, {"user", "u"}, {"database", "d"}}));
+}
+
+// `create_dataset_from_query` end to end against a real Postgres — the call
+// from https://github.com/oramasearch/zetta/issues/994. It never worked: the
+// capability routes through run_distributed_connector_ingest, which submitted
+// every config through Snowflake's REST protocol regardless of `type`, so a
+// Postgres connection failed with "snowflake: could not resolve
+// .snowflakecomputing.com". The consent gate refused the call first, which is
+// why the dispatch bug went unseen for as long as the gate was on.
+TEST(PostgresConnector, DistributedIngestLandsARealPostgresResultSet) {
+    if (!postgres_reachable()) GTEST_SKIP() << "no local Postgres reachable";
+    zetta::connect::install_postgres_protocol();
+
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+
+    zetta::connect::DistributedIngestOptions options;
+    options.query = "SELECT g AS n, g * 2 AS doubled FROM generate_series(1, 7) AS g";
+    options.table_name = "pg_probe";
+    options.max_rows = 100;
+    options.replication_factor = 1;
+
+    const zetta::connect::DistributedIngestResult result =
+        run_distributed_connector_ingest(node, local_pg("postgres"), options);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.rows, 7u);
+    EXPECT_EQ(result.columns, (std::vector<std::string>{"n", "doubled"}));
+    ASSERT_TRUE(result.table);
+    // One source, one stream: this node pulled it and owns what it landed.
+    EXPECT_FALSE(result.coordinated);
+    ASSERT_FALSE(result.partitions.empty());
+
+    // Landed as a real dataset, readable through the same scatter-gather SELECT
+    // the Snowflake path's output is read with.
+    zetta::query::QueryService service{node};
+    const auto all =
+        service.run("SELECT * FROM datasets." + result.table->name() + ";", "");
+    ASSERT_TRUE(all.ok()) << all.error;
+    EXPECT_EQ(all.rows.size(), 7u);
+
+    node.stop();
 }
 
 #endif  // ZETTA_WITH_POSTGRES

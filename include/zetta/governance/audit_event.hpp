@@ -27,6 +27,7 @@ enum class AuditAction {
     DatasetAdded,    // a dataset file was added as a partitioned table (#624)
     ConsentRequested,  // a remote consent challenge was issued (#621)
     ConsentDecided,    // a consent challenge was approved/denied (#621)
+    ConsentBypassed,   // a consent-gated call ran ungated: enforcement is off (#995)
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the

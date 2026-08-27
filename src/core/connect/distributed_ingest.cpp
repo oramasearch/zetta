@@ -14,6 +14,7 @@
 #include "zetta/connect/distributed_fetch.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/fetch_affinity_placement.hpp"
@@ -439,6 +440,68 @@ void install_connector_fetch_launch_runner(
         });
 }
 
+// The ingest path for a connector with no result-partition protocol (today:
+// Postgres). One query, one result set, landed through `add_dataset_rows` —
+// which runs the same PartitionScheduler, honours the same partition_count and
+// replication_factor, and marks the table partition_only, so the dataset it
+// produces is shaped exactly like the tiled path's. It fans out over cores and
+// disks but not over uplinks: a source that hands back one stream can only be
+// read by one node. Distributing it needs a keyed range split pushed into the
+// query, which is a deliberate later slice, not something to fake here.
+DistributedIngestResult run_single_shot_connector_ingest(
+    Node& node, const ConnectorConfig& config,
+    const DistributedIngestOptions& options) {
+    DistributedIngestResult result;
+
+    std::shared_ptr<compute::ComputeJob> job =
+        node.create_job(compute::JobKind::Ingest);
+    if (job) {
+        result.job = job->id();
+        job->set_status(compute::JobStatus::Running);
+    }
+    const auto fail = [&](std::string reason) {
+        result.error = std::move(reason);
+        if (job) job->set_status(compute::JobStatus::Failed, result.error);
+        return result;
+    };
+
+    // read_only_query_rejection already ran in the caller; run_connector_query
+    // re-checks it, which is correct — it is also a public entry point.
+    const ConnectorResult pulled =
+        run_connector_query(config, options.query, options.max_rows);
+    if (!pulled.ok()) return fail(pulled.error);
+    result.columns = pulled.data.columns;
+
+    data::AddDatasetOptions add;
+    add.database = options.database;
+    add.partitioned = true;
+    add.partition_count = options.partition_count;
+    add.replication_factor = options.replication_factor;
+    add.members = node.cluster_members();
+    add.table_name = options.table_name;
+    // A connector result set is a cache of rows this node pulled: never
+    // captured into the replicated document (they would cross the wire twice),
+    // and placed here rather than hashed onto the roster, because they are
+    // already here.
+    add.partition_only = true;
+    add.fetch_affinity_owner = node.node_id();
+
+    data::AddDatasetResult added =
+        data::add_dataset_rows(node, pulled.data.rows, add);
+    if (!added.ok()) return fail(added.error);
+
+    result.coordinated = false;
+    result.participants = {node.node_id()};
+    result.partitions_fetched = 1;  // one result set, pulled once
+    result.rows = added.rows;
+    result.database = added.database;
+    result.table = added.table;
+    result.partitions = added.partitions;
+    result.plan = added.plan;
+    if (job) job->set_status(compute::JobStatus::Succeeded);
+    return result;
+}
+
 DistributedIngestResult run_distributed_connector_ingest(
     Node& node, const ConnectorConfig& config,
     const DistributedIngestOptions& options) {
@@ -453,6 +516,20 @@ DistributedIngestResult run_distributed_connector_ingest(
         result.error = "max_rows must be at least 1";
         return result;
     }
+    // A connector whose source has no result-partition protocol cannot be
+    // tiled: Postgres returns one result set over its own wire protocol, with
+    // no chunk manifest to weight a fan-out by. Everything below this point
+    // (submit → plan over `partitionInfo[]` → co-launch a fetch per chunk) is
+    // Snowflake's REST shape specifically, and running a Postgres config
+    // through it built a Snowflake request out of empty fields and failed with
+    // "could not resolve .snowflakecomputing.com" — the wrong vendor named for
+    // a source the caller never mentioned. Route it to the single-shot path
+    // instead: pull the rows through the connector's own runner, then land
+    // them with the same scheduler, partitioning and RF the tiled path uses.
+    if (config.type != "snowflake") {
+        return run_single_shot_connector_ingest(node, config, options);
+    }
+
     const HttpTransport& exchange = default_http_transport();
     if (!exchange) {
         result.error =

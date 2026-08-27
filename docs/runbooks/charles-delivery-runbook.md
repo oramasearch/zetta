@@ -16,6 +16,15 @@ corrects the two-component answer given on the Aug 5 call, and it makes the ask 
 not read out of documentation. Where a step has a trap, the trap is stated before the
 step, not after it.
 
+> ⚠️ **`v0.1.0` cannot do §4.1's connector path.** Two bugs — a consent gate with no
+> reachable approver, and a Postgres query dispatched through Snowflake's protocol — made
+> `create_dataset_from_query` unusable against a local database. Both are fixed on
+> [PR #996](https://github.com/oramasearch/zetta/pull/996) and **neither fix is in the
+> tagged `v0.1.0`**. Decide before the session which build he gets, and read
+> [§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them) first. On the
+> tagged release, use the file path in [§4.1](#41--get-the-data-into-the-node) and do not
+> demo the connector.
+
 **The delivery contract:** Charles runs every step. Nobody at Orama touches Motive data,
 sees a credential, or needs access to his machine.
 
@@ -204,9 +213,21 @@ project:**
 Set `--listen`, then call the port you chose, and you get nothing — which reads exactly
 like a dead node.
 
-**Run it headed on his laptop, not headless.** The desktop app is the same node with a UI,
-and it is the only surface that can approve a consent challenge from a single operator —
-see [§4.2](#42--the-trap-a-local-postgres-query-is-consent-gated).
+**Run it headed on his laptop** if you want the UI in front of him — the desktop app is
+the same node with a renderer, and it demos better. It is no longer *required* for
+anything here: consent gating is off unless the node is started with `--governance`, so
+headless is a complete node
+([§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them)).
+
+| Flag | Effect |
+|---|---|
+| *(default)* | consent gating **off** — cloud-touching calls execute and audit as `consent_bypassed` |
+| `--governance` | the first call to a cloud-touching capability returns a one-time consent challenge a **different** principal must approve |
+
+Do not turn `--governance` on for his session. On a one-person node there is nobody to
+approve with, and the surfaces the refusal names are the ones
+[§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them) explains are
+missing.
 
 The node documents itself, and all three routes are public (no token needed to read them):
 `$ZETTA/cli.md` (every flag) · `$ZETTA/mcp.md` (how to connect an MCP client) ·
@@ -226,7 +247,7 @@ claude mcp add --transport http zetta "$ZETTA/mcp" \
 Claude Desktop / claude.ai: Settings → Connectors → **Add custom connector**, URL
 `$ZETTA/mcp`, request header `Authorization: Bearer <token>`.
 
-**Measured:** `tools/list` returns **75 tools** on v0.1.0 — the same capability registry
+**Measured:** `tools/list` returns **76 tools** — the same capability registry
 that renders the REST routes and the OpenAPI spec, so an agent and a curl see identical
 facts. That set includes `deployment_profile`, `run`, `get_run_report`, `score` and
 `explain` — every step below is reachable from the agent without Charles writing curl.
@@ -268,10 +289,20 @@ What differs is **who composes the calls**:
 - **Always use the agent for [§5](#5--ask-the-node-how-to-deploy-itself)** — the Helm
   step was designed for exactly that and is the strongest thing to show him.
 
-**One trap on the MCP surface.** `prompts/list` advertises a **`build_and_run`** prompt —
-his client will show it as a slash command. It drives `agent_run`, which needs an agent,
-and **no agent ships in `v0.1.0`** ([§7](#7--what-is-not-in-this-delivery)). It will fail.
-Tell him to ignore it and use the tools directly; the tools need no model.
+**Two prompts, and only one of them works.** `prompts/list` shows both as slash commands
+in his client:
+
+| Prompt | Use it? |
+|---|---|
+| **`model_from_source`** | **Yes — this is the one.** The whole deterministic path: browse the source, pull a model-ready frame, compile → approve → gate → run with a holdout, read the report, then `score` / `explain`. Needs no agent and no checkpoint. Takes `connection` (required), plus optional `ask` and `database`. |
+| `build_and_run` | **No.** It drives `agent_run`, which needs an installed agent, and **no agent ships** ([§7](#7--what-is-not-in-this-delivery)). It will fail. |
+
+`model_from_source` carries the three column rules from
+[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read) inline, so an agent
+following it applies the casts *before* the run rather than discovering them from a
+failure. **Measured: an MCP client driving that prompt completed all 14 steps** —
+connection → catalog → frame → project → compile → approve → gate → run → report → score →
+explain — with no human correction.
 
 Each step below gives the curl. To run the same step over MCP, call the tool of the same
 name with the same arguments object:
@@ -282,10 +313,32 @@ curl -s -X POST "$ZETTA/mcp" -H "Authorization: Bearer $TOK" -H 'Content-Type: a
        "params":{"name":"compile_intent","arguments":{"project":"churn"}}}'
 ```
 
+### 4.0 · The one that will cost him an hour: reads are GET, actions are POST
+
+**`POST` a read and the reply comes back empty** — no error, no body, curl hangs until it
+times out. It looks exactly like a dead node, and it has already cost a filed issue
+([zetta#954](https://github.com/oramasearch/zetta/issues/954)).
+
+The rule is mechanical. If the capability only *reads* — `sql`, `score`, `explain`,
+`get_run`, `get_run_report`, `list_connections`, `list_consent_requests`, `server_info` —
+it is **`GET`**, arguments in the query string:
+
+```sh
+curl -s -G -H "Authorization: Bearer $TOK" "$ZETTA/v1/sql" \
+  --data-urlencode 'statement=SELECT * FROM motive.accounts LIMIT 5;'
+```
+
+Anything that changes state — `create_connection`, `create_dataset_from_query`, `run`,
+`approve_plan`, `gate`, `add_dataset` — is **`POST`** with a JSON body. `$ZETTA/v1/openapi.json`
+gives the method for every route.
+
+That is why some commands below use `-G` and some do not; it is not stylistic. **MCP has no
+such distinction** — every tool is one `tools/call` — which is one reason the agent path in
+§3 is more forgiving, and worth saying out loud if he asks why you keep switching.
+
 ### 4.1 · Get the data into the node
 
-**Recommended path — a file.** No consent gate, no network, and it is the path that will
-work on the first try:
+**Safest path — a file.** No network, no connector, and it works on every build:
 
 ```sh
 psql -d motive -c "\copy (SELECT …) TO '/tmp/accounts.csv' CSV HEADER"
@@ -333,10 +386,114 @@ curl -s -H "Authorization: Bearer $TOK" $ZETTA/v1/list_connections
 secret is stored and never serialized back out by any surface. Worth having him check
 himself — it is exactly the kind of claim a security reviewer will ask about.
 
-### 4.2 · The trap: a local Postgres query is consent-gated
+**Then look inside the source before pulling anything.** `list_source_tables` opens one
+connection, runs one read-only catalog query, and **lands nothing** — this is how you find
+a table rather than ingesting one to discover it exists:
 
-`create_dataset_from_query` is consent-gated, and **the gate does not know that his
-Postgres is local**. Measured verbatim on v0.1.0:
+```sh
+curl -s -G -H "Authorization: Bearer $TOK" "$ZETTA/v1/list_source_tables" \
+  --data-urlencode "connection=local-pg" --data-urlencode "match=account"
+```
+
+It returns each table with its columns and types. `match` is a case-insensitive substring —
+`match=score` is how you locate scoring tables in a database you have not seen. Drop
+`match` for everything, add `schema=public` to narrow, `include_columns=false` for just
+names.
+
+**Read the types it returns before writing the next query** — they tell you which columns
+need casting, which is exactly what the next section is about.
+
+**Then the call that is actually the demo** — rows out of his Postgres into a partitioned
+dataset, no export step:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  $ZETTA/v1/create_dataset_from_query -d '{
+    "connection": "local-pg",
+    "query": "SELECT account_id, mrr, seats, failed_payments, churned FROM accounts",
+    "database": "motive",
+    "table_name": "accounts"
+  }'
+```
+
+**Measured** against a local Postgres 17: `ok: true`, with the column list, the row count,
+and one entry per partition placed on this node. Read it back the same way as any other
+dataset — note the `-G`, `sql` is a read:
+
+```sh
+curl -s -G -H "Authorization: Bearer $TOK" "$ZETTA/v1/sql" \
+  --data-urlencode 'statement=SELECT account_id, mrr FROM motive.accounts WHERE failed_payments > 3;'
+```
+
+Only a single `SELECT` / `WITH` reaches Postgres; the read-only guard rejects anything else
+before a connection is opened, which is the other claim a security reviewer will poke at.
+
+**Two traps in that read-back, both measured:**
+
+- **`token` is required, even for a trust-auth Postgres.** `create_connection` with an
+  empty `token` is refused with `connection: the connector config carries no token`. His
+  `motive-pgvector` container sets `POSTGRES_PASSWORD=motive`, so he has one — but a
+  laptop Postgres on local `trust` auth cannot be connected until a password is set on the
+  role.
+- **The node's SQL is a Postgres *subset*, and it is not the query you just sent to
+  Postgres.** `LIMIT` is not supported (`expected ';' after statement, got 'LIMIT'`), and a
+  bare `count(*)` is refused with `aggregate functions require a GROUP BY clause`.
+  Projection and `WHERE` work. The full `SELECT` inside `create_dataset_from_query` runs on
+  **Postgres** and can use anything Postgres understands; only the read *back out of the
+  node* goes through the subset. Worth saying explicitly, because hitting the subset right
+  after a rich source query reads as the product being broken.
+
+**One thing not to oversell:** this is *not* the aggregate-bandwidth path. Tiling a result
+set across the cluster needs a result manifest from the source — Snowflake's SQL API v2
+has one, Postgres has no equivalent — so a Postgres pull is one node reading one stream and
+then partitioning what it got. Correct, and single-node.
+
+#### Shape the source query for the model, not just for the read
+
+Two column rules are enforced deep in the run — at the `connect` step, *after* the dataset
+has landed — so a query that ingests happily still fails the pipeline minutes later with a
+message that does not obviously point back here. Both are fixed in the **source** query,
+which is why this belongs in §4.1 and not §4.3.
+
+| Rule | What you see if you miss it | Fix in the SELECT |
+|---|---|---|
+| The **entity column must be a 64-bit integer** | `run` refuses immediately: ``dataset: the entity column 'account_id' holds non-integer values; entities are keyed by a 64-bit integer`` | derive one — `('x'\|\|substr(md5(account_id),1,8))::bit(32)::bigint AS account_key` |
+| The **label (and every feature) must be numeric** | the run reaches `running`, then fails: ``connect step 'Load customer accounts' failed: … row 0 field 'churned' is not a number`` | cast it — `churned::int AS churned` |
+
+A Postgres `boolean` is the common way to trip the second one, and a text/UUID/Salesforce
+account id is the common way to trip the first — **both of which his real `accounts` table
+almost certainly has.** String entity keys are a known limitation, not a bug
+([`docs/data/dataset-path.md`](../data/dataset-path.md) — *"String entity keys"*).
+
+**The query that satisfies both, measured end to end on 600 rows:**
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  $ZETTA/v1/create_dataset_from_query -d '{
+    "connection": "local-pg",
+    "query": "SELECT ('"'"'x'"'"'||substr(md5(account_id),1,8))::bit(32)::bigint AS account_key, mrr::float8 AS mrr, seats, failed_payments, churned::int AS churned FROM accounts",
+    "database": "motive",
+    "table_name": "accounts_ml"
+  }'
+```
+
+Then §4.3's `run` takes `"entity_column": "account_key"`. **Keep the original
+`account_id`** in a second dataset if he wants to join the ranked list back to readable
+names — the model does not need it, and carrying a text column into the frame is what
+causes the failure above.
+
+**Do this before the session, on his data.** Every one of these three is a two-minute fix
+once you know it and a dead session if you meet it live.
+
+### 4.2 · Two bugs that used to stop §4.1 dead — and which build has them
+
+**This is the section to check the build against.** Both were real, both are fixed, and a
+binary from before the fix fails §4.1's connector path in two different ways that each
+look like a product failure.
+
+**The consent gate refused the call.** `create_dataset_from_query` was gated per *tool*, so
+a query against a Postgres on `127.0.0.1` came back as "touches a cloud provider", pointing
+at an approval page that does not exist:
 
 ```
 consent_required — 'create_dataset_from_query' touches a cloud provider and did NOT
@@ -345,18 +502,49 @@ execute; consent challenge <id> was issued and is waiting for approval at /gover
 requested it … approving from the same session that made the request is refused by design.
 ```
 
-That is the two-person rule working as designed, and on a one-person laptop it is a wall.
-**Two ways through:**
+The web console's `/governance` page has no consent list, the desktop app's approval
+surface is on **Admin & audit** (not Governance), and a one-person laptop has no second
+principal — so the challenge could be issued and then decided by nobody.
 
-1. **Run the node headed** and approve it in the desktop app: **Governance → Consent
-   requests → "Approve and run once."** The headed app is the trusted
-   human-in-front-of-the-machine surface and is exempt from the different-principal rule.
-2. **Use the file path in §4.1**, which is not consent-gated at all.
+**Underneath it, the call had never worked on Postgres at all.** Every connector config
+went through Snowflake's REST protocol regardless of `type`, so his `postgres` connection
+built a Snowflake request out of its empty `account`:
 
-**Do not discover this live.** Either decide to run headed before the session, or land the
-data as a file. This is a genuine product finding from writing this runbook, and it should
-be filed against the engine — a `postgres` connector on `127.0.0.1` should not be
-described to the user as "touches a cloud provider."
+```
+snowflake: could not resolve .snowflakecomputing.com
+```
+
+A vendor he never mentioned, for a database on his own machine. The gate had been hiding
+it — nobody had ever got far enough to see it.
+
+**On a build with the fixes:**
+
+1. **Consent enforcement is off by default.** A node started without `--governance`
+   executes consent-gated capabilities on the first call. The call is not unrecorded — it
+   lands on the audit trail as `consent_bypassed`, naming exactly what ran. Start the node
+   with `--governance` (or `ZETTA_GOVERNANCE=1`) to require approval again.
+2. **A loopback source is not a cloud.** Even with `--governance` on, a `postgres`
+   connector whose host is `127.0.0.1` / `localhost` / `::1` or a unix socket is not gated
+   — nothing leaves the machine.
+3. **A remote source's challenge names the real connector**, e.g.
+   `postgres db.example.com:5432/motive`, and lists the caller's own query.
+4. **Postgres ingests through its own wire protocol**, landing the same dataset shape the
+   Snowflake path produces.
+
+> ⚠️ **`v0.1.0` (commit `b54c008`) does NOT contain these fixes.** They are on
+> [PR #996](https://github.com/oramasearch/zetta/pull/996)
+> ([#994](https://github.com/oramasearch/zetta/issues/994),
+> [#995](https://github.com/oramasearch/zetta/issues/995)). Until that merges and a tag
+> carries it, **either give Charles a build from a branch that includes it, or route him
+> down §4.1's file path and do not demo the connector.** Handing him `v0.1.0` and this
+> section together is the one combination that guarantees a bad session: the runbook will
+> say it works and the binary will say `.snowflakecomputing.com`.
+>
+> **Check before the session:**
+>
+> ```sh
+> ./build/bin/zetta --help | grep -q -- --governance && echo "fixes present" || echo "PRE-FIX BUILD"
+> ```
 
 ### 4.3 · Project → intent → Pipeline → Verification → run
 
@@ -403,10 +591,14 @@ Then run it against his data:
 
 ```sh
 P run '{"project":"churn","graph":"churn skeleton",
-        "dataset_path":"motive.accounts",
-        "dataset":{"entity_column":"account_id","label_column":"churned"},
+        "dataset_path":"motive.accounts_ml",
+        "dataset":{"entity_column":"account_key","label_column":"churned"},
         "holdout_fraction":0.3}'
 ```
+
+`account_key` and `accounts_ml`, not `account_id` and `accounts` — see
+[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read). A text entity column
+is refused here, and a boolean label gets past this call and fails inside the run.
 
 **Set `holdout_fraction`.** Without it every metric in the report is in-sample — scored on
 the rows the model trained on — and they flatter. This is not theoretical: an in-sample AUC
@@ -680,7 +872,16 @@ Say these plainly rather than letting him find them.
   not papered over, but do not walk into it during a demo.
 - **Postgres and Snowflake are the shipped connectors.** Anything else is a connector to
   write, not a project.
-- **`create_dataset_from_query` on a local Postgres is consent-gated** — [§4.2](#42--the-trap-a-local-postgres-query-is-consent-gated).
+- **`create_dataset_from_query` on a local Postgres is fixed, but not in `v0.1.0`** —
+  [§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them). Check the
+  build before demoing the connector path.
+- **Only Snowflake ingests with the cluster's aggregate bandwidth.** A Postgres pull is
+  one node reading one stream and then partitioning it — Postgres returns no result
+  manifest to tile. Correct, single-node, and not what "compute-near-data" describes.
+- **Snowflake's connector is PAT/OAuth only.** Motive's `SVC_RETAIN_PROD` service account
+  uses RSA key-pair auth, which the connector schema has no field for
+  ([#994](https://github.com/oramasearch/zetta/issues/994), *Deferred*). If the
+  conversation moves from his local pgvector to their real warehouse, that is the wall.
 - **One methodology is executable.** The Pipeline compiler produces the tabular-supervised
   shape (M-1) plus part of the NLP/embeddings shape; the other nineteen in the catalogue
   are specified and not built ([zetta#984](https://github.com/oramasearch/zetta/issues/984)).
@@ -698,9 +899,16 @@ The fuller accounting of what has been claimed to Charles versus what is true is
 
 - [ ] Grant read on the four repos ([§0](#0--github-access--exactly-four-repos)); confirm
       his SSH key is on his GitHub account.
-- [ ] Confirm `v0.1.0` builds green from a clean clone on a machine that is not the dev box.
-- [ ] Decide headed vs. file-path for his data ([§4.1](#41--get-the-data-into-the-node)),
-      so the consent gate is a decision and not a surprise.
+- [ ] Confirm the build is green from a clean clone on a machine that is not the dev box,
+      and that the configure log says `Postgres source connector (libpqxx): ENABLED`
+      ([§1](#1--clone-and-build)) — without it `type: postgres` fails at *query* time.
+- [ ] **Decide which build he gets.** `v0.1.0` cannot do §4.1's connector path at all
+      ([§4.2](#42--two-bugs-that-used-to-stop-41-dead--and-which-build-has-them)). Either
+      ship him a build carrying [PR #996](https://github.com/oramasearch/zetta/pull/996),
+      or agree in advance that the session uses the file path and the connector is not
+      demoed. Verify with `./build/bin/zetta --help | grep -- --governance`.
+- [ ] Dry-run §4.1 → §4.4 yourself on **his** shape of data, on **the build he will get**,
+      before the session.
 - [ ] **Correct the component list to one image** before he takes it to Tony
       ([§5b](#5b--do-we-ship-the-kubernetes-operator-too--no-and-that-is-good-news)) — the
       Aug 5 call said operator + Zetta, and the operator is both unnecessary today and the

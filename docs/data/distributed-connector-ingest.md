@@ -11,7 +11,8 @@ coordinator, once to their eventual owner. This is the other half of
 
 ```
 include/zetta/connect/distributed_ingest.hpp  DistributedIngestOptions/Result, the launch kind
-src/core/connect/distributed_ingest.cpp       submit → launch → fetch → land → agree
+src/core/connect/distributed_ingest.cpp       type dispatch; submit → launch → fetch → land → agree (Snowflake),
+                                              run_single_shot_connector_ingest (Postgres and any untileable source)
 include/zetta/connect/distributed_fetch.hpp   plan_fetch_assignments (the tiling the launch runs on)
 include/zetta/data/fetch_affinity_placement.hpp  the placement that keeps a slice where it landed
 schemas/connector_fetch_launch.schema.json    the generated launch-payload schema
@@ -19,7 +20,43 @@ tests/connect/test_distributed_ingest.cpp     the five properties, over a real l
 src/core/testkit/cases_connect.cpp           cluster.distributed_import — the same properties as an in-app, GUI-runnable case
 ```
 
-## The four steps
+## Which connectors take this path
+
+**The four steps below are Snowflake's protocol.** They exist because
+Snowflake's SQL API v2 hands back a result *manifest* — a statement handle plus
+`partitionInfo[]` — which is what makes a result set tileable: the per-chunk row
+counts are the tiling's weights, and each node can fetch its own chunks
+directly from the source.
+
+A connector whose source has no such manifest cannot be tiled. Postgres returns
+one result set over its own wire protocol; there is nothing to weight a fan-out
+by and no way for a second node to pull "chunk 4". `run_distributed_connector_ingest`
+dispatches on `config.type` and sends those to
+**`run_single_shot_connector_ingest`**: pull the rows through the connector's
+own runner, then land them with the same `PartitionScheduler`, the same
+`partition_count` / `replication_factor`, the same `partition_only` marker, and
+the same fetch-affinity placement. **The dataset it produces is shaped exactly
+like the tiled path's** — it just fans out over this node's cores and disks
+rather than over the cluster's uplinks.
+
+That is an honest limit of the source, not a shortcut: a source that hands back
+one stream can only be read by one node. Distributing it means pushing a keyed
+range split into the query itself so each node asks the source for a different
+slice — a real slice, deliberately not built here.
+
+> Before this dispatch existed, **every** config went through the Snowflake
+> steps. A Postgres connection built a Snowflake REST request out of its empty
+> `account` and failed with `snowflake: could not resolve
+> .snowflakecomputing.com` — a vendor the caller never named. The bug was
+> invisible for as long as the consent gate refused `create_dataset_from_query`
+> before it reached the handler
+> ([#994](https://github.com/oramasearch/zetta/issues/994),
+> [#995](https://github.com/oramasearch/zetta/issues/995)). Pinned by
+> `DistributedIngest.ANonSnowflakeConfigNeverTakesTheSnowflakeProtocol` and, end
+> to end against a real database, by
+> `PostgresConnector.DistributedIngestLandsARealPostgresResultSet`.
+
+## The four steps (Snowflake)
 
 ```
 1. SUBMIT   one node POSTs the statement  ->  statementHandle + partitionInfo[]

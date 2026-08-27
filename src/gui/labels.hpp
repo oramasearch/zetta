@@ -40,6 +40,7 @@ constexpr std::string_view label_of(zetta::compute::JobKind kind) {
         case zetta::compute::JobKind::Explain:   return "Model explanation";
         case zetta::compute::JobKind::Score:     return "Batch scoring";
         case zetta::compute::JobKind::Ddf:       return "Data transform";
+        case zetta::compute::JobKind::Ingest:    return "Data ingest";
     }
     return "Compute job";
 }

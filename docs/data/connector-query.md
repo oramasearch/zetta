@@ -98,6 +98,18 @@ the consent gate rather than running silently. Governance-wise it is an
 `Orchestration / create_dataset_from_query` operation carried by the
 `pipelines:manage` permission.
 
+Two qualifications on that, both per-call rather than per-tool
+([../api/consent.md](../api/consent.md)):
+
+- **Consent enforcement is off unless the node was started with `--governance`**
+  (#995). Off, the call executes and audits as `consent_bypassed`.
+- **A loopback Postgres is not an external system.** The capability's
+  `ConsentDescriber` reads the resolved connector: a host of `127.0.0.1` /
+  `localhost` / `::1` or a unix socket never leaves the machine, so it is not
+  gated even with `--governance` on (#994). A remote source's challenge names
+  that connector's real type and target — it used to describe every source as
+  Snowflake.
+
 ## No foreign runtime (ADR-17)
 
 There is **no warehouse driver or SDK in the engine**. A connector builds plain

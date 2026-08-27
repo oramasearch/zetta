@@ -6,6 +6,29 @@ cloud rule in the root `CLAUDE.md` carried over the wire). Design settled in
 the explicit `consent_required` refusal from
 [#644](https://github.com/oramasearch/zetta/issues/644), which this replaces.
 
+## Enforcement is OFF by default
+
+`NodeConfig::enforce_consent` is `false` unless the node was started with
+`--governance` (or `ZETTA_GOVERNANCE=1`). With it off, a `requires_consent`
+capability executes on the first call and the ungated call is recorded as a
+**`consent_bypassed`** audit event carrying the summary the approver would have
+read — so "what touched a cloud on this node?" is still answerable without the
+challenge.
+
+This is a deliberate retreat, not the end state
+([#995](https://github.com/oramasearch/zetta/issues/995)). The protocol below
+is correct; its **approval surfaces are not reachable** on the node a first
+customer actually runs. The refusal used to point at the web console's
+`/governance` page, which has no consent list at all, and the desktop app's
+approval surface is on **Admin & audit**, not Governance. On a one-person
+laptop with a single API key there is no second principal either, so a
+challenge could be issued and then never decided by anybody — the gate blocked
+the action instead of gating it.
+
+Turn it back on per node with `--governance` once a reachable approval surface
+ships. Nothing else about the protocol changes: the same describers run, the
+same ledger, the same different-principal rule.
+
 ## The problem it closes
 
 Cloud-touching actions (a cloud `add_nodes`, a cloud inspect, provisioner
@@ -64,13 +87,18 @@ an agent auto-approves its own billable actions and the hard rule is hollow.
 | Provisioner backends | `zetta::cloud::ProvisionerFleet` (`include/zetta/cloud/provisioner_fleet.hpp`, moved from the GUI) — one holder feeds the headed Add-nodes control AND `ApiServer::set_provisioner_resolver` |
 | Read views | `system.consent_requests` (RULE-7, computed from the ledger) + the `list_consent_requests` capability |
 | Headed approval surface | `App::draw_consent_requests()` (Admin panel): each pending card names what would be read/run, Approve / Deny drive `decide_consent` as the trusted surface |
+| The enforcement switch | `NodeConfig::enforce_consent` (`include/zetta/node.hpp`), read in `Registry::call`; `--governance` / `ZETTA_GOVERNANCE` in `src/main.cpp` |
 
 ## Input-aware gating
 
 The describer sees the validated input, so consent is judged per call, not per
 tool: `add_nodes {target: "local"}` brings up no machines and touches no cloud
 — it executes on the first call, matching the GUI's plain-click parity — while
-any cloud target challenges. A `requires_consent` capability without a
+any cloud target challenges. `create_dataset_from_query` reads its resolved
+connector the same way: a Postgres on a loopback host or a unix socket never
+leaves the machine, so it is not a cloud and is not gated (#994), and a remote
+source's challenge names **that connector's** real type and target rather than
+a fixed sentence about Snowflake (#995). A `requires_consent` capability without a
 describer always challenges with a generic action built from its description
 (fail closed).
 
@@ -91,3 +119,7 @@ rides the registered draft-07 input schemas (the pboettch boundary in
   APR-3) so a challenge carries the cost preview alongside the command list.
 - Notification of pending challenges (today: poll `list_consent_requests` /
   `system.consent_requests`, or see the Admin panel).
+- **A consent list on the web console's `/governance` page**, and moving the
+  desktop app's out of Admin & audit onto Governance where both the refusal
+  text and the page name say it is (#995). Enforcement stays off by default
+  until then.

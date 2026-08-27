@@ -115,6 +115,14 @@ nlohmann::json rest_envelope(const ApiResult& result) {
         envelope["error"] = {{"code", result.error.code},
                              {"message", result.error.message},
                              {"path", result.error.path}};
+        // The structured failure payload rides along, exactly as it does on
+        // MCP — a "consent_required" refusal's challenge is the whole point of
+        // returning it (#621), and REST silently dropping it made the same
+        // call answer differently on the two renderings, which is the drift
+        // one registry exists to prevent (#995).
+        if (!result.error.details.is_null()) {
+            envelope["error"]["details"] = result.error.details;
+        }
     }
     envelope["trace_id"] = result.trace_id;
     envelope["span_id"] = result.span_id;
@@ -228,7 +236,13 @@ nlohmann::json error_envelope_schema() {
               {"path",
                {{"type", "string"},
                 {"description",
-                 "JSON pointer into the input when it is at fault"}}}}}}},
+                 "JSON pointer into the input when it is at fault"}}},
+              {"details",
+               {{"type", "object"},
+                {"description",
+                 "structured payload for failures that carry one \u2014 the "
+                 "consent challenge behind a consent_required refusal "
+                 "(#621). Absent otherwise."}}}}}}},
           {"trace_id", {{"type", "string"}}},
           {"span_id", {{"type", "string"}}},
           {"duration_ms", {{"type", "number"}}}}}};
@@ -290,8 +304,14 @@ nlohmann::json openapi_document(const Registry& registry) {
                 "immediately; poll progress through the read surface.";
         }
         if (capability->requires_consent) {
+            // Conditional, and the spec is generated without a node, so it
+            // cannot say which way this one is set (#995). Name the condition
+            // instead of asserting the outcome.
             description +=
-                " Consent-gated: never executes on a plain call (#621).";
+                " Consent-gated: on a node started with --governance this never "
+                "executes on a plain call — it returns a one-time consent "
+                "challenge that a DIFFERENT principal must approve (#621). "
+                "Consent enforcement is off by default.";
         }
         operation["description"] = std::move(description);
         operation["tags"] =

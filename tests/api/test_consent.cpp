@@ -58,7 +58,11 @@ public:
 
 struct ConsentFixture : ::testing::Test {
     zetta::test::TempDir dir;
-    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    // Consent enforcement is OFF by default (#995) — every test below is about
+    // the protocol that runs when it is ON, so this fixture asks for it
+    // explicitly. `ConsentDisabledFixture` at the bottom covers the default.
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false,
+                                       /*enforce_consent=*/true}};
     Registry registry;
     zetta::api::BackgroundActions background;
     CountingProvisioner fake_azure;
@@ -381,6 +385,153 @@ TEST_F(ConsentFixture, ConsentRequestsAreReadableAsASystemView) {
     auto listed = call("list_consent_requests", nlohmann::json::object());
     ASSERT_TRUE(listed.ok);
     EXPECT_EQ(listed.value.at("consent_requests").size(), 1u);
+}
+
+// --- The gate judges the source, not the tool name (#994, #995) ---------------
+
+// `create_dataset_from_query` was gated per-tool with a fixed sentence that
+// called every source Snowflake and every source a cloud. Both are per-call
+// facts, and its describer now reads them off the resolved connector.
+TEST_F(ConsentFixture, ALoopbackPostgresSourceIsNotACloudAndRunsUngated) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "local-pg"},
+                      {"connector",
+                       {{"type", "postgres"},
+                        {"host", "127.0.0.1"},
+                        {"port", "5433"},
+                        {"user", "motive"},
+                        {"token", "motive"},
+                        {"database", "motive"},
+                        {"sslmode", "disable"}}}})
+                    .ok);
+
+    auto result =
+        call("create_dataset_from_query",
+             {{"connection", "local-pg"},
+              {"query", "SELECT table_name FROM information_schema.tables"}});
+    // It reaches the handler — which fails on the unreachable local Postgres,
+    // not on consent. The point is which error: never "consent_required".
+    EXPECT_NE(result.error.code, "consent_required") << result.error.message;
+    EXPECT_TRUE(node.consent_ledger().pending().empty());
+}
+
+TEST_F(ConsentFixture, ARemoteSourceChallengesAndTheSummaryNamesItsRealType) {
+    ASSERT_TRUE(call("create_connection",
+                     {{"name", "warehouse"},
+                      {"connector",
+                       {{"type", "postgres"},
+                        {"host", "db.example.com"},
+                        {"port", "5432"},
+                        {"user", "readonly"},
+                        {"token", "secret"},
+                        {"database", "motive"}}}})
+                    .ok);
+
+    auto result = call("create_dataset_from_query",
+                       {{"connection", "warehouse"},
+                        {"query", "SELECT 1"}});
+    ASSERT_FALSE(result.ok);
+    ASSERT_EQ(result.error.code, "consent_required");
+    const std::string summary =
+        result.error.details.at("action").value("summary", "");
+    EXPECT_NE(summary.find("postgres db.example.com:5432/motive"),
+              std::string::npos)
+        << summary;
+    EXPECT_EQ(summary.find("Snowflake"), std::string::npos)
+        << "the summary must not name a connector the caller never used: "
+        << summary;
+    // What would run is the caller's own query, named verbatim.
+    EXPECT_EQ(result.error.details.at("action").at("runs").size(), 1u);
+    EXPECT_EQ(result.error.details.at("action").at("runs")[0], "SELECT 1");
+}
+
+// --- Consent enforcement is OFF by default (#995) -----------------------------
+
+// The gate points a refused caller at approval surfaces that a one-person node
+// cannot reach, so it blocks the action instead of gating it. Default OFF: the
+// call executes, and the bypass is recorded rather than silent.
+struct ConsentDisabledFixture : ConsentFixture {
+    zetta::test::TempDir open_dir;
+    // The default NodeConfig — no enforce_consent argument at all, so this
+    // fails if the default ever flips back without a deliberate decision.
+    zetta::Node open_node{
+        zetta::NodeConfig{open_dir.path().string(), /*preflight=*/false}};
+
+    void SetUp() override {
+        ConsentFixture::SetUp();
+        ASSERT_TRUE(open_node.start());
+    }
+    void TearDown() override {
+        wait_for_background();
+        open_node.stop();
+        ConsentFixture::TearDown();
+    }
+
+    ApiResult call_open(const std::string& name, nlohmann::json input) {
+        ApiContext context{open_node,
+                           nullptr,
+                           {},
+                           trace,
+                           &open_node.span_recorder(),
+                           &background,
+                           [this](const std::string& target)
+                               -> zetta::cloud::Provisioner* {
+                               if (target == "azure" || target == "local") {
+                                   return &fake_azure;
+                               }
+                               return nullptr;
+                           }};
+        return registry.call(name, input, context);
+    }
+
+    bool open_audit_contains(zetta::governance::AuditAction action) {
+        for (const auto& event : open_node.audit_events()) {
+            if (event->value().action == action) return true;
+        }
+        return false;
+    }
+};
+
+TEST_F(ConsentDisabledFixture, DefaultConfigLeavesConsentEnforcementOff) {
+    EXPECT_FALSE(zetta::NodeConfig{}.enforce_consent);
+}
+
+TEST_F(ConsentDisabledFixture, AGatedCallExecutesAndTheBypassIsAudited) {
+    auto result = call_open("add_nodes", {{"target", "azure"}, {"count", 2}});
+    ASSERT_TRUE(result.ok) << result.error.code << ": " << result.error.message;
+
+    // It really ran — the provisioner was reached, not merely un-refused. The
+    // cloud half rides a background worker either way, so pump it first.
+    wait_for_background();
+    EXPECT_EQ(fake_azure.provisions, 1);
+    // No challenge was minted: there is nothing for anyone to approve.
+    EXPECT_TRUE(open_node.consent_ledger().pending().empty());
+    // Ungated is not unrecorded.
+    EXPECT_TRUE(
+        open_audit_contains(zetta::governance::AuditAction::ConsentBypassed));
+    EXPECT_FALSE(
+        open_audit_contains(zetta::governance::AuditAction::ConsentRequested));
+
+    // The bypass row names what ran, so the audit trail still answers "what
+    // touched a cloud on this node?" without the challenge.
+    std::string detail;
+    for (const auto& event : open_node.audit_events()) {
+        if (event->value().action ==
+            zetta::governance::AuditAction::ConsentBypassed) {
+            detail = event->value().detail;
+        }
+    }
+    EXPECT_NE(detail.find("2 billable nodes"), std::string::npos) << detail;
+}
+
+// The describer still decides: `add_nodes {target: "local"}` touches no cloud,
+// so with enforcement OFF it executes for the same reason it always did — and
+// mints no bypass row, because nothing was bypassed.
+TEST_F(ConsentDisabledFixture, ALocalTargetIsNotRecordedAsABypass) {
+    auto result = call_open("add_nodes", {{"target", "local"}, {"count", 1}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_FALSE(
+        open_audit_contains(zetta::governance::AuditAction::ConsentBypassed));
 }
 
 }  // namespace

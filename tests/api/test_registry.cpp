@@ -59,9 +59,14 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 75u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+    EXPECT_EQ(registry.size(), 76u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
                                       // +agent_training_status +set_training_schedule (#941), +score (#948),
-                                      // +get_run_report (#958), +explain (#960 item 5)
+                                      // +get_run_report (#958), +explain (#960 item 5),
+                                      // +list_source_tables (#994)
+    // Finding a table must not require ingesting one: browsing a source's
+    // catalog used to mean running create_dataset_from_query against
+    // information_schema, which materialized a dataset to read a catalog (#994).
+    EXPECT_TRUE(registry.find("list_source_tables"));
     EXPECT_TRUE(registry.find("server_info"));
     // A run's report is readable through the control surface, not only from the
     // node that ran it (#958).
