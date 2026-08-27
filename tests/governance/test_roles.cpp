@@ -101,8 +101,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // (create_index joined it, #825; promote_dataset, #833; the agent
     // authoring trio create/update/delete_agent, #849; approve_plan, #885;
     // create/update_workspace_profile, #886; create/update_plan, Conflict D;
-    // agent_training_status + set_training_schedule, #941).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 29u);
+    // agent_training_status + set_training_schedule, #941;
+    // list_source_tables, #994).
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 30u);
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 

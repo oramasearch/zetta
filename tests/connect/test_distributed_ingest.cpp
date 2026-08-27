@@ -367,6 +367,43 @@ TEST(DistributedIngest, SingleNodeClusterTakesTheLocalPathAndLandsEverything) {
     EXPECT_EQ(all.rows.size(), kTotalRows);
 }
 
+// A connector that is not Snowflake must never be run through Snowflake's
+// submit/tile protocol. It was: `create_dataset_from_query` against a Postgres
+// connection built a Snowflake REST request out of the config's empty
+// `account` and failed with "could not resolve .snowflakecomputing.com" — a
+// vendor the caller never named, for a source that was on 127.0.0.1. The bug
+// hid behind the consent gate for as long as the gate refused the call first
+// (#994, #995). Pin the dispatch here, with no Postgres required: the reason
+// that comes back must be about the Postgres connector, never about Snowflake.
+TEST(DistributedIngest, ANonSnowflakeConfigNeverTakesTheSnowflakeProtocol) {
+    FakeWarehouse source;      // installed, and deliberately never reached
+    InstalledTransport installed(source);
+
+    const auto members = bring_up(24870, 1);
+
+    ConnectorConfig postgres;
+    postgres.type = "postgres";
+    postgres.host = "127.0.0.1";
+    postgres.port = "5433";
+    postgres.user = "motive";
+    postgres.database = "motive";
+
+    DistributedIngestOptions options = ingest_options();
+    options.connection.clear();  // inline config; no saved connection
+
+    const DistributedIngestResult result =
+        run_distributed_connector_ingest(members[0]->node, postgres, options);
+
+    // zetta-core installs no Postgres runner (that is zetta-api's job), so this
+    // fails — the assertion is about WHICH failure. A mention of Snowflake here
+    // means the type dispatch is gone again.
+    EXPECT_EQ(result.error.find("snowflake"), std::string::npos) << result.error;
+    EXPECT_EQ(result.error.find("Snowflake"), std::string::npos) << result.error;
+    EXPECT_NE(result.error.find("Postgres"), std::string::npos) << result.error;
+    EXPECT_EQ(source.submits, 0)
+        << "the Snowflake protocol was entered for a postgres config";
+}
+
 // ---------------------------------------------------------------------------
 // The acceptance: three real members, one query, every node pulling its own
 // tile straight from the source and landing it locally.

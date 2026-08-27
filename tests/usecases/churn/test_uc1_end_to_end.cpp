@@ -331,6 +331,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
             case JobKind::Score:     ++score; break;
             case JobKind::Explain:   ++explain; break;
             case JobKind::Ddf:       break;
+            case JobKind::Ingest:    break;  // no ingest step in this graph
         }
     }
     EXPECT_EQ(featurize, 1);

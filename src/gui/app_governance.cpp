@@ -205,10 +205,23 @@ void App::draw_consent_requests() {
                consent_decision_status_);
     }
     if (pending.empty()) {
-        ImGui::TextDisabled(
-            "No pending consent requests. Cloud-touching MCP calls park a "
-            "challenge here for approval; approvals are per-action and never "
-            "remembered.");
+        // "Nothing here" has two very different causes, and reading the wrong
+        // one costs an hour (#995): a node with the gate off will NEVER park a
+        // challenge, so say that rather than let an empty list imply the
+        // request was lost.
+        if (!node_.config().enforce_consent) {
+            ImGui::TextDisabled(
+                "Consent gating is off on this node, so cloud-touching calls "
+                "execute directly and park nothing here. They are still "
+                "recorded \u2014 see the audit trail below for "
+                "'consent bypassed'. Start the node with --governance to "
+                "require approval again.");
+        } else {
+            ImGui::TextDisabled(
+                "No pending consent requests. Cloud-touching MCP calls park a "
+                "challenge here for approval; approvals are per-action and never "
+                "remembered.");
+        }
         return;
     }
 

@@ -26,7 +26,8 @@ void append_capability(std::string& out, const Capability& capability) {
                capability.required_operation.domain)) +
            ":" + capability.required_operation.action;
     if (capability.mutates) out += " · mutates";
-    if (capability.requires_consent) out += " · consent-gated";
+    if (capability.requires_consent)
+        out += " \u00b7 consent-gated (only with --governance)";
     out += ")\n\n";
     out += capability.description + "\n\n";
     out += "REST: " + rest_method(capability) + " " + rest_path(capability) +

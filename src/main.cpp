@@ -112,6 +112,11 @@ void print_usage(const char* argv0) {
         "                      mTLS is always on — there is no plaintext mode\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
+        "  --governance        Enforce consent gating on cloud-touching calls.\n"
+        "                      OFF by default (#995): a consent-gated capability\n"
+        "                      executes on the first call and the bypass is\n"
+        "                      audited as consent_bypassed. Turn this on to\n"
+        "                      require a distinctly-privileged approval again\n"
         "  -h, --help          Show this help\n"
         "\n"
         "Environment (provisioning; applied as defaults, overridden by the\n"
@@ -119,7 +124,8 @@ void print_usage(const char* argv0) {
         "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
-        "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n",
+        "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
+        "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -218,6 +224,8 @@ Options parse_args(int argc, char** argv) {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
             o.node.preflight = false;
+        } else if (arg == "--governance") {
+            o.node.enforce_consent = true;
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {
@@ -401,6 +409,16 @@ int main(int argc, char** argv) {
     }
     if (opts.clerk_issuer.empty()) {
         if (const char* env = std::getenv("ZETTA_CLERK_ISSUER")) opts.clerk_issuer = env;
+    }
+    // Consent enforcement is off unless asked for, by flag or by environment —
+    // a provisioned node has no argv to edit (#995). An explicit --governance
+    // has already set it; the env can only turn it ON, never back off.
+    if (!opts.node.enforce_consent) {
+        if (const char* env = std::getenv("ZETTA_GOVERNANCE")) {
+            const std::string value = env;
+            opts.node.enforce_consent = value == "1" || value == "true" ||
+                                        value == "yes" || value == "on";
+        }
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a

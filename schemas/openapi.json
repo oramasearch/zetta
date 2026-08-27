@@ -12,6 +12,10 @@
                 "description": "invalid_input (400) · unauthorized / consent_required (403) · not_found / unknown_capability (404) · engine_error (422) · busy (503)",
                 "type": "string"
               },
+              "details": {
+                "description": "structured payload for failures that carry one — the consent challenge behind a consent_required refusal (#621). Absent otherwise.",
+                "type": "object"
+              },
               "message": {
                 "description": "the engine's reason, verbatim",
                 "type": "string"
@@ -226,7 +230,7 @@
     },
     "/v1/add_nodes": {
       "post": {
-        "description": "Add permanent nodes to this cluster via a wired provisioner. Cloud targets are consent-gated (billable): the first call returns a consent challenge; 'local' executes directly and touches no cloud. Requires orchestration:add_nodes. Consent-gated: never executes on a plain call (#621).",
+        "description": "Add permanent nodes to this cluster via a wired provisioner. Cloud targets are consent-gated (billable): the first call returns a consent challenge; 'local' executes directly and touches no cloud. Requires orchestration:add_nodes. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "add_nodes",
         "requestBody": {
           "content": {
@@ -1243,7 +1247,7 @@
     },
     "/v1/cloud_inspect": {
       "post": {
-        "description": "Consent-gated: inspect a cloud provider's identity/regions with its own CLI (read-only). First call returns a consent challenge; only a distinctly-privileged approval executes it. Requires orchestration:cloud_inspect. Consent-gated: never executes on a plain call (#621).",
+        "description": "Consent-gated: inspect a cloud provider's identity/regions with its own CLI (read-only). First call returns a consent challenge; only a distinctly-privileged approval executes it. Requires orchestration:cloud_inspect. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "cloud_inspect",
         "requestBody": {
           "content": {
@@ -2090,7 +2094,7 @@
     },
     "/v1/create_dataset_from_query": {
       "post": {
-        "description": "Run a read-only query against an external source (Snowflake) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. Reaches the source over the network with your credentials, so it is consent-gated (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: never executes on a plain call (#621).",
+        "description": "Run a read-only query against an external source (Snowflake or Postgres) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. A remote source is reached over the network with your credentials, so it is consent-gated when the node enforces governance; a loopback Postgres touches no cloud and runs directly (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "create_dataset_from_query",
         "requestBody": {
           "content": {
@@ -3503,7 +3507,7 @@
     },
     "/v1/detect_provisioners": {
       "post": {
-        "description": "Consent-gated: re-detect which cloud targets this node can drive by querying the local CLIs' deployment context (read-only). First call returns a consent challenge. Requires orchestration:detect_provisioners. Consent-gated: never executes on a plain call (#621).",
+        "description": "Consent-gated: re-detect which cloud targets this node can drive by querying the local CLIs' deployment context (read-only). First call returns a consent challenge. Requires orchestration:detect_provisioners. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
         "operationId": "detect_provisioners",
         "requestBody": {
           "content": {
@@ -7819,6 +7823,265 @@
           }
         },
         "summary": "List runs",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_source_tables": {
+      "get": {
+        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "operationId": "list_source_tables",
+        "parameters": [
+          {
+            "description": "a saved connection by name (give this OR an inline connector)",
+            "in": "query",
+            "name": "connection",
+            "required": false,
+            "schema": {
+              "description": "a saved connection by name (give this OR an inline connector)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                  "properties": {
+                    "account": {
+                      "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "default": "pat",
+                      "description": "Snowflake: how to present the bearer token.",
+                      "enum": [
+                        "pat",
+                        "oauth"
+                      ],
+                      "type": "string"
+                    },
+                    "database": {
+                      "description": "Session database (both connectors).",
+                      "type": "string"
+                    },
+                    "host": {
+                      "description": "Postgres host, e.g. 127.0.0.1.",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Postgres port (default 5432).",
+                      "type": "string"
+                    },
+                    "role": {
+                      "description": "Optional session role.",
+                      "type": "string"
+                    },
+                    "schema": {
+                      "description": "Session schema (both connectors).",
+                      "type": "string"
+                    },
+                    "sslmode": {
+                      "description": "Postgres sslmode (disable / require / verify-full / …).",
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "description": "Which connector implementation to use.",
+                      "enum": [
+                        "snowflake",
+                        "postgres"
+                      ],
+                      "type": "string"
+                    },
+                    "user": {
+                      "description": "Postgres role/user.",
+                      "type": "string"
+                    },
+                    "warehouse": {
+                      "description": "Snowflake compute warehouse (required for token auth).",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "title": "ConnectorConfig",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+            "in": "query",
+            "name": "connector",
+            "required": false
+          },
+          {
+            "description": "return each table's columns and their types (default true)",
+            "in": "query",
+            "name": "include_columns",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "return each table's columns and their types (default true)",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "case-insensitive substring the table name must contain, e.g. 'score' to find scoring tables",
+            "in": "query",
+            "name": "match",
+            "required": false,
+            "schema": {
+              "description": "case-insensitive substring the table name must contain, e.g. 'score' to find scoring tables",
+              "type": "string"
+            }
+          },
+          {
+            "description": "cap on tables returned (default 200)",
+            "in": "query",
+            "name": "max_tables",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "cap on tables returned (default 200)",
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "restrict to one schema; omitted = every non-system schema",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "description": "restrict to one schema; omitted = every non-system schema",
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "table_count": {
+                          "type": "integer"
+                        },
+                        "tables": {
+                          "items": {
+                            "properties": {
+                              "columns": {
+                                "items": {
+                                  "properties": {
+                                    "column": {
+                                      "type": "string"
+                                    },
+                                    "nullable": {
+                                      "type": "boolean"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "kind": {
+                                "description": "BASE TABLE | VIEW | …",
+                                "type": "string"
+                              },
+                              "schema": {
+                                "type": "string"
+                              },
+                              "table": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "truncated": {
+                          "description": "true when max_tables cut the list short",
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "tables"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List the tables in a connected source",
         "tags": [
           "read"
         ]

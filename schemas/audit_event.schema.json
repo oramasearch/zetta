@@ -17,7 +17,8 @@
         "cloud_inspected",
         "dataset_added",
         "consent_requested",
-        "consent_decided"
+        "consent_decided",
+        "consent_bypassed"
       ],
       "type": "string"
     },

@@ -2664,7 +2664,13 @@ struct ApiServer::Impl {
     boost::http::route_task serve_web_login(boost::http::route_params& route) {
         namespace http = boost::http;
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         const std::string token = form_field(parse_form(sink.data), "token");
         bool ok = false;
         if (!token.empty())
@@ -2710,7 +2716,13 @@ struct ApiServer::Impl {
     boost::http::route_task serve_session_login(boost::http::route_params& route) {
         namespace http = boost::http;
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string token;
         if (nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
             input.is_object() && input.contains("token") && input["token"].is_string())
@@ -2769,7 +2781,13 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string body;
         if (user_id.empty()) {
             body = web_ui_login("");
@@ -2857,7 +2875,13 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"ok":false,"error":"unauthorized"})";
@@ -2900,7 +2924,13 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"ok":false,"error":"unauthorized"})";
@@ -2940,7 +2970,13 @@ struct ApiServer::Impl {
             co_await bridge.run_on_owner(
                 [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
@@ -3018,7 +3054,13 @@ struct ApiServer::Impl {
         const std::string db = query_param(route, "db", "");
         const std::string name = query_param(route, "name", "");
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
@@ -3062,7 +3104,13 @@ struct ApiServer::Impl {
         const std::string db = query_param(route, "db", "");
         const std::string id = query_param(route, "id", "");
         StringBodySink sink;
-        co_await boost::capy::push_to(route.req_body, sink);
+        // A body-stream failure is a real route error, not a silently
+        // empty form: reading zero bytes because the peer went away must
+        // not fall through and be handled as "no fields supplied" (#992).
+        auto [read_error, bytes_read] =
+            co_await boost::capy::push_to(route.req_body, sink);
+        (void)bytes_read;
+        if (read_error) co_return http::route_error(read_error);
         std::string json_body;
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";

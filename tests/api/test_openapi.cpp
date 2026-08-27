@@ -98,6 +98,39 @@ TEST(RestRendering, ErrorCodesMapToHttpStatuses) {
               500);
 }
 
+// One registry, two renderings, zero drift — including on the FAILURE path.
+// A structured failure payload (the consent challenge behind a
+// "consent_required" refusal, #621) rode the MCP envelope and was dropped from
+// the REST one, so the same call answered differently depending on which
+// surface asked. A caller over REST got a challenge id in prose and no
+// challenge (#995).
+TEST(RestRendering, AStructuredFailurePayloadRidesTheRestEnvelope) {
+    using zetta::api::ApiResult;
+
+    ApiResult refused = ApiResult::failure("consent_required", "did not run");
+    refused.error.details = nlohmann::json{{"id", "challenge-1"},
+                                           {"capability", "cloud_inspect"}};
+    const nlohmann::json envelope = zetta::api::rest_envelope(refused);
+    ASSERT_TRUE(envelope.at("error").contains("details")) << envelope.dump();
+    EXPECT_EQ(envelope["error"]["details"]["id"], "challenge-1");
+
+    // A plain failure carries no `details` key at all — absent, not null.
+    const nlohmann::json plain =
+        zetta::api::rest_envelope(ApiResult::failure("engine_error", "boom"));
+    EXPECT_FALSE(plain.at("error").contains("details")) << plain.dump();
+
+    // And the documented envelope schema admits it, so the OpenAPI document
+    // describes what the wire actually carries.
+    EXPECT_TRUE(zetta::api::openapi_document(core_registry())
+                    .at("components")
+                    .at("schemas")
+                    .at("error_envelope")
+                    .at("properties")
+                    .at("error")
+                    .at("properties")
+                    .contains("details"));
+}
+
 // Every core capability documents its output (#618): a non-empty draft-07
 // object schema, and both schemas load in the same validator the boundary
 // uses — i.e. the OpenAPI document embeds only valid schemas.

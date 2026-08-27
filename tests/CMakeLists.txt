@@ -13,6 +13,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
+# ...and once more for gtest's own translation units, which hit the same line
+# while building libgtest.a. PRIVATE, so it never reaches anything else.
+check_cxx_compiler_flag(-Wno-character-conversion ZETTA_HAS_WNO_CHARACTER_CONVERSION)
+if(TARGET gtest AND ZETTA_HAS_WNO_CHARACTER_CONVERSION)
+  target_compile_options(gtest PRIVATE -Wno-character-conversion)
+endif()
+
+
 add_executable(zetta-tests
   api/test_registry.cpp
   api/test_agent_api.cpp
@@ -267,7 +275,21 @@ target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
   # registered input/output schema actually loads (test_openapi.cpp).
-  PRIVATE nlohmann_json_schema_validator)
+  PRIVATE nlohmann_json_schema_validator
+  # test_clerk_auth.cpp signs a JWT against libcrypto directly. zetta-core
+  # links OpenSSL::Crypto PRIVATE, so its include dirs never reach here and
+  # <openssl/bn.h> is not found — link it on this target too (#992).
+  PRIVATE OpenSSL::Crypto)
+
+# gtest v1.15.2's gtest-printers.h converts char8_t -> char32_t in PrintTo,
+# which newer Clang flags under -Wcharacter-conversion. It is a header, so the
+# warning is raised while compiling OUR test translation units, not gtest's —
+# an option on the gtest target could never reach it. Scope it to zetta-tests
+# so vendored noise never drowns a real warning and never leaks to the engine
+# targets (#992).
+if(ZETTA_HAS_WNO_CHARACTER_CONVERSION)
+  target_compile_options(zetta-tests PRIVATE -Wno-character-conversion)
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)

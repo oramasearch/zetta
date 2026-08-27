@@ -217,6 +217,22 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
             action = zetta::governance::ConsentAction{capability->description,
                                                       {}, {}};
         }
+        // Consent enforcement is OFF by default (#995, NodeConfig::enforce_consent):
+        // the surfaces the refusal points at cannot decide a challenge on a
+        // one-person node, so the gate blocks the action instead of gating it.
+        // Ungated is not unrecorded — the bypass is its own audit row
+        // (`consent_bypassed`) carrying the action summary the approver would
+        // have read, and a span attribute, so a node running without the gate
+        // still shows every cloud-touching call that ran because of it.
+        if (action && !context.node.config().enforce_consent) {
+            span.set_attribute("consent_enforced", "false");
+            audit_consent(context.node,
+                          zetta::governance::AuditAction::ConsentBypassed,
+                          context.acting_key, name, /*allowed=*/true,
+                          "consent enforcement is disabled (--governance off); "
+                          "ran without approval: " + action->summary);
+            action.reset();
+        }
         if (action) {
             auto challenge = context.node.consent_ledger().create(
                 name, effective_input, std::move(*action), context.acting_key,
@@ -229,18 +245,22 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                               challenge->action.summary);
             // Say where to go, not just what happened. A refusal that names a challenge id and
             // leaves the reader to find the surface that decides it is a dead end — the id is
-            // useless without the page. The web console's Consent requests tab lists it with
-            // Approve/Deny, and the headed app's approval surface is the trusted path when the
-            // requester has no second principal to approve with.
+            // useless without the page. It named the web console's /governance page, which has
+            // no consent list (#995); the surfaces that can actually decide it are the headed
+            // app's Admin & audit panel and an approver key over the wire. And when there is no
+            // second principal at all, the honest answer is that the gate is optional.
             ApiResult refusal = ApiResult::failure(
                 "consent_required",
                 "'" + name + "' touches a cloud provider and did NOT execute; consent challenge " +
                     challenge->id +
-                    " was issued and is waiting for approval at /governance (Consent requests). "
-                    "It must be approved by a DIFFERENT principal than the one that requested it: "
-                    "an approver key via approve_consent, or a human in the headed (desktop) app's "
-                    "approval surface \u2014 approving from the same session that made the request "
-                    "is refused by design. Approvals are per-action and never remembered.");
+                    " was issued and is waiting for a decision. It must be approved by a "
+                    "DIFFERENT principal than the one that requested it \u2014 an approver key "
+                    "calling approve_consent, or a human in the headed (desktop) app under "
+                    "Admin & audit \u2192 Consent requests, which is exempt from that rule. "
+                    "Approving from the session that made the request is refused by design, and "
+                    "approvals are per-action and never remembered. Read the pending challenges "
+                    "with list_consent_requests. This node was started with --governance; "
+                    "without it consent gating is off and this call would have executed.");
             refusal.error.details = zetta::governance::to_json(*challenge);
             return finish(std::move(refusal));
         }
