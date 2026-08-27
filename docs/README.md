@@ -48,6 +48,7 @@ run / test.
 | [plans/](plans/README.md) | Forward-looking work plans (current state + next steps), distinct from shipped-slice docs. |
 | [research/](research/) | Long-form background material (not descriptions of shipped code): coroutine runtime design, per-cloud CLI compute guides. |
 | [reports/](reports/README.md) | Generated deliverables: test reports, benchmarks, audits, measured claims. Dated, and linked from the issue that asked for them. |
+| [releases/](releases/README.md) | Cutting or reading a tagged release — what changed, what breaks, what is knowingly still open |
 
 ## Conventions for this tree
 
