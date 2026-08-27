@@ -247,7 +247,7 @@ claude mcp add --transport http zetta "$ZETTA/mcp" \
 Claude Desktop / claude.ai: Settings → Connectors → **Add custom connector**, URL
 `$ZETTA/mcp`, request header `Authorization: Bearer <token>`.
 
-**Measured:** `tools/list` returns **75 tools** on v0.1.0 — the same capability registry
+**Measured:** `tools/list` returns **76 tools** — the same capability registry
 that renders the REST routes and the OpenAPI spec, so an agent and a curl see identical
 facts. That set includes `deployment_profile`, `run`, `get_run_report`, `score` and
 `explain` — every step below is reachable from the agent without Charles writing curl.
@@ -289,10 +289,20 @@ What differs is **who composes the calls**:
 - **Always use the agent for [§5](#5--ask-the-node-how-to-deploy-itself)** — the Helm
   step was designed for exactly that and is the strongest thing to show him.
 
-**One trap on the MCP surface.** `prompts/list` advertises a **`build_and_run`** prompt —
-his client will show it as a slash command. It drives `agent_run`, which needs an agent,
-and **no agent ships in `v0.1.0`** ([§7](#7--what-is-not-in-this-delivery)). It will fail.
-Tell him to ignore it and use the tools directly; the tools need no model.
+**Two prompts, and only one of them works.** `prompts/list` shows both as slash commands
+in his client:
+
+| Prompt | Use it? |
+|---|---|
+| **`model_from_source`** | **Yes — this is the one.** The whole deterministic path: browse the source, pull a model-ready frame, compile → approve → gate → run with a holdout, read the report, then `score` / `explain`. Needs no agent and no checkpoint. Takes `connection` (required), plus optional `ask` and `database`. |
+| `build_and_run` | **No.** It drives `agent_run`, which needs an installed agent, and **no agent ships** ([§7](#7--what-is-not-in-this-delivery)). It will fail. |
+
+`model_from_source` carries the three column rules from
+[§4.1](#shape-the-source-query-for-the-model-not-just-for-the-read) inline, so an agent
+following it applies the casts *before* the run rather than discovering them from a
+failure. **Measured: an MCP client driving that prompt completed all 14 steps** —
+connection → catalog → frame → project → compile → approve → gate → run → report → score →
+explain — with no human correction.
 
 Each step below gives the curl. To run the same step over MCP, call the tool of the same
 name with the same arguments object:
@@ -375,6 +385,23 @@ curl -s -H "Authorization: Bearer $TOK" $ZETTA/v1/list_connections
 **Measured:** the response carries the full connector config **with `token` absent**. The
 secret is stored and never serialized back out by any surface. Worth having him check
 himself — it is exactly the kind of claim a security reviewer will ask about.
+
+**Then look inside the source before pulling anything.** `list_source_tables` opens one
+connection, runs one read-only catalog query, and **lands nothing** — this is how you find
+a table rather than ingesting one to discover it exists:
+
+```sh
+curl -s -G -H "Authorization: Bearer $TOK" "$ZETTA/v1/list_source_tables" \
+  --data-urlencode "connection=local-pg" --data-urlencode "match=account"
+```
+
+It returns each table with its columns and types. `match` is a case-insensitive substring —
+`match=score` is how you locate scoring tables in a database you have not seen. Drop
+`match` for everything, add `schema=public` to narrow, `include_columns=false` for just
+names.
+
+**Read the types it returns before writing the next query** — they tell you which columns
+need casting, which is exactly what the next section is about.
 
 **Then the call that is actually the demo** — rows out of his Postgres into a partitioned
 dataset, no export step:

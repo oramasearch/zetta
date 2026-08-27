@@ -160,14 +160,21 @@ claude mcp add --transport http zetta "$ZETTA/mcp" \
   --header "Authorization: Bearer $TOK"
 ```
 
-**Measured on `v0.1.0`:** `tools/list` returns **75 tools** — the same capability registry
+**Measured:** `tools/list` returns **76 tools** — the same capability registry
 that renders the REST routes and the OpenAPI spec, so an agent and a curl see identical
 facts by construction.
 
-> **`prompts/list` advertises a `build_and_run` prompt, and it will fail.** It drives
-> `agent_run`, which needs an installed agent, and a fresh node has none
-> ([#977](https://github.com/oramasearch/zetta/issues/977)). Use the tools directly — the
-> path in §4 needs no model at all.
+> **Two prompts; use `model_from_source`, not `build_and_run`.**
+> `model_from_source` is the whole deterministic path — browse the source, pull a
+> model-ready frame, compile → approve → gate → run with a holdout, read the report, then
+> `score` / `explain` — and needs no agent or checkpoint. It also carries the column rules
+> from [§4.2](#shape-the-source-query-for-the-model-not-just-for-the-read) inline, so an
+> agent applies the casts before the run instead of learning them from a failure.
+> `build_and_run` drives `agent_run`, which needs an installed agent that a fresh node does
+> not have ([#977](https://github.com/oramasearch/zetta/issues/977)), and will fail.
+>
+> **Measured: an MCP client driving `model_from_source` completed all 14 steps** with no
+> human correction.
 
 ---
 
@@ -242,7 +249,7 @@ store per row, saturating the node's owner loop
 ([#952](https://github.com/oramasearch/zetta/issues/952)). Parquet, JSONL and JSON behave
 identically.
 
-**A live connection — two calls, and the second one is the demo.**
+**A live connection — three calls: connect, look, pull.**
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
@@ -260,6 +267,20 @@ Discrete fields, **not a DSN**. Then verify the credential claim rather than ass
 `GET /v1/list_connections` returns the full connector config **with `token` absent**. The
 secret is never serialized back out by any surface — worth having an evaluator check
 themselves.
+
+Look inside it before pulling anything. `list_source_tables` opens one connection, runs one
+read-only catalog query and **lands nothing** — find a table rather than ingesting one to
+discover it exists:
+
+```sh
+curl -s -G -H "Authorization: Bearer $TOK" "$ZETTA/v1/list_source_tables" \
+  --data-urlencode "connection=local-pg" --data-urlencode "match=account"
+```
+
+Each table comes back with its columns and types. `match` is a case-insensitive substring
+(`match=score` locates scoring tables in a database you have not seen); `schema=` narrows,
+`include_columns=false` returns names only. Read the types before writing the next query —
+they decide what needs casting.
 
 Now pull rows straight out of the database into a partitioned dataset — no export, no
 file:
