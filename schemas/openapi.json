@@ -60,7 +60,7 @@
   "info": {
     "description": "The capability registry rendered as plain HTTP routes: reads are GET /v1/<name> (input in the query string), actions and jobs are POST /v1/<name> (input as the JSON body). The same registry is served as MCP tools on POST /mcp — one registry, two renderings, zero drift. Every response carries a trace_id; read the full trace back with get_trace.",
     "title": "Orama Zetta control surface",
-    "version": "0.0.1"
+    "version": "0.1.1"
   },
   "openapi": "3.1.0",
   "paths": {
