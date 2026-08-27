@@ -3691,6 +3691,199 @@ std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
     return config;
 }
 
+// --- list_source_tables ------------------------------------------------------
+//
+// Browse a connected source's schema WITHOUT ingesting from it (#994). Until
+// now the only way to answer "what tables are in this database?" was to run
+// `create_dataset_from_query` against `information_schema.tables` — which
+// materializes a partitioned, replicated dataset on the cluster in order to
+// read a catalog. That is what a customer actually did, and it leaves a junk
+// dataset behind every time someone looks.
+//
+// This is a Read: it opens one connection, runs one catalog query, returns
+// rows, and lands nothing.
+
+const nlohmann::json& list_source_tables_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"connection",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a saved connection by name (give this OR an inline connector)"}}},
+          {"connector", connector_property_schema()},
+          {"schema",
+           {{"type", "string"},
+            {"description",
+             "restrict to one schema; omitted = every non-system schema"}}},
+          {"match",
+           {{"type", "string"},
+            {"description",
+             "case-insensitive substring the table name must contain, e.g. "
+             "'score' to find scoring tables"}}},
+          {"include_columns",
+           {{"type", "boolean"},
+            {"default", true},
+            {"description",
+             "return each table's columns and their types (default true)"}}},
+          {"max_tables",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 2000},
+            {"default", 200},
+            {"description", "cap on tables returned (default 200)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& list_source_tables_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"tables"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"tables",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"schema", {{"type", "string"}}},
+                {"table", {{"type", "string"}}},
+                {"kind", {{"type", "string"},
+                          {"description", "BASE TABLE | VIEW | …"}}},
+                {"columns",
+                 {{"type", "array"},
+                  {"items",
+                   {{"type", "object"},
+                    {"properties",
+                     {{"column", {{"type", "string"}}},
+                      {"type", {{"type", "string"}}},
+                      {"nullable", {{"type", "boolean"}}}}}}}}}}}}}}},
+          {"table_count", {{"type", "integer"}}},
+          {"truncated",
+           {{"type", "boolean"},
+            {"description", "true when max_tables cut the list short"}}}}}};
+    return schema;
+}
+
+// A single-quoted SQL literal. The inputs here are caller-supplied filters that
+// go into a catalog query, so they are escaped rather than concatenated raw —
+// the connector's read-only guard stops a second statement, but it is not an
+// argument for building the first one carelessly.
+std::string sql_literal(const std::string& value) {
+    std::string out = "'";
+    for (const char character : value) {
+        if (character == '\'') out += '\'';
+        out += character;
+    }
+    out += "'";
+    return out;
+}
+
+ApiResult handle_list_source_tables(const nlohmann::json& input,
+                                    ApiContext& context) {
+    std::string reason;
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        resolve_query_connector(input, context, reason);
+    if (!config) return ApiResult::failure("invalid_input", reason);
+
+    const auto max_tables =
+        input.value("max_tables", static_cast<std::size_t>(200));
+    const bool include_columns = input.value("include_columns", true);
+    const std::string only_schema = input.value("schema", std::string{});
+    const std::string match = input.value("match", std::string{});
+
+    // information_schema is ISO SQL and both shipped connectors expose it, so
+    // one statement serves Postgres and Snowflake alike. The row cap is applied
+    // here rather than with LIMIT, which Snowflake and Postgres spell the same
+    // way but the read-only guard need not care about.
+    std::string statement =
+        "SELECT t.table_schema, t.table_name, t.table_type"
+        " FROM information_schema.tables t"
+        " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema')";
+    if (!only_schema.empty()) {
+        statement += " AND t.table_schema = " + sql_literal(only_schema);
+    }
+    if (!match.empty()) {
+        statement += " AND LOWER(t.table_name) LIKE " +
+                     sql_literal("%" + [&] {
+                       std::string lowered = match;
+                       std::transform(lowered.begin(), lowered.end(),
+                                      lowered.begin(), [](unsigned char c) {
+                                          return static_cast<char>(std::tolower(c));
+                                      });
+                       return lowered;
+                     }() + "%");
+    }
+    statement += " ORDER BY t.table_schema, t.table_name";
+
+    const zetta::connect::ConnectorResult listed = zetta::connect::run_connector_query(
+        *config, statement, max_tables + 1);
+    if (!listed.ok()) return ApiResult::failure("engine_error", listed.error);
+
+    const bool truncated = listed.data.rows.size() > max_tables;
+    nlohmann::json tables = nlohmann::json::array();
+    std::vector<std::pair<std::string, std::string>> wanted;
+    for (const nlohmann::json& row : listed.data.rows) {
+        if (tables.size() >= max_tables) break;
+        const std::string schema_name = row.value("table_schema", std::string{});
+        const std::string table_name = row.value("table_name", std::string{});
+        wanted.emplace_back(schema_name, table_name);
+        tables.push_back({{"schema", schema_name},
+                          {"table", table_name},
+                          {"kind", row.value("table_type", std::string{})}});
+    }
+
+    if (include_columns && !wanted.empty()) {
+        // One catalog query for every column of every table listed, rather than
+        // one round trip per table — a schema with 200 tables would otherwise be
+        // 200 connections.
+        std::string columns_statement =
+            "SELECT c.table_schema, c.table_name, c.column_name, c.data_type,"
+            " c.is_nullable, c.ordinal_position"
+            " FROM information_schema.columns c"
+            " WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')";
+        if (!only_schema.empty()) {
+            columns_statement +=
+                " AND c.table_schema = " + sql_literal(only_schema);
+        }
+        columns_statement += " ORDER BY c.table_schema, c.table_name, c.ordinal_position";
+
+        const zetta::connect::ConnectorResult described =
+            zetta::connect::run_connector_query(*config, columns_statement,
+                                                /*max_rows=*/100000);
+        if (described.ok()) {
+            for (const nlohmann::json& row : described.data.rows) {
+                const std::string schema_name =
+                    row.value("table_schema", std::string{});
+                const std::string table_name =
+                    row.value("table_name", std::string{});
+                for (nlohmann::json& entry : tables) {
+                    if (entry.value("schema", std::string{}) != schema_name ||
+                        entry.value("table", std::string{}) != table_name) {
+                        continue;
+                    }
+                    entry["columns"].push_back(
+                        {{"column", row.value("column_name", std::string{})},
+                         {"type", row.value("data_type", std::string{})},
+                         {"nullable",
+                          row.value("is_nullable", std::string{"YES"}) == "YES"}});
+                    break;
+                }
+            }
+        }
+        // A source that refuses the column catalog still returns its table list;
+        // the tables are the answer to "what is in here", columns are detail.
+    }
+
+    nlohmann::json output;
+    output["table_count"] = tables.size();
+    output["truncated"] = truncated;
+    output["tables"] = std::move(tables);
+    return ApiResult::success(std::move(output));
+}
+
 ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
                                            ApiContext& context) {
     std::string reason;
@@ -6342,6 +6535,24 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_list_connections});
+
+    registry.add(Capability{
+        "list_source_tables",
+        "List the tables in a connected source",
+        "Browse a connected source's catalog WITHOUT ingesting from it: the "
+        "tables (optionally with their columns and types) behind a saved "
+        "connection, filtered by schema and by a name substring. Opens one "
+        "connection, runs one read-only catalog query, lands nothing \u2014 use "
+        "this to FIND a table, then create_dataset_from_query to pull it. "
+        "Filter with match='score' to locate scoring tables.",
+        list_source_tables_schema(),
+        list_source_tables_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Orchestration, "list_source_tables"},
+        /*mutates=*/false,
+        /*requires_consent=*/true,
+        handle_list_source_tables,
+        describe_create_dataset_from_query});
 
     registry.add(Capability{
         "delete_connection",

@@ -7828,6 +7828,265 @@
         ]
       }
     },
+    "/v1/list_source_tables": {
+      "get": {
+        "description": "Browse a connected source's catalog WITHOUT ingesting from it: the tables (optionally with their columns and types) behind a saved connection, filtered by schema and by a name substring. Opens one connection, runs one read-only catalog query, lands nothing — use this to FIND a table, then create_dataset_from_query to pull it. Filter with match='score' to locate scoring tables. Requires orchestration:list_source_tables. Consent-gated: on a node started with --governance this never executes on a plain call — it returns a one-time consent challenge that a DIFFERENT principal must approve (#621). Consent enforcement is off by default.",
+        "operationId": "list_source_tables",
+        "parameters": [
+          {
+            "description": "a saved connection by name (give this OR an inline connector)",
+            "in": "query",
+            "name": "connection",
+            "required": false,
+            "schema": {
+              "description": "a saved connection by name (give this OR an inline connector)",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+                  "properties": {
+                    "account": {
+                      "description": "Snowflake account identifier (the host prefix, e.g. ab12345.us-east-1).",
+                      "type": "string"
+                    },
+                    "auth": {
+                      "default": "pat",
+                      "description": "Snowflake: how to present the bearer token.",
+                      "enum": [
+                        "pat",
+                        "oauth"
+                      ],
+                      "type": "string"
+                    },
+                    "database": {
+                      "description": "Session database (both connectors).",
+                      "type": "string"
+                    },
+                    "host": {
+                      "description": "Postgres host, e.g. 127.0.0.1.",
+                      "type": "string"
+                    },
+                    "port": {
+                      "description": "Postgres port (default 5432).",
+                      "type": "string"
+                    },
+                    "role": {
+                      "description": "Optional session role.",
+                      "type": "string"
+                    },
+                    "schema": {
+                      "description": "Session schema (both connectors).",
+                      "type": "string"
+                    },
+                    "sslmode": {
+                      "description": "Postgres sslmode (disable / require / verify-full / …).",
+                      "type": "string"
+                    },
+                    "token": {
+                      "description": "The secret: a Snowflake programmatic access / OAuth token, or a Postgres password. Never serialized back out.",
+                      "type": "string"
+                    },
+                    "type": {
+                      "description": "Which connector implementation to use.",
+                      "enum": [
+                        "snowflake",
+                        "postgres"
+                      ],
+                      "type": "string"
+                    },
+                    "user": {
+                      "description": "Postgres role/user.",
+                      "type": "string"
+                    },
+                    "warehouse": {
+                      "description": "Snowflake compute warehouse (required for token auth).",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "title": "ConnectorConfig",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Where and how to reach an external source for a connector query. The secret (Snowflake bearer / Postgres password) rides in `token` and is never serialized back out. Per-type required fields are enforced in from_json (Snowflake: account+token; Postgres: host+user+database).",
+            "in": "query",
+            "name": "connector",
+            "required": false
+          },
+          {
+            "description": "return each table's columns and their types (default true)",
+            "in": "query",
+            "name": "include_columns",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "return each table's columns and their types (default true)",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "case-insensitive substring the table name must contain, e.g. 'score' to find scoring tables",
+            "in": "query",
+            "name": "match",
+            "required": false,
+            "schema": {
+              "description": "case-insensitive substring the table name must contain, e.g. 'score' to find scoring tables",
+              "type": "string"
+            }
+          },
+          {
+            "description": "cap on tables returned (default 200)",
+            "in": "query",
+            "name": "max_tables",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "description": "cap on tables returned (default 200)",
+              "maximum": 2000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "restrict to one schema; omitted = every non-system schema",
+            "in": "query",
+            "name": "schema",
+            "required": false,
+            "schema": {
+              "description": "restrict to one schema; omitted = every non-system schema",
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "table_count": {
+                          "type": "integer"
+                        },
+                        "tables": {
+                          "items": {
+                            "properties": {
+                              "columns": {
+                                "items": {
+                                  "properties": {
+                                    "column": {
+                                      "type": "string"
+                                    },
+                                    "nullable": {
+                                      "type": "boolean"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "kind": {
+                                "description": "BASE TABLE | VIEW | …",
+                                "type": "string"
+                              },
+                              "schema": {
+                                "type": "string"
+                              },
+                              "table": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "truncated": {
+                          "description": "true when max_tables cut the list short",
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "tables"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List the tables in a connected source",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_specs": {
       "get": {
         "description": "Read the spec index: the OpenAPI document plus every JSON Schema this node speaks — capability input/output schemas and all schema-as-code boundary schemas — as names, kinds, and links. No side effects. Requires api:query.",
