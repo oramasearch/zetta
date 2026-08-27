@@ -14,6 +14,14 @@ wins is marketing, and the next reader rediscovers the gap expensively.
 
 ## Conventions
 
+- **Before working an issue, look for an open PR against it** — `gh pr list --search "<n>"`.
+  A contributor's branch that already fixes it is worth reviewing and merging, not
+  duplicating. This was missed for [#992](https://github.com/oramasearch/zetta/issues/992)
+  in v0.1.1, and an outside contributor's eight-day-old PR was superseded by work written
+  from scratch.
+- **Credit work the history will not show.** When a fix lands under a different commit than
+  the one that first proposed it, the release note says whose it was.
+
 - **Every number is measured**, against a running node, and says what it was measured on. A
   figure with no run behind it does not go in.
 - **A behaviour change gets its own section at the top**, with the flag or setting that
