@@ -559,7 +559,7 @@ posture.
 
 ## 5b · Whether to ship the operator too
 
-`orama-cloud-v1-operator`'s `OramaZettaCluster` CRD creates **exactly** what
+`orama-operator`'s `OramaZettaCluster` CRD creates **exactly** what
 `deployment_profile` describes by hand: a StatefulSet of equal peers, a headless Service
 for peer DNS on 7777, a client Service on 4800, a per-node PVC at `/data`, and two Secrets
 (the cluster join token and the seeded admin token).

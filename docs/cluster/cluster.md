@@ -215,7 +215,7 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   `node_type`) overlaid at query time with ephemeral per-node liveness + replication status
   (`directly_connected`, `status`, sync state) that is never written back to the CRDT. For aggregate
   cross-cluster bandwidth, each PERMANENT wan-accessible node should advertise its OWN address (per-node
-  LB, orama-cloud-v1-operator#104) so sync spreads across every node's uplink instead of funnelling
+  LB, orama-operator#104) so sync spreads across every node's uplink instead of funnelling
   through one shared rendezvous.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`

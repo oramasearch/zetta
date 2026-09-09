@@ -110,7 +110,7 @@ without asking a single question.
 - #188 `[REL-3]` — the one-button release gate over this flow.
 - #215 `[RUN-1]` — node bootstrap and enrollment underneath it.
 - #111 `[ENV-2]` — customer-managed Kubernetes, closed on the *manual* install path
-  (`orama-cloud-v1-operator/docs/install.md`). Path B here is that same target driven from
+  (`orama-operator/docs/install.md`). Path B here is that same target driven from
   the app instead.
 - [`env-4-ephemeral-burst`](env-4-ephemeral-burst.md) — borrowing temporary machines, once a
   cluster exists.

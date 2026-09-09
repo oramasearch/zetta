@@ -357,7 +357,7 @@ issued programmatically via `Node::create_token`.
 > The legacy anonymous HTTP path and the `--mcp-token` shared secret are **gone** from the binary — but the
 > in-process headed-GUI local session is **unaffected** (it authorizes in-process, not through the HTTP
 > gate; see below). The Orama operator injects `ZETTA_ADMIN_TOKEN` to seed the admin owner and renders
-> **no** `--cluster-plaintext` ([orama-cloud-v1-operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
+> **no** `--cluster-plaintext` ([orama-operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
 
 Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
 openapi + llms.txt), and the governed serving endpoints — is fronted by **one

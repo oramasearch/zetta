@@ -110,7 +110,7 @@ releases them again.
 
 ## Related
 
-- `orama-cloud-v1-operator#69` — the other half of Scenario B: the operator reads Zetta's
+- `orama-operator#69` — the other half of Scenario B: the operator reads Zetta's
   capacity signal, drives Karpenter to provision hardware, and scales
   `OramaZettaCluster.spec.replicas`.
 - #669 — enrollment beyond a shared join token (CSR, peer-cert pinning, revocation).
