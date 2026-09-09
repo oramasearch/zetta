@@ -136,7 +136,7 @@ Division of labor is therefore a **soft semantic convention**, not a mechanism:
   self-sufficient (bare hosts / dev / the macOS node need no operator).
 - **the operator enriches + drives lifecycle** — labels, desired-state, and **GC**
   (removing `node:<id>` for pods it deleted). It composes with, not replaces,
-  self-registration (operator [#105](https://github.com/oramasearch/orama-cloud-v1-operator/issues/105)
+  self-registration (operator [#105](https://github.com/oramasearch/orama-operator/issues/105)
   is enrichment, not the sole writer).
 
 Because merges are conflict-free, bending the convention (both write a field) simply

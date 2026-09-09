@@ -277,7 +277,7 @@ level can be trusted — a stale card is worse than none.
 
 ## Deployment under the Orama operator (One Orama)
 
-Zetta is deployed + operated by the **orama-cloud-v1-operator** (One Orama,
+Zetta is deployed + operated by the **orama-operator** (One Orama,
 [orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)) as an `OramaZettaCluster` —
 a StatefulSet of headless nodes + a headless peer Service (:7777) + a client Service (:4800). Two facts
 shape how the engine is used there:
@@ -289,7 +289,7 @@ shape how the engine is used there:
   sync spreads across all their uplinks — aggregate bandwidth); **dial-out-only** nodes (NAT / private
   pods) advertise no dialable address and only reach outbound. Peer traffic is **always mTLS** — one
   shared join token per cluster; there is **no plaintext mode** (the `--cluster-plaintext` escape hatch
-  was removed as a security hole, [operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
+  was removed as a security hole, [operator#92](https://github.com/oramasearch/orama-operator/issues/92)).
   A dial-out-only node must **never advertise its private pod IP**, and peers must **never dial it** — else,
   when two clusters share a pod CIDR (e.g. k0s + AKS both `10.244.0.x`), the dial hits the wrong node and
   undercounts membership ([#803](https://github.com/oramasearch/zetta/issues/803)); it syncs via its one
@@ -297,9 +297,9 @@ shape how the engine is used there:
 - **Zetta is the operators' datastore.** Each operator provisions its own schema (`orama_control` /
   `orama_data`) over `/v1/sql` and syncs its observed state into it, namespaced by a per-operator id so a
   shared store never collides. See the operator's
-  [`docs/zetta-datastore.md`](https://github.com/oramasearch/orama-cloud-v1-operator/blob/main/docs/zetta-datastore.md).
+  [`docs/zetta-datastore.md`](https://github.com/oramasearch/orama-operator/blob/main/docs/zetta-datastore.md).
   Planned: Zetta signals the operator for elastic capacity (→ Karpenter → more nodes,
-  [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69)).
+  [operator#69](https://github.com/oramasearch/orama-operator/issues/69)).
 
 ## Repository shape: bridge + modules
 

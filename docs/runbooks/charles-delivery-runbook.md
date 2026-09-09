@@ -772,7 +772,7 @@ nothing Charles can use yet.
 > **Phase 2 (when it earns its keep):** the operator, once there is a reason — several
 > Zetta slices across clusters joined into one CRDT cluster, elastic capacity, or the
 > operator using Zetta as its own datastore. It already has its own Helm chart
-> (`orama-cloud-v1-operator/chart/`), so it packages the same way when the time comes.
+> (`orama-operator/chart/`), so it packages the same way when the time comes.
 
 This is also the honest form of the **no-privilege deployment mode** we already owe him
 ([§8](#8--checklist-for-today)): phase 1 *is* that mode, and shipping it first proves the

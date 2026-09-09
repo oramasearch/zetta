@@ -133,7 +133,7 @@ verdict) — they assert strictly once enforcement is intact.
 
 The script lives here so it evolves with the engine, and is packaged into the
 **`oramasearch/zetta-e2e`** runner image (Alpine + `curl` + `jq` + this script; built in
-`zetta-bridge/build/images/zetta-e2e/`). The **orama-cloud-v1-operator** owns a
+`zetta-bridge/build/images/zetta-e2e/`). The **orama-operator** owns a
 `ZettaClusterE2ETest` CRD that runs the image as an in-cluster Job against a deployed
 `OramaZettaCluster` and surfaces pass/fail in the CR status — the same pattern as its
 `OramaCloudV1E2ETest`. This is part of **One Orama / One Amaro**
