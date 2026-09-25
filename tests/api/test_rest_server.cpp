@@ -373,6 +373,36 @@ TEST_F(RestClusterFixture, RunReportAnswersForADatasetlessRun) {
 // GET /v1/openapi.json serves exactly what the generator produces from the
 // server's registry — the served document and the drift-checked artifact
 // share one source of truth.
+// #1008 over the wire: an upload well past the HTTP parser's old 64 KiB default
+// body limit lands, and reads back through list_datasets. Before the limit was
+// raised, a body this size could not reach the capability at all.
+TEST_F(RestServerFixture, UploadDatasetOverRestAcceptsALargeBody) {
+    std::string content = "account,plan,mrr\n";
+    std::size_t rows = 0;
+    while (content.size() < 1024 * 1024) {  // ~1 MiB of csv
+        content += std::to_string(rows) + ",pro," + std::to_string(rows * 3) + "\n";
+        ++rows;
+    }
+    const nlohmann::json body = {
+        {"table_name", "uploaded"}, {"format", "csv"}, {"content", content}};
+    auto uploaded = request("POST", "/v1/upload_dataset", body.dump());
+    ASSERT_EQ(uploaded.status, 200) << uploaded.body.substr(0, 400);
+    auto uploaded_body = json_of(uploaded);
+    ASSERT_TRUE(uploaded_body.at("ok").get<bool>()) << uploaded.body.substr(0, 400);
+    EXPECT_EQ(uploaded_body.at("value").at("rows"), rows);
+
+    auto listed = request("GET", "/v1/list_datasets");
+    ASSERT_EQ(listed.status, 200) << listed.body;
+    bool found = false;
+    for (const auto& dataset : json_of(listed).at("value").at("datasets")) {
+        if (dataset.at("name") == "uploaded") {
+            found = true;
+            EXPECT_EQ(dataset.at("rows"), rows);
+        }
+    }
+    EXPECT_TRUE(found) << listed.body;
+}
+
 TEST_F(RestServerFixture, OpenApiDocumentIsServed) {
     auto served = request("GET", "/v1/openapi.json");
     EXPECT_EQ(served.status, 200);

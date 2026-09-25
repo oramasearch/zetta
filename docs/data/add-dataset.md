@@ -168,6 +168,57 @@ Two small differences from the file path:
   documents (the same shape a `.jsonl` file decodes to). Only the audit note reads
   it; there is no file to classify.
 
+## `add_dataset_content` + `upload_dataset` — a file's text over the API (#1008)
+
+`add_dataset` takes `path`, a file on the **node's** filesystem, which a remote
+caller cannot write. `add_dataset_content` takes the file's **text** instead and
+runs it through the very same decoders (`decode_csv` / `decode_jsonl` /
+`decode_json`) and the same create-table → add-rows → `write_partitioned` → audit
+path:
+
+```cpp
+inline constexpr std::size_t kMaxDatasetContentBytes = 16 * 1024 * 1024;  // 16 MiB
+
+AddDatasetResult add_dataset_content(Node& node, std::string_view content,
+                                     dataset_file::Format format,
+                                     const AddDatasetOptions& options = {});
+```
+
+Its control-surface entry is the **`upload_dataset`** action (REST
+`POST /v1/upload_dataset`, the MCP tool of the same name):
+
+| Input | | |
+|---|---|---|
+| `table_name` | string, required | the new table's name; a clash gets `_2`, `_3`, … like a re-added file |
+| `format` | `"csv"` \| `"jsonl"`, required | how `content` is laid out (csv: a header row, cells type-inferred) |
+| `content` | string, required | the file's text, at most **16 MiB** (16 777 216 bytes) |
+| `database` | string | target database, created if absent (default `datasets`) |
+| `replication_factor` | integer ≥ 1 | owners per partition (default 3, clamped to the node count) |
+
+The output is `add_dataset`'s: `{database, table, format, rows, partitions[]}`. It is
+**authorized exactly like `add_dataset`** (`orchestration:add_dataset`: whoever may add
+a dataset from a file may add the same rows from a request) and audited as
+`dataset_added`; the table then appears in `list_datasets` / `system.datasets` and can
+be given to `run` as `dataset_path: "<database>.<table>"` ([dataset-path.md](dataset-path.md)).
+
+**The cap is 16 MiB of content, and it is a refusal, not a truncation.** Over it the
+call answers `invalid_input` (400) naming the cap and pointing at the paths built for
+bigger data — a file on the node (`add_dataset`) or a source connection
+(`create_dataset_from_query`), both of which land data partition by partition. The
+whole text is held in memory and decoded on the owner loop, so the cap bounds both the
+request and the stall. To let a capped upload through at all, the HTTP server's
+request-body limit was raised from the parser's 64 KiB default to
+`2 × 16 MiB + 1 MiB` (`kMaxRequestBodyBytes` in `http_server.cpp`: JSON escaping can
+double a CSV's size); a body over that answers **413**. Refusals — oversize, a format
+other than csv/jsonl (schema), malformed jsonl (the line is named), a csv with a header
+and no rows — create nothing. Parquet is not accepted: it is binary and has no text
+form.
+
+Tests: `tests/api/test_registry.cpp` (`UploadDataset*`: csv + jsonl land and list,
+type inference and quoted cells match the file path, the audit, the name suffix, and
+every refusal) and `tests/api/test_rest_server.cpp`
+(`UploadDatasetOverRestAcceptsALargeBody`: ~1 MiB over loopback HTTP).
+
 ## The headed affordance
 
 The GUI reaches `add_dataset_file` three ways, all routed through the existing

@@ -44,6 +44,7 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/agent/agent_store.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -59,6 +60,16 @@ namespace zetta::api {
 namespace {
 
 constexpr std::string_view kProtocolVersion = "2025-06-18";
+
+// The largest request body the server reads (#1008). The HTTP parser's server
+// default is 64 KiB, which is fine for every call but one: `upload_dataset`
+// carries a file's text, up to kMaxDatasetContentBytes (16 MiB), and JSON string
+// escaping can grow it — a CSV's newlines and quotes each become two bytes. Twice
+// the content cap plus room for the rest of the envelope keeps every legal upload
+// under the limit, and the limit still bounds what one request can make the
+// node buffer.
+constexpr std::uint64_t kMaxRequestBodyBytes =
+    2 * zetta::data::kMaxDatasetContentBytes + 1024 * 1024;
 
 // Boost.JSON -> nlohmann, via serialization (the one sanctioned crossing).
 nlohmann::json to_nlohmann(const boost::json::value& value) {
@@ -841,7 +852,13 @@ struct ApiServer::Impl {
                 http::json_sink body_sink;
                 auto [read_error, bytes_read] =
                     co_await boost::capy::push_to(route.req_body, body_sink);
-                if (read_error) {
+                if (read_error == http::error::body_too_large) {
+                    status = http::status::payload_too_large;
+                    response_body = transport_error_body(
+                        "invalid_input",
+                        "the request body is larger than this node accepts (" +
+                            std::to_string(kMaxRequestBodyBytes) + " bytes)");
+                } else if (read_error) {
                     status = http::status::bad_request;
                     response_body = transport_error_body(
                         "invalid_input",
@@ -3753,7 +3770,11 @@ bool ApiServer::start() {
 
     impl.server = std::make_unique<beast2::http_server>(
         impl.io_context, impl.options.worker_coroutines, std::move(router),
-        http::make_parser_config(http::parser_config(true)),
+        http::make_parser_config([] {
+            http::parser_config config(/*server=*/true);
+            config.body_limit = kMaxRequestBodyBytes;
+            return config;
+        }()),
         http::make_serializer_config(http::serializer_config()));
 
     corosio::ipv4_address address(impl.options.listen_address);
