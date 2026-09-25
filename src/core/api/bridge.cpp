@@ -1,5 +1,7 @@
 #include "zetta/api/bridge.hpp"
 
+#include <cstdio>
+#include <exception>
 #include <utility>
 #include <vector>
 
@@ -33,7 +35,19 @@ void MainThreadBridge::drain() {
         queue_.clear();
     }
     for (PendingWork& pending_work : batch) {
-        pending_work.work();
+        // `work` must not throw (see the header), but if it does, the awaiting
+        // coroutine must still resume: an unset event parks the request forever
+        // (the client sees no response, #1007), and the exception would also
+        // skip every later item in this batch and unwind the owner loop. The
+        // awaiting side reads whatever the work left behind — for a capability
+        // call, a default (failed) result, which it answers as a 500.
+        try {
+            pending_work.work();
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "zetta: owner-loop work threw: %s\n", error.what());
+        } catch (...) {
+            std::fprintf(stderr, "zetta: owner-loop work threw an unknown error\n");
+        }
         pending_work.completed->set();
     }
 }

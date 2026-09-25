@@ -16,6 +16,8 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/pipeline/gate.hpp"
@@ -352,6 +354,53 @@ TEST(ChurnSolution, ReportNamesTheFiguresItCannotSupply) {
         }
     }
     EXPECT_TRUE(named) << "the report did not say why it has no held-out figure";
+}
+
+// #1007: the report reads a table the run wrote — replicated state, which a peer
+// or a customer's dataset shaped. A column of an unexpected type (a null rank, a
+// string account id that was never derived to a key) made nlohmann's typed
+// accessors THROW inside the read, and a throw on the owner loop is a request
+// nobody answers. The report must come back, carrying the odd row as it is.
+TEST(ChurnSolution, ReportToleratesAtRiskRowsOfAnUnexpectedShape) {
+    const Solution* solution = SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24535);
+    CpuDevice device;
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, solution->graph, zetta::usecases::churn::demo_churn_dataset());
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+
+    // The at-risk table the run materialized, by the run's own `dataset` output.
+    std::shared_ptr<zetta::data::Table> at_risk_table;
+    for (const zetta::pipeline::RunOutput& output : result.execution.run->outputs()) {
+        const std::size_t dot = output.ref.find('.');
+        if (output.kind != "dataset" || dot == std::string::npos) continue;
+        if (auto database = host.node.find_database(output.ref.substr(0, dot))) {
+            at_risk_table = database->find_table(output.ref.substr(dot + 1));
+        }
+        if (at_risk_table) break;
+    }
+    ASSERT_TRUE(at_risk_table) << "the run materialized no at-risk table";
+    at_risk_table->add_row(
+        {{"rank", nullptr}, {"account", "acct-0042"}, {"risk", "high"}});
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{host.node};
+    const zetta::api::ApiResult read = registry.call(
+        "get_run_report",
+        {{"run_id", result.execution.run->id()}, {"limit", 1000}}, context);
+    ASSERT_TRUE(read.ok) << read.error.code << ": " << read.error.message;
+
+    bool carried = false;
+    for (const nlohmann::json& entry : read.value.at("at_risk")) {
+        if (entry.at("entity") == "acct-0042") {
+            carried = true;
+            EXPECT_EQ(entry.at("risk"), 0.0) << entry.dump(2);
+        }
+    }
+    EXPECT_TRUE(carried) << "the odd row was dropped rather than reported as-is";
 }
 
 // =====================================================================

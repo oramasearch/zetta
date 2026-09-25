@@ -108,6 +108,33 @@ std::string principal_of(Node& node, const std::string& acting_key) {
 
 }  // namespace
 
+namespace {
+
+// Run a handler, turning an exception into an engine_error result (#1007).
+//
+// Handlers are non-throwing by contract, but a handler reads replicated state a
+// peer or a customer's dataset wrote — a column of an unexpected type, a value of
+// the wrong shape — and nlohmann's typed accessors throw on that. An exception
+// escaping Registry::call unwinds through the owner-loop bridge: over REST the
+// caller gets no response at all, and on a headless node it terminates the
+// process. Contain it here, the one place every surface passes through, and
+// answer with the engine's reason like any other failure. (On macOS this relies
+// on linking Homebrew's libunwind — see the note in CMakeLists.txt.)
+ApiResult invoke_contained(const Capability& capability, const nlohmann::json& input,
+                           ApiContext& context) {
+    try {
+        return capability.handler(input, context);
+    } catch (const std::exception& error) {
+        return ApiResult::failure(
+            "engine_error", "'" + capability.name + "' failed: " + error.what());
+    } catch (...) {
+        return ApiResult::failure(
+            "engine_error", "'" + capability.name + "' failed with an unknown error");
+    }
+}
+
+}  // namespace
+
 ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                          ApiContext& context) const {
     // Every call is a span (docs/architecture/observability.md): intent is
@@ -272,7 +299,7 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // agent tools, #904) calls back through this — same context, so the caller's
     // permissions and the audit trail apply to the inner call too.
     context.registry = this;
-    ApiResult result = capability->handler(effective_input, context);
+    ApiResult result = invoke_contained(*capability, effective_input, context);
 
     if (result.ok && capability->mutates && activity_) {
         activity_(ActivityEvent{capability->name,

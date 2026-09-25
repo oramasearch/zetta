@@ -698,8 +698,11 @@ This is not bureaucracy. Three failures it prevents, all of which have happened:
   capability added to one by hand is a capability the other silently lacks.
 
 **Read capabilities are `GET`, actions are `POST`.** Worth stating because
-probing a read with POST returns an empty reply that looks exactly like a hung
-node, and a whole issue was filed on that misreading (#954).
+probing a read with POST used to return no reply at all, which looks exactly
+like a hung node — a whole issue was filed on that misreading (#954). It now
+answers 405 naming the right method, and an unknown `/v1/<name>` answers 404
+(#1007); a node *older* than the fix still goes silent, so on a deployed image
+a silent route usually means the capability predates the image.
 
 When a capability is added, the same change updates: the registry entry, the
 regenerated `schemas/openapi.json` (`ZETTA_WRITE_SCHEMAS=1`), the capability-count

@@ -66,13 +66,24 @@ nlohmann::json to_nlohmann(const boost::json::value& value) {
                                  /*cb=*/nullptr, /*allow_exceptions=*/false);
 }
 
+// Serialize a response body for the wire WITHOUT throwing. nlohmann's plain
+// dump() throws on a string that is not valid UTF-8, and a value a handler
+// returns can carry one (a customer's CSV column, a Latin-1 account name). A
+// throw here escapes the route coroutine, the worker drops the connection, and
+// the caller sees "Empty reply from server" instead of an answer (#1007).
+// Invalid sequences are replaced with U+FFFD, so the rest of the body survives.
+std::string wire_dump(const nlohmann::json& value) {
+    return value.dump(-1, ' ', /*ensure_ascii=*/false,
+                      nlohmann::json::error_handler_t::replace);
+}
+
 std::string jsonrpc_error(const nlohmann::json& id, int code,
                           std::string_view message) {
     nlohmann::json response;
     response["jsonrpc"] = "2.0";
     response["id"] = id.is_null() ? nlohmann::json() : id;
     response["error"] = {{"code", code}, {"message", message}};
-    return response.dump();
+    return wire_dump(response);
 }
 
 std::string jsonrpc_result(const nlohmann::json& id, nlohmann::json result) {
@@ -80,7 +91,7 @@ std::string jsonrpc_result(const nlohmann::json& id, nlohmann::json result) {
     response["jsonrpc"] = "2.0";
     response["id"] = id;
     response["result"] = std::move(result);
-    return response.dump();
+    return wire_dump(response);
 }
 
 // The beast2 worker reuses ONE response object across requests (and across
@@ -712,7 +723,7 @@ struct ApiServer::Impl {
 
             nlohmann::json result;
             result["content"] = nlohmann::json::array(
-                {{{"type", "text"}, {"text", payload.dump()}}});
+                {{{"type", "text"}, {"text", wire_dump(payload)}}});
             result["structuredContent"] = std::move(payload);
             result["isError"] = !call_result.ok;
             return jsonrpc_result(id, std::move(result));
@@ -883,13 +894,79 @@ struct ApiServer::Impl {
                 });
             }
             status = http_status_of(rest_status(call_result));
-            response_body = rest_envelope(call_result).dump();
+            response_body = wire_dump(rest_envelope(call_result));
         }
 
         route.status(status);
         route.res.set(http::field::content_type, "application/json");
         stamp_response_headers(route, response_body);
         auto [send_error] = co_await route.send(response_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // The last handler on the router: a request NO route answered (#1007).
+    //
+    // Without it the router falls through, the beast2 worker writes nothing, and
+    // goes back to reading the next request on the same connection — so a client
+    // that asked for a path this node does not serve waits forever for a response
+    // that is never coming (curl: 0 bytes, then its own timeout; through a proxy
+    // that closes the upstream, "Empty reply from server"). That reads exactly
+    // like a hung node, and it is what an image built before a capability existed
+    // shows for that capability's route. Every request gets an answer:
+    //
+    //   - /v1/<name> where <name> IS a capability, wrong method -> 405 naming the
+    //     method it takes (reads are GET, actions/jobs are POST — #954 was filed on
+    //     this exact misreading);
+    //   - /v1/<name> where <name> is not a capability -> 404 unknown_capability;
+    //   - anything else -> 404 not_found.
+    //
+    // The connection is closed after the reply: a request body this handler never
+    // read would otherwise be parsed as the next request.
+    boost::http::route_task serve_unrouted(boost::http::route_params& route) {
+        namespace http = boost::http;
+
+        const std::string path(route.url.path());
+        const std::string method(route.req.method_text());
+        constexpr std::string_view kCapabilityPrefix = "/v1/";
+
+        http::status status = http::status::not_found;
+        std::string body;
+        if (path.starts_with(kCapabilityPrefix)) {
+            const std::string name = path.substr(kCapabilityPrefix.size());
+            std::shared_ptr<const Capability> capability;
+            co_await bridge.run_on_owner(
+                [&] { capability = capability_registry.find(name); });
+            if (capability) {
+                const std::string expected = rest_method(*capability);
+                status = http::status::method_not_allowed;
+                route.res.set(http::field::allow, expected);
+                body = transport_error_body(
+                    "method_not_allowed",
+                    "'" + name + "' is " +
+                        (expected == "GET"
+                             ? std::string("a read: call it with GET and the input in "
+                                           "the query string")
+                             : std::string("an action: call it with POST and the "
+                                           "input as a JSON body")) +
+                        " (got " + method + ")");
+            } else {
+                body = transport_error_body(
+                    "unknown_capability",
+                    "no capability named '" + name +
+                        "' on this node — GET /v1/openapi.json lists the ones it "
+                        "serves (an older node may predate the one you asked for)");
+            }
+        } else {
+            body = transport_error_body("not_found",
+                                        "no route for " + method + " " + path);
+        }
+
+        route.status(status);
+        route.res.set(http::field::content_type, "application/json");
+        route.res.set_keep_alive(false);
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
@@ -3666,6 +3743,13 @@ bool ApiServer::start() {
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_entity_endpoint(route, /*predict=*/false);
                });
+
+    // LAST: answer whatever no route above matched (#1007) — an unknown path, or
+    // a capability called with the wrong method — instead of leaving the client
+    // waiting for a response that never comes. Must stay the final registration.
+    router.use([&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_unrouted(route);
+    });
 
     impl.server = std::make_unique<beast2::http_server>(
         impl.io_context, impl.options.worker_coroutines, std::move(router),

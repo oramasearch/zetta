@@ -556,6 +556,27 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
     return nullptr;
 }
 
+// A number from an at-risk row, or `fallback` when the column is absent or not a
+// number. nlohmann's `value<T>` THROWS when the key is present with another type
+// (a null rank, a string account id from a customer's dataset), and a throw from
+// a read is an answer nobody receives (#1007). The report reads a table a run
+// wrote — replicated state — so it tolerates a column of an unexpected type.
+double row_number(const nlohmann::json& row, const char* key, double fallback) {
+    const auto found = row.find(key);
+    if (found == row.end() || !found->is_number()) return fallback;
+    return found->get<double>();
+}
+
+// The entity key of an at-risk row: an int64 the whole way through (#1000), or
+// whatever the row holds verbatim when it is not an integer (a business id that
+// was never derived to a key, #957) — reported as-is rather than zeroed.
+nlohmann::json row_entity(const nlohmann::json& row) {
+    const auto found = row.find("account");
+    if (found == row.end() || found->is_null()) return std::int64_t{0};
+    if (found->is_number_integer()) return found->get<std::int64_t>();
+    return *found;
+}
+
 // A row count as a plain integer string — "4", not "4.000000".
 std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
@@ -657,7 +678,8 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         }
         std::sort(rows.begin(), rows.end(),
                   [](const nlohmann::json& left, const nlohmann::json& right) {
-                      return left.value("rank", 0.0) < right.value("rank", 0.0);
+                      return row_number(left, "rank", 0.0) <
+                             row_number(right, "rank", 0.0);
                   });
         nlohmann::json at_risk = nlohmann::json::array();
         for (const nlohmann::json& row : rows) {
@@ -667,10 +689,12 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             // keys are int64 the whole way through, and a derived key — the
             // documented remedy for a string business id (#957) — is above
             // 2^31 about half the time, which made the ranked list a customer
-            // is shown disagree with this node's own SQL table.
-            nlohmann::json entry = {{"rank", row.value("rank", 0)},
-                                    {"entity", row.value("account", std::int64_t{0})},
-                                    {"risk", row.value("risk", 0.0)}};
+            // is shown disagree with this node's own SQL table. `row_entity`
+            // keeps the int64, and reads without throwing (#1007).
+            nlohmann::json entry = {
+                {"rank", static_cast<std::int64_t>(row_number(row, "rank", 0.0))},
+                {"entity", row_entity(row)},
+                {"risk", row_number(row, "risk", 0.0)}};
             // Evidence is whatever columns beyond the fixed ones the run wrote —
             // the population's strongest drivers, the same columns on every row.
             nlohmann::json evidence = nlohmann::json::object();

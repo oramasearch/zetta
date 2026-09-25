@@ -24,7 +24,11 @@ What it installs (or install manually):
   since LLVM 21.1.8 the headers availability-gate symbols the macOS *system*
   dylib lacks (floating-point `std::from_chars` → "'from_chars' is
   unavailable: introduced in macOS 26.0"), which is a false alarm when running
-  against Homebrew's dylib.
+  against Homebrew's dylib. It also links **Homebrew's libunwind**
+  (`lib/unwind`, `-lunwind`): Homebrew's libc++abi paired with the *system*
+  unwinder sometimes skips a matching `catch` and `std::terminate()`s — a catch
+  that works in a toy program fails in a real frame (#1007). `otool -L
+  build/tests/zetta-tests | grep unwind` should show the Homebrew path.
 - **OpenSSL 3** (`openssl@3` on Homebrew, `libssl-dev` on apt) — **required**:
   it backs the cluster's inter-node mutual TLS (Corosio's TLS provider) and the
   node-identity certificate minting (CTL-2, #466;

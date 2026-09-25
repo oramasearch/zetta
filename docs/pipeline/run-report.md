@@ -42,6 +42,14 @@ facts as one generated the moment the run ended, and that anything querying
 It follows RULE-7: observable state is a view computed from the live source, never a
 hand-synced copy.
 
+**It always answers (#1007).** A run with no resolvable model output answers
+`not_found` (404) saying there are no measured numbers — it does not wait for one.
+The at-risk rows are read without typed accessors that throw: a `rank` or `risk`
+that is not a number reads as `0`, and an `account` that is not an integer (a
+business id never derived to a key, #957) is reported verbatim as `entity` rather
+than failing the whole report. A dataset-less churn run (the built-in demo data) is
+covered end to end over REST in `tests/api/test_rest_server.cpp`.
+
 ## What the run has to write down
 
 The feature table is in memory and gone when the run ends, so the facts a report needs
