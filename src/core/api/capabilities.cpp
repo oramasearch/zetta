@@ -1405,6 +1405,108 @@ ApiResult handle_create_project(const nlohmann::json& input, ApiContext& context
     return ApiResult::success(std::move(output));
 }
 
+// --- delete_project (#1009) --------------------------------------------------
+//
+// Removes the project with its inputs and graphs (Node::drop_project — the
+// replicated document first, so every peer drops them, then the on-disk
+// directory). Runs and models are deliberately KEPT: they are records of what
+// happened and what was trained, a model may be deployed or exposed, and each
+// carries the project only as a label. They stay listed; this answer says how
+// many were left behind so the caller is not surprised to still see them.
+
+const nlohmann::json& delete_project_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the project's name (list_projects)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_project_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "id", "removed", "kept"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"id", {{"type", "string"}, {"description", "the deleted project's uuid"}}},
+          {"removed",
+           {{"type", "object"},
+            {"required", {"inputs", "graphs"}},
+            {"additionalProperties", false},
+            {"description", "what was deleted with the project"},
+            {"properties",
+             {{"inputs", {{"type", "integer"}}}, {"graphs", {{"type", "integer"}}}}}}},
+          {"kept",
+           {{"type", "object"},
+            {"required", {"runs", "models"}},
+            {"additionalProperties", false},
+            {"description",
+             "records that name this project and were NOT deleted: they stay "
+             "listed in list_runs / list_models, still labelled with the project's "
+             "id"},
+            {"properties",
+             {{"runs", {{"type", "integer"}}}, {"models", {{"type", "integer"}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_delete_project(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    const std::shared_ptr<zetta::pipeline::Project> project =
+        context.node.find_project(name);
+    if (!project) {
+        return ApiResult::failure("not_found", "no project named '" + name + "'");
+    }
+    const std::string id = project->id();
+    // A run records its project by id (the run capability) or, from the in-process
+    // runners, by name; count both so `kept` is honest either way.
+    const auto names_this_project = [&](const std::string& label) {
+        return label == id || label == name;
+    };
+
+    std::size_t runs = 0;
+    std::size_t in_progress = 0;
+    for (const auto& run : context.node.runs()) {
+        if (!names_this_project(run->project())) continue;
+        ++runs;
+        if (run->status() == zetta::pipeline::RunStatus::Pending ||
+            run->status() == zetta::pipeline::RunStatus::Running) {
+            ++in_progress;
+        }
+    }
+    // Deleting the graph out from under a run that is still executing it would
+    // leave that run to fail half-way for a reason nobody asked for.
+    if (in_progress > 0) {
+        return ApiResult::failure(
+            "engine_error",
+            "project '" + name + "' has " + std::to_string(in_progress) +
+                " run(s) still pending or running; wait for them to finish "
+                "(get_run) and delete it then");
+    }
+    std::size_t models = 0;
+    for (const auto& model : context.node.models()) {
+        if (names_this_project(model->project())) ++models;
+    }
+    const std::size_t inputs = project->input_count();
+    const std::size_t graphs = project->graph_count();
+
+    if (!context.node.drop_project(name)) {
+        return ApiResult::failure("engine_error",
+                                  "could not delete project '" + name + "'");
+    }
+    nlohmann::json output;
+    output["name"] = name;
+    output["id"] = id;
+    output["removed"] = {{"inputs", inputs}, {"graphs", graphs}};
+    output["kept"] = {{"runs", runs}, {"models", models}};
+    return ApiResult::success(std::move(output));
+}
+
 // --- expose_model / expose_index (#648, docs/api/serving.md) ------------------
 //
 // Exposure flips the entity's REPLICATED `exposed` flag (Model::set_exposed /
@@ -6207,6 +6309,21 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    registry.add(Capability{
+        "delete_project",
+        "Delete project",
+        "Delete a project with its captured inputs and its graphs, on every node. "
+        "Its runs and models are KEPT - they stay listed in list_runs / list_models, "
+        "still labelled with the deleted project's id - and the answer counts them. "
+        "Refused while one of its runs is pending or running. Not undoable. (#1009)",
+        delete_project_schema(),
+        delete_project_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_project"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_project});
 
     // --- agents (#849): CRUD for the served, selectable agent entity ----------
     registry.add(Capability{

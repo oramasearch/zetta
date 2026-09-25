@@ -1023,6 +1023,12 @@ bool Node::drop_project(const std::string& name) {
         for (const auto& graph : project->graphs()) {
             replication_->remove(catalog::graph_key(graph->id()));
         }
+        // ...and its inputs (#1009). They were left behind as `input:` keys naming
+        // a project that no longer exists — the integrity check counts exactly
+        // these as dangling_inputs.
+        for (const auto& input : project->inputs()) {
+            replication_->remove(catalog::input_key(input->id()));
+        }
         replication_->remove(catalog::project_key(project->id()));
     }
     return materialize_drop_project(project->id());
