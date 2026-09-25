@@ -42,7 +42,7 @@ CRUD (`shared_ptr` handles, empty/`false` on miss or clash):
 |---|---|---|
 | `create_project(name, owner = {})` | `shared_ptr<Project>` | Empty handle if `name` is empty or already taken. Stamps `created`/`updated`. |
 | `find_project(name)` | `shared_ptr<Project>` | Empty handle on miss. |
-| `drop_project(name)` | `bool` | `true` if one was removed. |
+| `drop_project(name)` | `bool` | `true` if one was removed. Removes the project **with its inputs and graphs** (their `input:`/`graph:` keys and the folder); runs and models are kept (see [Deleting a project](#deleting-a-project--delete_project-1009)). |
 | `rename_project(from, to)` | `bool` | `false` if `to` is empty/taken or `from` is missing. Bumps `updated`. |
 | `project_names()` | `vector<string>` | Sorted by name. |
 | `project_count()` | `size_t` | — |
@@ -52,6 +52,37 @@ auto churn = node.create_project("churn", "team:risk");   // owner key optional
 node.rename_project("churn", "retention");                // keeps the id
 node.drop_project("retention");
 ```
+
+## Deleting a project — `delete_project` (#1009)
+
+The control-surface entry is the **`delete_project`** action (REST
+`POST /v1/delete_project`, the MCP tool of the same name), authorized like
+`create_project` — its own right, `orchestration:delete_project`, in the
+`pipelines:manage` bundle — and audited like every capability call.
+
+- **Input:** `{ "name": "<project>" }` (required, the name `list_projects` shows).
+- **Output:** `{ name, id, removed: { inputs, graphs }, kept: { runs, models } }`.
+- **Missing project:** `not_found`.
+- **A run of the project still `pending` or `running`:** refused (`engine_error`) —
+  deleting the graph out from under an executing run would fail it half-way.
+
+**What goes:** the project, its captured inputs (and their payload bodies) and its
+graphs — removed from the replicated document (tombstones, so every peer drops
+them on its next reconcile) and from disk. Before #1009, `drop_project` removed the
+graphs but left each `input:` key behind naming a project that no longer existed;
+the integrity check counted them as `dangling_inputs`.
+
+**What stays, deliberately: runs and models.** A run is a record of what happened
+and a model is what was trained; a model may be deployed or exposed and serving
+traffic, and its lineage is what an audit reads. Neither is *part* of the project —
+each carries the project's **id** as a plain label (`run.project`, `model.project`).
+They stay listed in `list_runs` / `list_models` / `system.runs` / `system.models`,
+still carrying that id, which now resolves to no project. The answer's `kept`
+counts them so the caller is not surprised to still see them. Deployments and agents
+that name the project are likewise untouched. A project later created with the same
+name gets a new id, so old runs do not attach to it.
+
+Not undoable: there is no trash or restore.
 
 ## Persistence & replication
 
@@ -218,7 +249,7 @@ edit here) and the correctness gate are separate slices.
 
 ## Tests
 
-`tests/pipeline/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
+`tests/pipeline/test_project.cpp` covers create/find/rename/drop (+ owner + stamps; a drop leaves no `input:`/`graph:` key behind and keeps a labelled run, #1009),
 survival across a restart (both disk-only and CRDT-only), and replication of a
 project + a rename to a connected peer. `tests/pipeline/test_project_graph.cpp` does the
 same for a project's execution graphs: create/find/drop, **`update_graph`**
@@ -226,4 +257,6 @@ same for a project's execution graphs: create/find/drop, **`update_graph`**
 survives restart via the CRDT), restart via disk and via the CRDT, and
 replication of a graph to a peer (with a faithful round-trip checked each time).
 Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
-covered in `tests/pipeline/test_execution_graph.cpp`.
+covered in `tests/pipeline/test_execution_graph.cpp`. The `delete_project` capability's journey
+(delete → read back, runs/models kept, missing → `not_found`, refused while a run is in
+flight) is in `tests/api/test_registry.cpp`.

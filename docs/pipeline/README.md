@@ -10,7 +10,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 
 - [run-report.md](run-report.md) — what a run FOUND: the facts artifact behind a report, assembled at query time from the Model record and the at-risk table (`get_run_report`, #958).
 - [run-report-prompt.md](run-report-prompt.md) — the run report artifact and the prompt that writes it: the engine computes every number, the narrator may only arrange them (#948 step 4).
-- [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD, and the execution graphs it owns.
+- [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→…→act taxonomy, and its schema-validated JSON form.
 - [intent-compiler.md](intent-compiler.md) — NL intent → a reviewable, editable ExecutionGraph skeleton (`zetta::pipeline::compile_intent`; templated churn mapping, FEAT-2 / #311).

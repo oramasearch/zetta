@@ -3092,6 +3092,148 @@
         ]
       }
     },
+    "/v1/delete_project": {
+      "post": {
+        "description": "Delete a project with its captured inputs and its graphs, on every node. Its runs and models are KEPT - they stay listed in list_runs / list_models, still labelled with the deleted project's id - and the answer counts them. Refused while one of its runs is pending or running. Not undoable. (#1009) Requires orchestration:delete_project.",
+        "operationId": "delete_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the project's name (list_projects)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "description": "the deleted project's uuid",
+                          "type": "string"
+                        },
+                        "kept": {
+                          "additionalProperties": false,
+                          "description": "records that name this project and were NOT deleted: they stay listed in list_runs / list_models, still labelled with the project's id",
+                          "properties": {
+                            "models": {
+                              "type": "integer"
+                            },
+                            "runs": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "runs",
+                            "models"
+                          ],
+                          "type": "object"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "description": "what was deleted with the project",
+                          "properties": {
+                            "graphs": {
+                              "type": "integer"
+                            },
+                            "inputs": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "inputs",
+                            "graphs"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "id",
+                        "removed",
+                        "kept"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/deny_consent": {
       "post": {
         "description": "Refuse one pending consent challenge; the named action never runs. The requesting key may withdraw its own challenge. Requires orchestration:deny_consent.",

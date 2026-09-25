@@ -62,12 +62,15 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 77u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+    EXPECT_EQ(registry.size(), 78u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
                                       // +agent_training_status +set_training_schedule (#941), +score (#948),
                                       // +get_run_report (#958), +explain (#960 item 5),
-                                      // +list_source_tables (#994), +upload_dataset (#1008)
+                                      // +list_source_tables (#994), +upload_dataset (#1008),
+                                      // +delete_project (#1009)
     // A remote caller can put data on the node without a file on its disk (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
+    // A mistaken project can be removed, not only created (#1009).
+    EXPECT_TRUE(registry.find("delete_project"));
     // Finding a table must not require ingesting one: browsing a source's
     // catalog used to mean running create_dataset_from_query against
     // information_schema, which materialized a dataset to read a catalog (#994).
@@ -110,8 +113,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // ...and the governed serving slice (#648): exposure is an
     // orchestration:<name> action like every other mutation.
     for (const char* name :
-         {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
-          "compile_python", "approve_plan", "gate", "deploy", "run",
+         {"create_project", "delete_project", "capture_intent", "import_n8n",
+          "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
           "update_workspace_profile", "create_plan", "update_plan"}) {
@@ -311,6 +314,90 @@ TEST_F(RegistryFixture, JourneyCreateProjectThenReadBack) {
     EXPECT_FALSE(duplicate.ok);
     EXPECT_EQ(duplicate.error.code, "engine_error");
     EXPECT_EQ(activity_count.load(), 1);  // no hook on failure
+}
+
+// #1009 journey: delete a project and read the deletion back. Its inputs and
+// graphs go with it; its runs and models are kept, stay listed, and the answer
+// says how many were left behind.
+TEST_F(RegistryFixture, JourneyDeleteProjectThenReadBack) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "mistake"}}).ok);
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "keeper"}}).ok);
+    auto captured = call("capture_intent",
+                         nlohmann::json{{"project", "mistake"},
+                                        {"text", "predict which accounts churn"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    auto compiled = call("compile_intent",
+                         nlohmann::json{{"project", "mistake"},
+                                        {"input_id", captured.value.at("input_id")}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    const std::string project_id = node.find_project("mistake")->id();
+
+    // A finished run and a model labelled with the project.
+    auto run = node.create_run(project_id);
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    zetta::ml::ModelValue model_value;
+    model_value.kind = "classifier";
+    model_value.name = "mistake-model";
+    model_value.project = project_id;
+    auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+
+    auto deleted = call("delete_project", nlohmann::json{{"name", "mistake"}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.code << ": " << deleted.error.message;
+    EXPECT_EQ(deleted.value.at("name"), "mistake");
+    EXPECT_EQ(deleted.value.at("id"), project_id);
+    EXPECT_EQ(deleted.value.at("removed").at("inputs"), 1u);
+    EXPECT_EQ(deleted.value.at("removed").at("graphs"), 1u);
+    EXPECT_EQ(deleted.value.at("kept").at("runs"), 1u);
+    EXPECT_EQ(deleted.value.at("kept").at("models"), 1u);
+
+    // Read back: gone from list_projects, the other project untouched...
+    auto listed = call("list_projects", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok);
+    const auto projects = listed.value.at("projects");
+    EXPECT_EQ(std::find(projects.begin(), projects.end(), "mistake"), projects.end());
+    EXPECT_NE(std::find(projects.begin(), projects.end(), "keeper"), projects.end());
+    auto get = call("get_project", nlohmann::json{{"name", "mistake"}});
+    EXPECT_FALSE(get.ok);
+    EXPECT_EQ(get.error.code, "not_found");
+
+    // ...and the run + model still listed, still labelled.
+    auto runs = call("get_run", nlohmann::json{{"run_id", run->id()}});
+    ASSERT_TRUE(runs.ok) << runs.error.message;
+    EXPECT_EQ(runs.value.at("project"), project_id);
+    auto models = call("get_model", nlohmann::json{{"model_id", model->id()}});
+    ASSERT_TRUE(models.ok) << models.error.message;
+
+    // Deleting it again, or anything missing, is not_found.
+    auto again = call("delete_project", nlohmann::json{{"name", "mistake"}});
+    EXPECT_FALSE(again.ok);
+    EXPECT_EQ(again.error.code, "not_found");
+    auto missing = call("delete_project", nlohmann::json{{"name", "never-was"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "not_found");
+
+    // The name is free again.
+    EXPECT_TRUE(call("create_project", nlohmann::json{{"name", "mistake"}}).ok);
+}
+
+// A project whose run is still in flight is not deleted out from under it.
+TEST_F(RegistryFixture, DeleteProjectRefusesWhileARunIsInProgress) {
+    ASSERT_TRUE(call("create_project", nlohmann::json{{"name", "busy"}}).ok);
+    auto run = node.create_run(node.find_project("busy")->id());
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Running);
+
+    auto refused = call("delete_project", nlohmann::json{{"name", "busy"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "engine_error");
+    EXPECT_NE(refused.error.message.find("running"), std::string::npos)
+        << refused.error.message;
+    EXPECT_TRUE(node.find_project("busy"));
+
+    run->set_status(zetta::pipeline::RunStatus::Failed);
+    EXPECT_TRUE(call("delete_project", nlohmann::json{{"name", "busy"}}).ok);
+    EXPECT_FALSE(node.find_project("busy"));
 }
 
 // Journey (#616): create a project, capture an intent input and a graph, then

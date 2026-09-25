@@ -229,6 +229,10 @@ public:
                                             std::string owner = {},
                                             std::string description = {});
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
+    // drop removes the project with its inputs and graphs — from the replicated
+    // document (so every peer drops them) and from disk. Runs and models are
+    // NOT touched: they are records of what happened, keep the project's id as
+    // a plain label, and stay listed (#1009, docs/pipeline/projects.md).
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
     std::vector<std::string> project_names() const;

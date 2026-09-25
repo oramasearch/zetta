@@ -40,6 +40,7 @@ const std::vector<PermissionEntry>& vocabulary() {
         // guarded by a test (tests/api/test_auth_gate.cpp).
         {"pipelines:manage",
          {{CapabilityDomain::Orchestration, "create_project"},
+          {CapabilityDomain::Orchestration, "delete_project"},
           {CapabilityDomain::Orchestration, "add_dataset"},
           {CapabilityDomain::Orchestration, "create_dataset_from_query"},
           {CapabilityDomain::Orchestration, "promote_dataset"},

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
+#include <string_view>
 #include <string>
 #include <thread>
 
@@ -9,7 +11,9 @@
 #include "temp_dir.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -155,6 +159,51 @@ TEST(Project, PersistsAcrossRestartViaCRDT) {
     ASSERT_TRUE(project);
     EXPECT_EQ(project->id(), id);
     EXPECT_EQ(project->owner(), "team:growth");
+    node.stop();
+}
+
+// #1009: dropping a project takes its inputs and graphs out of the replicated
+// document too. Graphs already went; `input:` keys were left behind naming a
+// project that no longer existed — exactly what the integrity check counts as
+// dangling_inputs, and what a peer would have kept materializing nowhere.
+TEST(Project, DropRemovesItsInputsAndGraphsFromTheDocument) {
+    TempDir tmp;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    Node node{config_for(tmp), &replication};
+    node.start();
+    auto project = node.create_project("doomed");
+    ASSERT_TRUE(project);
+    ASSERT_TRUE(project->capture_intent("predict churn"));
+    ASSERT_TRUE(project->capture_intent("and say why"));
+    ASSERT_TRUE(project->create_graph("skeleton", zetta::ir::ExecutionGraph{}));
+    const std::filesystem::path project_dir = project->dir();
+    ASSERT_TRUE(std::filesystem::exists(project_dir));
+
+    // A run labelled with the project: a record, not part of the project.
+    auto run = node.create_run(project->id());
+    ASSERT_TRUE(run);
+
+    ASSERT_TRUE(node.drop_project("doomed"));
+
+    const auto count_prefix = [&](std::string_view prefix) {
+        int keys = 0;
+        const nlohmann::json snapshot = replication.snapshot();
+        for (const auto& [key, value] : snapshot.items()) {
+            if (key.starts_with(prefix)) ++keys;
+        }
+        return keys;
+    };
+    EXPECT_EQ(count_prefix("project:"), 0);
+    EXPECT_EQ(count_prefix("input:"), 0);
+    EXPECT_EQ(count_prefix("graph:"), 0);
+    const zetta::IntegrityReport integrity = node.check_integrity();
+    EXPECT_EQ(integrity.dangling_inputs, 0u);
+    EXPECT_EQ(integrity.dangling_graphs, 0u);
+    EXPECT_FALSE(std::filesystem::exists(project_dir));
+
+    // The run is kept, still carrying the project's id as its label.
+    EXPECT_TRUE(node.find_run(run->id()));
+    EXPECT_EQ(count_prefix("run:"), 1);
     node.stop();
 }
 
