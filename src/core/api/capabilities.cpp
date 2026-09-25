@@ -3429,6 +3429,96 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- upload_dataset (#1008) ---------------------------------------------------------
+//
+// add_dataset reads a file on the NODE's filesystem, which a remote caller cannot
+// write. This takes the file's text in the request and lands it through the same
+// decode + table-creation + partition-write + audit path (add_dataset_content).
+
+const nlohmann::json& upload_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"table_name", "format", "content"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"table_name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the new table's name. A name already taken in the database gets a "
+             "numeric suffix (_2, _3, ...); the output says which name was used"}}},
+          {"format",
+           {{"type", "string"},
+            {"enum", {"csv", "jsonl"}},
+            {"description",
+             "how `content` is laid out: csv (a header row, then one row per line, "
+             "cells type-inferred) or jsonl (one JSON object per line)"}}},
+          {"content",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the file's text, verbatim. At most 16 MiB (16777216 bytes of UTF-8); "
+             "larger data belongs in a file on the node (add_dataset) or a source "
+             "connection (create_dataset_from_query)"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "target database, created if absent (default datasets)"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "owners per partition (default 3, clamped to the node count)"}}}}}};
+    return schema;
+}
+
+ApiResult handle_upload_dataset(const nlohmann::json& input, ApiContext& context) {
+    const std::string& content = input.at("content").get_ref<const std::string&>();
+    // Checked here as well as in the engine, so the refusal is an invalid_input
+    // (the caller's request is wrong) rather than an engine_error.
+    if (content.size() > zetta::data::kMaxDatasetContentBytes) {
+        return ApiResult::failure(
+            "invalid_input",
+            "content is " + std::to_string(content.size()) +
+                " bytes; upload_dataset accepts at most " +
+                std::to_string(zetta::data::kMaxDatasetContentBytes) +
+                " bytes (16 MiB). Put larger data in a file on the node and use "
+                "add_dataset, or load it with create_dataset_from_query",
+            "/content");
+    }
+    const std::string format_name = input.at("format").get<std::string>();
+    const zetta::data::dataset_file::Format format =
+        format_name == "csv" ? zetta::data::dataset_file::Format::Csv
+                             : zetta::data::dataset_file::Format::Jsonl;
+
+    zetta::data::AddDatasetOptions options;
+    options.database = input.value("database", options.database);
+    options.table_name = input.at("table_name").get<std::string>();
+    options.replication_factor =
+        input.value("replication_factor", options.replication_factor);
+    options.approx_bytes = content.size();
+    options.members = context.node.cluster_members();  // live placement roster
+
+    const zetta::data::AddDatasetResult added =
+        zetta::data::add_dataset_content(context.node, content, format, options);
+    if (!added.ok()) {
+        return ApiResult::failure("engine_error", added.error);
+    }
+    nlohmann::json partitions = nlohmann::json::array();
+    for (const auto& partition : added.partitions) {
+        if (!partition) continue;
+        partitions.push_back({{"partition_id", partition->id()},
+                              {"owner_nodes", partition->owner_nodes()}});
+    }
+    nlohmann::json output;
+    output["database"] = added.database ? added.database->name() : options.database;
+    output["table"] = added.table ? added.table->name() : "";
+    output["format"] = zetta::data::dataset_file::format_name(added.format);
+    output["rows"] = added.rows;
+    output["partitions"] = std::move(partitions);
+    return ApiResult::success(std::move(output));
+}
+
 // --- saved connections + create_dataset_from_query ----------------------------------
 
 // The connector config as an embeddable sub-schema: the code-owned
@@ -6527,6 +6617,26 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_add_dataset});
+
+    registry.add(Capability{
+        "upload_dataset",
+        "Upload a dataset",
+        "Load a csv or jsonl file's TEXT, sent in the request, into a new "
+        "partitioned table placed across the cluster - for a caller that cannot "
+        "put a file on the node (add_dataset reads the node's filesystem). Same "
+        "parsing, table creation and placement as add_dataset; at most 16 MiB of "
+        "content. Audited as dataset_added; the table then appears in "
+        "list_datasets / system.datasets and can be passed to run as "
+        "dataset_path <database>.<table>. (#1008)",
+        upload_dataset_schema(),
+        add_dataset_output_schema(),
+        CapabilityKind::Action,
+        // Authorized exactly like add_dataset: whoever may add a dataset from a
+        // file may add the same rows from a request body.
+        Operation{CapabilityDomain::Orchestration, "add_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_upload_dataset});
 
     registry.add(Capability{
         "create_connection",

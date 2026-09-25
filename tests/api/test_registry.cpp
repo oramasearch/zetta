@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include <chrono>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -60,10 +62,12 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 76u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+    EXPECT_EQ(registry.size(), 77u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
                                       // +agent_training_status +set_training_schedule (#941), +score (#948),
                                       // +get_run_report (#958), +explain (#960 item 5),
-                                      // +list_source_tables (#994)
+                                      // +list_source_tables (#994), +upload_dataset (#1008)
+    // A remote caller can put data on the node without a file on its disk (#1008).
+    EXPECT_TRUE(registry.find("upload_dataset"));
     // Finding a table must not require ingesting one: browsing a source's
     // catalog used to mean running create_dataset_from_query against
     // information_schema, which materialized a dataset to read a catalog (#994).
@@ -509,6 +513,125 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+}
+
+// #1008: upload_dataset lands a file's TEXT from the request through the same
+// decode + table creation + placement as add_dataset, and the table then reads
+// back through list_datasets — the path a remote caller (lake's Train -> Data
+// page) has, since it cannot write the node's filesystem.
+TEST_F(RegistryFixture, UploadDatasetLandsCsvAndJsonlAndListsThem) {
+    auto csv = call("upload_dataset",
+                    nlohmann::json{{"table_name", "accounts"},
+                                   {"format", "csv"},
+                                   {"content", "account,plan,mrr\n1,pro,500\n2,free,0\n"
+                                               "3,\"pro, annual\",1200\n"}});
+    ASSERT_TRUE(csv.ok) << csv.error.code << ": " << csv.error.message;
+    EXPECT_EQ(csv.value.at("database"), "datasets");
+    EXPECT_EQ(csv.value.at("table"), "accounts");
+    EXPECT_EQ(csv.value.at("format"), "csv");
+    EXPECT_EQ(csv.value.at("rows"), 3u);
+    EXPECT_FALSE(csv.value.at("partitions").empty());
+
+    auto jsonl = call("upload_dataset",
+                      nlohmann::json{{"table_name", "events"},
+                                     {"format", "jsonl"},
+                                     {"database", "uploads"},
+                                     {"replication_factor", 1},
+                                     {"content", "{\"account\":1,\"event\":\"login\"}\n"
+                                                 "\n"
+                                                 "{\"account\":2,\"event\":\"churn\"}\n"}});
+    ASSERT_TRUE(jsonl.ok) << jsonl.error.code << ": " << jsonl.error.message;
+    EXPECT_EQ(jsonl.value.at("database"), "uploads");
+    EXPECT_EQ(jsonl.value.at("format"), "jsonl");
+    EXPECT_EQ(jsonl.value.at("rows"), 2u);
+
+    // The cells were type-inferred exactly as add_dataset infers a csv file's,
+    // and the quoted comma stayed inside its cell.
+    auto accounts = node.find_database("datasets")->find_table("accounts");
+    ASSERT_TRUE(accounts);
+    bool quoted_cell_kept = false;
+    for (std::size_t index = 0; index < accounts->store().size(); ++index) {
+        const auto row = accounts->store().at(index);
+        ASSERT_TRUE(row);
+        EXPECT_TRUE(row->at("mrr").is_number()) << row->dump();
+        if (row->at("plan") == "pro, annual") quoted_cell_kept = true;
+    }
+    EXPECT_TRUE(quoted_cell_kept);
+
+    // Both read back through the dataset reads.
+    auto listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    std::set<std::string> names;
+    for (const auto& dataset : listed.value.at("datasets")) {
+        names.insert(dataset.at("database").get<std::string>() + "." +
+                     dataset.at("name").get<std::string>());
+    }
+    EXPECT_TRUE(names.contains("datasets.accounts")) << listed.value.dump();
+    EXPECT_TRUE(names.contains("uploads.events")) << listed.value.dump();
+
+    // Audited like add_dataset.
+    std::size_t audited = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == zetta::governance::AuditAction::DatasetAdded) ++audited;
+    }
+    EXPECT_EQ(audited, 2u);
+
+    // A second upload under a taken name gets a suffix, and says so.
+    auto again = call("upload_dataset",
+                      nlohmann::json{{"table_name", "accounts"},
+                                     {"format", "csv"},
+                                     {"content", "account\n9\n"}});
+    ASSERT_TRUE(again.ok) << again.error.message;
+    EXPECT_EQ(again.value.at("table"), "accounts_2");
+}
+
+TEST_F(RegistryFixture, UploadDatasetRefusesOversizeBadFormatAndMalformedContent) {
+    // Over the 16 MiB cap: a clear invalid_input naming the cap, and nothing made.
+    const std::string oversize(zetta::data::kMaxDatasetContentBytes + 1, 'x');
+    auto too_big = call("upload_dataset",
+                        nlohmann::json{{"table_name", "huge"},
+                                       {"format", "csv"},
+                                       {"content", oversize}});
+    EXPECT_FALSE(too_big.ok);
+    EXPECT_EQ(too_big.error.code, "invalid_input");
+    EXPECT_NE(too_big.error.message.find("16 MiB"), std::string::npos)
+        << too_big.error.message;
+
+    // A format outside csv|jsonl is refused by the input schema.
+    auto parquet = call("upload_dataset",
+                        nlohmann::json{{"table_name", "binary"},
+                                       {"format", "parquet"},
+                                       {"content", "PAR1"}});
+    EXPECT_FALSE(parquet.ok);
+    EXPECT_EQ(parquet.error.code, "invalid_input");
+    EXPECT_NE(parquet.error.message.find("format"), std::string::npos)
+        << parquet.error.message;
+
+    // Missing required fields are refused by the schema too.
+    auto no_table = call("upload_dataset",
+                         nlohmann::json{{"format", "csv"}, {"content", "a\n1\n"}});
+    EXPECT_FALSE(no_table.ok);
+    EXPECT_EQ(no_table.error.code, "invalid_input");
+
+    // Malformed jsonl names the line, like a malformed file does.
+    auto malformed = call("upload_dataset",
+                          nlohmann::json{{"table_name", "broken"},
+                                         {"format", "jsonl"},
+                                         {"content", "{\"a\":1}\n{not json}\n"}});
+    EXPECT_FALSE(malformed.ok);
+    EXPECT_EQ(malformed.error.code, "engine_error");
+    EXPECT_NE(malformed.error.message.find("line 2"), std::string::npos)
+        << malformed.error.message;
+
+    // A csv with a header and no rows has nothing to land.
+    auto header_only = call("upload_dataset",
+                            nlohmann::json{{"table_name", "empty"},
+                                           {"format", "csv"},
+                                           {"content", "a,b\n"}});
+    EXPECT_FALSE(header_only.ok);
+
+    // None of the refusals created a table.
+    EXPECT_FALSE(node.find_database("datasets"));
 }
 
 // #833 section 9: promote_dataset raises a cached result set's replication

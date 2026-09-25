@@ -532,6 +532,62 @@ AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
     return result;
 }
 
+AddDatasetResult add_dataset_content(Node& node, std::string_view content,
+                                     dataset_file::Format format,
+                                     const AddDatasetOptions& options) {
+    AddDatasetResult result;
+    result.format = format;
+    if (content.size() > kMaxDatasetContentBytes) {
+        result.error = "content is " + std::to_string(content.size()) +
+                       " bytes; the most a dataset upload accepts is " +
+                       std::to_string(kMaxDatasetContentBytes) +
+                       " bytes (16 MiB). Put larger data in a file on the node "
+                       "(add_dataset) or load it from a source connection "
+                       "(create_dataset_from_query)";
+        return result;
+    }
+    if (content.find_first_not_of(" \t\r\n") == std::string_view::npos) {
+        result.error = "content is empty";
+        return result;
+    }
+
+    // The same decoders a file of this format goes through — only where the
+    // bytes came from differs.
+    const std::string bytes(content);
+    std::string error;
+    std::vector<nlohmann::json> rows;
+    switch (format) {
+        case dataset_file::Format::Csv:   rows = decode_csv(bytes, error); break;
+        case dataset_file::Format::Jsonl: rows = decode_jsonl(bytes, error); break;
+        case dataset_file::Format::Json:  rows = decode_json(bytes, error); break;
+        case dataset_file::Format::Parquet:
+        case dataset_file::Format::Unknown:
+            error = std::string("format '") + dataset_file::format_name(format) +
+                    "' cannot be uploaded as text (use csv, jsonl, or json)";
+            break;
+    }
+    if (!error.empty()) {
+        result.error = error;
+        return result;
+    }
+    if (rows.empty()) {
+        result.error = "content decoded to no rows";
+        return result;
+    }
+
+    const std::string base =
+        options.table_name.empty() ? "dataset" : options.table_name;
+    create_named_target_table(node, base, options, result);
+    if (!result.table) return result;
+
+    for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
+    result.rows = result.table->row_count();
+
+    partition_target_table(node, options, result);
+    audit_dataset_added(node, result);
+    return result;
+}
+
 // --- AsyncDatasetAdd (#624) ---------------------------------------------------
 
 // The state the spawned decode worker shares with the handle. Held by
