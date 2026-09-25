@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -21,6 +22,7 @@
 #include "zetta/api/rest.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/api/specs.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/governance/role.hpp"
 #include "zetta/schemas/registry.hpp"
 #include "zetta/data/database.hpp"
@@ -35,6 +37,7 @@
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -61,6 +64,13 @@ HttpResponse http_request(unsigned short port, const std::string& method,
         ::close(socket_descriptor);
         return {};
     }
+    // A bounded wait (#1007): a server that never answers must FAIL the test
+    // (status 0, empty body), not park the suite in recv() forever — the hang is
+    // exactly the failure some of these tests exist to catch.
+    timeval receive_timeout{};
+    receive_timeout.tv_sec = 10;
+    ::setsockopt(socket_descriptor, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout,
+                 sizeof(receive_timeout));
     std::string request = method + " " + target + " HTTP/1.1\r\n";
     request += "Host: 127.0.0.1\r\n";
     if (!body.empty()) request += "Content-Type: application/json\r\n";
@@ -234,6 +244,130 @@ TEST_F(RestServerFixture, ErrorsMapToStatuses) {
     auto malformed = request("POST", "/v1/create_project", "this is not json");
     EXPECT_EQ(malformed.status, 400);
     EXPECT_EQ(json_of(malformed).at("error").at("code"), "invalid_input");
+}
+
+// #1007: a request no route matches used to get NO response — the router fell
+// through, the worker wrote nothing, and the client waited until its own timeout
+// (0 bytes), or saw "Empty reply from server" through a proxy. That is what a node
+// older than a capability shows for that capability's route, and what calling a
+// read with POST shows (#954). Every one of these must now be answered.
+TEST_F(RestServerFixture, UnroutedRequestsAreAnsweredInsteadOfHanging) {
+    auto unknown = request("GET", "/v1/no_such_capability?run_id=x&limit=10");
+    EXPECT_EQ(unknown.status, 404) << unknown.body;
+    auto unknown_body = json_of(unknown);
+    ASSERT_TRUE(unknown_body.is_object()) << unknown.body;
+    EXPECT_FALSE(unknown_body.at("ok").get<bool>());
+    EXPECT_EQ(unknown_body.at("error").at("code"), "unknown_capability");
+
+    // A read called as an action says which method it takes.
+    auto read_as_post = request("POST", "/v1/get_run_report", R"({"run_id":"x"})");
+    EXPECT_EQ(read_as_post.status, 405) << read_as_post.body;
+    auto read_as_post_body = json_of(read_as_post);
+    ASSERT_TRUE(read_as_post_body.is_object()) << read_as_post.body;
+    EXPECT_EQ(read_as_post_body.at("error").at("code"), "method_not_allowed");
+    EXPECT_NE(read_as_post_body.at("error").at("message").get<std::string>().find("GET"),
+              std::string::npos);
+
+    // ...and an action called as a read.
+    auto action_as_get = request("GET", "/v1/create_project?name=x");
+    EXPECT_EQ(action_as_get.status, 405) << action_as_get.body;
+    EXPECT_NE(json_of(action_as_get).at("error").at("message").get<std::string>().find("POST"),
+              std::string::npos);
+
+    auto elsewhere = request("GET", "/no/such/route");
+    EXPECT_EQ(elsewhere.status, 404) << elsewhere.body;
+    EXPECT_EQ(json_of(elsewhere).at("error").at("code"), "not_found");
+
+    // The node is still serving afterwards.
+    EXPECT_EQ(request("GET", "/v1/server_info").status, 200);
+}
+
+// #1007, the reported path end to end over REST: create_project -> capture_intent
+// -> compile_intent (with input_id) -> approve_plan -> gate -> run, with NO dataset
+// attached, then the report. get_run answered `succeeded` while get_run_report
+// never did. Both, with and without `limit`, must answer — and a run that trained
+// no model must answer with an error envelope, not silence.
+// A churn run executes over the live compute plane, so this one needs the node's
+// cluster attached (a single-member JobCoordinator) — the AttachedNode shape. The
+// cluster outlives TearDown's node.stop() (members are destroyed after it).
+struct RestClusterFixture : RestServerFixture {
+    zetta::cluster::Cluster cluster{"rest-report-node", [] {
+                                        zetta::cluster::ClusterConfig config;
+                                        config.listen_host = "127.0.0.1";
+                                        config.listen_port = 24740;
+                                        config.port_range = 8;
+                                        return config;
+                                    }()};
+
+    void SetUp() override {
+        RestServerFixture::SetUp();
+        cluster.start();
+        node.attach_cluster(cluster, /*worker_count=*/2);
+        ASSERT_NE(node.job_coordinator(), nullptr);
+    }
+};
+
+TEST_F(RestClusterFixture, RunReportAnswersForADatasetlessRun) {
+    auto post = [&](const std::string& name, const nlohmann::json& body) {
+        auto response = request("POST", "/v1/" + name, body.dump());
+        EXPECT_EQ(response.status, 200) << name << ": " << response.body;
+        return json_of(response).value("value", nlohmann::json::object());
+    };
+    post("create_project", {{"name", "report-1007"}});
+    const auto captured = post(
+        "capture_intent",
+        {{"project", "report-1007"},
+         {"text", "predict which customers will churn next month and why"}});
+    const std::string input_id = captured.value("input_id", std::string{});
+    ASSERT_FALSE(input_id.empty()) << captured.dump();
+    const auto compiled =
+        post("compile_intent", {{"project", "report-1007"}, {"input_id", input_id}});
+    const std::string graph = compiled.value("name", std::string{});
+    ASSERT_FALSE(graph.empty()) << compiled.dump();
+    post("approve_plan", {{"project", "report-1007"}, {"graph", graph}});
+    post("gate", {{"project", "report-1007"}, {"graph", graph}});
+    const auto started = post("run", {{"project", "report-1007"}, {"graph", graph}});
+    const std::string run_id = started.value("run_id", std::string{});
+    ASSERT_FALSE(run_id.empty()) << started.dump();
+
+    // Let the run finish, playing the owning loop (tick + drain) meanwhile.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    std::shared_ptr<zetta::pipeline::Run> run;
+    while (std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        server->drain();
+        run = node.find_run(run_id);
+        if (run && (run->status() == zetta::pipeline::RunStatus::Succeeded ||
+                    run->status() == zetta::pipeline::RunStatus::Failed)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(run);
+    ASSERT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded);
+    auto got = request("GET", "/v1/get_run?run_id=" + run_id);
+    EXPECT_EQ(got.status, 200) << got.body;
+
+    auto report = request("GET", "/v1/get_run_report?run_id=" + run_id);
+    ASSERT_EQ(report.status, 200) << report.body;
+    auto report_body = json_of(report);
+    ASSERT_TRUE(report_body.at("ok").get<bool>()) << report.body;
+    EXPECT_TRUE(report_body.at("value").contains("model"));
+
+    auto limited = request("GET", "/v1/get_run_report?run_id=" + run_id + "&limit=10");
+    ASSERT_EQ(limited.status, 200) << limited.body;
+    EXPECT_LE(json_of(limited).at("value").at("at_risk").size(), 10u);
+
+    // A run that trained no model: an error envelope that says why.
+    auto bare = node.create_run("report-1007");
+    ASSERT_TRUE(bare);
+    auto no_model = request("GET", "/v1/get_run_report?run_id=" + bare->id());
+    EXPECT_EQ(no_model.status, 404) << no_model.body;
+    auto no_model_body = json_of(no_model);
+    ASSERT_TRUE(no_model_body.is_object()) << no_model.body;
+    EXPECT_EQ(no_model_body.at("error").at("code"), "not_found");
+    EXPECT_NE(no_model_body.at("error").at("message").get<std::string>().find("model"),
+              std::string::npos);
 }
 
 // GET /v1/openapi.json serves exactly what the generator produces from the

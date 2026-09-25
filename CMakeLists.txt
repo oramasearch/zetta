@@ -51,8 +51,18 @@ project(zetta
 # disable them.
 if(APPLE AND CMAKE_CXX_COMPILER MATCHES "^(/opt/homebrew/opt/llvm[^/]*)/")
   set(ZETTA_HOMEBREW_LLVM_PREFIX "${CMAKE_MATCH_1}")
+  # Homebrew's libc++abi must unwind with Homebrew's libunwind, not the system
+  # one (the keg's own caveat). Linked against the system unwinder, a thrown
+  # exception is sometimes not caught by a matching handler and std::terminate()s
+  # instead — a catch that works in a toy program and fails in a real frame. It
+  # made the registry's exception containment (#1007) a no-op on macOS, and is
+  # likely also what the postgres.cpp "-O1 miscompile" note below describes (that
+  # workaround is left in place until it is re-verified without it).
   add_link_options(-L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
-                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++)
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
+                   -L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/unwind
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/unwind
+                   -lunwind)
   add_compile_definitions(_LIBCPP_DISABLE_AVAILABILITY)
 endif()
 

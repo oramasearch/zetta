@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <stdexcept>
 #include <chrono>
 #include <thread>
 
@@ -132,6 +133,29 @@ TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
     EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, {},
                                          CapabilityKind::Read,
                                          {}, false, false, nullptr}));
+}
+
+// #1007: a handler that throws must still produce an answer. The exception used
+// to unwind through the owner-loop bridge — over REST the caller got no response
+// at all, and on a headless node the process terminated.
+TEST_F(RegistryFixture, AThrowingHandlerAnswersWithAnEngineError) {
+    ASSERT_TRUE(registry.add(Capability{
+        "throws_on_read", "", "", nlohmann::json{{"type", "object"}}, {},
+        CapabilityKind::Read,
+        zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+        false, false,
+        [](const nlohmann::json&, ApiContext&) -> ApiResult {
+            // The shape of the real failure: a typed read of a null column.
+            const nlohmann::json row = {{"rank", nullptr}};
+            return ApiResult::success({{"rank", row.at("rank").get<int>()}});
+        }}));
+    const ApiResult result = call("throws_on_read", nlohmann::json::object());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.code, "engine_error");
+    EXPECT_NE(result.error.message.find("throws_on_read"), std::string::npos)
+        << result.error.message;
+    // Still a traced call, like every other failure.
+    EXPECT_EQ(result.trace_id.size(), 32u);
 }
 
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
@@ -601,6 +625,43 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     }
     EXPECT_TRUE(work_ran.load());
     EXPECT_TRUE(coroutine_resumed.load());
+    EXPECT_EQ(bridge.pending(), 0u);
+}
+
+zetta::runtime::task<> await_throwing_bridge_work(zetta::api::MainThreadBridge& bridge,
+                                                  std::atomic<bool>& coroutine_resumed) {
+    co_await bridge.run_on_owner([] { throw std::runtime_error("work threw"); });
+    coroutine_resumed = true;
+}
+
+// #1007: work that throws on the owning loop must not park its awaiter forever
+// (a REST request that never gets a response), nor take the rest of the batch —
+// or the owner loop itself — down with it.
+TEST(MainThreadBridge, ThrowingWorkStillResumesItsAwaiterAndTheRestOfTheBatch) {
+    zetta::api::MainThreadBridge bridge;
+    std::atomic<bool> thrower_resumed{false};
+    std::atomic<bool> later_work_ran{false};
+    std::atomic<bool> later_resumed{false};
+
+    zetta::runtime::spawn(await_throwing_bridge_work(bridge, thrower_resumed), [] {});
+    for (int attempt = 0; attempt < 100 && bridge.pending() < 1; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    zetta::runtime::spawn(await_bridge_work(bridge, later_work_ran, later_resumed),
+                          [] {});
+    for (int attempt = 0; attempt < 100 && bridge.pending() < 2; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(bridge.pending(), 2u);
+
+    EXPECT_NO_THROW(bridge.drain());
+    for (int attempt = 0;
+         attempt < 1000 && !(thrower_resumed && later_resumed); ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_TRUE(thrower_resumed.load());
+    EXPECT_TRUE(later_work_ran.load());
+    EXPECT_TRUE(later_resumed.load());
     EXPECT_EQ(bridge.pending(), 0u);
 }
 

@@ -35,7 +35,9 @@ class MainThreadBridge {
 public:
     // Awaitable from any runtime coroutine (the Beast2 adapter): queue `work`
     // for the owning loop and resume once it has run. `work` must be quick
-    // (it executes inside a tick) and must not throw. Compose a timeout at
+    // (it executes inside a tick) and must not throw — a throw is contained
+    // by drain() (logged; the awaiting coroutine still resumes, #1007), but
+    // whatever the work was meant to produce is lost. Compose a timeout at
     // the call site (the adapter maps a timed-out wait to a busy error).
     runtime::task<> run_on_owner(std::function<void()> work);
 
