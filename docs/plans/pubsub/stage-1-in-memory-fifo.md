@@ -285,7 +285,26 @@ dead-letter open spans; `system.pubsub_topics` shows per topic memory held, disk
 held, spilling since, subscriber count, slowest subscriber and its lag, and
 dispatch mode.
 
-## 12. Open
+## 12. As built (2026-09-27)
+
+Built in PR [#1035](https://github.com/oramasearch/zetta/pull/1035) (epic
+[#1024](https://github.com/oramasearch/zetta/issues/1024)); what exists is documented in
+[../../pubsub/](../../pubsub/README.md). Where the build differs from this spec:
+
+- **Exposure** ships `receive_events` as a stateless long poll by sequence number; SSE
+  streaming is [#1037](https://github.com/oramasearch/zetta/issues/1037).
+- **Topic definitions** are persisted on the node that created them, not yet replicated
+  through the CRDT; that belongs to stage 2 ([#1038](https://github.com/oramasearch/zetta/issues/1038)).
+- **Governance** checks every right, clamp/reject and every sender link, but zetta's model
+  has no per-role delivery bounds or delegation grants yet: the node applies none and
+  allows every link ([#1036](https://github.com/oramasearch/zetta/issues/1036)).
+- **Pod requests** are only visible once the operator sets the `ZETTA_POD_*` Downward API
+  variables ([orama-operator#191](https://github.com/oramasearch/orama-operator/issues/191));
+  cgroup limits are read without them.
+- **Addresses:** a node inbox is addressed `inbox:<kind>.<name>` internally; a table
+  address is `table:<database>.<table>`; an error topic is `topic:errors.<kind>.<name>`.
+
+## 13. Open
 
 - How topics behave across the cluster: stage 2, designed later ([D39](decisions.md)). Until then stage 1 is a reference implementation under zetta's first principle.
 - The link to the agent-task design, once it has a home (D25).
