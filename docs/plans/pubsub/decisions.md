@@ -360,3 +360,34 @@ Corrects the Q12 settlement, which had treated the deque as a second store type.
 
 **Open:** whether appends and reads inside a ring take the same mutex or the
 ring's own ([Q25](questions.md)).
+
+## D22 — Exposure over MCP/REST is optional, off by default (2026-09-27)
+
+**What.** A topic can optionally be exposed externally (MCP/REST: publish,
+subscribe streaming over SSE, create/drop). **By default it is not exposed**:
+pub/sub is an engine-internal facility unless configuration says otherwise, and
+exposure is governed (D7). Answers [Q8](questions.md).
+
+**Cost.** Departs from zetta's "every capability ships on the API and MCP" rule
+for the default; the capabilities still exist in the registry, gated by the
+per-topic exposure setting, so the rule is kept and the default is off.
+
+## D23 — Each queue has its own lock and condition variables; a topic may chain several queues (2026-09-27)
+
+**What.** Every queue (each ring buffer in the `TopicRingStack`, a consumer
+queue, …) has **its own mutex and condition variables**. The stack's mutex only
+guards adding and removing rings (D21). Lock order: stack before queue. To
+simplify locking, a topic may be built from **several queues in a chain**, chosen
+by configuration, e.g.:
+
+```
+producers ──► producer queue ──► internal queue (TopicRingStack) ──► consumer queue per subscriber
+```
+
+Each hop has one side writing and one side reading, so producers contend only
+with producers, and each consumer only with the dispatcher feeding it. Answers
+[Q25](questions.md).
+
+**Cost.** Each hop adds latency and a handoff; payloads must not be copied per
+hop (refcounted event pointers, D4). Something has to move events along the
+chain ([Q26](questions.md)).

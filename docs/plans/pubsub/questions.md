@@ -172,7 +172,9 @@ design past several of these questions. Still open from round 1:
 
 ## Round 12 — 2026-09-27
 
-8. *(reopened from round 1)* **Is stage 1 exposed on MCP/REST**, or engine-internal
+8. ~~*(reopened from round 1)* **Is stage 1 exposed on MCP/REST**~~ →
+   *Answered 2026-09-27 (Steve): optionally; not exposed externally by default*
+   ([D22](decisions.md)). Original: **Is stage 1 exposed on MCP/REST**, or engine-internal
    first? Proposal: both in the same change, per zetta's rule that a capability
    ships on the API and MCP with the engine work: `create_topic`, `drop_topic`,
    `publish`, and `subscribe` streaming events over SSE (the MCP transport
@@ -188,11 +190,22 @@ id per node.
 
 ## Round 13 — 2026-09-27
 
-25. **Inside the `TopicRingStack`, which lock guards an append or a read?** (a)
+25. ~~**Inside the `TopicRingStack`, which lock guards an append or a read?**~~
+    → *Answered 2026-09-27 (Steve): the queue has its own lock and condition
+    variables; a topic might have a few queues (producer, internal, consumer) to
+    simplify locking, by configuration* ([D23](decisions.md)). Original: (a)
     the **stack's mutex** for everything: one lock per topic, simplest, but every
     publisher and subscriber of a topic contend on it; or (b) the stack's mutex
     only for adding/removing rings, and **each ring has its own mutex** for
     appends and reads, so readers of an older ring never contend with the
     publisher writing the newest. Lock order in (b): stack before ring.
 
-Still open from round 12: Q8 (MCP/REST exposure in stage 1).
+
+## Round 14 — 2026-09-27
+
+26. **What moves events along the chain** (producer queue → internal queue →
+    consumer queues)? (a) a **dispatcher thread per topic**: simple, one thread
+    per topic; (b) a **shared pool** of dispatcher threads serving every topic:
+    bounded threads, needs fairness between topics; or (c) **no dispatcher**: the
+    producer's own thread carries its event through every hop (no extra thread,
+    but a slow consumer queue slows the publisher).

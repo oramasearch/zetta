@@ -35,7 +35,7 @@ first principle — see [`context.md`](context.md)).
    — what memory-mapped segments survive (process crash yes, machine failure no),
    cgroup page-cache charging, SIGBUS and other pitfalls.
 8. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
-   governed, with detected defaults) and every settled decision (D1–D21).
+   governed, with detected defaults) and every settled decision (D1–D23).
 9. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.

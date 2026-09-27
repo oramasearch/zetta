@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 17 (after [D1–D21](decisions.md)). No partitions:
+**Status:** draft, revision 18 (after [D1–D23](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -67,16 +67,22 @@ By default a subscriber joins the topic's subscriber list and receives events
 published after it joined, as its delivery rules define. Its start position is
 configurable at every level (oldest held, a sequence number).
 
-## Subscribers and waiting (D1, D5)
+## Queues, locks and waiting (D1, D5, D21, D23)
 
-No coroutines in stage 1. Subscribers are threads. **Each queue carries its own
-`std::mutex` and `std::condition_variable`**: the shared ring (or deque) has
-one, and each per-consumer queue, if the delivery mode uses them, has its own.
-`publish` appends under the target queue's lock, releases it, then notifies.
+No coroutines in stage 1; subscribers are threads. **Every queue has its own
+mutex and condition variables**; the `TopicRingStack`'s mutex only guards adding
+and removing rings (lock order: stack, then queue).
 
-Open: where the per-consumer queues exist at all depends on how delivery is
-chosen ([Q11](questions.md)); if a publish touches several queues, the lock
-order goes here.
+A topic may be a **chain of queues**, chosen by configuration:
+
+```
+producers ──► producer queue ──► internal queue (TopicRingStack) ──► consumer queue per subscriber
+```
+
+Each hop has one writer side and one reader side. Payloads move as refcounted
+event pointers, never copied per hop. The simplest configuration is the
+internal queue alone, with subscribers reading it directly. What moves events
+between queues is [Q26](questions.md).
 
 ## Delivery (D3)
 
@@ -215,3 +221,9 @@ pubsub: INFO shutdown: flushing 14 topics, 3.1 GiB held; budget 25s
 pubsub: INFO shutdown: flushed 14/14 topics in 11.4s
 pubsub: WARN shutdown: budget spent; orders lost 212,004 events (seq 90011002..90223005)
 ```
+
+## Exposure (D22)
+
+Internal by default. A topic can be exposed over MCP/REST by configuration:
+`publish`, `subscribe` (events streamed over SSE), and `create_topic` /
+`drop_topic`, governed like any capability.
