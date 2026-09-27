@@ -1,7 +1,7 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 26 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D35](decisions.md). Every section cites the
+**Status:** draft spec, revision 27 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D38](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
 overruled. Open items are listed at the end.
@@ -40,7 +40,16 @@ own, drained according to its kind:
 
 *Proposal:* each drain implements one `InboxDrain` interface, registered by kind,
 and is governed like the direct operation (`sql:write` to insert, `serving:read`
-to infer). Where a drain's result goes is [Q33](questions.md).
+to infer).
+
+**Results (D36).** Configurable; the global default sends nothing. Each drain
+has its own logical default: a SQL query replies all; an insert does not reply
+(others: see D36). What "reply all" covers is [Q34](questions.md).
+
+**Errors (D37, D38).** A recipient's failures go to its own error topic, created
+on the first error (*proposal:* `topic:errors.agent.405`), carrying the
+original event's envelope and `correlation-id`. Undeliverable events still go to
+the dead letters (D32). No rate limits in stage 1.
 
 **Envelope (D27, D29, D33).** Every event may carry:
 
@@ -276,6 +285,6 @@ dispatch mode.
 
 ## 12. Open
 
-- Where a drain's result goes ([Q33](questions.md)).
+- What "reply all" covers ([Q34](questions.md)).
 - The link to the agent-task design, once it has a home (D25).
 - The proposals marked above, until confirmed.

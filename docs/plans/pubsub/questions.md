@@ -288,9 +288,21 @@ id per node.
 
 ## Round 21 — 2026-09-27
 
-33. **Where does a drain's result go?** A `function:` call returns a value, a
+33. ~~**Where does a drain's result go?**~~ → *Answered 2026-09-27 (Steve):
+    configurable; defaults to nothing; case by case by what is most logical (a
+    SQL query might reply all, an insert might not); per-recipient error topics,
+    created only when there are errors; no rate limits by default, later*
+    ([D36–D38](decisions.md)). Original: **Where does a drain's result go?** A `function:` call returns a value, a
     `model:` inference returns a prediction, a `table:` insert returns the new
     row (or an error). Proposal: the result is sent automatically to the event's
     `reply-to` addresses with the same `correlation-id` (nothing is sent when
     `reply-to` is empty), and a failure is sent there too as an error event, as
     well as to the dead letters.
+
+## Round 22 — 2026-09-27
+
+34. **What does "reply all" mean here?** Email's reply-all goes to the original
+    sender and every `to` and `cc` recipient (never `bcc`). Proposal for us:
+    the `reply-to` addresses if present, otherwise `from` (and `sender`), plus
+    every `to` and `cc` address of the original event, never `bcc`, with the
+    same `correlation-id`. Or should "reply all" mean only the `reply-to` list?

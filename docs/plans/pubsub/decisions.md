@@ -587,3 +587,39 @@ Postgres reached through a connection) is left to that drain.
 **Cost.** Each drain must be governed (inserting into `table:logs` needs
 `sql:write` on it; calling `model:` needs `serving:read`), and a drain that
 produces a result raises the question of where the result goes ([Q33](questions.md)).
+
+## D36 — Where a drain's result goes is decided case by case; the global default is nowhere (2026-09-27)
+
+**What.** Configurable at every level. The **global default is to send nothing**.
+Each drain has the default that is most logical for it: e.g. a SQL **query**
+replies to all (its result is the point), while an **insert** does not reply.
+Answers [Q33](questions.md).
+
+| Drain | Default reply (proposal where not stated by Steve) |
+|---|---|
+| SQL query | reply all (Steve) |
+| table insert | none (Steve) |
+| `function:` / `procedure:` call | reply all when it returns a value, *proposal* |
+| `model:` inference | reply all, *proposal* |
+| `service:` | the service decides, *proposal* |
+
+## D37 — Each recipient gets an error topic, created only when it first has an error (2026-09-27)
+
+**What.** Errors raised while delivering to or draining for a recipient
+(including rate-limiting errors, once rate limits exist) go to that
+**recipient's error topic**. Error topics are **created lazily**, on the first
+error, never up front.
+
+**Relation to D32:** the dead-letter address holds events that could not be
+*delivered* (no match, expired, loop); an error topic holds *failures of a
+recipient* (a row that did not fit, a function that raised, an inference that
+failed). *Proposal:* name `topic:errors.<kind>.<name>` (e.g.
+`topic:errors.agent.405`), governed like any topic, readable by the recipient
+and by `pubsub:manage`; each error event carries the original event's
+`correlation-id` and envelope.
+
+## D38 — No rate limits by default; rate limiting comes later (2026-09-27)
+
+**What.** Stage 1 has **no rate limits** by default. Rate limiting is a later
+feature; when it arrives, its errors go to the recipient's error topic (D37) and
+its limits follow the standing rule.
