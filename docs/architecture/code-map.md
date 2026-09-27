@@ -257,6 +257,12 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     address.hpp             zetta::pubsub::Address/parse_address/address_matches — `kind:name` addresses, prefix-glob wildcards (#1025)
     event.hpp               zetta::pubsub::Event/Envelope/Payload/MimeRegistry — the envelope (from, sender stack, to/cc/bcc, reply-to, correlation id, topics-chain), inline vs shared payloads, envelope checks, the on-disk frame (#1025)
     store.hpp               zetta::pubsub::EventStore/TopicRingStack/RingBuffer/QueueStore — position-addressed stores; a deque of ring buffers with stack-then-ring locking, free list, spill + read-back, flush + restore; the std::queue work-queue store (#1026)
+    delivery.hpp            zetta::pubsub::DeliveryOptions/EffectiveDelivery/DeliveryBounds/apply_bounds — recipients, ordering, priority, guarantees, reply policy; layering message > subscription > topic; clamp or reject (#1028/#1029)
+    authorizer.hpp          zetta::pubsub::Authorizer/AllowAllAuthorizer — the governance injection point: rights, delivery bounds, may_act_for per sender link (#1029)
+    dispatcher.hpp          zetta::pubsub::Dispatcher — per-key order; thread per key, a pool past a threshold (hysteresis), inline; logged switches (D24)
+    resources.hpp           zetta::pubsub::detect_resources/derive_limits/ResourceProbe — memory/CPU/disk from cgroup v2/v1, Downward API env, host; derived limits, logged (#1030)
+    log.hpp                 zetta::pubsub::LogSink — the logging injection point; stderr by default
+    pubsub.hpp              zetta::pubsub::PubSub/Subscription/TopicSettings/InboxDrain — the facade: runtime topics, subscriptions, inboxes, routing, drains, dead letters, error topics, limits, shutdown flush + reload (#1027–#1032)
   governance/               access control (principals, keys, scopes, capabilities) + users/roles/tokens + the audit trail
     principal.hpp           zetta::governance::Principal — an authenticated actor; owns access keys
     access_key.hpp          zetta::governance::AccessKey — a scoped + capability-bearing login credential + authorize()
@@ -503,6 +509,11 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     address.cpp             zetta::pubsub address parsing + wildcard matching (#1025)
     event.cpp               zetta::pubsub payloads, MIME interning, bcc stripping, envelope checks, frame encode/decode with crc32 (#1025)
     store.cpp               zetta::pubsub ring buffers, TopicRingStack, QueueStore (#1026)
+    delivery.cpp            zetta::pubsub delivery resolution + apply_bounds (#1028/#1029)
+    dispatcher.cpp          zetta::pubsub::Dispatcher (D24)
+    resources.cpp           zetta::pubsub resource detection (cgroup/mountinfo parsing, sysctl/meminfo, statvfs) + derive_limits + the stderr sink (#1030)
+    topic.hpp / topic.cpp   internal: one topic or inbox — priority levels of stores, subscriptions + groups + claims, at-least/exactly-once, overflow enforcement, spill logging, snapshot/restore; the Subscription handle (#1027/#1028/#1030)
+    pubsub.cpp              zetta::pubsub::PubSub — routing (to/cc/bcc, wildcards via a cache), governance, inboxes, drains + replies, dead letters, error topics, auto-creation, definitions on disk, shutdown flush + start-up reload (#1027–#1032)
   governance/
     principal.cpp           zetta::governance::Principal — persist/rename principal.json + key CRUD
     access_key.cpp          zetta::governance::AccessKey — persist key.json + authorize() decisions (resource + operation)

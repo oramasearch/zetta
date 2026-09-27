@@ -144,6 +144,7 @@ std::size_t Event::memory_bytes() const {
     count(envelope.bcc);
     count(envelope.reply_to);
     count(envelope.topics_chain);
+    for (const auto& [key, value] : headers) envelope_bytes += key.size() + value.size();
     return sizeof(Event) + id.size() + envelope_bytes + payload.size();
 }
 
@@ -197,6 +198,22 @@ std::string encode_event_frame(const Event& event) {
         {"topics_chain", addresses_to_json(envelope.topics_chain)},
     };
     if (envelope.from) header["from"] = envelope.from->to_string();
+    if (!event.headers.empty()) header["headers"] = event.headers;
+    header["published_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    event.published_at.time_since_epoch())
+                                    .count();
+    const auto& delivery = event.delivery;
+    nlohmann::json delivery_json = nlohmann::json::object();
+    if (delivery.recipients) {
+        delivery_json["recipients"] = to_string(delivery.recipients->mode);
+        delivery_json["count"] = delivery.recipients->count;
+    }
+    if (delivery.ordering) delivery_json["ordering"] = to_string(*delivery.ordering);
+    if (delivery.priority) delivery_json["priority"] = *delivery.priority;
+    if (delivery.guarantee) delivery_json["guarantee"] = to_string(*delivery.guarantee);
+    if (delivery.ack_deadline) delivery_json["ack_deadline_ms"] = delivery.ack_deadline->count();
+    if (delivery.reply) delivery_json["reply"] = to_string(*delivery.reply);
+    if (!delivery_json.empty()) header["delivery"] = delivery_json;
     if (event.expires_at) {
         header["expires_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
                                       event.expires_at->time_since_epoch())
@@ -262,6 +279,53 @@ DecodedFrame decode_event_frame(std::string_view buffer, std::size_t inline_thre
         if (!from.is_string()) return decoded;
         envelope.from = parse_address(from.get<std::string>());
         if (!envelope.from) return decoded;
+    }
+    if (header.contains("headers")) {
+        const auto& headers = header["headers"];
+        if (!headers.is_object()) return decoded;
+        for (const auto& [key, value] : headers.items()) {
+            if (!value.is_string()) return decoded;
+            event.headers.emplace(key, value.get<std::string>());
+        }
+    }
+    if (header.contains("published_at_ms") && header["published_at_ms"].is_number_integer()) {
+        event.published_at = std::chrono::system_clock::time_point(
+            std::chrono::milliseconds(header["published_at_ms"].get<long long>()));
+    }
+    if (header.contains("delivery")) {
+        const auto& delivery = header["delivery"];
+        if (!delivery.is_object()) return decoded;
+        auto& options = event.delivery;
+        if (delivery.contains("recipients") && delivery["recipients"].is_string()) {
+            const auto mode = delivery["recipients"].get<std::string>();
+            Recipients recipients;
+            recipients.mode = mode == "one"     ? Recipients::Mode::One
+                              : mode == "count" ? Recipients::Mode::Count
+                                                : Recipients::Mode::All;
+            if (delivery.contains("count") && delivery["count"].is_number_unsigned()) {
+                recipients.count = delivery["count"].get<std::uint32_t>();
+            }
+            options.recipients = recipients;
+        }
+        if (delivery.contains("ordering") && delivery["ordering"].is_string()) {
+            options.ordering = delivery["ordering"].get<std::string>() == "priority" ? Ordering::Priority
+                                                                                     : Ordering::Fifo;
+        }
+        if (delivery.contains("priority") && delivery["priority"].is_number_unsigned()) {
+            options.priority = delivery["priority"].get<std::uint8_t>();
+        }
+        if (delivery.contains("guarantee") && delivery["guarantee"].is_string()) {
+            options.guarantee = guarantee_from_string(delivery["guarantee"].get<std::string>());
+        }
+        if (delivery.contains("ack_deadline_ms") && delivery["ack_deadline_ms"].is_number_integer()) {
+            options.ack_deadline = std::chrono::milliseconds(delivery["ack_deadline_ms"].get<long long>());
+        }
+        if (delivery.contains("reply") && delivery["reply"].is_string()) {
+            const auto reply = delivery["reply"].get<std::string>();
+            options.reply = reply == "reply_to"    ? ReplyPolicy::ReplyTo
+                            : reply == "reply_all" ? ReplyPolicy::ReplyAll
+                                                   : ReplyPolicy::None;
+        }
     }
     if (header.contains("expires_at_ms") && header["expires_at_ms"].is_number_integer()) {
         event.expires_at = std::chrono::system_clock::time_point(

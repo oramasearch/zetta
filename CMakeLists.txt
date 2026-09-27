@@ -486,6 +486,11 @@ add_library(zetta-core STATIC
   src/core/pubsub/address.cpp
   src/core/pubsub/event.cpp
   src/core/pubsub/store.cpp
+  src/core/pubsub/delivery.cpp
+  src/core/pubsub/dispatcher.cpp
+  src/core/pubsub/resources.cpp
+  src/core/pubsub/topic.cpp
+  src/core/pubsub/pubsub.cpp
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp

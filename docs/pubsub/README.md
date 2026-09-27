@@ -20,3 +20,18 @@ and logged), no rate limits. New JSON formats: the on-disk event frame header on
 - [stores.md](stores.md) — `EventStore`; the `TopicRingStack` (a deque of ring buffers,
   stack-then-ring locking, free list, spill and read-back, flush and restore); the
   `std::queue`-backed `QueueStore` (#1026).
+- [topics.md](topics.md) — the `PubSub` facade; topics as runtime objects; auto-creation;
+  subscriptions (start position, groups, retention, gap notices); inboxes; the wildcard
+  cache (#1027, #1028).
+- [delivery.md](delivery.md) — delivery options layered message > subscription > topic;
+  recipients and claims; priority levels with aging; at-least-once and exactly-once (#1028).
+- [governance.md](governance.md) — the `Authorizer` injection point; identity-stamped
+  envelopes; the sender-stack checks; clamp or reject; audit (#1029).
+- [dispatch.md](dispatch.md) — the `Dispatcher`: a thread per key, a pool past a
+  threshold, inline; per-key order; logged switches (#1026).
+- [limits.md](limits.md) — detecting memory, CPU and disk from cgroups, the Downward API
+  and the host; derived limits; overflow policies; spilling and its log lines (#1030).
+- [restart.md](restart.md) — the shutdown flush within a budget; best-effort reload,
+  including after a crash (#1031).
+- [drains.md](drains.md) — inbox drains by address kind; replies; dead letters; error
+  topics (#1032).

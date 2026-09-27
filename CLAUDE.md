@@ -49,6 +49,10 @@ now" is not one.**
   saturates all of them. A raw `std::mutex` is permitted only as the lowest
   cross-thread handoff *inside* a backend adapter (the one TU that names the
   backend library) — contained, commented, never in a public API.
+  **One deliberate exception: `zetta::pubsub`** (Steve, 2026-09-27, decisions
+  D1/D5 in `docs/plans/pubsub/decisions.md`): its queues use a mutex and
+  condition variables per queue and its subscribers are threads, by design, in
+  stage 1. Do not extend the exception to other code.
 - **Cluster-native.** A node is an equal peer in a cluster, not a server that
   happens to replicate. State is replicated state; work is *placed*, not
   centralized.
@@ -379,6 +383,8 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   per-peer outbox, a bounded telemetry ring) — contained, commented, and never
   visible in a public API. If the runtime seam lacks a primitive you need,
   extend the seam (one alias/adapter in `runtime.hpp`), don't work around it.
+  (The one exception is `zetta::pubsub`, locks and condition variables by
+  decision D1/D5 — see the first principle above.)
 
 - **Observability first (RULE: every operation is observable).** Every
   operation captures its **intent** (what the caller asked for, verbatim),

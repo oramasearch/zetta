@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "zetta/pubsub/address.hpp"
+#include "zetta/pubsub/delivery.hpp"
 
 // Pub/sub events and their envelope (#1025; decisions D4, D26, D27, D29, D33,
 // D34 in docs/plans/pubsub/decisions.md). See docs/pubsub/events.md.
@@ -84,6 +86,12 @@ struct Event {
     std::uint8_t priority = 0;   // 0 lowest .. 255 highest
     Payload payload;
     std::optional<std::chrono::system_clock::time_point> expires_at;  // time to live
+    std::chrono::system_clock::time_point published_at{};  // priority aging, observability
+    // The message's own delivery layer (D6): overrides the subscription and topic.
+    DeliveryOptions delivery;
+    // Small text annotations the engine adds: a dead letter's `reason`, an
+    // error event's `error`, a gap notice's `missed` count.
+    std::map<std::string, std::string> headers;
 
     // Bytes this event holds in memory (payload + envelope estimate). Used
     // against the memory limits (D10).

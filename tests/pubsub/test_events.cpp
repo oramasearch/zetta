@@ -112,6 +112,11 @@ TEST(PubSubEvent, FrameRoundTripsEveryField) {
     event.envelope.correlation_id = "req-1";
     event.envelope.topics_chain = {address("topic:inbound")};
     event.payload = Payload::make(R"({"a":1})", 256);
+    event.headers = {{"reason", "no match"}};
+    event.published_at = std::chrono::system_clock::time_point(std::chrono::milliseconds(1'600'000'000'000));
+    event.delivery.recipients = Recipients{Recipients::Mode::Count, 3};
+    event.delivery.guarantee = Guarantee::ExactlyOnce;
+    event.delivery.reply = ReplyPolicy::ReplyTo;
     event.expires_at = std::chrono::system_clock::time_point(std::chrono::milliseconds(1'700'000'000'000));
 
     const auto frame = encode_event_frame(event);
@@ -134,6 +139,11 @@ TEST(PubSubEvent, FrameRoundTripsEveryField) {
     EXPECT_EQ(round.envelope.topics_chain, event.envelope.topics_chain);
     EXPECT_EQ(round.payload.bytes(), R"({"a":1})");
     EXPECT_EQ(round.expires_at, event.expires_at);
+    EXPECT_EQ(round.headers, event.headers);
+    EXPECT_EQ(round.published_at, event.published_at);
+    EXPECT_EQ(round.delivery.recipients, event.delivery.recipients);
+    EXPECT_EQ(round.delivery.guarantee, event.delivery.guarantee);
+    EXPECT_EQ(round.delivery.reply, event.delivery.reply);
 }
 
 TEST(PubSubEvent, TornAndCorruptFramesAreDetected) {
