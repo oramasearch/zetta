@@ -30,6 +30,8 @@
 // testsuite_run; run/testsuite_run are `kind: job` and return the engine's durable
 // Run id immediately). See docs/api/governed-actions.md +
 // docs/api/adding-a-capability.md.
+#include "zetta/agent/agent_record.hpp"
+
 namespace zetta::api {
 
 void register_core_capabilities(Registry& registry);
@@ -46,5 +48,15 @@ void register_core_capabilities(Registry& registry);
 //                                  exactly the named action once
 //   deny_consent           action  refuse (or withdraw) a pending challenge
 void register_cloud_capabilities(Registry& registry);
+
+// A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
+// `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the
+// version the grant pinned; it is gated, then run (`dataset`, `holdout`, `model_name` pass through).
+// A failing gate or a changed approval is returned as the failure, and nothing runs.
+ApiResult run_granted_pipeline(ApiContext& context,
+                               const zetta::agent::AgentRecord& agent,
+                               const std::string& tool,
+                               const nlohmann::json& arguments);
+std::string pipeline_tool_name(const std::string& graph);
 
 }  // namespace zetta::api

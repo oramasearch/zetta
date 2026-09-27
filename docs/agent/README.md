@@ -100,6 +100,11 @@ list behind lake's Train → Agents and Ask Orama's selector
 | `definition` | `runtime: python`. `source: zetta` carries `instructions` and `files [{path, contents}]` inline (relative paths only, at most **1 MiB** in total because the record replicates everywhere); `source: lake` carries `repository_id` and a pinned `revision`. `entrypoint` is `module:function` |
 | `endpoint` | `runtime: service`: where lake reaches the agent |
 
+**Granted Pipelines are tools** in native `chat` too: each grant is `pipeline_<graph>`
+(`pipeline_tool_name`), run by `run_granted_pipeline`, which refuses a graph no longer approved at
+the pinned version, gates it, and runs it (`dataset`, `holdout`, `model_name` pass through). Verify:
+`AgentApiFixture.AGrantedPipelineRunsAsTheAgentsToolOnlyAtItsApprovedVersion`.
+
 Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
 agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
 `agent_training_status` reports a non-native agent as *not trained by Zetta* rather than

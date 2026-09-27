@@ -280,3 +280,44 @@ TEST_F(AgentApiFixture, KindsRuntimesStudioShapeAndPipelineGrants) {
     EXPECT_EQ(call("get_agent", {{"id", python_id}}).value.at("pipelines").at(0).at("version"),
               pinned.at("version"));
 }
+
+// lake#238: a Pipeline granted to an agent is its tool — gated, then run — and only while it is
+// still approved at the version the grant pinned.
+TEST_F(AgentApiFixture, AGrantedPipelineRunsAsTheAgentsToolOnlyAtItsApprovedVersion) {
+    ASSERT_TRUE(call("create_project", {{"name", "py"}}).ok);
+    ASSERT_TRUE(call("compile_python",
+                     {{"project", "py"},
+                      {"source",
+                       "ds = load_dataset(\"accounts.parquet\")\n"
+                       "clean = ds.dropna()\n"
+                       "model = train(clean, target=\"churned\")\n"},
+                      {"name", "Weekly Churn"}})
+                    .ok);
+    ASSERT_TRUE(call("approve_plan", {{"project", "py"}, {"graph", "Weekly Churn"}}).ok);
+    ApiResult created = call("create_agent",
+                             {{"name", "Runner"},
+                              {"model", "models/Qwen3-0.6B"},
+                              {"pipelines", {{{"project", "py"}, {"graph", "Weekly Churn"}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    std::string reason;
+    const auto agent = zetta::agent::agent_from_json(created.value, &reason);
+    ASSERT_TRUE(agent) << reason;
+    EXPECT_EQ(zetta::api::pipeline_tool_name("Weekly Churn"), "pipeline_weekly_churn");
+
+    ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
+    context.registry = &registry;
+    const ApiResult ran =
+        zetta::api::run_granted_pipeline(context, *agent, "pipeline_weekly_churn", nlohmann::json::object());
+    // It passed the approval check and the gate and reached `run`. This embedding wires no
+    // background owner for job capabilities, so `run` itself answers that; the live workspace runs it.
+    EXPECT_TRUE(ran.ok || ran.error.message.find("job capability") != std::string::npos)
+        << ran.error.message;
+
+    EXPECT_FALSE(zetta::api::run_granted_pipeline(context, *agent, "pipeline_other", {}).ok)
+        << "only a granted Pipeline is a tool";
+    zetta::agent::AgentRecord stale = *agent;
+    stale.pipelines[0].version = "2000-01-01T00:00:00Z";
+    const ApiResult refused = zetta::api::run_granted_pipeline(context, stale, "pipeline_weekly_churn", {});
+    ASSERT_FALSE(refused.ok);
+    EXPECT_NE(refused.error.message.find("changed since it was granted"), std::string::npos);
+}
