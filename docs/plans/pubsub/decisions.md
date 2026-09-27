@@ -174,3 +174,44 @@ extension (research/03). A subscriber reading spilled segments hits a latency
 cliff. Spilling is not durability: without `fsync` a crash loses spilled events,
 so durable topics stay a stage 3 decision. Cursors are sequence numbers so they
 stay valid across tiers.
+
+## D11 — Defaults are detected from the environment, logged, and overridable (2026-09-27)
+
+**What.** Limits are not guessed constants. At startup the node detects its
+budget (cgroup memory and CPU limits, Kubernetes requests and limits exposed to
+the pod, host memory total and used, free disk on the data directory) and derives
+pub/sub's defaults from it. Configuration overrides any detected value. **Every
+detected input, where it came from, and the value chosen is written to the log.**
+Replaces the fixed defaults proposed under Q19/Q20.
+
+**Why.** A fixed number is wrong on most machines: too small on a 256 GiB host,
+too large in a 2 GiB pod. The JVM, Go and .NET all size from the container limit
+for the same reason (research/04).
+
+**Cost.** Zetta's `node_metrics.cpp` reads only host figures today; inside a pod
+that is the host's memory, not the pod's. Detection needs cgroup v1 and v2
+readers (with the tightest-ancestor rule) and, for requests, the Downward API
+environment variables, which the operator must set on the Zetta pod. Detection
+can fail or mislead, hence the log line.
+
+**Revisit if** the detected budget turns out to be the wrong basis (e.g. several
+heavy subsystems each claiming a share of the same budget need one allocator).
+
+## D12 — Spilling to disk is logged when it starts, repeatedly while it lasts, and when it ends (2026-09-27)
+
+**What.** Spilling will certainly hurt performance, so it is never quiet:
+- a **warning when a partition first spills**, naming the topic, partition,
+  the memory limit it hit, and the subscriber holding it back;
+- **repeated warnings while it keeps spilling**, rate-limited (proposal: every
+  30 s per partition), with bytes on disk, the spill rate, and which subscribers
+  are reading from disk and how far behind they are;
+- a line **when it stops** (the partition is back in memory), with the total
+  spilled and the duration.
+
+**Why.** An operator seeing a latency cliff should find the cause in the log
+without having to guess; a single line at the start is easy to miss in a long
+spill.
+
+**Cost.** Log volume, hence the rate limit. Proposal (zetta RULE-7): the same
+state is also a read view (`system.pubsub_partitions`: memory, disk, spilling
+since, slowest subscriber) so it can be queried rather than only grepped.

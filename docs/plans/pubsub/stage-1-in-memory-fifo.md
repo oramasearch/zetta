@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 9 (after [D1–D10](decisions.md)). Settled parts cite
+**Status:** draft, revision 11 (after [D1–D12](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -123,20 +123,39 @@ Overflow policies: `unbounded` · `skip_ahead` (the slow subscriber jumps forwar
 and receives a gap notice with the count it missed) · `disconnect` ·
 `hold_publisher` (with a timeout, then fail) · `reject_new` · `spill_to_disk`.
 
-**Defaults are sized from a throughput target, and every limit is in bytes**,
-never an event count: a count means something different at 100 bytes and at
-1 MiB. First proposal (64 MiB, 10,000 events) was too small (Steve: a partition
-can see more than 10k events per second). Revised proposal, from a target of
-100k events/s per partition at ~1 KiB ([Q20](questions.md)):
+**Defaults are detected, not guessed** ([D11](decisions.md),
+[research/04](research/04-detecting-resource-budgets.md)). Every limit is in
+bytes, never an event count. (Two rounds of fixed defaults were rejected: 64 MiB
+/ 10,000 events was far too small for a partition that sees more than 10k
+events/s, and a fixed throughput target is still a guess.)
 
-| Limit | Default | At the target rate |
-|---|---|---|
-| memory per partition | 1 GiB | ~10 s of traffic |
-| node-wide pub/sub memory | 25% of RAM | shared by every partition on the node |
-| subscription lag | the partition's memory cap | a subscriber may be as far behind as memory holds |
-| disk per partition | 32 GiB | ~5 min of traffic |
-| node-wide spill disk | 50% of free space in the data dir | |
-| hold publisher | 5 s, then the publish fails | |
+**Detection order for memory** (the first that answers wins, then the tightest):
+
+1. configuration (always wins, and is logged as such);
+2. the cgroup limit: v2 `memory.max`, or v1 `memory.limit_in_bytes`, taking the
+   tightest ancestor;
+3. the Kubernetes request/limit from Downward API environment variables, if the
+   operator sets them;
+4. the host: `hw.memsize` (macOS) or `MemTotal` (Linux), with current use from
+   `host_statistics64` / `MemAvailable`.
+
+Disk comes from `statvfs` on the data directory (and an `ephemeral-storage`
+limit if exposed). CPU from `cpu.max` / `cfs_quota_us` and the cpuset.
+
+**Derived defaults** (fractions of the detected budget; the fractions are
+proposals): pub/sub memory for the node = 25% of the memory budget, shared by
+every partition on it; a subscription may lag as far as its partition holds;
+spill disk = 50% of the data directory's free space; hold publisher 5 s, then
+fail.
+
+**The log line**, once at startup and again if a limit changes:
+
+```
+pubsub: memory budget 4.0 GiB (cgroup v2 memory.max /kubepods/.../zetta-0; host 256 GiB ignored)
+pubsub: memory for topics 1.0 GiB (25% of budget; override: pubsub.memory)
+pubsub: spill disk 180 GiB (50% of 360 GiB free on /var/lib/zetta; override: pubsub.spill_disk)
+pubsub: cpu 1.5 (cgroup v2 cpu.max 150000/100000; cpuset 0-15)
+```
 
 When full: at-most-once → `skip_ahead`; at-least-once and exactly-once →
 `spill_to_disk`, then `hold_publisher`, then fail.
@@ -146,3 +165,12 @@ data dir and dropped from memory; the ring's segment list records where each
 segment lives. Readers find a segment by sequence number, so a cursor never
 cares which tier it is in. Spill files are not `fsync`ed and are deleted on
 startup: this is overflow, not durability ([research/03](research/03-memory-limits-and-spill.md)).
+
+**Spilling is logged** ([D12](decisions.md)): on the first spill, every 30 s
+while it continues, and when it ends.
+
+```
+pubsub: WARN orders/3 spilling to disk: memory 1.0 GiB full; slowest subscriber billing-sync at seq 88121004 (lag 1.0 GiB); expect higher latency
+pubsub: WARN orders/3 still spilling (2m30s): 6.2 GiB on disk, +41 MiB/s; reading from disk: billing-sync (lag 6.9 GiB)
+pubsub: INFO orders/3 no longer spilling after 4m10s; 9.8 GiB spilled in total
+```

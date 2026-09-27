@@ -25,15 +25,18 @@ first principle — see [`context.md`](context.md)).
 4. [`research/03-memory-limits-and-spill.md`](research/03-memory-limits-and-spill.md)
    — how RabbitMQ, NATS, Redis and Pulsar cap queues, their overflow policies and
    defaults, and the pitfalls of spilling to disk.
-5. [`decisions.md`](decisions.md) — every settled decision (D1–D10), each with its
+5. [`research/04-detecting-resource-budgets.md`](research/04-detecting-resource-budgets.md)
+   — detecting memory, CPU and disk budgets from cgroups, the Downward API and the
+   host, and how the JVM, Go and .NET size themselves.
+6. [`decisions.md`](decisions.md) — every settled decision (D1–D12), each with its
    cost and what would make us revisit it.
-6. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
+7. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.
-7. [`governance.md`](governance.md) — how topics join zetta's central governance
+8. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
-8. [`questions.md`](questions.md) — open questions, answered ones kept with their
+9. [`questions.md`](questions.md) — open questions, answered ones kept with their
    answers.
 
 ## Stages (proposed, not agreed)

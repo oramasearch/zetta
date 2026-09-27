@@ -98,9 +98,20 @@ design past several of these questions. Still open from round 1:
 
 ## Round 6 — 2026-09-27
 
-20. **What throughput should the defaults be sized for?** Proposed target: **100k
+20. ~~**What throughput should the defaults be sized for?**~~ → *Answered
+    2026-09-27 (Steve): don't guess; auto-select from the environment (pod
+    requests/limits, system memory total/used, …), overridable by configuration,
+    and log what was detected* ([D11](decisions.md)). Q19 is closed by the same
+    answer. Original question: Proposed target: **100k
     events/s per partition at ~1 KiB each (~100 MiB/s)**. The revised defaults
     follow from it: 1 GiB of memory per partition (~10 s of traffic), 32 GiB of
     disk per partition (~5 min), both inside node-wide budgets (25% of RAM, 50% of
     free disk). If the target is higher, or events are bigger, the defaults scale
     with it.
+
+## Round 7 — 2026-09-27
+
+21. **Partitions.** You said "per partition": is a topic partitioned, like a
+    Kafka topic, with each partition its own ordered ring? If so, what picks an
+    event's partition (a key hash, round robin, the publisher naming it), and is
+    ordering guaranteed only within a partition?
