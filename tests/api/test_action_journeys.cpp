@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 
@@ -23,6 +25,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -373,4 +376,69 @@ TEST_F(ActionJourneys, JourneyDeniedKeyIsRefusedAndAudited) {
     const journey::JourneyReport read_back_report =
         journey::run_journey(read_back, caller());
     EXPECT_TRUE(read_back_report.ok) << read_back_report.summary();
+}
+
+
+// =====================================================================
+// A run given no dataset trains on the table its pipeline's connect step names
+// (lake points a project's pipeline at a table; before, such a run trained on
+// the built-in demo dataset and said nothing).
+// =====================================================================
+TEST_F(Uc1Journey, ARunWithoutADatasetReadsItsPipelinesTable) {
+    std::vector<nlohmann::json> rows;
+    for (std::int64_t index = 0; index < 120; ++index) {
+        const std::int64_t failed = index % 5;
+        rows.push_back({{"account_id", index + 1},
+                        {"failed_payments", failed},
+                        {"tenure_months", static_cast<double>(60 - index % 50)},
+                        {"churned", (failed >= 3) != (index % 9 == 0) ? 1 : 0}});
+    }
+    zetta::data::AddDatasetOptions options;
+    options.database = "datasets";
+    options.table_name = "accounts";
+    options.partitioned = true;
+    options.members = {node.node_id()};
+    ASSERT_TRUE(zetta::data::add_dataset_rows(node, rows, options).ok());
+
+    ASSERT_TRUE(call("create_project", {{"name", "retention"}}).ok);
+    const nlohmann::json nodes = nlohmann::json::array(
+        {{{"id", "load"}, {"kind", "connect"}, {"name", "Load accounts"},
+          {"attributes", {{"source", "datasets"}, {"table", "accounts"}}}},
+         {{"id", "features"}, {"kind", "clean"}, {"name", "Build features"}},
+         {{"id", "train"}, {"kind", "model"}, {"name", "Train"},
+          {"attributes", {{"target", "churned"}, {"algo", "gbdt"}}}}});
+    const nlohmann::json edges = nlohmann::json::array(
+        {{{"from", "load"}, {"to", "features"}, {"kind", "data_flow"}},
+         {{"from", "features"}, {"to", "train"}, {"kind", "data_flow"}}});
+    const ApiResult saved = call("save_graph", {{"project", "retention"}, {"graph", "churn"},
+                                                {"nodes", nodes}, {"edges", edges}});
+    ASSERT_TRUE(saved.ok) << saved.error.message;
+    ASSERT_TRUE(call("approve_plan", {{"project", "retention"}, {"graph", "churn"}}).ok);
+
+    const ApiResult ran = call("run", {{"project", "retention"}, {"graph", "churn"}});
+    ASSERT_TRUE(ran.ok) << ran.error.message;
+    EXPECT_EQ(ran.value.value("engine", ""), "churn");
+    ASSERT_TRUE(ran.value.contains("dataset_notes")) << ran.value.dump();
+    EXPECT_NE(ran.value["dataset_notes"].dump().find(
+                  "read from the pipeline's connect step 'Load accounts': datasets.accounts, "
+                  "label 'churned'"),
+              std::string::npos)
+        << ran.value.dump();
+    EXPECT_EQ(ran.value["dataset"].value("label_column", ""), "churned");
+
+    // The run finishes (its worker joins before the node stops), trained on the table.
+    const std::string run_id = ran.value.value("run_id", "");
+    std::string status;
+    for (int attempt = 0; attempt < 3000 && status != "succeeded" && status != "failed"; ++attempt) {
+        node.tick();
+        background.prune();
+        const ApiResult read = call("get_run", {{"run_id", run_id}});
+        status = read.ok ? read.value.value("status", "") : "";
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(status, "succeeded");
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value["dataset"].value("source", ""), "datasets.accounts")
+        << report.value.dump();
 }
