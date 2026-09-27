@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 7 (after [D1–D9](decisions.md)). Settled parts cite
+**Status:** draft, revision 8 (after [D1–D10](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -108,3 +108,28 @@ How this maps onto cursors:
 - **exactly-once:** at-least-once plus a per-subscription set of processed event
   ids, so a redelivery is dropped before the subscriber sees it. In-memory only
   until stage 3.
+
+## Limits and overflow (D10)
+
+Settable at each level, bounded by governance:
+
+| Level | Setting |
+|---|---|
+| topic | memory cap (bytes), disk cap (bytes), overflow policy, spill allowed |
+| subscription | how far it may fall behind (events or bytes), its own overflow policy |
+| message | time to live; whether it may be dropped under pressure |
+
+Overflow policies: `unbounded` · `skip_ahead` (the slow subscriber jumps forward
+and receives a gap notice with the count it missed) · `disconnect` ·
+`hold_publisher` (with a timeout, then fail) · `reject_new` · `spill_to_disk`.
+
+**Proposed defaults** ([Q19](questions.md)): 64 MiB memory per topic; 10,000
+events of lag per subscription; at-most-once → `skip_ahead`; at-least-once and
+exactly-once → `spill_to_disk` up to 1 GiB, then `hold_publisher` for 5 s, then
+fail the publish.
+
+**Disk tier:** a full memory segment is written whole to a file under the node's
+data dir and dropped from memory; the ring's segment list records where each
+segment lives. Readers find a segment by sequence number, so a cursor never
+cares which tier it is in. Spill files are not `fsync`ed and are deleted on
+startup: this is overflow, not durability ([research/03](research/03-memory-limits-and-spill.md)).

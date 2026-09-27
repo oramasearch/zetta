@@ -22,19 +22,18 @@ first principle — see [`context.md`](context.md)).
 3. [`research/02-growable-rings-and-delivery.md`](research/02-growable-rings-and-delivery.md)
    — segmented rings and reclamation, inline vs heap events, and how brokers
    choose recipients, ordering, priority and QoS.
-4. [`decisions.md`](decisions.md) — settled decisions with cost and revisit
-   condition (D1 locks + condition variables, D2 pluggable stores / growing ring,
-   D3 runtime delivery semantics, D4 binary events with a heap, D5 no coroutines
-   in stage 1, a mutex per queue, D6 delivery set at topic, subscription or
-   message level, D7 governance decides what each level may ask for, D8 clamp over-bound
-   requests by default, reject per topic, D9 QoS = priority + guarantee at every
-   level).
-5. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
-   in-memory topic with a list of subscribers. Draft, revision 2.
-6. [`governance.md`](governance.md) — how topics join zetta's central governance
+4. [`research/03-memory-limits-and-spill.md`](research/03-memory-limits-and-spill.md)
+   — how RabbitMQ, NATS, Redis and Pulsar cap queues, their overflow policies and
+   defaults, and the pitfalls of spilling to disk.
+5. [`decisions.md`](decisions.md) — every settled decision (D1–D10), each with its
+   cost and what would make us revisit it.
+6. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
+   in-memory topic with a list of subscribers. Draft; its status line carries the
+   revision.
+7. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
-7. [`questions.md`](questions.md) — open questions, answered ones kept with their
+8. [`questions.md`](questions.md) — open questions, answered ones kept with their
    answers.
 
 ## Stages (proposed, not agreed)

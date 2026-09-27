@@ -156,3 +156,21 @@ Answers [Q16](questions.md).
   exact within one process lifetime until stage 3 makes it durable.
 - **Priority** breaks FIFO for events of different priority, and strict priority
   starves low priority unless waiting events age upward.
+
+## D10 — Memory limits and overflow are configurable at every level, with defaults; disk is an overflow tier (2026-09-27)
+
+**What.** How much a topic may hold, and what happens when it is full, is set at
+the topic, subscription and message levels (bounded by governance, like every
+option), with sane defaults. Overflow policies include spilling ring segments to
+**disk**. Answers [Q13](questions.md). The proposed defaults are
+[Q19](questions.md).
+
+**Why.** A stuck subscriber must not take the process down, and no single
+policy fits every topic (research/03: RabbitMQ, NATS, Redis and Pulsar each
+default differently).
+
+**Cost.** Disk is a second tier with its own cap and policy, not an unlimited
+extension (research/03). A subscriber reading spilled segments hits a latency
+cliff. Spilling is not durability: without `fsync` a crash loses spilled events,
+so durable topics stay a stage 3 decision. Cursors are sequence numbers so they
+stay valid across tiers.

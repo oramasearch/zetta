@@ -41,7 +41,9 @@ design past several of these questions. Still open from round 1:
 12. **`std::queue` can't do broadcast.** It only has `front`/`pop`, so it can
     feed one reader. Is the `std::queue` store meant for work-queue topics only,
     or should the alternative store be a `std::deque` used by index?
-13. **Is growth ever capped?** A slow or dead subscriber pins every ring after
+13. ~~**Is growth ever capped?**~~ → *Answered 2026-09-27 (Steve): yes,
+    configurable at all levels with sane defaults, potentially overflowing to
+    disk* ([D10](decisions.md)). Original question: **Is growth ever capped?** A slow or dead subscriber pins every ring after
     its cursor. Options: no cap; a per-topic memory limit after which the
     slowest subscriber is dropped or skipped ahead and told it missed N; or
     fall back to blocking the publisher.
@@ -79,3 +81,14 @@ design past several of these questions. Still open from round 1:
     only use "one"), do we (a) **reject** it with an error naming the rule, and
     audit the denial (zetta's deny-by-default), or (b) **clamp** it to the bound,
     deliver, and audit that it was clamped?
+
+## Round 5 — 2026-09-27
+
+19. **Are these the right defaults?** Proposed in
+    [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md#limits-and-overflow-d10):
+    per-topic memory cap 64 MiB; a subscription may fall 10,000 events behind;
+    when full, the default policy follows the guarantee: **at-most-once skips the
+    slow subscriber ahead** (it is told how many it missed), **at-least-once and
+    exactly-once spill to disk** up to 1 GiB per topic, then **hold the publisher**
+    for up to 5 s, then fail the publish. Spilling is off for topics whose events
+    must never touch disk.
