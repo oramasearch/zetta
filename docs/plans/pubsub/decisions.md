@@ -626,3 +626,16 @@ and by `pubsub:manage`; each error event carries the original event's
 **What.** Stage 1 has **no rate limits** by default. Rate limiting is a later
 feature; when it arrives, its errors go to the recipient's error topic (D37) and
 its limits follow the standing rule.
+
+## D39 — Cluster behavior is designed later, as stage 2 (2026-09-27)
+
+**What.** How topics, inboxes and subscribers behave across nodes is left to a
+later stage 2 design. Answers [Q35](questions.md).
+
+**Cost.** Zetta's first principle accepts a single-node implementation only as
+a reference with the distributed path designed behind the same API. So stage 1
+may be built, but it is not the shipped answer until stage 2 is designed. What
+keeps the door open today: topic definitions are already replicated (D14),
+governance is replicated state (D7), addresses are cluster-wide names (D26),
+positions are sequence numbers (D10), and nothing promises order beyond one
+store (D13).

@@ -42,7 +42,7 @@ first principle — see [`context.md`](context.md)).
    — NATS/MQTT/RabbitMQ/Kafka/Akka wildcards, email To/Cc/Bcc/Reply-To and
    threading, and the pitfalls of sender-side wildcards.
 9. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
-   governed, with detected defaults) and every settled decision (D1–D38).
+   governed, with detected defaults) and every settled decision (D1–D39).
 10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the stage 1
    specification, consolidated from every decision; its status line carries the
    revision.
@@ -57,6 +57,6 @@ first principle — see [`context.md`](context.md)).
 | Stage | What | Status |
 |---|---|---|
 | 1 | In-memory pub/sub on one node: addressed events, inboxes, runtime topics, governed delivery options | spec drafted |
-| 2 | The same API across the cluster (a topic owned by a partition, subscribers on any node) | not started |
+| 2 | The same API across the cluster (topics, inboxes and subscribers on any node) | designed later (D39) |
 | 3 | Retention / replay (a log with per-subscriber offsets); restart/crash survival is in stage 1 (D17); fsync-durable topics are here | not started |
 | 4 | Change events from tables and datasets (CDC) as topics | not started |

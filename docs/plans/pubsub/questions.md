@@ -311,7 +311,8 @@ id per node.
 
 ## Round 23 — 2026-09-27
 
-35. **Stage 2: the cluster.** Zetta's first principle says a single-node design
+35. ~~**Stage 2: the cluster.**~~ → *Answered 2026-09-27 (Steve): design stage 2
+    later* ([D39](decisions.md)). Original: **Stage 2: the cluster.** Zetta's first principle says a single-node design
     ships only with its distributed path designed behind the same API. Today a
     topic's definition is replicated but its events live on one node. When
     `agent:405` runs on node B and subscribes to a topic whose events are held
@@ -320,3 +321,13 @@ id per node.
     **each node holds its own copy** of the events its local subscribers need,
     and publishes are forwarded to every node with a matching subscriber; (c)
     leave cluster behavior to stage 2 and design it next.
+
+## Round 24 — 2026-09-27
+
+36. **Is the stage 1 spec ready to become work?** Proposal: an epic on
+    `oramasearch/zetta` ("pub/sub stage 1") with leaf issues in build order:
+    events and envelope → `TopicRingStack` and queues → topics as runtime objects
+    → subscriptions, inboxes and delivery options → governance → limits,
+    detection and spilling → shutdown and restart → drains, results and error
+    topics → optional MCP/REST exposure → observability. Or keep designing
+    first (e.g. confirm the marked proposals, or link the agent-task design)?

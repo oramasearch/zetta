@@ -1,7 +1,7 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 28 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D38](decisions.md). Every section cites the
+**Status:** draft spec, revision 29 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D39](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
 overruled. Open items are listed at the end.
@@ -287,6 +287,6 @@ dispatch mode.
 
 ## 12. Open
 
-- How topics behave across the cluster, stage 2 ([Q35](questions.md)).
+- How topics behave across the cluster: stage 2, designed later ([D39](decisions.md)). Until then stage 1 is a reference implementation under zetta's first principle.
 - The link to the agent-task design, once it has a home (D25).
 - The proposals marked above, until confirmed.
