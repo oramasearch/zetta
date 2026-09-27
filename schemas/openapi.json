@@ -1778,7 +1778,21 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "chat_capable": {
+                    "type": "boolean"
+                  },
+                  "definition": {
+                    "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                    "type": "object"
+                  },
                   "description": {
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "description": "runtime: service",
+                    "type": "string"
+                  },
+                  "goal": {
                     "type": "string"
                   },
                   "goals": {
@@ -1791,13 +1805,83 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "is_default": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": [
+                      "custom",
+                      "orama"
+                    ],
+                    "type": "string"
+                  },
+                  "manifesto": {
+                    "type": "string"
+                  },
                   "model": {
-                    "description": "checkpoint dir, model:<uuid>, or a HuggingFace repo id",
-                    "minLength": 1,
+                    "description": "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace repo id",
+                    "type": "string"
+                  },
+                  "model_name": {
+                    "type": "string"
+                  },
+                  "model_version": {
                     "type": "string"
                   },
                   "name": {
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "pipelines": {
+                    "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                    "items": {
+                      "properties": {
+                        "graph": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "enum": [
+                      "native",
+                      "python",
+                      "service"
+                    ],
+                    "type": "string"
+                  },
+                  "skills": {
+                    "items": {
+                      "enum": [
+                        "search",
+                        "generate-data",
+                        "train",
+                        "summarize",
+                        "call-api"
+                      ],
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "enum": [
+                      "idle",
+                      "running",
+                      "waiting",
+                      "completed",
+                      "failed"
+                    ],
                     "type": "string"
                   },
                   "system_prompt": {
@@ -1808,11 +1892,30 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  "trigger": {
+                    "description": "empty = conversation only",
+                    "type": "string"
+                  },
+                  "work_area": {
+                    "properties": {
+                      "detail": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "workspace",
+                          "project",
+                          "dataset"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   }
                 },
                 "required": [
-                  "name",
-                  "model"
+                  "name"
                 ],
                 "type": "object"
               }
@@ -1841,19 +1944,104 @@
                     },
                     "value": {
                       "properties": {
+                        "chat_capable": {
+                          "type": "boolean"
+                        },
                         "created_at": {
                           "type": "string"
                         },
+                        "definition": {
+                          "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                          "type": "object"
+                        },
                         "description": {
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "description": "runtime: service",
+                          "type": "string"
+                        },
+                        "goal": {
                           "type": "string"
                         },
                         "id": {
                           "type": "string"
                         },
+                        "is_default": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "custom",
+                            "orama"
+                          ],
+                          "type": "string"
+                        },
+                        "manifesto": {
+                          "type": "string"
+                        },
                         "model": {
                           "type": "string"
                         },
+                        "model_name": {
+                          "type": "string"
+                        },
+                        "model_version": {
+                          "type": "string"
+                        },
                         "name": {
+                          "type": "string"
+                        },
+                        "pipelines": {
+                          "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                          "items": {
+                            "properties": {
+                              "graph": {
+                                "type": "string"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "purpose": {
+                          "type": "string"
+                        },
+                        "runtime": {
+                          "enum": [
+                            "native",
+                            "python",
+                            "service"
+                          ],
+                          "type": "string"
+                        },
+                        "skills": {
+                          "items": {
+                            "enum": [
+                              "search",
+                              "generate-data",
+                              "train",
+                              "summarize",
+                              "call-api"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "idle",
+                            "running",
+                            "waiting",
+                            "completed",
+                            "failed"
+                          ],
                           "type": "string"
                         },
                         "system_prompt": {
@@ -1865,8 +2053,28 @@
                           },
                           "type": "array"
                         },
+                        "trigger": {
+                          "description": "empty = conversation only",
+                          "type": "string"
+                        },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "work_area": {
+                          "properties": {
+                            "detail": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "workspace",
+                                "project",
+                                "dataset"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
                         }
                       },
                       "type": "object"
@@ -4507,19 +4715,104 @@
                     },
                     "value": {
                       "properties": {
+                        "chat_capable": {
+                          "type": "boolean"
+                        },
                         "created_at": {
                           "type": "string"
                         },
+                        "definition": {
+                          "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                          "type": "object"
+                        },
                         "description": {
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "description": "runtime: service",
+                          "type": "string"
+                        },
+                        "goal": {
                           "type": "string"
                         },
                         "id": {
                           "type": "string"
                         },
+                        "is_default": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "custom",
+                            "orama"
+                          ],
+                          "type": "string"
+                        },
+                        "manifesto": {
+                          "type": "string"
+                        },
                         "model": {
                           "type": "string"
                         },
+                        "model_name": {
+                          "type": "string"
+                        },
+                        "model_version": {
+                          "type": "string"
+                        },
                         "name": {
+                          "type": "string"
+                        },
+                        "pipelines": {
+                          "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                          "items": {
+                            "properties": {
+                              "graph": {
+                                "type": "string"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "purpose": {
+                          "type": "string"
+                        },
+                        "runtime": {
+                          "enum": [
+                            "native",
+                            "python",
+                            "service"
+                          ],
+                          "type": "string"
+                        },
+                        "skills": {
+                          "items": {
+                            "enum": [
+                              "search",
+                              "generate-data",
+                              "train",
+                              "summarize",
+                              "call-api"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "idle",
+                            "running",
+                            "waiting",
+                            "completed",
+                            "failed"
+                          ],
                           "type": "string"
                         },
                         "system_prompt": {
@@ -4531,8 +4824,28 @@
                           },
                           "type": "array"
                         },
+                        "trigger": {
+                          "description": "empty = conversation only",
+                          "type": "string"
+                        },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "work_area": {
+                          "properties": {
+                            "detail": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "workspace",
+                                "project",
+                                "dataset"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
                         }
                       },
                       "type": "object"
@@ -6728,19 +7041,104 @@
                         "agents": {
                           "items": {
                             "properties": {
+                              "chat_capable": {
+                                "type": "boolean"
+                              },
                               "created_at": {
                                 "type": "string"
                               },
+                              "definition": {
+                                "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                                "type": "object"
+                              },
                               "description": {
+                                "type": "string"
+                              },
+                              "endpoint": {
+                                "description": "runtime: service",
+                                "type": "string"
+                              },
+                              "goal": {
                                 "type": "string"
                               },
                               "id": {
                                 "type": "string"
                               },
+                              "is_default": {
+                                "type": "boolean"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "custom",
+                                  "orama"
+                                ],
+                                "type": "string"
+                              },
+                              "manifesto": {
+                                "type": "string"
+                              },
                               "model": {
                                 "type": "string"
                               },
+                              "model_name": {
+                                "type": "string"
+                              },
+                              "model_version": {
+                                "type": "string"
+                              },
                               "name": {
+                                "type": "string"
+                              },
+                              "pipelines": {
+                                "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                                "items": {
+                                  "properties": {
+                                    "graph": {
+                                      "type": "string"
+                                    },
+                                    "project": {
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "purpose": {
+                                "type": "string"
+                              },
+                              "runtime": {
+                                "enum": [
+                                  "native",
+                                  "python",
+                                  "service"
+                                ],
+                                "type": "string"
+                              },
+                              "skills": {
+                                "items": {
+                                  "enum": [
+                                    "search",
+                                    "generate-data",
+                                    "train",
+                                    "summarize",
+                                    "call-api"
+                                  ],
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "status": {
+                                "enum": [
+                                  "idle",
+                                  "running",
+                                  "waiting",
+                                  "completed",
+                                  "failed"
+                                ],
                                 "type": "string"
                               },
                               "system_prompt": {
@@ -6752,13 +7150,37 @@
                                 },
                                 "type": "array"
                               },
+                              "trigger": {
+                                "description": "empty = conversation only",
+                                "type": "string"
+                              },
                               "updated_at": {
                                 "type": "string"
+                              },
+                              "work_area": {
+                                "properties": {
+                                  "detail": {
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "workspace",
+                                      "project",
+                                      "dataset"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "type": "object"
                               }
                             },
                             "type": "object"
                           },
                           "type": "array"
+                        },
+                        "default_agent_id": {
+                          "description": "the agent marked is_default (Ask Orama); empty when none",
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -10045,19 +10467,104 @@
                     },
                     "value": {
                       "properties": {
+                        "chat_capable": {
+                          "type": "boolean"
+                        },
                         "created_at": {
                           "type": "string"
                         },
+                        "definition": {
+                          "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                          "type": "object"
+                        },
                         "description": {
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "description": "runtime: service",
+                          "type": "string"
+                        },
+                        "goal": {
                           "type": "string"
                         },
                         "id": {
                           "type": "string"
                         },
+                        "is_default": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "custom",
+                            "orama"
+                          ],
+                          "type": "string"
+                        },
+                        "manifesto": {
+                          "type": "string"
+                        },
                         "model": {
                           "type": "string"
                         },
+                        "model_name": {
+                          "type": "string"
+                        },
+                        "model_version": {
+                          "type": "string"
+                        },
                         "name": {
+                          "type": "string"
+                        },
+                        "pipelines": {
+                          "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                          "items": {
+                            "properties": {
+                              "graph": {
+                                "type": "string"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "purpose": {
+                          "type": "string"
+                        },
+                        "runtime": {
+                          "enum": [
+                            "native",
+                            "python",
+                            "service"
+                          ],
+                          "type": "string"
+                        },
+                        "skills": {
+                          "items": {
+                            "enum": [
+                              "search",
+                              "generate-data",
+                              "train",
+                              "summarize",
+                              "call-api"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "idle",
+                            "running",
+                            "waiting",
+                            "completed",
+                            "failed"
+                          ],
                           "type": "string"
                         },
                         "system_prompt": {
@@ -10069,8 +10576,28 @@
                           },
                           "type": "array"
                         },
+                        "trigger": {
+                          "description": "empty = conversation only",
+                          "type": "string"
+                        },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "work_area": {
+                          "properties": {
+                            "detail": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "workspace",
+                                "project",
+                                "dataset"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
                         }
                       },
                       "type": "object"
@@ -10880,7 +11407,21 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "chat_capable": {
+                    "type": "boolean"
+                  },
+                  "definition": {
+                    "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                    "type": "object"
+                  },
                   "description": {
+                    "type": "string"
+                  },
+                  "endpoint": {
+                    "description": "runtime: service",
+                    "type": "string"
+                  },
+                  "goal": {
                     "type": "string"
                   },
                   "goals": {
@@ -10897,12 +11438,82 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "is_default": {
+                    "type": "boolean"
+                  },
+                  "kind": {
+                    "enum": [
+                      "custom",
+                      "orama"
+                    ],
+                    "type": "string"
+                  },
+                  "manifesto": {
+                    "type": "string"
+                  },
                   "model": {
-                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "model_name": {
+                    "type": "string"
+                  },
+                  "model_version": {
                     "type": "string"
                   },
                   "name": {
                     "minLength": 1,
+                    "type": "string"
+                  },
+                  "pipelines": {
+                    "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                    "items": {
+                      "properties": {
+                        "graph": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "purpose": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "enum": [
+                      "native",
+                      "python",
+                      "service"
+                    ],
+                    "type": "string"
+                  },
+                  "skills": {
+                    "items": {
+                      "enum": [
+                        "search",
+                        "generate-data",
+                        "train",
+                        "summarize",
+                        "call-api"
+                      ],
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "status": {
+                    "enum": [
+                      "idle",
+                      "running",
+                      "waiting",
+                      "completed",
+                      "failed"
+                    ],
                     "type": "string"
                   },
                   "system_prompt": {
@@ -10913,6 +11524,26 @@
                       "type": "string"
                     },
                     "type": "array"
+                  },
+                  "trigger": {
+                    "description": "empty = conversation only",
+                    "type": "string"
+                  },
+                  "work_area": {
+                    "properties": {
+                      "detail": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "workspace",
+                          "project",
+                          "dataset"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   }
                 },
                 "required": [
@@ -10945,19 +11576,104 @@
                     },
                     "value": {
                       "properties": {
+                        "chat_capable": {
+                          "type": "boolean"
+                        },
                         "created_at": {
                           "type": "string"
                         },
+                        "definition": {
+                          "description": "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or lake (repository_id + revision); entrypoint is module:function",
+                          "type": "object"
+                        },
                         "description": {
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "description": "runtime: service",
+                          "type": "string"
+                        },
+                        "goal": {
                           "type": "string"
                         },
                         "id": {
                           "type": "string"
                         },
+                        "is_default": {
+                          "type": "boolean"
+                        },
+                        "kind": {
+                          "enum": [
+                            "custom",
+                            "orama"
+                          ],
+                          "type": "string"
+                        },
+                        "manifesto": {
+                          "type": "string"
+                        },
                         "model": {
                           "type": "string"
                         },
+                        "model_name": {
+                          "type": "string"
+                        },
+                        "model_version": {
+                          "type": "string"
+                        },
                         "name": {
+                          "type": "string"
+                        },
+                        "pipelines": {
+                          "description": "approved Pipelines the agent may call as tools; version pins the approval",
+                          "items": {
+                            "properties": {
+                              "graph": {
+                                "type": "string"
+                              },
+                              "project": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "purpose": {
+                          "type": "string"
+                        },
+                        "runtime": {
+                          "enum": [
+                            "native",
+                            "python",
+                            "service"
+                          ],
+                          "type": "string"
+                        },
+                        "skills": {
+                          "items": {
+                            "enum": [
+                              "search",
+                              "generate-data",
+                              "train",
+                              "summarize",
+                              "call-api"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "status": {
+                          "enum": [
+                            "idle",
+                            "running",
+                            "waiting",
+                            "completed",
+                            "failed"
+                          ],
                           "type": "string"
                         },
                         "system_prompt": {
@@ -10969,8 +11685,28 @@
                           },
                           "type": "array"
                         },
+                        "trigger": {
+                          "description": "empty = conversation only",
+                          "type": "string"
+                        },
                         "updated_at": {
                           "type": "string"
+                        },
+                        "work_area": {
+                          "properties": {
+                            "detail": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "enum": [
+                                "workspace",
+                                "project",
+                                "dataset"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
                         }
                       },
                       "type": "object"

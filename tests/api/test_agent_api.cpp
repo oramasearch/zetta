@@ -174,3 +174,109 @@ TEST_F(AgentApiFixture, AgentRunBuildsAndRunsFromRealModel) {
 }
 
 }  // namespace
+
+// zetta#1015: every agent lake shows is an AgentRecord — the specialized Orama agents (the Agent
+// Library) and the ones people build — so kind, runtime, the Studio shape, the Ask Orama contract,
+// granted Pipelines and a Python agent's definition all round-trip through the capabilities.
+TEST_F(AgentApiFixture, KindsRuntimesStudioShapeAndPipelineGrants) {
+    // A record written before these fields reads back as a custom native agent.
+    ApiResult native = call("create_agent", {{"name", "Base"}, {"model", "models/Qwen3-0.6B"}});
+    ASSERT_TRUE(native.ok) << native.error.message;
+    EXPECT_EQ(native.value.at("kind"), "custom");
+    EXPECT_EQ(native.value.at("runtime"), "native");
+    EXPECT_EQ(native.value.at("status"), "idle");
+    EXPECT_TRUE(native.value.at("chat_capable").get<bool>());
+
+    // Ask Orama: a specialized service agent, the default.
+    ApiResult ask = call("create_agent",
+                         {{"name", "Ask Orama"},
+                          {"kind", "orama"},
+                          {"runtime", "service"},
+                          {"endpoint", "http://agent-ask-orama.lake:8080"},
+                          {"is_default", true}});
+    ASSERT_TRUE(ask.ok) << ask.error.message;
+    EXPECT_FALSE(call("create_agent", {{"name", "No endpoint"}, {"runtime", "service"}}).ok);
+
+    // A custom Python agent in Studio's shape, its code stored inline.
+    const nlohmann::json python_agent = {
+        {"name", "Renewal watcher"},
+        {"runtime", "python"},
+        {"purpose", "Flag renewals at risk"},
+        {"work_area", {{"kind", "project"}, {"detail", "churn"}}},
+        {"manifesto", "Answer from company data only."},
+        {"goal", "Every at-risk renewal is flagged a month ahead."},
+        {"skills", {"search", "summarize"}},
+        {"trigger", "every Monday at 09:00"},
+        {"model_name", "gpt-5"},
+        {"definition",
+         {{"source", "zetta"},
+          {"instructions", "# Renewal watcher"},
+          {"entrypoint", "agent.main:run"},
+          {"files", {{{"path", "agent/main.py"}, {"contents", "def run(ctx):\n    return 1\n"}}}}}}};
+    ApiResult python = call("create_agent", python_agent);
+    ASSERT_TRUE(python.ok) << python.error.message;
+    EXPECT_EQ(python.value.at("work_area").at("kind"), "project");
+    EXPECT_EQ(python.value.at("skills").size(), 2u);
+    EXPECT_EQ(python.value.at("definition").at("files").at(0).at("path"), "agent/main.py");
+    const std::string python_id = python.value.at("id");
+
+    // The definition's rules: a lake source needs a pinned revision, inline code is capped, paths
+    // stay inside the definition, and skills come from the fixed set.
+    nlohmann::json lake_source = python_agent;
+    lake_source["definition"] = {{"source", "lake"}, {"repository_id", "r-1"}};
+    ApiResult no_revision = call("create_agent", lake_source);
+    ASSERT_FALSE(no_revision.ok);
+    EXPECT_NE(no_revision.error.message.find("revision"), std::string::npos);
+    lake_source["definition"]["revision"] = "c0ffee";
+    EXPECT_TRUE(call("create_agent", lake_source).ok);
+    nlohmann::json too_big = python_agent;
+    too_big["definition"]["files"][0]["contents"] = std::string(1024 * 1024 + 1, 'x');
+    ApiResult big = call("create_agent", too_big);
+    ASSERT_FALSE(big.ok);
+    EXPECT_NE(big.error.message.find("lake repository"), std::string::npos);
+    nlohmann::json escape = python_agent;
+    escape["definition"]["files"][0]["path"] = "../etc/passwd";
+    EXPECT_FALSE(call("create_agent", escape).ok);
+    nlohmann::json bad_skill = python_agent;
+    bad_skill["skills"] = {"launch-missiles"};
+    EXPECT_FALSE(call("create_agent", bad_skill).ok);
+
+    // The Ask Orama contract: one explicit default, reported by list_agents.
+    ApiResult listed = call("list_agents", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    EXPECT_EQ(listed.value.at("default_agent_id"), ask.value.at("id"));
+
+    // Zetta runs only native agents; the others are refused with where they do run.
+    ApiResult chat = call("chat", {{"agent", python_id}, {"message", "hello"}});
+    ASSERT_FALSE(chat.ok);
+    EXPECT_NE(chat.error.message.find("agent-runtime"), std::string::npos);
+    ApiResult status = call("agent_training_status", {{"id", python_id}});
+    ASSERT_TRUE(status.ok) << status.error.message;
+    EXPECT_NE(status.value.at("reason").get<std::string>().find("Not trained by Zetta"),
+              std::string::npos);
+
+    // Pipelines: only an approved graph can be granted, and the grant pins its approval.
+    ASSERT_TRUE(call("create_project", {{"name", "py"}}).ok);
+    ASSERT_TRUE(call("compile_python",
+                     {{"project", "py"},
+                      {"source",
+                       "ds = load_dataset(\"accounts.parquet\")\n"
+                       "clean = ds.dropna()\n"
+                       "model = train(clean, target=\"churned\")\n"},
+                      {"name", "churn"}})
+                    .ok);
+    const nlohmann::json grant = {{"id", python_id},
+                                  {"pipelines", {{{"project", "py"}, {"graph", "churn"}}}}};
+    ApiResult proposed = call("update_agent", grant);
+    ASSERT_FALSE(proposed.ok);
+    EXPECT_NE(proposed.error.message.find("not approved"), std::string::npos);
+    ApiResult approved = call("approve_plan", {{"project", "py"}, {"graph", "churn"}});
+    ASSERT_TRUE(approved.ok) << approved.error.message;
+    ApiResult granted = call("update_agent", grant);
+    ASSERT_TRUE(granted.ok) << granted.error.message;
+    const nlohmann::json pinned = granted.value.at("pipelines").at(0);
+    EXPECT_EQ(pinned.at("graph"), "churn");
+    EXPECT_FALSE(pinned.at("version").get<std::string>().empty());
+    EXPECT_EQ(call("get_agent", {{"id", python_id}}).value.at("pipelines").at(0).at("version"),
+              pinned.at("version"));
+}
