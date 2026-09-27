@@ -273,6 +273,7 @@ level can be trusted — a stale card is worse than none.
 | **The report a run produces**, and asking a finished run what it found | [`docs/pipeline/run-report.md`](docs/pipeline/run-report.md) (the artifact + `get_run_report`) · [`docs/pipeline/run-report-prompt.md`](docs/pipeline/run-report-prompt.md) + the **run-report** skill · [`docs/agent/chatting-with-results.md`](docs/agent/chatting-with-results.md) · regenerate: [`docs/runbooks/regenerating-the-run-report.md`](docs/runbooks/regenerating-the-run-report.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
+| Pub/sub: topics, inboxes, the envelope, delivery options, drains, limits and spilling, flush/reload, exposure | [`docs/pubsub/`](docs/pubsub/README.md) (what is built) · [`docs/plans/pubsub/`](docs/plans/pubsub/README.md) (the design, every decision with its cost, the as-built differences) |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |
 | Access control, audit, governed console | [`docs/governance/`](docs/governance/README.md) |
 | Any GUI change | [`docs/gui/`](docs/gui/README.md) — design system + rendering notes are mandatory reads |
@@ -331,7 +332,8 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; a new *kind* of agreement = a new `ReplicationPolicy` — never a
-  bespoke sync path. (Known migration debt: cluster membership still lives in
+  bespoke sync path. (Two deliberate exceptions, both *messages* rather
+  than state: the signal plane and pub/sub — see below.) (Known migration debt: cluster membership still lives in
   the `Cluster` peer table — move things *toward* this rule, never away.) See
   [`docs/cluster/replication.md`](docs/cluster/replication.md).
 
@@ -365,6 +367,27 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   `LanguageFrontend` (see the **new-input** skill). Signals ride the ephemeral
   **signal plane** (the one deliberate exception to "everything is replicated":
   a signal is a *message*, not *state*).
+
+- **Pub/sub is node-local messaging, not replicated state** (`zetta::pubsub`,
+  [`docs/pubsub/`](docs/pubsub/README.md); design + decisions D1–D39 in
+  [`docs/plans/pubsub/`](docs/plans/pubsub/README.md)). The node owns one
+  `PubSub` (`Node::pubsub()`): topics, an inbox per addressable entity
+  (`kind:name` — `topic:`, `agent:`, `table:<db>.<table>`, …), email-style
+  envelopes (from + sender stack, to/cc/bcc, reply-to, correlation id), delivery
+  options layered message > subscription > topic, limits detected from the
+  environment, spill to disk, a flush on `stop()` and a reload on `start()`.
+  Events are **messages held on one node** — never CRDT keys — and in stage 1
+  topic definitions are saved on the creating node only (replicating them is
+  stage 2, #1038). It is not the signal plane: the signal plane moves engine
+  signals between peers; pub/sub is an application-level broker agents use.
+  Rules that bind it: it locks, by decision (see the first principle); the
+  library never names `zetta::Node` — `src/core/pubsub/node_integration.cpp` is
+  the one TU that does (governance, the table drain, `system.pubsub_topics`);
+  rights are `pubsub:*` permissions + `Topic` prefix grants, decided on the
+  owner thread via `run_on_owner`; a new delivery target is a new `InboxDrain`
+  for its address kind, never a special case in the router; every topic is
+  engine-internal unless created `exposed` (the five pub/sub capabilities
+  reach only exposed topics).
 
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
@@ -458,6 +481,7 @@ include/zetta/   zetta-core PUBLIC API (no SDL/ImGui)
   ir/ query/ input/               ExecutionGraph IR · dialect-agnostic SQL · language frontends
   compute/ ddf/ ml/ index/        devices+schedulers · dataframes · native ML · indexes
   agent/ dataset/                 RLVR agent (action, prompt, solution-graph bridge, grader) · native corpus generators
+  pubsub/                         in-memory pub/sub: addresses + envelope, TopicRingStack, PubSub facade, drains, node adapters
   parquet/ repl/ testkit/ checks/ native Parquet · console · in-app tests · gate checks
 src/core/        zetta-core impl (catalog.hpp = internal CRDT key scheme)
 src/gui/         App — links SDL3 + ImGui; app.hpp forward-declares, only app.cpp

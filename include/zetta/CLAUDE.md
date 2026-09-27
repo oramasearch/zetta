@@ -28,5 +28,8 @@ it in the same commit when adding, moving, or renaming a header.
 - **Non-throwing boundaries:** public parse/validate entry points return
   `std::optional` / status types with a path-qualified reason; nothing throws
   across the zetta-core seam.
+- `zetta/pubsub/` is the one public domain whose API is thread-safe with locks
+  (decision D1/D5, docs/pubsub/); `node_integration.hpp` is its only header that
+  forward-declares `zetta::Node`.
 - Header comments carry the owning issue refs (`#NNN`) and point at the
   matching `docs/<domain>/` page — keep both current when the surface changes.

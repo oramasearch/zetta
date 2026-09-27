@@ -77,6 +77,13 @@ zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
   Everything else goes through `zetta::runtime` / the public seams — never
   `boost::capy`/`boost::corosio`/`openssl/*`.
+- **Pub/sub (`src/core/pubsub/`)** keeps its dependencies injected: `Authorizer`
+  (rights, delivery bounds, delegation), `InboxDrain` (one per address kind),
+  `LogSink`, `ResourceProbe` (cgroup / env / host / disk reads), the span
+  recorder and an idle pump. Only `node_integration.cpp` names `zetta::Node`,
+  and it reads users/roles through `run_on_owner`. Its queues lock by design
+  (decision D1/D5); `topic.hpp` is internal. Events are node-local messages,
+  never CRDT keys.
 - Observable state defaults to a virtual read-only `system.<table>` computed at
   query time from the live source (RULE-7); plain names, no `zetta_` prefix for
   new tables. Ephemeral/observed state (telemetry, cloud inspects, checkpoints)
