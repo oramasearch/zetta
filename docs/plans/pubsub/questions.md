@@ -57,9 +57,21 @@ design past several of these questions. Still open from round 1:
 
 ## Round 3 — 2026-09-27
 
-17. **When levels disagree, which wins?** Options: (a) the most specific wins
+17. ~~**When levels disagree, which wins?**~~ → *Answered 2026-09-27 (Steve):
+    the security/governance rules defined on the topic, user and subscriber,
+    through the central governance model of users, roles, grants, rules and
+    permissions* ([D7](decisions.md), [`governance.md`](governance.md)).
+    Original question: Options: (a) the most specific wins
     (message over subscription over topic); (b) the topic and subscription set
     limits and a message can only narrow within them, the way MQTT delivers at
     the lower of the publish QoS and the subscription QoS; (c) a different rule
     per axis (e.g. recipients: message wins; priority: message wins; guarantee:
     the minimum).
+
+## Round 4 — 2026-09-27
+
+18. **When a publish or subscription asks for more than governance allows** (e.g.
+    priority 9 where the role's bound is 5, or "deliver to everyone" where it may
+    only use "one"), do we (a) **reject** it with an error naming the rule, and
+    audit the denial (zetta's deny-by-default), or (b) **clamp** it to the bound,
+    deliver, and audit that it was clamped?

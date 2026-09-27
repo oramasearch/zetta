@@ -96,3 +96,20 @@ subscribe time: each event needs its own delivery state (e.g. a remaining-claims
 count), checked under its queue's lock.
 
 **Revisit if** the combination rules become too hard to explain in one table.
+
+## D7 — Governance decides what each level may ask for (2026-09-27)
+
+**What.** When topic, subscription and message settings disagree, the outcome is
+decided by the security and governance rules on the topic, the user and the
+subscriber, through zetta's **central governance model** (users, roles,
+permissions, scoped grants, policies, audit), not by a fixed precedence built
+into pub/sub. Answers [Q17](questions.md). Detail: [`governance.md`](governance.md).
+
+**Why.** One model already governs tables, columns, blobs and MCP tools; topics
+join it rather than inventing a second one. It is replicated state, so it works
+cluster-wide in stage 2 without new machinery.
+
+**Cost.** Pub/sub needs a new resource kind (`Topic`), new permission atoms and
+policies over delivery options; every publish and subscribe pays an
+authorization check (cacheable per subscription). What happens when a request
+exceeds its bounds is [Q18](questions.md).

@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 4 (after [D1–D6](decisions.md)). Settled parts cite
+**Status:** draft, revision 5 (after [D1–D7](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -72,8 +72,10 @@ order goes here.
 ## Delivery (D3)
 
 The same options object can be set on the topic (default), on a subscription,
-and on a single publish ([D6](decisions.md)); which wins when they disagree is
-[Q17](questions.md).
+and on a single publish ([D6](decisions.md)). The request is layered most specific
+first, then bounded by governance for that principal on that topic
+([D7](decisions.md), [`governance.md`](governance.md)); stage 1 takes an injected
+authorization interface.
 
 ```cpp
 struct delivery {
