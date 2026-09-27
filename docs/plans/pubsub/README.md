@@ -34,8 +34,8 @@ first principle — see [`context.md`](context.md)).
 7. [`research/06-mmap-crash-survival.md`](research/06-mmap-crash-survival.md)
    — what memory-mapped segments survive (process crash yes, machine failure no),
    cgroup page-cache charging, SIGBUS and other pitfalls.
-8. [`decisions.md`](decisions.md) — every settled decision (D1–D18), each with its
-   cost and what would make us revisit it.
+8. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
+   governed, with detected defaults) and every settled decision (D1–D19).
 9. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.

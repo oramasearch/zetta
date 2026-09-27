@@ -163,6 +163,24 @@ design past several of these questions. Still open from round 1:
 
 ## Round 11 — 2026-09-27
 
-7. *(reopened from round 1)* **Where does a new subscriber start?** Proposal:
+7. ~~*(reopened from round 1)* **Where does a new subscriber start?**~~ →
+   *Answered 2026-09-27 (Steve): configurable at all levels; by default it joins
+   the subscriber list and receives events as its rules define*
+   ([D19](decisions.md)). Original: Proposal:
    at the **next** event published (default), configurable to the **oldest
    event still held**, or to a given sequence number.
+
+## Round 12 — 2026-09-27
+
+8. *(reopened from round 1)* **Is stage 1 exposed on MCP/REST**, or engine-internal
+   first? Proposal: both in the same change, per zetta's rule that a capability
+   ships on the API and MCP with the engine work: `create_topic`, `drop_topic`,
+   `publish`, and `subscribe` streaming events over SSE (the MCP transport
+   already uses it), with the in-process C++ API underneath for engine code.
+
+Settled without asking, under the standing rule (Steve may overrule):
+Q12 the second store is an indexable `std::deque` (broadcast needs indexed
+reads); Q14 heap events are immutable and refcounted, and the inline threshold
+is a per-topic setting defaulting to 256 bytes; Q15 stage 1 encodings are
+`blob` (with MIME type), `json` and `text`, with MIME types interned to a 16-bit
+id per node.

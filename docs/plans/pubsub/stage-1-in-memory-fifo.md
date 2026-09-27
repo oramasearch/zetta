@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 15 (after [D1–D18](decisions.md)). No partitions:
+**Status:** draft, revision 16 (after [D1–D19](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -55,10 +55,15 @@ public:
   `std::vector<slot>` rings. Full → push a new ring (from a small free list if
   one is spare). A ring is returned to the free list when every entitled cursor
   has passed its last sequence.
-- **`std::queue`-backed**: a finding worth your eye — `std::queue` only exposes
-  `front`/`pop`, so it can serve **one** reader (work queue), not broadcast with
-  independent cursors. A `std::deque` used directly can, because it is indexable.
-  See [Q12](questions.md).
+- **`deque_store`**: a `std::deque` used by index. (`std::queue` only has
+  `front`/`pop`, so it can feed one reader and cannot serve broadcast; settled as
+  a `std::deque` under the standing rule, Q12.)
+
+## Subscribing (D19)
+
+By default a subscriber joins the topic's subscriber list and receives events
+published after it joined, as its delivery rules define. Its start position is
+configurable at every level (oldest held, a sequence number).
 
 ## Subscribers and waiting (D1, D5)
 

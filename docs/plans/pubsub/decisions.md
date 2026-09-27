@@ -3,6 +3,13 @@
 Each entry: what, why, what it costs, what would make us revisit. Settled by Steve
 unless noted.
 
+## The standing rule (from D6, D9, D10, D19)
+
+**Every pub/sub setting is configurable at every level (topic, subscription,
+message, where it makes sense), bounded by governance (D7, clamped by default,
+D8), with a sane default detected or chosen for the common case (D11), and
+logged when it matters.** A new setting follows this rule without asking.
+
 ## D1 — Locks and condition variables are allowed inside pub/sub (2026-09-27)
 
 **What.** The topic may use `std::mutex` and `std::condition_variable` internally.
@@ -314,3 +321,11 @@ persistent topics, later.
 **Why.** Keep stage 1 moving; persistence deserves its own design.
 
 **Cost.** None hidden: the log says exactly what survived.
+
+## D19 — A new subscriber joins and receives from then on, by default (2026-09-27)
+
+**What.** By default a new consumer simply joins the topic's subscriber list and
+starts receiving events published after it joined, as its delivery rules
+define. Where it starts is configurable at every level (the standing rule):
+e.g. the oldest event still held, or a given sequence number. Answers
+[Q7](questions.md).
