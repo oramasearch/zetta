@@ -43,9 +43,9 @@ first principle — see [`context.md`](context.md)).
    threading, and the pitfalls of sender-side wildcards.
 9. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
    governed, with detected defaults) and every settled decision (D1–D32).
-10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
-   the stage 1 specification, consolidated from every
-   decision; its status line carries the revision.
+10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the stage 1
+   specification, consolidated from every decision; its status line carries the
+   revision.
 11. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
