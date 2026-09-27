@@ -256,6 +256,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   pubsub/                   in-memory pub/sub (#1024, docs/pubsub/)
     address.hpp             zetta::pubsub::Address/parse_address/address_matches — `kind:name` addresses, prefix-glob wildcards (#1025)
     event.hpp               zetta::pubsub::Event/Envelope/Payload/MimeRegistry — the envelope (from, sender stack, to/cc/bcc, reply-to, correlation id, topics-chain), inline vs shared payloads, envelope checks, the on-disk frame (#1025)
+    store.hpp               zetta::pubsub::EventStore/TopicRingStack/RingBuffer/QueueStore — position-addressed stores; a deque of ring buffers with stack-then-ring locking, free list, spill + read-back, flush + restore; the std::queue work-queue store (#1026)
   governance/               access control (principals, keys, scopes, capabilities) + users/roles/tokens + the audit trail
     principal.hpp           zetta::governance::Principal — an authenticated actor; owns access keys
     access_key.hpp          zetta::governance::AccessKey — a scoped + capability-bearing login credential + authorize()
@@ -501,6 +502,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   pubsub/
     address.cpp             zetta::pubsub address parsing + wildcard matching (#1025)
     event.cpp               zetta::pubsub payloads, MIME interning, bcc stripping, envelope checks, frame encode/decode with crc32 (#1025)
+    store.cpp               zetta::pubsub ring buffers, TopicRingStack, QueueStore (#1026)
   governance/
     principal.cpp           zetta::governance::Principal — persist/rename principal.json + key CRUD
     access_key.cpp          zetta::governance::AccessKey — persist key.json + authorize() decisions (resource + operation)

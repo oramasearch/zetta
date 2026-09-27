@@ -485,6 +485,7 @@ endif()
 add_library(zetta-core STATIC
   src/core/pubsub/address.cpp
   src/core/pubsub/event.cpp
+  src/core/pubsub/store.cpp
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp

@@ -17,3 +17,6 @@ and logged), no rate limits. New JSON formats: the on-disk event frame header on
 - [events.md](events.md) — addresses (`kind:name`, prefix-glob wildcards), the
   envelope (from, sender stack, to/cc/bcc, reply-to, correlation id, topics-chain),
   payloads (inline vs shared heap), MIME interning, envelope checks, the on-disk frame (#1025).
+- [stores.md](stores.md) — `EventStore`; the `TopicRingStack` (a deque of ring buffers,
+  stack-then-ring locking, free list, spill and read-back, flush and restore); the
+  `std::queue`-backed `QueueStore` (#1026).
