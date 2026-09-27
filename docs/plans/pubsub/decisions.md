@@ -559,3 +559,31 @@ with an error in the log**. Answers [Q31](questions.md).
 **Cost.** Checking up to 10,000 links on every event is expensive. *Proposal:*
 the verdict for a chain is cached by the chain's hash, invalidated when a grant
 that covers any link changes, the same way wildcard resolutions are (D30).
+
+## D35 — Each address kind drains its inbox its own way; a table inserts rows (2026-09-27)
+
+**What.** What happens to events in an inbox depends on the address kind:
+
+| Kind | Default drain |
+|---|---|
+| `table:` | **insert each event as a row** (envelope and payload mapped to columns; an event that does not fit the schema is dead-lettered, D32) |
+| `function:` / `procedure:` | call a Postgres-style function or stored procedure with the event (a separate address, not `table:`) |
+| `service:` | deliver to a service |
+| `model:` | run inference with the event as input |
+| `topic:` | publish to the topic's subscribers (D28) |
+| `agent:` | hold for the agent to read (D28, D31) |
+
+The list is open ("etc."). Answers [Q32](questions.md).
+
+**Why.** One addressing model reaches storage, code, services and models, not
+only subscribers.
+
+**How it stays extensible (proposal):** a drain is an implementation of one
+interface (an `InboxDrain` per kind), registered by kind, per zetta's rule that
+a new capability is a new implementation of an existing interface, never a
+special case. Which `function:` means (zetta's own SQL engine or an external
+Postgres reached through a connection) is left to that drain.
+
+**Cost.** Each drain must be governed (inserting into `table:logs` needs
+`sql:write` on it; calling `model:` needs `serving:read`), and a drain that
+produces a result raises the question of where the result goes ([Q33](questions.md)).

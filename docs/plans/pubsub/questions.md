@@ -277,8 +277,20 @@ id per node.
 
 ## Round 20 — 2026-09-27
 
-32. **What drains a table's inbox?** `to: table:logs` puts an event in the
+32. ~~**What drains a table's inbox?**~~ → *Answered 2026-09-27 (Steve): insert
+    as a row by default; a Postgres function or stored procedure is another
+    target (its own address, not `table:`); also services, model inference, etc.*
+    ([D35](decisions.md)). Original: **What drains a table's inbox?** `to: table:logs` puts an event in the
     table's inbox (D28). By default, is each event **inserted as a row** (the
     envelope and payload mapped onto the table's columns, rejected to the dead
     letters when they don't fit the schema), or does the inbox only hold events
     until something subscribed on the table's behalf reads them?
+
+## Round 21 — 2026-09-27
+
+33. **Where does a drain's result go?** A `function:` call returns a value, a
+    `model:` inference returns a prediction, a `table:` insert returns the new
+    row (or an error). Proposal: the result is sent automatically to the event's
+    `reply-to` addresses with the same `correlation-id` (nothing is sent when
+    `reply-to` is empty), and a failure is sent there too as an error event, as
+    well as to the dead letters.

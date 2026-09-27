@@ -1,7 +1,7 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 25 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D34](decisions.md). Every section cites the
+**Status:** draft spec, revision 26 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D35](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
 overruled. Open items are listed at the end.
@@ -26,10 +26,21 @@ default, and logged when it matters (D6, D7, D8, D11).
 `topic:abc123`, `agent:405`, `table:logs`. The kinds line up with governance's
 `ResourceKind` plus `topic` and `agent`, so one name serves routing and grants.
 
-**Inboxes (D28).** Every addressable entity has an **inbox**, a queue of its own.
-Sending to `agent:405` puts the event in that agent's inbox. Sending to
-`topic:abc123` publishes to the topic, and its subscribers receive it by their
-delivery rules.
+**Inboxes (D28, D35).** Every addressable entity has an **inbox**, a queue of its
+own, drained according to its kind:
+
+| Kind | Default drain |
+|---|---|
+| `topic:` | publish to the topic's subscribers, by their delivery rules |
+| `agent:` | hold for the agent to read |
+| `table:` | insert each event as a row; an event that does not fit is dead-lettered |
+| `function:` / `procedure:` | call the function or stored procedure with the event |
+| `service:` | deliver to the service |
+| `model:` | run inference on the event |
+
+*Proposal:* each drain implements one `InboxDrain` interface, registered by kind,
+and is governed like the direct operation (`sql:write` to insert, `serving:read`
+to infer). Where a drain's result goes is [Q33](questions.md).
 
 **Envelope (D27, D29, D33).** Every event may carry:
 
@@ -265,6 +276,6 @@ dispatch mode.
 
 ## 12. Open
 
-- What drains a `table:` inbox by default (e.g. insert each event as a row) (D28, [Q32](questions.md)).
+- Where a drain's result goes ([Q33](questions.md)).
 - The link to the agent-task design, once it has a home (D25).
 - The proposals marked above, until confirmed.
