@@ -25,7 +25,8 @@ first principle — see [`context.md`](context.md)).
 4. [`decisions.md`](decisions.md) — settled decisions with cost and revisit
    condition (D1 locks + condition variables, D2 pluggable stores / growing ring,
    D3 runtime delivery semantics, D4 binary events with a heap, D5 no coroutines
-   in stage 1, a mutex per queue).
+   in stage 1, a mutex per queue, D6 delivery set at topic, subscription or
+   message level).
 5. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft, revision 2.
 6. [`questions.md`](questions.md) — open questions, answered ones kept with their

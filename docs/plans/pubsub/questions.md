@@ -33,8 +33,9 @@ design past several of these questions. Still open from round 1:
     `publish` posts to their executor (both, one mutex); (b) condition variable
     only, and coroutine code calls it through `run_blocking` on a pool thread;
     (c) condition variable only, and we accept the blocked thread.
-11. **Where are delivery semantics chosen: per topic, per subscription, or per
-    message?** E.g. is "deliver to one" a property of a subscriber group (like
+11. ~~**Where are delivery semantics chosen?**~~ → *Answered 2026-09-27
+    (Steve): at any level, or several* ([D6](decisions.md)). Original question:
+    per topic, per subscription, or per message? E.g. is "deliver to one" a property of a subscriber group (like
     NATS queue groups), or can a single publish say "this one goes to 3
     recipients"?
 12. **`std::queue` can't do broadcast.** It only has `front`/`pop`, so it can
@@ -53,3 +54,12 @@ design past several of these questions. Still open from round 1:
 16. **What does QoS mean for you: priority (who goes first), or a delivery
     guarantee** (at-most-once vs at-least-once with acknowledgement and
     redelivery, like MQTT QoS 0/1)? Or both?
+
+## Round 3 — 2026-09-27
+
+17. **When levels disagree, which wins?** Options: (a) the most specific wins
+    (message over subscription over topic); (b) the topic and subscription set
+    limits and a message can only narrow within them, the way MQTT delivers at
+    the lower of the publish QoS and the subscription QoS; (c) a different rule
+    per axis (e.g. recipients: message wins; priority: message wins; guarantee:
+    the minimum).

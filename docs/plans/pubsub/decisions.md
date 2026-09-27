@@ -79,3 +79,20 @@ appends to every consumer queue).
 
 **Revisit if** zetta code needs to subscribe from coroutines at scale; a
 coroutine waiter list can then be added behind the same API.
+
+## D6 — Delivery semantics can be set at any level: topic, subscription, message (2026-09-27)
+
+**What.** Recipients, ordering and QoS/priority may each be set on the topic
+(its default), on a subscription, and on a single publish, at one level or
+several at once. Answers [Q11](questions.md).
+
+**Why.** Refines D3: the flexibility is the point, and fixing the level would
+recreate the Kafka limitation we are avoiding.
+
+**Cost.** When two levels disagree there must be one written rule for which
+wins ([Q17](questions.md)). And because a single publish can name its own
+recipients, the store cannot rely only on per-consumer copies decided at
+subscribe time: each event needs its own delivery state (e.g. a remaining-claims
+count), checked under its queue's lock.
+
+**Revisit if** the combination rules become too hard to explain in one table.

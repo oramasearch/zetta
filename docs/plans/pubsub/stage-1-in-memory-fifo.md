@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 3 (after [D1–D5](decisions.md)). Settled parts cite
+**Status:** draft, revision 4 (after [D1–D6](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -71,7 +71,9 @@ order goes here.
 
 ## Delivery (D3)
 
-Proposed options object, chosen at runtime:
+The same options object can be set on the topic (default), on a subscription,
+and on a single publish ([D6](decisions.md)); which wins when they disagree is
+[Q17](questions.md).
 
 ```cpp
 struct delivery {
@@ -86,6 +88,8 @@ How this maps onto cursors:
 - **all** (broadcast): each subscriber has its own cursor over the shared store.
 - **one** (work queue): subscribers in a group share one cursor; each event is
   claimed once.
+- Because a publish can name its own recipients (D6), each event carries its
+  own delivery state; per-consumer copies alone are not enough.
 - **n(k)**: each event carries a remaining-claims count, decremented under the
   lock; the event is done at 0. Nobody surveyed ships this ([research/02](research/02-growable-rings-and-delivery.md)).
 - **priority**: one ring per priority level, the reader takes the highest
