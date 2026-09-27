@@ -42,7 +42,7 @@ first principle — see [`context.md`](context.md)).
    — NATS/MQTT/RabbitMQ/Kafka/Akka wildcards, email To/Cc/Bcc/Reply-To and
    threading, and the pitfalls of sender-side wildcards.
 9. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
-   governed, with detected defaults) and every settled decision (D1–D27).
+   governed, with detected defaults) and every settled decision (D1–D31).
 10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.

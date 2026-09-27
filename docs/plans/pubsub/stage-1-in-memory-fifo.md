@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 20 (after [D1–D27](decisions.md)). No partitions:
+**Status:** draft, revision 21 (after [D1–D31](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -19,9 +19,11 @@ publish ──► [ topic ]
 
 ## Events (D4)
 
-An event has an **envelope** ([D26–D27](decisions.md)): `to`, `cc`, `bcc` and
-`reply-to` (lists of `kind:name` addresses, wildcards allowed, e.g.
-`agent:security-*`) and a `correlation-id`. The envelope is variable-length, so
+An event has an **envelope** ([D26–D29](decisions.md)): `from` (stamped by the
+node from the authenticated principal), `to`, `cc`, `bcc` and `reply-to` (lists
+of `kind:name` addresses, wildcards allowed, e.g. `agent:security-*`), a
+`correlation-id`, and a `topics-chain` (the topics it passed through, used to
+stop loops). The envelope is variable-length, so
 it is stored with the payload (inline or on the heap), not in the fixed header;
 `bcc` is removed from every copy except the bcc recipient's own.
 
@@ -238,3 +240,12 @@ pubsub: WARN shutdown: budget spent; orders lost 212,004 events (seq 90011002..9
 Internal by default. A topic can be exposed over MCP/REST by configuration:
 `publish`, `subscribe` (events streamed over SSE), and `create_topic` /
 `drop_topic`, governed like any capability.
+
+## Inboxes and wildcards (D28, D30, D31)
+
+- Every addressable entity has an **inbox** (a consumer queue, D23).
+- A wildcard address is resolved through a **cache**: computed on first use,
+  refreshed only when the subscriber list changes, bounded in size.
+- An inbox outlives its subscriber's disconnect for a retention the subscriber
+  chooses: **24 hours by default for agents**, or not at all. A waiting inbox
+  counts against limits and spills like any queue.

@@ -238,10 +238,22 @@ id per node.
 
 ## Round 17 — 2026-09-27
 
-28. **What does delivering to a non-topic address mean?** Proposal: every
+28. ~~**What does delivering to a non-topic address mean?**~~ → *Answered
+    2026-09-27 (Steve): yes, an inbox per entity* ([D28](decisions.md)); plus
+    `from`, `topics-chain`, cached wildcards and inbox retention ([D29–D31](decisions.md)).
+    Original: **What does delivering to a non-topic address mean?** Proposal: every
     addressable entity has an **inbox**, a queue of its own. `to: agent:405` puts
     the event in agent 405's inbox (its consumer queue, D23); `to: topic:abc123`
     publishes to that topic, whose subscribers get it by their rules. And
     `to: table:logs`: does it **insert the event as a row** into the table (the
     table as a sink), or does something subscribed on the table's behalf
     receive it?
+
+## Round 18 — 2026-09-27
+
+29. **Where do undeliverable events go?** Several cases now produce them: an
+    inbox whose retention expired with events still in it (D31), an event whose
+    time to live ran out (D10), an address or wildcard that matches nobody, a
+    loop or chain-depth stop (D29), a subscriber skipped ahead (D10). Proposal: a
+    **dead-letter address** (`topic:dead-letter` by default, settable at every
+    level), receiving the event with a reason; or simply drop and log.

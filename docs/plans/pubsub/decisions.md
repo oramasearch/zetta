@@ -468,3 +468,58 @@ wildcard is a separately governed right; its fan-out is capped and logged; and
 whether a wildcard is expanded at send time or also reaches future matches must
 be defined. Bcc must be stripped from every copy except the bcc recipient's own.
 The envelope never proves the sender; identity comes from governance.
+
+## D28 — Every addressable entity has an inbox (2026-09-27)
+
+**What.** Each addressable entity has an **inbox**, a queue of its own.
+`to: agent:405` puts the event in agent 405's inbox; `to: topic:abc123`
+publishes to the topic, and its subscribers receive it by their rules; a
+`table:` address has an inbox too. Answers [Q28](questions.md) (Steve: "yes,
+that's right").
+
+**Open (low priority):** what drains a table's inbox by default, e.g. inserting
+each event as a row.
+
+## D29 — The envelope also carries `from` and a `topics-chain` (2026-09-27)
+
+**What.**
+- **`from`**: the sender's address. Proposal: the node stamps it from the
+  authenticated principal (governance), so it cannot be forged; a sender may
+  only name an address it is granted to send as.
+- **`topics-chain`**: a stack of the topics the event has passed through on its
+  way to this recipient, newest last, like email's `Received:` headers.
+
+**Why.** A recipient can see who sent an event and how it got there.
+
+**Cost / proposals:** the chain also detects loops: an event is not delivered
+to a topic already on its chain, and the chain has a maximum depth (default 32,
+per the standing rule); both are logged when they fire.
+
+## D30 — Wildcard resolutions are cached and refreshed only when subscribers change (2026-09-27)
+
+**What.** The first time a wildcard (`agent:security-*`) is seen, its list of
+matching addresses is computed and **cached**. The cache entry is updated only
+when the **subscriber list changes** (an entity is added or removed), not on
+every send.
+
+**Why.** Sending to a wildcard then costs one lookup, not a scan.
+
+**What this settles:** a wildcard reaches whatever matches *at send time*;
+because the cache follows the subscriber list, an agent created later is
+included in later sends, never in earlier ones.
+
+**Cost.** Every subscriber-list change must invalidate (or incrementally update)
+the entries it affects; the cache needs a size bound and eviction for
+wildcards seen once. Both are logged.
+
+## D31 — Subscribers choose how long their inbox outlives them; agents default to 24 hours (2026-09-27)
+
+**What.** A subscriber decides how permanent its inbox is: how long it keeps
+receiving and holding events after the subscriber disconnects. **Default for
+agents: 24 hours.** A subscriber can instead choose an inbox that **does not
+outlive its disconnect**. Configurable at every level, bounded by governance
+(the standing rule).
+
+**Cost.** A disconnected inbox keeps filling, so it counts against the memory
+limits, spills (D10) and survives restarts (D17) like any other queue. When the
+retention expires, the events still in it need somewhere to go ([Q29](questions.md)).
