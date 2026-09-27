@@ -1,6 +1,6 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 27 (2026-09-27): a consolidated rewrite of
+**Status:** draft spec, revision 28 (2026-09-27): a consolidated rewrite of
 revisions 1–22 over decisions [D1–D38](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
@@ -43,8 +43,10 @@ and is governed like the direct operation (`sql:write` to insert, `serving:read`
 to infer).
 
 **Results (D36).** Configurable; the global default sends nothing. Each drain
-has its own logical default: a SQL query replies all; an insert does not reply
-(others: see D36). What "reply all" covers is [Q34](questions.md).
+has its own logical default: a SQL query replies; an insert does not (others:
+see D36). A reply goes to the event's `reply-to` list with the same
+`correlation-id`; nothing is sent when it is empty. Email-style reply-all (also
+every `to` and `cc`, never `bcc`) is an option.
 
 **Errors (D37, D38).** A recipient's failures go to its own error topic, created
 on the first error (*proposal:* `topic:errors.agent.405`), carrying the
@@ -285,6 +287,6 @@ dispatch mode.
 
 ## 12. Open
 
-- What "reply all" covers ([Q34](questions.md)).
+- How topics behave across the cluster, stage 2 ([Q35](questions.md)).
 - The link to the agent-task design, once it has a home (D25).
 - The proposals marked above, until confirmed.

@@ -301,8 +301,22 @@ id per node.
 
 ## Round 22 — 2026-09-27
 
-34. **What does "reply all" mean here?** Email's reply-all goes to the original
+34. ~~**What does "reply all" mean here?**~~ → *Answered 2026-09-27 (Steve):
+    "I meant reply-to by default"* ([D36](decisions.md), corrected); reply-all
+    stays available as an option. Original: **What does "reply all" mean here?** Email's reply-all goes to the original
     sender and every `to` and `cc` recipient (never `bcc`). Proposal for us:
     the `reply-to` addresses if present, otherwise `from` (and `sender`), plus
     every `to` and `cc` address of the original event, never `bcc`, with the
     same `correlation-id`. Or should "reply all" mean only the `reply-to` list?
+
+## Round 23 — 2026-09-27
+
+35. **Stage 2: the cluster.** Zetta's first principle says a single-node design
+    ships only with its distributed path designed behind the same API. Today a
+    topic's definition is replicated but its events live on one node. When
+    `agent:405` runs on node B and subscribes to a topic whose events are held
+    on node A, what should happen? Options: (a) the topic has an **owner node**
+    and remote subscribers are fed over the peer link (the owner can move); (b)
+    **each node holds its own copy** of the events its local subscribers need,
+    and publishes are forwarded to every node with a matching subscriber; (c)
+    leave cluster behavior to stage 2 and design it next.

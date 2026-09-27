@@ -592,15 +592,18 @@ produces a result raises the question of where the result goes ([Q33](questions.
 
 **What.** Configurable at every level. The **global default is to send nothing**.
 Each drain has the default that is most logical for it: e.g. a SQL **query**
-replies to all (its result is the point), while an **insert** does not reply.
-Answers [Q33](questions.md).
+replies (its result is the point), while an **insert** does not. **A reply goes
+to the event's `reply-to` list** (Steve, correcting an earlier "reply all");
+email-style reply-all (also every `to` and `cc`, never `bcc`) is available as a
+configured option. With an empty `reply-to`, nothing is sent. Answers
+[Q33](questions.md) and [Q34](questions.md).
 
 | Drain | Default reply (proposal where not stated by Steve) |
 |---|---|
-| SQL query | reply all (Steve) |
+| SQL query | reply-to (Steve) |
 | table insert | none (Steve) |
-| `function:` / `procedure:` call | reply all when it returns a value, *proposal* |
-| `model:` inference | reply all, *proposal* |
+| `function:` / `procedure:` call | reply-to when it returns a value, *proposal* |
+| `model:` inference | reply-to, *proposal* |
 | `service:` | the service decides, *proposal* |
 
 ## D37 — Each recipient gets an error topic, created only when it first has an error (2026-09-27)
