@@ -490,6 +490,8 @@ ChurnSolutionResult run_churn_solution_on_table(
 
     ChurnPipelineConfig pipeline;
     pipeline.accounts_table = input.table_id;
+    pipeline.accounts_dataset = input.dataset_name;
+    pipeline.dataset_notes = input.notes;
     pipeline.accounts_schema = table_accounts_schema(input.contract);
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode
     pipeline.featurize = table_featurize_spec(input.contract);

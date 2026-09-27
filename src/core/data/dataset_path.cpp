@@ -283,7 +283,15 @@ DatasetContractResult infer_dataset_contract(const std::vector<std::string>& col
             if (column == result.contract.entity_column) continue;
             if (column == result.contract.label_column) continue;
             if (column == result.contract.time_column) continue;
-            if (!all_values(sample, column, is_numeric_value)) continue;
+            if (!all_values(sample, column, is_numeric_value)) {
+                // Said out loud: a column left out silently is one the caller assumes
+                // the model used (lake's UX review 2026-09-27; categorical features are
+                // #957).
+                result.notes.push_back("not used: '" + column +
+                                       "' (not numeric; categorical columns are not "
+                                       "supported yet)");
+                continue;
+            }
             result.contract.feature_columns.push_back(column);
         }
         if (result.contract.feature_columns.empty()) {

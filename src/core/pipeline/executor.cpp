@@ -235,6 +235,13 @@ ExecutionResult GraphExecutor::execute(Node& node,
             "result_shape", nlohmann::json{{"outputs", outcome.outputs.size()}});
         step_span.finish(outcome.ok, outcome.error);
         lineage.steps.push_back(step_label(*step));
+        if (!outcome.notes.empty()) {
+            node.run_on_owner([&] {
+                for (const std::string& note : outcome.notes) {
+                    run.add_log({zetta::util::now_iso8601(), "info", note});
+                }
+            });
+        }
         for (std::string& source : outcome.sources) {
             lineage.sources.push_back(std::move(source));
         }

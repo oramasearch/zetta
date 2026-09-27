@@ -134,6 +134,8 @@ std::optional<double> entity_feature(const ddf::FeatureTable& table,
 // The cross-step pipeline state (pImpl). One ChurnStepExecutor drives one execution,
 // so this accumulates each step's artifact for the steps downstream of it.
 struct ChurnStepExecutor::State {
+    // A table-backed run reads its one dataset once; the first connect step records it.
+    bool dataset_recorded = false;
     bool events_loaded = false;
     ddf::DataFrame events;
     bool accounts_loaded = false;
@@ -252,6 +254,29 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_connect(const ir::Node& step
     std::string error;
     if (!ensure_inputs_loaded(error)) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
+    }
+    if (!config_.accounts_table.empty()) {
+        // A table-backed run (#947) reads the dataset the caller named, not what the
+        // graph's connect steps describe. Say that, rather than report their sources as
+        // read (lake's UX review 2026-09-27: a run on datasets.x listed
+        // warehouse:customers and warehouse:events, and a step with no such table
+        // "succeeded").
+        const std::string dataset =
+            config_.accounts_dataset.empty() ? config_.accounts_table : config_.accounts_dataset;
+        if (!state_->dataset_recorded) {
+            state_->dataset_recorded = true;
+            outcome.sources.push_back("dataset:" + dataset);
+            outcome.outputs.push_back(zetta::pipeline::RunOutput{
+                "dataset", dataset, "connect:" + step.id});
+            outcome.notes.push_back("dataset: trained on " + dataset);
+            for (const std::string& note : config_.dataset_notes) {
+                outcome.notes.push_back("dataset: " + note);
+            }
+        } else {
+            outcome.notes.push_back("connect: " + step_label(step) +
+                                    " was not read: this run trained on " + dataset);
+        }
+        return outcome;
     }
     outcome.sources.push_back(connect_source(step));
     outcome.outputs.push_back(zetta::pipeline::RunOutput{

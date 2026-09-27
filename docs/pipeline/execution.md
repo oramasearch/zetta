@@ -198,3 +198,22 @@ executor writes, so the two are tested together (`tests/pipeline/test_run_progre
 
 See also [runs.md](runs.md), [execution-graph.md](execution-graph.md),
 [deployments.md](deployments.md), and [architecture.md](../architecture/architecture.md).
+
+## What a run says it read (2026-09-27)
+
+Found by lake's UX review (https://github.com/oramasearch/lake/issues/251,
+https://github.com/oramasearch/lake/issues/253):
+
+- **A table-backed churn run** (`dataset_path = "<database>.<table>"`, #947) records the dataset
+  as its only lineage source (`dataset:<database>.<table>`) on its first connect step and logs
+  `dataset: trained on <database>.<table>` plus each of `resolve_dataset`'s notes. Every other
+  connect step logs `connect: <name> was not read: this run trained on <database>.<table>` instead
+  of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these lines.
+- **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric;
+  categorical columns are not supported yet)` (#957 is categorical support), and
+  `get_run_report`'s `dataset` adds `source` and `not_used` (from the run's lineage and logs; a
+  model's metrics hold numbers only). A table-backed report drops `events`, which it has none of.
+- **A structural run** (a graph that is not churn-shaped) logs a `warn`, `structural: … its steps
+  ran without training or scoring anything …` (and that a given `dataset_path` was not read), and
+  `run`'s answer carries the same sentence as `note`.
+

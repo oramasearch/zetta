@@ -88,6 +88,21 @@ TEST(DatasetContract, InfersEntityLabelAndFeaturesFromAFlatTable) {
     EXPECT_FALSE(result.notes.empty());
 }
 
+TEST(DatasetContract, AColumnItCannotUseIsSaidOutLoud) {
+    // lake's UX review 2026-09-27: a categorical `plan` column vanished from the features
+    // with nothing saying so (#957 is categorical support itself).
+    const std::vector<std::string> columns{"account_id", "plan", "spend", "churned"};
+    const std::vector<Json> sample{
+        {{"account_id", 1}, {"plan", "pro"}, {"spend", 80.0}, {"churned", 0}},
+        {{"account_id", 2}, {"plan", "basic"}, {"spend", 20.0}, {"churned", 1}}};
+    const auto inferred = zetta::data::infer_dataset_contract(columns, sample, {});
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+    EXPECT_EQ(inferred.contract.feature_columns, (std::vector<std::string>{"spend"}));
+    EXPECT_TRUE(std::ranges::any_of(inferred.notes, [](const std::string& note) {
+        return note.starts_with("not used: 'plan'");
+    }));
+}
+
 // The label and entity are never carried into X — that would leak the answer.
 TEST(DatasetContract, TheLabelAndEntityAreNeverFeatures) {
     const auto result = infer_dataset_contract(kAccountColumns, accounts_sample());
