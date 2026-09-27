@@ -266,9 +266,19 @@ id per node.
     2026-09-27 (Steve): both, `from` (the person) and `sender` (the agent),
     configurable at all levels* ([D33](decisions.md)).
 
-31. **Delegation chains.** Ask Orama can delegate to a subagent, which can
+31. ~~**Delegation chains.**~~ → *Answered 2026-09-27 (Steve): check the full
+    stack; 10,000 is the maximum, and at that point drop with an error in the
+    log* ([D34](decisions.md)). Original: **Delegation chains.** Ask Orama can delegate to a subagent, which can
     delegate again. When `agent:security-scan` sends on behalf of
     `agent:ask-orama`, which acted for `user:steve`: is `sender` just the last
     agent, or a **stack** of every agent in the chain (like `topics-chain`), each
     link checked by governance and recorded in the audit? And is there a maximum
     delegation depth?
+
+## Round 20 — 2026-09-27
+
+32. **What drains a table's inbox?** `to: table:logs` puts an event in the
+    table's inbox (D28). By default, is each event **inserted as a row** (the
+    envelope and payload mapped onto the table's columns, rejected to the dead
+    letters when they don't fit the schema), or does the inbox only hold events
+    until something subscribed on the table's behalf reads them?

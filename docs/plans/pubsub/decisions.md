@@ -546,3 +546,16 @@ for (`user:steve`), **`sender`** is the one that actually sent it
 the audit records both. Configurable at every level (the standing rule), e.g. a
 topic may require `sender` to be shown, or hide it from recipients. Confirms the
 D29 proposal that the node stamps these from authenticated principals.
+
+## D34 — `sender` is the full delegation stack, checked link by link, at most 10,000 deep (2026-09-27)
+
+**What.** When agents delegate to agents, `sender` is a **stack** of every agent
+in the chain (like `topics-chain`), and governance checks **every link**: each
+agent may act for the one before it, back to `from`. The audit records the whole
+stack. **The maximum depth is 10,000**; a lower limit can be set at any level
+(the standing rule). An event whose chain would exceed the limit is **dropped
+with an error in the log**. Answers [Q31](questions.md).
+
+**Cost.** Checking up to 10,000 links on every event is expensive. *Proposal:*
+the verdict for a chain is cached by the chain's hash, invalidated when a grant
+that covers any link changes, the same way wildcard resolutions are (D30).

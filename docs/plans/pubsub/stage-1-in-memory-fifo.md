@@ -1,7 +1,7 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 24 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D33](decisions.md). Every section cites the
+**Status:** draft spec, revision 25 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D34](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
 overruled. Open items are listed at the end.
@@ -36,7 +36,7 @@ delivery rules.
 | Field | Meaning |
 |---|---|
 | `from` | the principal the event is for (`user:steve`); stamped by the node from authenticated principals, never trusted from the caller (D33) |
-| `sender` | who actually sent it when acting for `from` (`agent:ask-orama`); governance checks the sender may act for `from`, and the audit records both (D33) |
+| `sender` | who actually sent it when acting for `from`: a **stack** of every agent in the delegation chain (`agent:ask-orama`, then `agent:security-scan`, …); governance checks every link back to `from`; the audit records the stack; at most 10,000 deep, beyond which the event is dropped with an error logged (D33, D34) |
 | `to` | primary recipients |
 | `cc` | also receive it |
 | `bcc` | receive it; removed from every copy except the bcc recipient's own |
@@ -265,6 +265,6 @@ dispatch mode.
 
 ## 12. Open
 
-- What drains a `table:` inbox by default (e.g. insert each event as a row) (D28).
+- What drains a `table:` inbox by default (e.g. insert each event as a row) (D28, [Q32](questions.md)).
 - The link to the agent-task design, once it has a home (D25).
 - The proposals marked above, until confirmed.

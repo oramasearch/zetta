@@ -31,9 +31,12 @@ inherits it for free.
   to one address and sending to a **wildcard** (`agent:*`) are separate rights,
   and a wildcard's fan-out is capped and logged. The envelope's `reply-to`
   never proves who sent an event.
-- **Acting on behalf (D33):** `from` is the principal the event is for, `sender`
-  the agent that sent it. Both are stamped by the node; governance checks the
-  sender may act for `from`; the audit records both.
+- **Acting on behalf (D33, D34):** `from` is the principal the event is for,
+  `sender` the stack of agents that sent it, one per delegation. Both are stamped
+  by the node; governance checks every link of the stack back to `from`; the
+  audit records the whole stack. Maximum depth 10,000 (lower is configurable);
+  beyond it the event is dropped with an error logged. *Proposal:* a chain's
+  verdict is cached by its hash and invalidated when a covering grant changes.
 - **Delivery options are governed like rows.** A `WITH CHECK`-style policy on a
   topic bounds what a publish or a subscription may request (max priority,
   allowed recipient modes, guarantee level), per role. A `USING`-style policy on
