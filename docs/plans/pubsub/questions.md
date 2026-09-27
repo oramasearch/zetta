@@ -215,8 +215,19 @@ id per node.
 
 ## Round 15 — 2026-09-27
 
-1. *(reopened from round 1)* **What will publish first, and what will subscribe
-   first?** The design is now general enough that the first real use decides
+1. ~~*(reopened from round 1)* **What will publish first, and what will subscribe
+   first?**~~ → *Answered 2026-09-27 (Steve): anything can, especially agents;
+   agent tasks will use pub/sub too, designed elsewhere* ([D25](decisions.md)).
+   Original: **What will publish first, and what will subscribe first?** The design is now general enough that the first real use decides
    what stage 1 builds first and what its tests look like. Candidates seen in
    zetta: agent events for Ask Orama / Train → Agents, pipeline run progress,
    table change events, cluster signals, the GUI's live activity feed.
+
+## Round 16 — 2026-09-27
+
+27. **Request/reply.** Agent tasks usually need an answer: "do this task, send me
+    the result". Should pub/sub support it directly, the way NATS does (a publish
+    carries a **reply-to** topic and a **correlation id**; the requester waits for
+    the reply with a timeout; a short-lived reply topic is created and dropped
+    automatically)? Or is that left to the agent-task layer, built from plain
+    topics?

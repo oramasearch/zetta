@@ -416,3 +416,18 @@ Answers [Q26](questions.md).
 
 **Cost.** Two dispatch modes to test, and a migration step that must hand a
 topic from its thread to the pool without losing or reordering events.
+
+## D25 — Anything can publish or subscribe; agents first, including agent tasks (2026-09-27)
+
+**What.** Pub/sub is a general engine facility: any part of zetta can publish or
+subscribe. **Agents are the main user**, and **agent tasks** (handing work to
+agents and getting results back) will run over pub/sub. The agent-task design
+lives in a separate place; this design only has to serve it. Answers
+[Q1](questions.md).
+
+**What that implies here:** the patterns agent tasks need (work queues with one
+recipient per task, at-least-once delivery with acknowledgement, priority,
+request/reply) must be expressible with the options already decided, and the
+stage 1 tests should include an agent-task-shaped workload.
+
+**Open:** a link to the agent-task design once it has a home.

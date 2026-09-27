@@ -5,6 +5,10 @@ pub/sub in zetta today and no issue for it (the only related issue is
 [#1014](https://github.com/oramasearch/zetta/issues/1014), which reads Kafka
 *as a source*; it does not make zetta a broker).
 
+**Who uses it.** Anything in zetta can publish or subscribe; **agents** are the
+main user, and **agent tasks** will run over pub/sub (designed separately,
+[D25](decisions.md)).
+
 **How this folder works.** We design slowly, one decision at a time. Each file is
 one subject. Questions go into [`questions.md`](questions.md) and are answered
 there, with the date and who answered; a settled answer moves into the page it
@@ -35,7 +39,7 @@ first principle — see [`context.md`](context.md)).
    — what memory-mapped segments survive (process crash yes, machine failure no),
    cgroup page-cache charging, SIGBUS and other pitfalls.
 8. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
-   governed, with detected defaults) and every settled decision (D1–D24).
+   governed, with detected defaults) and every settled decision (D1–D25).
 9. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.
