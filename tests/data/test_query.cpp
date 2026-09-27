@@ -1169,3 +1169,67 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
 
     node.stop();
 }
+
+// ---- ORDER BY / LIMIT / OFFSET --------------------------------------------
+// Agents write ranked questions ("the ten riskiest accounts") as ORDER BY … LIMIT;
+// before these clauses every such query failed with "expected ';'".
+
+TEST(PostgresParser, ParsesOrderByLimitOffset) {
+    PostgresDialect pg;
+    auto parsed = pg.parse("SELECT a, b FROM t WHERE a > 1 ORDER BY b DESC, a LIMIT 5 OFFSET 2;");
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    const auto& select = std::get<SelectStmt>(parsed.statements.at(0));
+    ASSERT_EQ(select.order_by.size(), 2u);
+    EXPECT_EQ(select.order_by[0].column, "b");
+    EXPECT_TRUE(select.order_by[0].descending);
+    EXPECT_FALSE(select.order_by[1].descending);
+    EXPECT_EQ(select.limit, 5u);
+    EXPECT_EQ(select.offset, 2u);
+    EXPECT_TRUE(pg.parse("SELECT * FROM t OFFSET 3 LIMIT 1").ok()) << "either order, no ';'";
+    EXPECT_TRUE(pg.parse("SELECT * FROM t LIMIT ALL;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT -1;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t LIMIT 1.5;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t ORDER a;").ok());
+}
+
+TEST(QueryService, OrderByLimitAndOffsetShapeTheResult) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.accounts (account text, risk int, plan text);", "");
+    svc.run("INSERT INTO d.accounts (account, risk, plan) VALUES ('a', 30, 'pro'), ('b', 90, 'free'),"
+            " ('c', 60, 'pro'), ('d', 90, 'pro');", "");
+
+    auto top = svc.run("SELECT account, risk FROM d.accounts ORDER BY risk DESC, account LIMIT 3", "");
+    ASSERT_TRUE(top.ok()) << top.error;
+    ASSERT_EQ(top.rows.size(), 3u);
+    EXPECT_EQ(top.rows[0]["account"], "b") << "ties keep the next key's order";
+    EXPECT_EQ(top.rows[1]["account"], "d");
+    EXPECT_EQ(top.rows[2]["account"], "c");
+
+    auto page = svc.run("SELECT * FROM d.accounts ORDER BY account OFFSET 1 LIMIT 2;", "");
+    ASSERT_TRUE(page.ok()) << page.error;
+    ASSERT_EQ(page.rows.size(), 2u);
+    EXPECT_EQ(page.rows[0]["account"], "b");
+    EXPECT_EQ(page.rows[1]["account"], "c");
+
+    auto filtered = svc.run("SELECT account FROM d.accounts WHERE plan = 'pro' LIMIT 10;", "");
+    ASSERT_TRUE(filtered.ok()) << filtered.error;
+    EXPECT_EQ(filtered.rows.size(), 3u) << "a LIMIT above the row count keeps every row";
+
+    auto grouped = svc.run("SELECT risk, COUNT(*) AS n FROM d.accounts GROUP BY risk ORDER BY n DESC LIMIT 1;", "");
+    ASSERT_TRUE(grouped.ok()) << grouped.error;
+    ASSERT_EQ(grouped.rows.size(), 1u);
+    EXPECT_EQ(grouped.rows[0]["risk"], 90);
+
+    auto unknown = svc.run("SELECT account FROM d.accounts ORDER BY risk;", "");
+    EXPECT_FALSE(unknown.ok());
+    EXPECT_NE(unknown.error.find("ORDER BY \"risk\""), std::string::npos) << unknown.error;
+
+    auto system = svc.run("SELECT * FROM system.tables ORDER BY name LIMIT 1;", "");
+    ASSERT_TRUE(system.ok()) << system.error;
+    EXPECT_LE(system.rows.size(), 1u);
+
+    node.stop();
+}
