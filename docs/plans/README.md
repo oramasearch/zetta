@@ -16,6 +16,10 @@ plan.
   one registry of governed, schema-validated tools over the existing engine
   entry points (read parity → action parity → REST/OpenAPI → simulated user
   tests → GUI activity surfacing), embedded in headed + headless nodes.
+- [pubsub/](pubsub/README.md) — **pub/sub in zetta**, designed one question at a
+  time: an in-memory topic first (pluggable stores, a growing ring by default,
+  binary events, delivery semantics chosen at runtime), then cluster-wide, replay
+  and change events. Decisions, research and open questions live in the folder.
 - [virtual-tables.md](virtual-tables.md) — **virtual tables over CRDT entities**: a
   read-only table whose columns span three tiers (durable CRDT / ephemeral-synced /
   ephemeral-local), composed at query time so fast state (telemetry, `last_seen`)
