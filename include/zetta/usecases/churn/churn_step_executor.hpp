@@ -109,6 +109,11 @@ struct ChurnPipelineConfig {
     // (`event_features` empty) and the events frame is empty. Setting this with a
     // windowed spec is a configuration error the featurize step reports.
     std::string accounts_table;
+    // That table as the caller named it (`database.table`), and what resolving it decided.
+    // A table-backed run's lineage names this dataset, and its connect steps that were not
+    // read say so, instead of reporting the graph's own sources as read.
+    std::string accounts_dataset;
+    std::vector<std::string> dataset_notes;
 
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
     ml::GbdtParams params;               // the GBDT hyperparameters

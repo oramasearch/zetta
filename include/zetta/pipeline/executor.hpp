@@ -37,6 +37,9 @@ struct StepOutcome {
     std::string error;                  // why it failed (when !ok)
     std::vector<RunOutput> outputs;     // artifacts this step materialized
     std::vector<std::string> sources;   // source refs this step pulled from
+    // What a person should know about how this step ran (logged as info on the run):
+    // e.g. that a connect step was not read because the run trained on a named dataset.
+    std::vector<std::string> notes;
 };
 
 // The pluggable unit that executes one graph step (mirrors the gate's Check

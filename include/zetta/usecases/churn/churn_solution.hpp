@@ -192,6 +192,11 @@ inline constexpr std::string_view kTableEntityColumn = "entity";
 
 struct ChurnTableInput {
     std::string table_id;  // a `Table::id()` — what the partition catalog records
+    // The `database.table` the caller named: what the run's lineage says it read.
+    std::string dataset_name;
+    // What resolving the dataset decided (resolve_dataset's notes), including the columns
+    // it could not use and why; they are logged on the run and shown in its report.
+    std::vector<std::string> notes;
     // What the table's columns MEAN. Resolve it from a `dataset_path` with
     // zetta::data::resolve_dataset, which infers what the caller left unsaid and
     // reports every inference.

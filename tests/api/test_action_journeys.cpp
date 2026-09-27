@@ -256,6 +256,37 @@ TEST_F(ActionJourneys, JourneyCompilePythonSource) {
 }
 
 // =====================================================================
+// A pipeline that is not churn-shaped runs structurally: it trains nothing,
+// and says so on its answer and on the run (lake's UX review 2026-09-27, lake#251).
+// =====================================================================
+TEST_F(ActionJourneys, JourneyAStructuralRunSaysNothingWasTrained) {
+    journey::Journey structural{"structural-run", {}};
+    structural.steps = {
+        {"create the project", "create_project", {{"name", "docs"}}},
+        {"save a two-step search pipeline", "save_graph",
+         {{"project", "docs"},
+          {"graph", "search docs"},
+          {"nodes", nlohmann::json::array({{{"id", "load"}, {"kind", "connect"}, {"name", "Load docs"}},
+                                 {{"id", "find"}, {"kind", "index"}, {"name", "Index docs"}}})},
+          {"edges", nlohmann::json::array({{{"from", "load"}, {"to", "find"}, {"kind", "data_flow"}}})}}},
+        {"approve it", "approve_plan",
+         {{"project", "docs"}, {"graph", "search docs"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"run it with a dataset it will not read", "run",
+         {{"project", "docs"}, {"graph", "search docs"}, {"dataset_path", "datasets.docs"}},
+         {.checks = {journey::equals("/engine", "structural"),
+                     journey::contains("/note", "without training"),
+                     journey::contains("/note", "was not read")}},
+         {{"run_id", "/run_id"}}},
+        {"the run itself says so", "get_run",
+         {{"run_id", "$run_id"}},
+         {.checks = {journey::any_element("/logs", {{"/level", "warn"}})}}},
+    };
+    const journey::JourneyReport report = journey::run_journey(structural, caller());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
+// =====================================================================
 // testsuite_run: kind job — the durable Run id returns immediately while the
 // case executes on a worker; status + the case's log land on the run.
 // Unknown case / unknown option are rejected with path-qualified reasons.

@@ -9617,6 +9617,10 @@
                           "description": "structural runs only, on failure",
                           "type": "string"
                         },
+                        "note": {
+                          "description": "structural runs: that nothing was trained, and whether a given dataset was read",
+                          "type": "string"
+                        },
                         "poll": {
                           "description": "churn runs: where to read progress",
                           "type": "string"

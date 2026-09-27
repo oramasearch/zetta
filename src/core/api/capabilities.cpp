@@ -659,6 +659,20 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         features.push_back(driver.feature);
     }
     if (!features.empty()) dataset["features"] = std::move(features);
+    // What the run actually read and what it could not use, from the run itself: its
+    // lineage sources and its "dataset: " log notes (a table-backed run, #947).
+    const zetta::pipeline::RunLineage& lineage = run->lineage();
+    for (const std::string& source : lineage.sources) {
+        if (source.starts_with("dataset:")) {
+            dataset["source"] = source.substr(8);
+            dataset.erase("events");  // a table-backed run has no events shard
+        }
+    }
+    nlohmann::json notes = nlohmann::json::array();
+    for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+        if (log.message.starts_with("dataset: not used:")) notes.push_back(log.message.substr(9));
+    }
+    if (!notes.empty()) dataset["not_used"] = std::move(notes);
     if (!dataset.empty()) report["dataset"] = std::move(dataset);
     else {
         missing.push_back({{"field", "dataset"},
@@ -2790,6 +2804,11 @@ const nlohmann::json& run_output_schema() {
              "the durable engine handle — poll get_run / system.runs"}}},
           {"engine", {{"type", "string"}, {"enum", {"churn", "structural"}}}},
           {"status", {{"type", "string"}}},
+          {"note",
+           {{"type", "string"},
+            {"description",
+             "structural runs: that nothing was trained, and whether a given dataset was "
+             "read"}}},
           {"failed_step",
            {{"type", "string"},
             {"description", "structural runs only, on failure"}}},
@@ -2847,9 +2866,19 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
             return ApiResult::failure("engine_error",
                                       "the run record could not be created");
         }
+        // Said on the run itself (lake#251): a structural run trains nothing, and a person
+        // reading it must not take its succeeded steps for a trained model.
+        std::string structural =
+            "structural: this pipeline is not churn-shaped, so its steps ran without training "
+            "or scoring anything; only churn-shaped pipelines train today";
+        if (input.contains("dataset_path")) {
+            structural += ", and the dataset it was given was not read";
+        }
+        executed.run->add_log({zetta::util::now_iso8601(), "warn", structural});
         nlohmann::json output;
         output["run_id"] = executed.run->id();
         output["engine"] = "structural";
+        output["note"] = structural;
         output["status"] = std::string(to_string(executed.run->status()));
         if (!executed.ok) {
             output["failed_step"] = executed.failed_step;
@@ -2898,6 +2927,8 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
             }
             table.table_id = resolved.table_id;
             table.contract = resolved.contract;
+            table.dataset_name = dataset_path->get<std::string>();
+            table.notes = resolved.notes;
             // What was INFERRED travels back with the run: an assumption the caller
             // never sees is one they discover inside a trained model.
             dataset_notes = resolved.notes;
