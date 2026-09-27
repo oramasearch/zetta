@@ -130,3 +130,29 @@ elsewhere, so a clamp must never be silent: `publish` and `subscribe` return the
 vs effective. Clamping applies only to *delivery options*; a principal with no
 `pubsub:publish` / `pubsub:subscribe` grant on the topic is still denied outright.
 Changing the setting is itself governed (`pubsub:manage`).
+
+## D9 — QoS is priority and delivery guarantee, both configurable at every level (2026-09-27)
+
+**What.** QoS is two settings, not one:
+- **priority**: which event is delivered first;
+- **guarantee**: at-most-once, at-least-once (acknowledge, redeliver when not
+  acknowledged), exactly-once.
+
+Each can be set on the topic, the subscription and the message, and is bounded
+by governance like every other delivery option ([D6](#d6--delivery-semantics-can-be-set-at-any-level-topic-subscription-message-2026-09-27),
+[D7](#d7--governance-decides-what-each-level-may-ask-for-2026-09-27),
+[D8](#d8--over-bound-requests-clamp-by-default-reject-if-the-topic-says-so-2026-09-27)).
+Answers [Q16](questions.md).
+
+**Why.** Same principle as D6: the caller chooses at runtime.
+
+**Cost.**
+- **At-least-once** needs acknowledgements, a redelivery deadline per delivered
+  event, and holding the event until every entitled recipient has acknowledged
+  it. Unacknowledged events pin ring segments, so it sharpens the growth
+  question ([Q13](questions.md)). Subscribers must tolerate duplicates.
+- **Exactly-once** in memory means at-least-once plus de-duplication: a stable
+  event id and a per-subscription record of ids already processed. It is only
+  exact within one process lifetime until stage 3 makes it durable.
+- **Priority** breaks FIFO for events of different priority, and strict priority
+  starves low priority unless waiting events age upward.

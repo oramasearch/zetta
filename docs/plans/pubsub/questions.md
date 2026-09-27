@@ -51,7 +51,9 @@ design past several of these questions. Still open from round 1:
     segment?
 15. **Which encodings in stage 1, and is the MIME type interned** to a small id
     in the header, or stored as a string per event?
-16. **What does QoS mean for you: priority (who goes first), or a delivery
+16. ~~**What does QoS mean?**~~ → *Answered 2026-09-27 (Steve): both priority
+    and the delivery guarantee, configurable at all levels* ([D9](decisions.md)).
+    Original question: **What does QoS mean for you: priority (who goes first), or a delivery
     guarantee** (at-most-once vs at-least-once with acknowledgement and
     redelivery, like MQTT QoS 0/1)? Or both?
 

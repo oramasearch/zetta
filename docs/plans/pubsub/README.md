@@ -27,7 +27,8 @@ first principle — see [`context.md`](context.md)).
    D3 runtime delivery semantics, D4 binary events with a heap, D5 no coroutines
    in stage 1, a mutex per queue, D6 delivery set at topic, subscription or
    message level, D7 governance decides what each level may ask for, D8 clamp over-bound
-   requests by default, reject per topic).
+   requests by default, reject per topic, D9 QoS = priority + guarantee at every
+   level).
 5. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft, revision 2.
 6. [`governance.md`](governance.md) — how topics join zetta's central governance

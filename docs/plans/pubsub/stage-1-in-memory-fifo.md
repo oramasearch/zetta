@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 6 (after [D1–D8](decisions.md)). Settled parts cite
+**Status:** draft, revision 7 (after [D1–D9](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -82,7 +82,8 @@ rejected, per topic ([D8](decisions.md)); `publish` returns the effective option
 struct delivery {
     recipients who;        // all | one | n(k)
     ordering   order;      // fifo | priority (reordering allowed)
-    // qos: priority, or a guarantee (at-most-once / at-least-once)? Q16
+    std::uint8_t priority; // D9
+    guarantee  delivery;   // at_most_once | at_least_once | exactly_once (D9)
 };
 ```
 
@@ -97,3 +98,13 @@ How this maps onto cursors:
   lock; the event is done at 0. Nobody surveyed ships this ([research/02](research/02-growable-rings-and-delivery.md)).
 - **priority**: one ring per priority level, the reader takes the highest
   non-empty level; needs aging or low priority can starve.
+
+## Guarantees (D9)
+
+- **at-most-once:** a delivered event is done for that recipient.
+- **at-least-once:** a delivery is *in flight* until the subscriber calls
+  `ack(sequence)`; past its deadline it is redelivered. The event's storage is
+  released only when every entitled recipient has acknowledged it.
+- **exactly-once:** at-least-once plus a per-subscription set of processed event
+  ids, so a redelivery is dropped before the subscriber sees it. In-memory only
+  until stage 3.
