@@ -5608,9 +5608,22 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
             enabled_tools.push_back(spec);
         }
     }
+    // Pipelines granted to the agent are tools too (lake#238): gate, then run.
+    for (const zetta::agent::PipelineGrant& grant : agent->pipelines) {
+        enabled_tools.push_back(
+            {pipeline_tool_name(grant.graph),
+             "run the approved Pipeline '" + grant.graph + "' in project '" + grant.project +
+                 "': checks the correctness gate, then runs it: {\"dataset\": \"<database.table>\"}"});
+    }
+    const zetta::agent::AgentRecord& granted = *agent;
     const zetta::agent::AgentToolRunner agent_tools =
-        [&context](const std::string& tool,
-                   const nlohmann::json& arguments) -> zetta::agent::ToolResult {
+        [&context, &granted](const std::string& tool,
+                             const nlohmann::json& arguments) -> zetta::agent::ToolResult {
+        if (tool.rfind("pipeline_", 0) == 0) {
+            const ApiResult ran = run_granted_pipeline(context, granted, tool, arguments);
+            if (!ran.ok) return zetta::agent::ToolResult::failure(ran.error.message);
+            return zetta::agent::ToolResult::success(ran.value);
+        }
         const bool allowed = std::any_of(
             kAgentTools.begin(), kAgentTools.end(),
             [&tool](const zetta::agent::AgentToolSpec& spec) { return spec.name == tool; });
@@ -7131,6 +7144,57 @@ void register_core_capabilities(Registry& registry) {
     // The cloud-touching tools + the consent protocol tools (#621) — the
     // consent-gated slice, in its own TU (cloud_capabilities.cpp).
     register_cloud_capabilities(registry);
+}
+
+std::string pipeline_tool_name(const std::string& graph) {
+    std::string name = "pipeline_";
+    for (const char character : graph) {
+        name += std::isalnum(static_cast<unsigned char>(character))
+                    ? static_cast<char>(std::tolower(static_cast<unsigned char>(character)))
+                    : '_';
+    }
+    return name.substr(0, 57);
+}
+
+ApiResult run_granted_pipeline(ApiContext& context,
+                               const zetta::agent::AgentRecord& agent,
+                               const std::string& tool,
+                               const nlohmann::json& arguments) {
+    const auto grant = std::find_if(
+        agent.pipelines.begin(), agent.pipelines.end(),
+        [&tool](const zetta::agent::PipelineGrant& g) { return pipeline_tool_name(g.graph) == tool; });
+    if (grant == agent.pipelines.end()) {
+        return ApiResult::failure("unauthorized", "'" + tool + "' is not a Pipeline granted to this agent");
+    }
+    if (context.registry == nullptr) {
+        return ApiResult::failure("engine_error", "no capability registry for this call");
+    }
+    const auto project = context.node.find_project(grant->project);
+    const auto graph = project ? project->find_graph(grant->graph) : nullptr;
+    if (!graph) {
+        return ApiResult::failure("not_found", "the granted Pipeline '" + grant->graph + "' is gone");
+    }
+    if (graph->approval_status() != "approved" || graph->approved_at() != grant->version) {
+        return ApiResult::failure(
+            "unauthorized",
+            "the Pipeline '" + grant->graph +
+                "' changed since it was granted; it has to be approved and granted again");
+    }
+    const nlohmann::json ref = {{"project", grant->project}, {"graph", grant->graph}};
+    const ApiResult gated = context.registry->call("gate", ref, context);
+    if (!gated.ok) return gated;
+    if (gated.value.value("block_deploy", false)) {
+        return ApiResult::failure("engine_error",
+                                  "the correctness gate blocks '" + grant->graph + "': " +
+                                      gated.value.dump());
+    }
+    nlohmann::json run = ref;
+    if (arguments.is_object()) {
+        for (const char* key : {"dataset", "holdout", "model_name"}) {
+            if (arguments.contains(key)) run[key] = arguments.at(key);
+        }
+    }
+    return context.registry->call("run", run, context);
 }
 
 }  // namespace zetta::api
