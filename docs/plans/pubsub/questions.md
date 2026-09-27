@@ -70,7 +70,9 @@ design past several of these questions. Still open from round 1:
 
 ## Round 4 — 2026-09-27
 
-18. **When a publish or subscription asks for more than governance allows** (e.g.
+18. ~~**Over-bound requests: reject or clamp?**~~ → *Answered 2026-09-27
+    (Steve): configurable per topic, clamp by default* ([D8](decisions.md)).
+    Original question: **When a publish or subscription asks for more than governance allows** (e.g.
     priority 9 where the role's bound is 5, or "deliver to everyone" where it may
     only use "one"), do we (a) **reject** it with an error naming the rule, and
     audit the denial (zetta's deny-by-default), or (b) **clamp** it to the bound,

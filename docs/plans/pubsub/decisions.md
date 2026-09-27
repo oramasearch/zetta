@@ -113,3 +113,20 @@ cluster-wide in stage 2 without new machinery.
 policies over delivery options; every publish and subscribe pays an
 authorization check (cacheable per subscription). What happens when a request
 exceeds its bounds is [Q18](questions.md).
+
+## D8 — Over-bound requests: clamp by default, reject if the topic says so (2026-09-27)
+
+**What.** Each topic has a setting for requests that exceed their governance
+bounds: **`clamp`** (the default) lowers the request to the bound and delivers;
+**`reject`** fails it with an error naming the rule. Both outcomes are audited.
+Answers [Q18](questions.md).
+
+**Why.** Clamping keeps producers working when a bound tightens; topics where
+silently lowering a request would be wrong can opt into rejection.
+
+**Cost.** Clamp as the default departs from zetta's deny-by-default posture
+elsewhere, so a clamp must never be silent: `publish` and `subscribe` return the
+**effective** options they were granted, and the audit event records requested
+vs effective. Clamping applies only to *delivery options*; a principal with no
+`pubsub:publish` / `pubsub:subscribe` grant on the topic is still denied outright.
+Changing the setting is itself governed (`pubsub:manage`).

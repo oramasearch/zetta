@@ -1,6 +1,6 @@
 # Governance — who may publish, subscribe, and ask for what
 
-**Status:** draft, 2026-09-27, after [D7](decisions.md). Builds on zetta's
+**Status:** draft, 2026-09-27, after [D7–D8](decisions.md). Builds on zetta's
 existing governance model; adds no second one.
 
 ## What zetta already has (`include/zetta/governance/`, `docs/governance/`)
@@ -32,6 +32,11 @@ inherits it for free.
 - **Resolution (D7):** the request is layered, most specific first (message →
   subscription → topic default), then the result must pass the governance
   bounds for that principal on that topic.
+- **Over-bound requests (D8):** a per-topic setting, `clamp` (default) or
+  `reject`. Clamp lowers the request to the bound and delivers; the caller gets
+  the effective options back, and the audit records requested vs effective. A
+  principal without `pubsub:publish` / `pubsub:subscribe` on the topic is denied,
+  never clamped.
 - **Every publish/subscribe decision is audited** the way data access is today;
   whether every *event* is audited (volume) is a separate question.
 
