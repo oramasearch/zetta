@@ -536,3 +536,13 @@ ahead (D10). Answers [Q29](questions.md).
 that cannot be dead-lettered (the dead-letter address itself is full or
 missing) is dropped and logged, never retried in a loop; reading it is governed
 (it can hold events sent to anyone).
+
+## D33 — `from` names who it is for, `sender` names who sent it (2026-09-27)
+
+**What.** When an agent acts on someone's behalf, the envelope carries both, as
+email does with `From` and `Sender`: **`from`** is the principal the event is
+for (`user:steve`), **`sender`** is the one that actually sent it
+(`agent:ask-orama`). Governance checks that the sender may act for `from`, and
+the audit records both. Configurable at every level (the standing rule), e.g. a
+topic may require `sender` to be shown, or hide it from recipients. Confirms the
+D29 proposal that the node stamps these from authenticated principals.

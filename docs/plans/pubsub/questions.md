@@ -259,3 +259,16 @@ id per node.
     loop or chain-depth stop (D29), a subscriber skipped ahead (D10). Proposal: a
     **dead-letter address** (`topic:dead-letter` by default, settable at every
     level), receiving the event with a reason; or simply drop and log.
+
+## Round 19 — 2026-09-27
+
+30. ~~**What does `from` say when an agent acts for a person?**~~ → *Answered
+    2026-09-27 (Steve): both, `from` (the person) and `sender` (the agent),
+    configurable at all levels* ([D33](decisions.md)).
+
+31. **Delegation chains.** Ask Orama can delegate to a subagent, which can
+    delegate again. When `agent:security-scan` sends on behalf of
+    `agent:ask-orama`, which acted for `user:steve`: is `sender` just the last
+    agent, or a **stack** of every agent in the chain (like `topics-chain`), each
+    link checked by governance and recorded in the audit? And is there a maximum
+    delegation depth?

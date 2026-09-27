@@ -1,7 +1,7 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 23 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D32](decisions.md). Every section cites the
+**Status:** draft spec, revision 24 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D33](decisions.md). Every section cites the
 decisions it comes from; anything marked *proposal* was filled in under the
 [standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
 overruled. Open items are listed at the end.
@@ -31,11 +31,12 @@ Sending to `agent:405` puts the event in that agent's inbox. Sending to
 `topic:abc123` publishes to the topic, and its subscribers receive it by their
 delivery rules.
 
-**Envelope (D27, D29).** Every event may carry:
+**Envelope (D27, D29, D33).** Every event may carry:
 
 | Field | Meaning |
 |---|---|
-| `from` | the sender's address; *proposal:* stamped by the node from the authenticated principal, so it cannot be forged |
+| `from` | the principal the event is for (`user:steve`); stamped by the node from authenticated principals, never trusted from the caller (D33) |
+| `sender` | who actually sent it when acting for `from` (`agent:ask-orama`); governance checks the sender may act for `from`, and the audit records both (D33) |
 | `to` | primary recipients |
 | `cc` | also receive it |
 | `bcc` | receive it; removed from every copy except the bcc recipient's own |
