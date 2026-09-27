@@ -84,6 +84,27 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   `delete_agent` capabilities (`api/capabilities.cpp`), exposed on **both MCP and REST** by the
   capability registry. The GUI/web chat panels build on these (chat + tool-calling in flight).
 
+### Every agent lake shows (zetta#1015)
+
+The record describes **every** agent, not only the native base agent, so `list_agents` is the one
+list behind lake's Train → Agents and Ask Orama's selector
+([lake#228](https://github.com/oramasearch/lake/issues/228)):
+
+| Field | Meaning |
+|---|---|
+| `kind` | `custom` (built by a person or the Agent Factory; the default) or `orama` (a specialized agent Orama ships: the Agent Library) |
+| `runtime` | `native` (runs here: `chat`, `agent_run`; the default, so every older record keeps its meaning), `python` (runs on `agent-runtime` from `definition`), `service` (a specialized agent with its own image, at `endpoint`) |
+| `purpose`, `work_area {kind, detail}`, `manifesto`, `goal`, `skills`, `trigger`, `status`, `model_name`, `model_version` | Studio's agent shape. `skills` ∈ search, generate-data, train, summarize, call-api; `work_area.kind` ∈ workspace, project, dataset; an empty `trigger` means conversation only; `status` ∈ idle, running, waiting, completed, failed |
+| `chat_capable`, `is_default` | The Ask Orama selector contract. `list_agents` returns `default_agent_id`: the agent marked `is_default` that can chat (Ask Orama), empty when none |
+| `pipelines [{project, graph, version}]` | Approved Pipelines the agent may call as tools ([lake#238](https://github.com/oramasearch/lake/issues/238)). `create_agent` / `update_agent` refuse a graph that is not approved and pin `version` to its `approved_at`, so a graph re-approved later is a different version |
+| `definition` | `runtime: python`. `source: zetta` carries `instructions` and `files [{path, contents}]` inline (relative paths only, at most **1 MiB** in total because the record replicates everywhere); `source: lake` carries `repository_id` and a pinned `revision`. `entrypoint` is `module:function` |
+| `endpoint` | `runtime: service`: where lake reaches the agent |
+
+Validation: a `native` agent needs `model`; a `python` agent a valid `definition`; a `service`
+agent an `endpoint`. `chat` and `agent_run` refuse non-native agents and say where they run.
+`agent_training_status` reports a non-native agent as *not trained by Zetta* rather than
+untrained. Verify: `AgentApiFixture.KindsRuntimesStudioShapeAndPipelineGrants`.
+
 ## The reward primitive (shipped)
 
 - **`EndState`** (`end_state.hpp`) — the observable end-state of a rollout,

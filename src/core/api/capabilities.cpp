@@ -4675,6 +4675,47 @@ const nlohmann::json& agent_fields_schema() {
           {"model", {{"type", "string"}}},
           {"system_prompt", {{"type", "string"}}},
           {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          // zetta#1015: the agent's family and runtime, the Studio agent shape, the Ask Orama
+          // contract, granted Pipelines, a Python agent's definition and a service's endpoint.
+          {"kind", {{"type", "string"}, {"enum", {"custom", "orama"}}}},
+          {"runtime", {{"type", "string"}, {"enum", {"native", "python", "service"}}}},
+          {"purpose", {{"type", "string"}}},
+          {"work_area",
+           {{"type", "object"},
+            {"properties",
+             {{"kind", {{"type", "string"}, {"enum", {"workspace", "project", "dataset"}}}},
+              {"detail", {{"type", "string"}}}}}}},
+          {"manifesto", {{"type", "string"}}},
+          {"goal", {{"type", "string"}}},
+          {"skills",
+           {{"type", "array"},
+            {"items",
+             {{"type", "string"},
+              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+          {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
+          {"status",
+           {{"type", "string"},
+            {"enum", {"idle", "running", "waiting", "completed", "failed"}}}},
+          {"model_name", {{"type", "string"}}},
+          {"model_version", {{"type", "string"}}},
+          {"chat_capable", {{"type", "boolean"}}},
+          {"is_default", {{"type", "boolean"}}},
+          {"pipelines",
+           {{"type", "array"},
+            {"description",
+             "approved Pipelines the agent may call as tools; version pins the approval"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"project", {{"type", "string"}}},
+                {"graph", {{"type", "string"}}},
+                {"version", {{"type", "string"}}}}}}}}},
+          {"definition",
+           {{"type", "object"},
+            {"description",
+             "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or "
+             "lake (repository_id + revision); entrypoint is module:function"}}},
+          {"endpoint", {{"type", "string"}, {"description", "runtime: service"}}},
           {"created_at", {{"type", "string"}}},
           {"updated_at", {{"type", "string"}}}}}};
     return schema;
@@ -4683,15 +4724,58 @@ const nlohmann::json& agent_fields_schema() {
 const nlohmann::json& create_agent_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"name", "model"}},
+        {"required", {"name"}},
         {"additionalProperties", false},
         {"properties",
          {{"name", {{"type", "string"}, {"minLength", 1}}},
           {"description", {{"type", "string"}}},
           {"model",
            {{"type", "string"},
-            {"minLength", 1},
-            {"description", "checkpoint dir, model:<uuid>, or a HuggingFace repo id"}}},
+            {"description",
+             "native agents (required there): checkpoint dir, model:<uuid>, or a HuggingFace "
+             "repo id"}}},
+          // zetta#1015: the agent's family and runtime, the Studio agent shape, the Ask Orama
+          // contract, granted Pipelines, a Python agent's definition and a service's endpoint.
+          {"kind", {{"type", "string"}, {"enum", {"custom", "orama"}}}},
+          {"runtime", {{"type", "string"}, {"enum", {"native", "python", "service"}}}},
+          {"purpose", {{"type", "string"}}},
+          {"work_area",
+           {{"type", "object"},
+            {"properties",
+             {{"kind", {{"type", "string"}, {"enum", {"workspace", "project", "dataset"}}}},
+              {"detail", {{"type", "string"}}}}}}},
+          {"manifesto", {{"type", "string"}}},
+          {"goal", {{"type", "string"}}},
+          {"skills",
+           {{"type", "array"},
+            {"items",
+             {{"type", "string"},
+              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+          {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
+          {"status",
+           {{"type", "string"},
+            {"enum", {"idle", "running", "waiting", "completed", "failed"}}}},
+          {"model_name", {{"type", "string"}}},
+          {"model_version", {{"type", "string"}}},
+          {"chat_capable", {{"type", "boolean"}}},
+          {"is_default", {{"type", "boolean"}}},
+          {"pipelines",
+           {{"type", "array"},
+            {"description",
+             "approved Pipelines the agent may call as tools; version pins the approval"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"project", {{"type", "string"}}},
+                {"graph", {{"type", "string"}}},
+                {"version", {{"type", "string"}}}}}}}}},
+          {"definition",
+           {{"type", "object"},
+            {"description",
+             "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or "
+             "lake (repository_id + revision); entrypoint is module:function"}}},
+          {"endpoint", {{"type", "string"}, {"description", "runtime: service"}}},
+
           {"system_prompt", {{"type", "string"}}},
           {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           // Goals are editable after creation: what an agent is rewarded for is the thing most
@@ -4711,7 +4795,49 @@ const nlohmann::json& update_agent_schema() {
          {{"id", {{"type", "string"}, {"minLength", 1}}},
           {"name", {{"type", "string"}, {"minLength", 1}}},
           {"description", {{"type", "string"}}},
-          {"model", {{"type", "string"}, {"minLength", 1}}},
+          {"model", {{"type", "string"}}},
+          // zetta#1015: the agent's family and runtime, the Studio agent shape, the Ask Orama
+          // contract, granted Pipelines, a Python agent's definition and a service's endpoint.
+          {"kind", {{"type", "string"}, {"enum", {"custom", "orama"}}}},
+          {"runtime", {{"type", "string"}, {"enum", {"native", "python", "service"}}}},
+          {"purpose", {{"type", "string"}}},
+          {"work_area",
+           {{"type", "object"},
+            {"properties",
+             {{"kind", {{"type", "string"}, {"enum", {"workspace", "project", "dataset"}}}},
+              {"detail", {{"type", "string"}}}}}}},
+          {"manifesto", {{"type", "string"}}},
+          {"goal", {{"type", "string"}}},
+          {"skills",
+           {{"type", "array"},
+            {"items",
+             {{"type", "string"},
+              {"enum", {"search", "generate-data", "train", "summarize", "call-api"}}}}}},
+          {"trigger", {{"type", "string"}, {"description", "empty = conversation only"}}},
+          {"status",
+           {{"type", "string"},
+            {"enum", {"idle", "running", "waiting", "completed", "failed"}}}},
+          {"model_name", {{"type", "string"}}},
+          {"model_version", {{"type", "string"}}},
+          {"chat_capable", {{"type", "boolean"}}},
+          {"is_default", {{"type", "boolean"}}},
+          {"pipelines",
+           {{"type", "array"},
+            {"description",
+             "approved Pipelines the agent may call as tools; version pins the approval"},
+            {"items",
+             {{"type", "object"},
+              {"properties",
+               {{"project", {{"type", "string"}}},
+                {"graph", {{"type", "string"}}},
+                {"version", {{"type", "string"}}}}}}}}},
+          {"definition",
+           {{"type", "object"},
+            {"description",
+             "runtime: python. source zetta (instructions + files inline, at most 1 MiB) or "
+             "lake (repository_id + revision); entrypoint is module:function"}}},
+          {"endpoint", {{"type", "string"}, {"description", "runtime: service"}}},
+
           {"system_prompt", {{"type", "string"}}},
           {"tools", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           // Goals are editable after creation: what an agent is rewarded for is the thing most
@@ -4743,7 +4869,10 @@ const nlohmann::json& list_agents_output_schema() {
         {"type", "object"},
         {"required", {"agents"}},
         {"properties",
-         {{"agents", {{"type", "array"}, {"items", agent_fields_schema()}}}}}};
+         {{"agents", {{"type", "array"}, {"items", agent_fields_schema()}}},
+          {"default_agent_id",
+           {{"type", "string"},
+            {"description", "the agent marked is_default (Ask Orama); empty when none"}}}}}};
     return schema;
 }
 
@@ -4788,6 +4917,35 @@ zetta::agent::AgentRecord agent_from_input(const nlohmann::json& input,
     return base;
 }
 
+// The fields zetta#1015 added, then every granted Pipeline checked: it must exist and be approved,
+// and the grant is pinned to that approval (its approved_at). A graph that is only proposed can
+// never be granted, so an agent never calls an unapproved graph.
+std::optional<std::string> apply_agent_input(const nlohmann::json& input,
+                                             zetta::agent::AgentRecord& agent,
+                                             ApiContext& context) {
+    if (std::optional<std::string> reason = zetta::agent::apply_agent_fields(input, agent)) {
+        return reason;
+    }
+    if (!input.contains("pipelines")) return std::nullopt;
+    for (zetta::agent::PipelineGrant& grant : agent.pipelines) {
+        const auto project = resolve_project(context, grant.project);
+        if (!project) return "agent.pipelines: no project '" + grant.project + "'";
+        const auto graph = resolve_graph(*project, grant.graph);
+        if (!graph) {
+            return "agent.pipelines: no graph '" + grant.graph + "' on project '" +
+                   project->name() + "'";
+        }
+        if (graph->approval_status() != "approved") {
+            return "agent.pipelines: '" + graph->name() + "' on '" + project->name() +
+                   "' is not approved; only an approved Pipeline can be granted to an agent";
+        }
+        grant.project = project->name();
+        grant.graph = graph->name();
+        grant.version = graph->approved_at();
+    }
+    return std::nullopt;
+}
+
 ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) {
     if (context.node.replication() == nullptr) {
         return ApiResult::failure("engine_error", "agents require a replicated node");
@@ -4797,6 +4955,9 @@ ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) 
     agent.created_at = zetta::util::now_iso8601();
     agent.updated_at = agent.created_at;
     agent = agent_from_input(input, std::move(agent));
+    if (std::optional<std::string> reason = apply_agent_input(input, agent, context)) {
+        return ApiResult::failure("invalid_argument", *reason);
+    }
 
     zetta::agent::AgentStore store(*context.node.replication());
     std::string error;
@@ -4807,14 +4968,21 @@ ApiResult handle_create_agent(const nlohmann::json& input, ApiContext& context) 
 
 ApiResult handle_list_agents(const nlohmann::json&, ApiContext& context) {
     nlohmann::json agents = nlohmann::json::array();
+    std::string default_agent_id;
     if (context.node.replication() != nullptr) {
         zetta::agent::AgentStore store(*context.node.replication());
         for (const zetta::agent::AgentRecord& agent : store.list()) {
+            // The Ask Orama contract: one explicit default, and only when it can hold a
+            // conversation. List position never supplies it.
+            if (agent.is_default && agent.chat_capable && default_agent_id.empty()) {
+                default_agent_id = agent.id;
+            }
             agents.push_back(zetta::agent::to_json(agent));
         }
     }
     nlohmann::json output;
     output["agents"] = std::move(agents);
+    output["default_agent_id"] = default_agent_id;
     return ApiResult::success(std::move(output));
 }
 
@@ -4865,6 +5033,9 @@ ApiResult handle_update_agent(const nlohmann::json& input, ApiContext& context) 
     const std::optional<zetta::agent::AgentRecord> existing = store.get(id);
     if (!existing) return ApiResult::failure("not_found", "no agent '" + id + "'");
     zetta::agent::AgentRecord updated = agent_from_input(input, *existing);
+    if (std::optional<std::string> reason = apply_agent_input(input, updated, context)) {
+        return ApiResult::failure("invalid_argument", *reason);
+    }
     updated.updated_at = zetta::util::now_iso8601();
     std::string error;
     const std::optional<zetta::agent::AgentRecord> stored = store.put(updated, &error);
@@ -4883,6 +5054,18 @@ ApiResult handle_agent_training_status(const nlohmann::json& input, ApiContext& 
     zetta::agent::AgentStore store(*context.node.replication());
     const std::optional<zetta::agent::AgentRecord> agent = store.get(id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + id + "'");
+    if (!agent->native()) {
+        // A Python or service agent runs a frontier model or its own code; Zetta trains nothing
+        // for it. Saying "untrained" would invite a retrain that cannot happen.
+        return ApiResult::success(nlohmann::json{
+            {"agent", agent->id},
+            {"trained", false},
+            {"stale", false},
+            {"due", false},
+            {"reason", "Not trained by Zetta: this agent runs outside the engine (" +
+                           agent->runtime + ")."},
+            {"versions", nlohmann::json::array()}});
+    }
 
     const zetta::agent::RetrainStatus status = zetta::agent::retrain_status(
         agent->training, agent->versions, agent->tools, agent->goals, zetta::util::now_iso8601());
@@ -5358,6 +5541,13 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     zetta::agent::AgentStore store(*context.node.replication());
     const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+    if (!agent->native()) {
+        return ApiResult::failure("invalid_argument",
+                                  "agent '" + agent->name + "' runs on " +
+                                      (agent->runtime == "python" ? std::string("agent-runtime")
+                                                                  : std::string("its own service")) +
+                                      ", outside Zetta; use it from lake");
+    }
 
     // The tools the agent may call while answering (#904): READ-ONLY introspection,
     // an explicit allowlist — never a mutating capability, so a chat can describe
@@ -5686,6 +5876,13 @@ ApiResult handle_agent_run(const nlohmann::json& input, ApiContext& context) {
     zetta::agent::AgentStore store(*context.node.replication());
     const std::optional<zetta::agent::AgentRecord> agent = store.get(agent_id);
     if (!agent) return ApiResult::failure("not_found", "no agent '" + agent_id + "'");
+    if (!agent->native()) {
+        return ApiResult::failure("invalid_argument",
+                                  "agent '" + agent->name + "' runs on " +
+                                      (agent->runtime == "python" ? std::string("agent-runtime")
+                                                                  : std::string("its own service")) +
+                                      ", outside Zetta; use it from lake");
+    }
 
     // 1. The agent reads the ask and recognizes the use case (the shared respond() path).
     const zetta::agent::ChatResponse chat = zetta::agent::respond(
