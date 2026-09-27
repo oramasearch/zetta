@@ -128,7 +128,7 @@ and receives a gap notice with the count it missed) · `disconnect` ·
 **Defaults are detected, not guessed** ([D11](decisions.md),
 [research/04](research/04-detecting-resource-budgets.md)). Every limit is in
 bytes, never an event count. (Two rounds of fixed defaults were rejected: 64 MiB
-/ 10,000 events was far too small for a partition that sees more than 10k
+/ 10,000 events was far too small for a topic that sees more than 10k
 events/s, and a fixed throughput target is still a guess.)
 
 **Detection order for memory** (the first that answers wins, then the tightest):
@@ -146,7 +146,7 @@ limit if exposed). CPU from `cpu.max` / `cfs_quota_us` and the cpuset.
 
 **Derived defaults** (fractions of the detected budget; the fractions are
 proposals): pub/sub memory for the node = 25% of the memory budget, shared by
-every topic on it; a subscription may lag as far as its partition holds;
+every topic on it; a subscription may lag as far as its topic holds;
 spill disk = 50% of the data directory's free space; hold publisher 5 s, then
 fail.
 
