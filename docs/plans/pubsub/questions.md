@@ -84,7 +84,10 @@ design past several of these questions. Still open from round 1:
 
 ## Round 5 — 2026-09-27
 
-19. **Are these the right defaults?** Proposed in
+19. **Are these the right defaults?** → *Steve, 2026-09-27: too small; a
+    partition can see more than 10k events per second.* Revised in the stage 1
+    page (limits in bytes, sized from a throughput target); the target itself
+    is Q20. Original proposal: Proposed in
     [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md#limits-and-overflow-d10):
     per-topic memory cap 64 MiB; a subscription may fall 10,000 events behind;
     when full, the default policy follows the guarantee: **at-most-once skips the
@@ -92,3 +95,12 @@ design past several of these questions. Still open from round 1:
     exactly-once spill to disk** up to 1 GiB per topic, then **hold the publisher**
     for up to 5 s, then fail the publish. Spilling is off for topics whose events
     must never touch disk.
+
+## Round 6 — 2026-09-27
+
+20. **What throughput should the defaults be sized for?** Proposed target: **100k
+    events/s per partition at ~1 KiB each (~100 MiB/s)**. The revised defaults
+    follow from it: 1 GiB of memory per partition (~10 s of traffic), 32 GiB of
+    disk per partition (~5 min), both inside node-wide budgets (25% of RAM, 50% of
+    free disk). If the target is higher, or events are bigger, the defaults scale
+    with it.

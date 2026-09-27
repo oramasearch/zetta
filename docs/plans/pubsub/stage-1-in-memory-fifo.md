@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 8 (after [D1–D10](decisions.md)). Settled parts cite
+**Status:** draft, revision 9 (after [D1–D10](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -123,10 +123,23 @@ Overflow policies: `unbounded` · `skip_ahead` (the slow subscriber jumps forwar
 and receives a gap notice with the count it missed) · `disconnect` ·
 `hold_publisher` (with a timeout, then fail) · `reject_new` · `spill_to_disk`.
 
-**Proposed defaults** ([Q19](questions.md)): 64 MiB memory per topic; 10,000
-events of lag per subscription; at-most-once → `skip_ahead`; at-least-once and
-exactly-once → `spill_to_disk` up to 1 GiB, then `hold_publisher` for 5 s, then
-fail the publish.
+**Defaults are sized from a throughput target, and every limit is in bytes**,
+never an event count: a count means something different at 100 bytes and at
+1 MiB. First proposal (64 MiB, 10,000 events) was too small (Steve: a partition
+can see more than 10k events per second). Revised proposal, from a target of
+100k events/s per partition at ~1 KiB ([Q20](questions.md)):
+
+| Limit | Default | At the target rate |
+|---|---|---|
+| memory per partition | 1 GiB | ~10 s of traffic |
+| node-wide pub/sub memory | 25% of RAM | shared by every partition on the node |
+| subscription lag | the partition's memory cap | a subscriber may be as far behind as memory holds |
+| disk per partition | 32 GiB | ~5 min of traffic |
+| node-wide spill disk | 50% of free space in the data dir | |
+| hold publisher | 5 s, then the publish fails | |
+
+When full: at-most-once → `skip_ahead`; at-least-once and exactly-once →
+`spill_to_disk`, then `hold_publisher`, then fail.
 
 **Disk tier:** a full memory segment is written whole to a file under the node's
 data dir and dropped from memory; the ring's segment list records where each
