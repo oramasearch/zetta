@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 21 (after [D1–D31](decisions.md)). No partitions:
+**Status:** draft, revision 22 (after [D1–D32](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -249,3 +249,8 @@ Internal by default. A topic can be exposed over MCP/REST by configuration:
 - An inbox outlives its subscriber's disconnect for a retention the subscriber
   chooses: **24 hours by default for agents**, or not at all. A waiting inbox
   counts against limits and spills like any queue.
+
+## Dead letters (D32)
+
+Undeliverable events go to `topic:dead-letter` (configurable at every level)
+with a reason. If that fails too, the event is dropped and logged.

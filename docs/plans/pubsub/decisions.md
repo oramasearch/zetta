@@ -523,3 +523,16 @@ outlive its disconnect**. Configurable at every level, bounded by governance
 **Cost.** A disconnected inbox keeps filling, so it counts against the memory
 limits, spills (D10) and survives restarts (D17) like any other queue. When the
 retention expires, the events still in it need somewhere to go ([Q29](questions.md)).
+
+## D32 — Undeliverable events go to a dead-letter address, with a reason (2026-09-27)
+
+**What.** An event that cannot be delivered goes to a **dead-letter address**,
+`topic:dead-letter` by default, configurable at every level, carrying the
+**reason**: inbox retention expired (D31), time to live expired (D10), no address
+or wildcard matched (D30), loop or chain-depth stop (D29), subscriber skipped
+ahead (D10). Answers [Q29](questions.md).
+
+**Cost / proposals:** the dead-letter topic has limits like any topic; an event
+that cannot be dead-lettered (the dead-letter address itself is full or
+missing) is dropped and logged, never retried in a loop; reading it is governed
+(it can hold events sent to anyone).

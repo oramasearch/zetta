@@ -251,7 +251,9 @@ id per node.
 
 ## Round 18 — 2026-09-27
 
-29. **Where do undeliverable events go?** Several cases now produce them: an
+29. ~~**Where do undeliverable events go?**~~ → *Answered 2026-09-27 (Steve):
+    the dead-letter proposal, configurable at all levels* ([D32](decisions.md)).
+    Original: **Where do undeliverable events go?** Several cases now produce them: an
     inbox whose retention expired with events still in it (D31), an event whose
     time to live ran out (D10), an address or wildcard that matches nobody, a
     loop or chain-depth stop (D29), a subscriber skipped ahead (D10). Proposal: a
