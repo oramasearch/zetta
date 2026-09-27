@@ -2960,6 +2960,131 @@
         ]
       }
     },
+    "/v1/create_topic": {
+      "post": {
+        "description": "Create a pub/sub topic. Topics are engine-internal unless `exposed` is true; only exposed topics are reachable through publish_event, receive_events, list_topics and drop_topic. Requires orchestration:pubsub_create.",
+        "operationId": "create_topic",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "exposed": {
+                    "description": "reachable through this control surface (default false: engine-internal)",
+                    "type": "boolean"
+                  },
+                  "guarantee": {
+                    "enum": [
+                      "at_most_once",
+                      "at_least_once",
+                      "exactly_once"
+                    ],
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "lifecycle": {
+                    "description": "default: flushed on shutdown and reloaded; ephemeral: never touches disk",
+                    "enum": [
+                      "default",
+                      "ephemeral"
+                    ],
+                    "type": "string"
+                  },
+                  "topic": {
+                    "description": "topic:<name> or <name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "exposed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create topic",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_workspace_profile": {
       "post": {
         "description": "Create the calling user's Workspace Profile — the input to the Discover Opportunities pathway (#886). Owner is the caller; replicates to every node. Role, daily work, and approved source refs are the editable body. Requires orchestration:create_workspace_profile.",
@@ -3949,6 +4074,111 @@
           }
         },
         "summary": "Detect cloud provisioners",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/drop_topic": {
+      "post": {
+        "description": "Drop an exposed pub/sub topic: its subscriptions close and its events are discarded. Requires orchestration:pubsub_manage.",
+        "operationId": "drop_topic",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "topic": {
+                    "description": "topic:<name> or <name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "exposed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Drop topic",
         "tags": [
           "action"
         ]
@@ -8780,6 +9010,116 @@
         ]
       }
     },
+    "/v1/list_topics": {
+      "get": {
+        "description": "The exposed pub/sub topics on this node with their subscriber counts, held events and next sequence number. Requires data:pubsub_subscribe.",
+        "operationId": "list_topics",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "topics": {
+                          "items": {
+                            "properties": {
+                              "held_events": {
+                                "type": "integer"
+                              },
+                              "next_sequence": {
+                                "type": "integer"
+                              },
+                              "subscribers": {
+                                "type": "integer"
+                              },
+                              "topic": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "topic",
+                              "subscribers",
+                              "held_events",
+                              "next_sequence"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "topics"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List topics",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_traces": {
       "get": {
         "description": "Read the most recent observability spans on this node (intent, timings, result shapes). No side effects. Requires api:query.",
@@ -9474,6 +9814,316 @@
           }
         },
         "summary": "Propose an improvement",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/publish_event": {
+      "post": {
+        "description": "Publish one event to an exposed topic. `from` is the caller; delivery options above the caller's governance bounds are clamped and reported. Requires data:pubsub_publish.",
+        "operationId": "publish_event",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "correlation_id": {
+                    "type": "string"
+                  },
+                  "encoding": {
+                    "enum": [
+                      "text",
+                      "json",
+                      "blob"
+                    ],
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "mime_type": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "description": "the event's bytes, as text",
+                    "type": "string"
+                  },
+                  "priority": {
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "reply_to": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "topic": {
+                    "description": "topic:<name> or <name>",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ttl_ms": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "topic",
+                  "payload"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "accepted": {
+                          "type": "boolean"
+                        },
+                        "clamped": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "event_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "event_id",
+                        "accepted",
+                        "clamped"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Publish event",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/receive_events": {
+      "get": {
+        "description": "Read an exposed topic's held events from a sequence number, oldest first; with wait_ms, wait for new ones (long poll). Stateless: pass the returned next_sequence to continue. Requires data:pubsub_subscribe.",
+        "operationId": "receive_events",
+        "parameters": [
+          {
+            "description": "first sequence to return (default 1)",
+            "in": "query",
+            "name": "from_sequence",
+            "required": false,
+            "schema": {
+              "description": "first sequence to return (default 1)",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "topic:<name> or <name>",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "topic:<name> or <name>",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "long-poll: wait up to this long when nothing is there yet",
+            "in": "query",
+            "name": "wait_ms",
+            "required": false,
+            "schema": {
+              "description": "long-poll: wait up to this long when nothing is there yet",
+              "maximum": 30000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "properties": {
+                              "correlation_id": {
+                                "type": "string"
+                              },
+                              "encoding": {
+                                "type": "string"
+                              },
+                              "from": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "payload": {
+                                "type": "string"
+                              },
+                              "sequence": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "sequence",
+                              "id",
+                              "encoding",
+                              "payload"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "next_sequence": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "events",
+                        "next_sequence"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Receive events",
         "tags": [
           "read"
         ]

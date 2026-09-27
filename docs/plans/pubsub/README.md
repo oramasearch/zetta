@@ -56,7 +56,7 @@ first principle — see [`context.md`](context.md)).
 
 | Stage | What | Status |
 |---|---|---|
-| 1 | In-memory pub/sub on one node: addressed events, inboxes, runtime topics, governed delivery options | spec drafted |
+| 1 | In-memory pub/sub on one node: addressed events, inboxes, runtime topics, governed delivery options | **built**, PR [#1035](https://github.com/oramasearch/zetta/pull/1035); docs in [../../pubsub/](../../pubsub/README.md) |
 | 2 | The same API across the cluster (topics, inboxes and subscribers on any node) | designed later (D39) |
 | 3 | Retention / replay (a log with per-subscriber offsets); restart/crash survival is in stage 1 (D17); fsync-durable topics are here | not started |
 | 4 | Change events from tables and datasets (CDC) as topics | not started |

@@ -232,7 +232,8 @@ both the resource scope and the capability for the operation being performed —
 thereby audited, not just the seam itself; **approval gates** for risky actions
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
-access **tiers** (team / partner / per-dataset) extend `ResourceKind` and
+access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
+has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
 without changing this seam. Principals + keys + their scope/capability grants are
 now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel.md)
@@ -288,7 +289,7 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `serving:manage`, `cloud:manage` (#799) |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `serving:manage`, `cloud:manage` (#799), **and the pub/sub atoms** `pubsub:*` (#1029) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
 
@@ -455,6 +456,8 @@ can never disagree:
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+| `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
+| `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
 | `pipelines:manage` | `orchestration:{create_project, delete_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, gate, deploy, run, start_run, testsuite_run}` | drive the pipeline authoring → gate → deploy → run control surface over MCP/REST |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
 | `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |

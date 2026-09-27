@@ -107,9 +107,22 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
-    // The canonical list carries the #746 atoms, blob:read (#747), and the three
-    // Orchestration atoms (#799).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 13u);
+    // Pub/sub (#1029): publish, subscribe and send_wildcard are data rights,
+    // create and manage orchestration.
+    EXPECT_EQ(permission_operations("pubsub:publish"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_publish"}}));
+    EXPECT_EQ(permission_operations("pubsub:subscribe"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_subscribe"}}));
+    EXPECT_EQ(permission_operations("pubsub:send_wildcard"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "pubsub_send_wildcard"}}));
+    EXPECT_EQ(permission_operations("pubsub:create"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_create"}}));
+    EXPECT_EQ(permission_operations("pubsub:manage"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_manage"}}));
+
+    // The canonical list carries the #746 atoms, blob:read (#747), the three
+    // Orchestration atoms (#799), and the five pub/sub atoms (#1029).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 18u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

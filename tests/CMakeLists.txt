@@ -102,6 +102,13 @@ add_executable(zetta-tests
   data/test_partition_rebalance.cpp
   data/test_partition_scheduler.cpp
   governance/test_access_control.cpp
+  pubsub/test_events.cpp
+  pubsub/test_stores.cpp
+  pubsub/test_delivery.cpp
+  pubsub/test_dispatch_and_resources.cpp
+  pubsub/test_pubsub.cpp
+  pubsub/test_node_pubsub.cpp
+  pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
   governance/test_scoped_grants.cpp

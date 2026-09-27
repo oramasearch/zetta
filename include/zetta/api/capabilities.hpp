@@ -49,6 +49,17 @@ void register_core_capabilities(Registry& registry);
 //   deny_consent           action  refuse (or withdraw) a pending challenge
 void register_cloud_capabilities(Registry& registry);
 
+// Pub/sub on the control surface (#1033, docs/pubsub/exposure.md): the
+// registry entries exist on every node, but only topics created with
+// `exposed` are reachable through them (engine-internal by default, D22).
+//
+//   create_topic    action  create a topic (exposed: false by default)
+//   drop_topic      action  drop an exposed topic
+//   list_topics     read    the exposed topics
+//   publish_event   action  publish to an exposed topic
+//   receive_events  read    long-poll an exposed topic from a sequence number
+void register_pubsub_capabilities(Registry& registry);
+
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the
 // version the grant pinned; it is gated, then run (`dataset`, `holdout`, `model_name` pass through).

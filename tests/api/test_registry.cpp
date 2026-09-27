@@ -62,7 +62,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 78u);  // +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
+    EXPECT_EQ(registry.size(), 83u);  // +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
                                       // +agent_training_status +set_training_schedule (#941), +score (#948),
                                       // +get_run_report (#958), +explain (#960 item 5),
                                       // +list_source_tables (#994), +upload_dataset (#1008),
