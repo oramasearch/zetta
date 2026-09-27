@@ -132,7 +132,12 @@ design past several of these questions. Still open from round 1:
 
 ## Round 9 — 2026-09-27
 
-23. **What is the default fsync policy for a persistent topic** (how much a crash
+23. ~~**Default fsync policy for a persistent topic?**~~ → *Answered 2026-09-27
+    (Steve): by default events persist to disk on shutdown too; only a
+    non-default setting makes a topic discard on shutdown (never using disk);
+    more persistent topics come later; for now topics are memory-only except for
+    restarts, crashes and overflow* ([D17](decisions.md)). Original question:
+    **What is the default fsync policy for a persistent topic** (how much a crash
     may lose)? Options, from research/05: (a) **every event** before `publish`
     returns: no loss, lowest throughput (RabbitMQ confirms, Redis `always`);
     (b) **on an interval**, e.g. every 1 s: lose up to that interval (Redis
@@ -140,3 +145,15 @@ design past several of these questions. Still open from round 1:
     throughput, loss depends on the OS (Kafka's usual setting, which relies on
     replication). Presumably configurable at every level like the rest; the
     question is the default.
+
+## Round 10 — 2026-09-27
+
+24. **Which crash must a default topic survive?** Proposal (research/06): keep
+    ring segments in **memory-mapped files** in the data directory. Writes stay
+    memory writes; if the **process** dies (kill -9, segfault, OOM kill), the
+    kernel still holds the pages and writes them back, so nothing is lost and no
+    fsync is paid. If the **machine** dies (power loss, kernel panic, node
+    failure), whatever the kernel had not written back is lost. Is surviving a
+    process crash enough for the default, with machine-failure durability left
+    to the later durable topics? Or must the default also survive machine
+    failure (which needs periodic fsync, i.e. D15's policy question)?

@@ -246,10 +246,10 @@ reloaded** after any shutdown, graceful or not. Like every other zetta entity, a
 topic definition is replicated state (a CRDT key), which gives both persistence
 and cluster-wide visibility. Answers [Q22](questions.md).
 
-**Interpretation to confirm:** every topic's *definition* survives a restart;
-its *events* survive only if it is a persistent topic (D15).
+**Interpretation corrected by Steve (D17):** events survive restarts by
+default too, not only on persistent topics.
 
-## D15 — Persistent topics keep their events across graceful shutdown and crash (2026-09-27)
+## D15 — Persistent topics keep their events across graceful shutdown and crash (2026-09-27) — *narrowed by D17*
 
 **What.** A topic can be declared **persistent**. Its events are written to
 append-only segment files with an index and a checkpoint, and are reloaded after
@@ -280,3 +280,25 @@ requires `CREATE`); it can be enabled per name prefix (like Pulsar's
 per-namespace override) rather than only all-or-nothing; every auto-creation is
 logged and audited with the defaults it received; and auto-created topics are
 non-persistent unless configuration says otherwise.
+
+## D17 — By default events survive restarts, crashes and overflow; memory-only is opt-in; durable topics come later (2026-09-27)
+
+**What.** The **default** topic is memory-first, but its events are not lost:
+- on a **graceful shutdown** they are written to disk and reloaded on start;
+- on a **crash** they are recovered on start (mechanism: [Q24](questions.md));
+- on **overflow** they spill to disk (D10), and spilled segments are **reloaded**
+  on start, no longer deleted.
+
+A **non-default** setting makes a topic **ephemeral**: it never uses disk, its
+events are discarded on shutdown, and `spill_to_disk` is not available to it.
+Fully **durable** topics (an fsync guarantee on every publish, replay as a log)
+are deferred. Supersedes the event half of D15 and the "deleted on startup" rule
+of D10. Answers [Q23](questions.md).
+
+**Why.** Losing events because a node restarted is the surprising outcome, so it
+must be the one you ask for.
+
+**Cost.** Surviving a crash without writing every event to disk needs the ring
+segments to live somewhere the process's death does not erase (research/06).
+Recovery must handle a torn last event (framing + checksum). The node needs a
+data directory with room for the whole in-memory contents at shutdown.

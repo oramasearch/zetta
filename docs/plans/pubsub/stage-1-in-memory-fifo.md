@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 13 (after [D1–D16](decisions.md)). No partitions:
+**Status:** draft, revision 14 (after [D1–D17](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -165,8 +165,9 @@ When full: at-most-once → `skip_ahead`; at-least-once and exactly-once →
 **Disk tier:** a full memory segment is written whole to a file under the node's
 data dir and dropped from memory; the ring's segment list records where each
 segment lives. Readers find a segment by sequence number, so a cursor never
-cares which tier it is in. Spill files are not `fsync`ed and are deleted on
-startup: this is overflow, not durability ([research/03](research/03-memory-limits-and-spill.md)).
+cares which tier it is in. Spilled segments are reloaded on start
+(D17); ephemeral topics never spill. Spilling is not a durability guarantee
+([research/03](research/03-memory-limits-and-spill.md)).
 
 **Spilling is logged** per topic ([D12](decisions.md)): on the first spill, every 30 s
 while it continues, and when it ends.
@@ -184,8 +185,12 @@ pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
   `system.pubsub_topics`; governed by `pubsub:manage`.
 - **Definitions are replicated state** (a CRDT key, like tables and roles), so
   they are persisted and reloaded after any shutdown and visible on every node.
-- **Persistent topics** write events to segment files + index + checkpoint under
-  the data dir; on startup the node reloads them, repairing the tail after a
-  crash. The fsync policy is [Q23](questions.md).
+- **Default topics** (D17) keep events in memory, write them to disk on
+  graceful shutdown, recover them after a crash (proposal: memory-mapped
+  segments, [Q24](questions.md)), spill on overflow, and reload all of it on
+  start.
+- **Ephemeral topics** (non-default): never touch disk; events discarded on
+  shutdown.
+- **Durable topics** (fsync guarantees, replay): later.
 - **Auto-creation** is a pub/sub configuration setting, per name prefix;
   governed by `pubsub:create`; logged and audited with the defaults applied.
