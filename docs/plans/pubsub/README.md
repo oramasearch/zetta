@@ -44,8 +44,8 @@ first principle — see [`context.md`](context.md)).
 9. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
    governed, with detected defaults) and every settled decision (D1–D32).
 10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
-   in-memory topic with a list of subscribers. Draft; its status line carries the
-   revision.
+   the stage 1 specification, consolidated from every
+   decision; its status line carries the revision.
 11. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
@@ -56,7 +56,7 @@ first principle — see [`context.md`](context.md)).
 
 | Stage | What | Status |
 |---|---|---|
-| 1 | In-memory topic on one node, thread-safe, thread subscribers | designing |
+| 1 | In-memory pub/sub on one node: addressed events, inboxes, runtime topics, governed delivery options | spec drafted |
 | 2 | The same API across the cluster (a topic owned by a partition, subscribers on any node) | not started |
 | 3 | Retention / replay (a log with per-subscriber offsets); restart/crash survival is in stage 1 (D17); fsync-durable topics are here | not started |
 | 4 | Change events from tables and datasets (CDC) as topics | not started |

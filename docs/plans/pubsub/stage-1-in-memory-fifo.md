@@ -1,182 +1,222 @@
-# Stage 1 — an in-memory topic
+# Stage 1 — in-memory pub/sub specification
 
-**Status:** draft, revision 22 (after [D1–D32](decisions.md)). No partitions:
-a topic is one ordered store ([D13](decisions.md)). Settled parts cite
-their decision; everything else is a proposal waiting on
-[`questions.md`](questions.md).
+**Status:** draft spec, revision 23 (2026-09-27): a consolidated rewrite of
+revisions 1–22 over decisions [D1–D32](decisions.md). Every section cites the
+decisions it comes from; anything marked *proposal* was filled in under the
+[standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
+overruled. Open items are listed at the end.
 
-## Shape
+## 1. What stage 1 is
 
-```
-publish ──► [ topic ]
-              a mutex + condition_variable per queue  (D1, D5)
-              event_store  ◄── pluggable               (D2)
-                 default: TopicRingStack = std::deque of ring buffers (D21)
-                 alt:     std::queue (std::deque)
-              subscriptions: each has a cursor + delivery options (D3)
-              message heap: events too big for a slot   (D4)
-```
+An engine-internal message facility in zetta (`namespace zetta::pubsub`): any
+part of zetta can publish or subscribe, and **agents** are the main user,
+including **agent tasks**, which are designed separately and run on top of this
+(D25). Events are held **in memory**, overflow to disk, and survive restarts on
+a best-effort basis (D17, D18). No partitions (D13), no coroutines (D5), no
+durability guarantees (later, with persistent topics).
 
-## Events (D4)
+**The standing rule:** every setting is configurable at every level where it
+makes sense (topic, subscription, message), bounded by governance, clamped by
+default when a request exceeds its bounds, with a detected or common-case
+default, and logged when it matters (D6, D7, D8, D11).
 
-An event has an **envelope** ([D26–D29](decisions.md)): `from` (stamped by the
-node from the authenticated principal), `to`, `cc`, `bcc` and `reply-to` (lists
-of `kind:name` addresses, wildcards allowed, e.g. `agent:security-*`), a
-`correlation-id`, and a `topics-chain` (the topics it passed through, used to
-stop loops). The envelope is variable-length, so
-it is stored with the payload (inline or on the heap), not in the fixed header;
-`bcc` is removed from every copy except the bcc recipient's own.
+## 2. Addresses and the envelope
 
-A slot in the ring holds a fixed-size header plus a small inline area:
+**Addresses (D26).** Everything addressable has a unique `kind:name`:
+`topic:abc123`, `agent:405`, `table:logs`. The kinds line up with governance's
+`ResourceKind` plus `topic` and `agent`, so one name serves routing and grants.
+
+**Inboxes (D28).** Every addressable entity has an **inbox**, a queue of its own.
+Sending to `agent:405` puts the event in that agent's inbox. Sending to
+`topic:abc123` publishes to the topic, and its subscribers receive it by their
+delivery rules.
+
+**Envelope (D27, D29).** Every event may carry:
+
+| Field | Meaning |
+|---|---|
+| `from` | the sender's address; *proposal:* stamped by the node from the authenticated principal, so it cannot be forged |
+| `to` | primary recipients |
+| `cc` | also receive it |
+| `bcc` | receive it; removed from every copy except the bcc recipient's own |
+| `reply-to` | where replies go |
+| `correlation-id` | ties a reply to its request |
+| `topics-chain` | stack of topics the event passed through, newest last |
+
+`to`, `cc`, `bcc` and `reply-to` are lists of addresses, and any address may be a
+**wildcard** (`agent:*`, `agent:security-*`, a prefix glob within the name).
+
+**Wildcards (D30).** A wildcard's matches are computed the first time it is seen
+and **cached**; the entry is refreshed only when the subscriber list changes.
+So a wildcard reaches whoever matches at send time. *Proposal:* the cache is
+bounded, and sending to a wildcard is a separately governed right with a capped,
+logged fan-out.
+
+**Loops (D29).** *Proposal:* an event is never delivered to a topic already on
+its `topics-chain`, and the chain has a maximum depth (default 32). Either stop
+is logged and dead-lettered.
+
+## 3. Events
+
+**Encodings (D4, Q15).** An event is binary with an encoding tag: `blob` (with a
+MIME type), `json`, `text`, more later. *Proposal:* MIME types are interned to a
+16-bit id per node.
+
+**Storage of one event (D4, Q14).** A ring slot holds a fixed header and a small
+inline area. The payload and the variable-length envelope live inline when they
+fit; otherwise the slot holds an **event pointer** to an immutable, reference-
+counted event on the message heap, so fan-out and queue hops never copy it.
+*Proposal:* the inline threshold is a per-topic setting, default 256 bytes.
 
 ```cpp
-struct event_header {
-    std::uint64_t sequence;   // assigned by the topic, monotonic
-    std::uint32_t size;       // payload bytes
-    encoding      kind;       // blob, json, ... (enum, extensible)
-    std::uint16_t mime;       // interned MIME type id (blob); 0 = none
-    std::uint8_t  priority;   // D3, if priority is per message
+struct EventHeader {
+    std::uint64_t sequence;   // per topic, monotonic
+    std::uint32_t size;       // payload + envelope bytes
+    Encoding      encoding;   // blob | json | text | ...
+    std::uint16_t mime;       // interned MIME id (blob); 0 = none
+    std::uint8_t  priority;   // D9
     std::uint8_t  flags;      // inline | heap
     // reserved: partition key (D13; unused while topics are unpartitioned)
 };
-// payload: inline bytes when size <= inline_capacity, else an event_ptr
-// to an immutable, refcounted event on the message heap.
 ```
 
-Proposals here, each a question below: MIME types are **interned** to a 16-bit
-id so a header stays small ([Q15](questions.md)); a heap event is **immutable
-and refcounted**, so broadcast never copies it ([Q14](questions.md)).
+## 4. Topics
 
-## Storage (D2)
+**Runtime objects (D14).** Created with `CREATE TOPIC` over SQL (or
+`create_topic` when exposed), dropped with `DROP TOPIC`, listed in
+`system.pubsub_topics`. A topic definition is **replicated state** (a CRDT key,
+like tables and roles), so it is persisted, reloaded after any shutdown and
+known on every node; its events stay on the node that holds them.
+
+**Auto-creation (D16).** The pub/sub configuration can let a publish or
+subscribe to a missing topic create it, *proposal:* per name prefix, governed by
+`pubsub:create`, and logged and audited with the defaults it received.
+
+**Lifecycles (D17, D18).**
+
+| Kind | Events on graceful shutdown | After a crash | Overflow |
+|---|---|---|---|
+| **default** | written to disk, reloaded on start | recovered, best effort | spill to disk |
+| **ephemeral** (opt-in) | discarded | lost | never touches disk |
+| **durable** | — later, with persistent topics — | | |
+
+Start-up logs what was recovered and what was lost:
+
+```
+pubsub: INFO orders recovered 1,204,339 events (seq 88121004..89325342); 0 torn
+```
+
+## 5. Stores and queues
+
+**`TopicRingStack` (D2, D21).** The default store: a `std::deque` that holds
+fixed-capacity ring buffers. When the newest ring is full, a new ring is pushed
+(from a small free list when one is spare); a ring is removed once every
+subscriber entitled to it has passed its last sequence. The stack's mutex
+protects **changes to the stack**. The alternative store is `std::queue`-backed,
+which feeds one reader and so suits work queues only.
+
+**Locks (D1, D5, D23).** Every queue has **its own mutex and condition
+variables**. Lock order: stack, then queue. Subscribers are threads; there are
+no coroutines in stage 1.
+
+**Queue chains (D23).** By configuration a topic may chain queues so each hop
+has one writing side and one reading side:
+
+```
+producers ──► producer queue ──► internal queue (TopicRingStack) ──► inbox per subscriber
+```
+
+The simplest configuration is the internal queue alone.
+
+**Dispatch (D24).** What moves events along the chain: a **dispatcher thread
+per topic** by default; a **shared pool** once the topic count passes a
+threshold or a heuristic fires; **inline** (the publisher's thread) by
+configuration. *Proposals:* threshold 2 × detected CPUs, pool size = detected
+CPUs, switch back at half the threshold, topics can be pinned to a mode, the
+pool serves topics round robin with a per-turn cap. Every switch is logged:
+
+```
+pubsub: INFO dispatch: 34 topics > threshold 32 (2 × 16 cpus); moving 32 topics to a pool of 16 threads
+```
+
+## 6. Subscribing and delivery
+
+**Joining (D19).** A subscriber joins the topic's subscriber list and receives
+events published after it joined, as its rules define. Start position is
+configurable (oldest held, a sequence number).
+
+**Inbox retention (D31).** A subscriber chooses how long its inbox keeps
+receiving after it disconnects: **24 hours by default for agents**, or not past
+the disconnect. A waiting inbox counts against limits and spills like any queue.
+
+**Delivery options (D3, D6, D9).** Set on the topic (default), the subscription,
+or the single publish:
 
 ```cpp
-class event_store {                       // runtime-chosen, so virtual
-public:
-    virtual ~event_store() = default;
-    virtual std::uint64_t append(event) = 0;           // returns the sequence
-    virtual const event* at(std::uint64_t seq) const = 0;
-    virtual void release_before(std::uint64_t seq) = 0; // min cursor advanced
+struct Delivery {
+    Recipients   recipients;  // all | one (a group shares the event) | n(k)
+    Ordering     ordering;    // fifo | priority (reordering allowed)
+    std::uint8_t priority;
+    Guarantee    guarantee;   // at_most_once | at_least_once | exactly_once
 };
 ```
 
-- **`TopicRingStack`** (default, [D21](decisions.md)): a `std::deque` holding
-  fixed-capacity ring buffers (`std::vector<slot>`). The stack's mutex protects
-  changes to the stack (pushing and removing rings); whether it also guards
-  appends and reads is [Q25](questions.md). Full → push a new ring (from a small free list if
-  one is spare). A ring is returned to the free list when every entitled cursor
-  has passed its last sequence.
-- **`std::queue`-backed** (alternative, D2): `std::queue` only has
-  `front`/`pop`, so it feeds one reader; suitable for work-queue topics, not
-  broadcast.
+- **all:** every subscriber reads the shared store at its own position.
+- **one:** a group shares a position; each event is claimed once.
+- **n(k):** each event carries a remaining-claims count, decremented under its
+  queue's lock. Because a single publish can choose its recipients, delivery
+  state lives on the event, not only on subscriptions.
+- **priority:** *proposal:* one ring stack per priority level, highest non-empty
+  first, with aging so low priority is not starved.
 
-## Subscribing (D19)
+**Guarantees (D9).**
+- **at-most-once:** delivered means done.
+- **at-least-once:** in flight until `ack(sequence)`; redelivered after a
+  deadline; the event is released when every entitled recipient has acked.
+- **exactly-once:** at-least-once plus a per-subscription record of processed
+  ids; exact only within one process lifetime.
 
-By default a subscriber joins the topic's subscriber list and receives events
-published after it joined, as its delivery rules define. Its start position is
-configurable at every level (oldest held, a sequence number).
+**Resolution (D7, D8).** The request is layered most specific first (message,
+then subscription, then topic), then bounded by governance for that principal
+on that topic. Over the bounds: **clamp** (default) or **reject**, per topic.
+`publish` and `subscribe` return the effective options.
 
-## Queues, locks and waiting (D1, D5, D21, D23)
+**Dead letters (D32).** Undeliverable events go to `topic:dead-letter`
+(configurable) with a reason: retention expired, time to live expired, no match,
+loop or depth stop, subscriber skipped ahead. If that fails, drop and log.
 
-No coroutines in stage 1; subscribers are threads. **Every queue has its own
-mutex and condition variables**; the `TopicRingStack`'s mutex only guards adding
-and removing rings (lock order: stack, then queue).
+## 7. Governance
 
-A topic may be a **chain of queues**, chosen by configuration:
+Detail in [`governance.md`](governance.md). Topics join zetta's central model
+(users, roles, permissions, scoped grants, policies, audit) (D7):
+`Topic` as a resource kind; `pubsub:publish`, `pubsub:subscribe`,
+`pubsub:create`, `pubsub:manage`; policies that bound delivery options per role;
+separate rights for wildcard sends; every decision audited. Stage 1 takes an
+injected authorization interface so the data structure does not depend on
+`zetta::Node`.
 
-```
-producers ──► producer queue ──► internal queue (TopicRingStack) ──► consumer queue per subscriber
-```
+## 8. Limits and overflow
 
-Each hop has one writer side and one reader side. Payloads move as refcounted
-event pointers, never copied per hop. The simplest configuration is the
-internal queue alone, with subscribers reading it directly.
+**Settings (D10).**
 
-**Dispatch** ([D24](decisions.md)): a dispatcher thread per topic by default; a
-shared pool (sized to the detected CPUs) once topics exceed a threshold (proposal
-2 × CPUs, with hysteresis) or a heuristic fires; inline (the publisher's thread
-does the hops) by configuration. Topics can be pinned to a mode. Every switch is
-logged.
-
-## Delivery (D3)
-
-The same options object can be set on the topic (default), on a subscription,
-and on a single publish ([D6](decisions.md)). The request is layered most specific
-first, then bounded by governance for that principal on that topic
-([D7](decisions.md), [`governance.md`](governance.md)); stage 1 takes an injected
-authorization interface. A request over its bounds is clamped by default or
-rejected, per topic ([D8](decisions.md)); `publish` returns the effective options.
-
-```cpp
-struct delivery {
-    recipients who;        // all | one | n(k)
-    ordering   order;      // fifo | priority (reordering allowed)
-    std::uint8_t priority; // D9
-    guarantee  delivery;   // at_most_once | at_least_once | exactly_once (D9)
-};
-```
-
-How this maps onto cursors:
-
-- **all** (broadcast): each subscriber has its own cursor over the shared store.
-- **one** (work queue): subscribers in a group share one cursor; each event is
-  claimed once.
-- Because a publish can name its own recipients (D6), each event carries its
-  own delivery state; per-consumer copies alone are not enough.
-- **n(k)**: each event carries a remaining-claims count, decremented under the
-  lock; the event is done at 0. Nobody surveyed ships this ([research/02](research/02-growable-rings-and-delivery.md)).
-- **priority**: one ring per priority level, the reader takes the highest
-  non-empty level; needs aging or low priority can starve.
-
-## Guarantees (D9)
-
-- **at-most-once:** a delivered event is done for that recipient.
-- **at-least-once:** a delivery is *in flight* until the subscriber calls
-  `ack(sequence)`; past its deadline it is redelivered. The event's storage is
-  released only when every entitled recipient has acknowledged it.
-- **exactly-once:** at-least-once plus a per-subscription set of processed event
-  ids, so a redelivery is dropped before the subscriber sees it. In-memory only
-  until stage 3.
-
-## Limits and overflow (D10)
-
-Settable at each level, bounded by governance:
-
-| Level | Setting |
+| Level | Settings |
 |---|---|
-| topic | memory cap (bytes), disk cap (bytes), overflow policy, spill allowed |
-| subscription | how far it may fall behind (events or bytes), its own overflow policy |
-| message | time to live; whether it may be dropped under pressure |
+| topic | memory cap, disk cap, overflow policy, spill allowed |
+| subscription | how far it may fall behind, its own overflow policy |
+| message | time to live, droppable under pressure |
 
-Overflow policies: `unbounded` · `skip_ahead` (the slow subscriber jumps forward
-and receives a gap notice with the count it missed) · `disconnect` ·
-`hold_publisher` (with a timeout, then fail) · `reject_new` · `spill_to_disk`.
+Policies: `unbounded`, `skip_ahead` (with a gap notice), `disconnect`,
+`hold_publisher` (then fail), `reject_new`, `spill_to_disk`. Every limit is in
+bytes, never an event count.
 
-**Defaults are detected, not guessed** ([D11](decisions.md),
-[research/04](research/04-detecting-resource-budgets.md)). Every limit is in
-bytes, never an event count. (Two rounds of fixed defaults were rejected: 64 MiB
-/ 10,000 events was far too small for a topic that sees more than 10k
-events/s, and a fixed throughput target is still a guess.)
-
-**Detection order for memory** (the first that answers wins, then the tightest):
-
-1. configuration (always wins, and is logged as such);
-2. the cgroup limit: v2 `memory.max`, or v1 `memory.limit_in_bytes`, taking the
-   tightest ancestor;
-3. the Kubernetes request/limit from Downward API environment variables, if the
-   operator sets them;
-4. the host: `hw.memsize` (macOS) or `MemTotal` (Linux), with current use from
-   `host_statistics64` / `MemAvailable`.
-
-Disk comes from `statvfs` on the data directory (and an `ephemeral-storage`
-limit if exposed). CPU from `cpu.max` / `cfs_quota_us` and the cpuset.
-
-**Derived defaults** (fractions of the detected budget; the fractions are
-proposals): pub/sub memory for the node = 25% of the memory budget, shared by
-every topic on it; a subscription may lag as far as its topic holds;
-spill disk = 50% of the data directory's free space; hold publisher 5 s, then
-fail.
-
-**The log line**, once at startup and again if a limit changes:
+**Detected defaults (D11).** Memory budget, first that answers, tightest wins:
+configuration → cgroup (`memory.max` / `memory.limit_in_bytes`, tightest
+ancestor) → Kubernetes requests/limits via Downward API variables → host
+(`hw.memsize` / `MemTotal`). Disk from `statvfs` on the data directory; CPU from
+`cpu.max` / `cfs_quota_us` and the cpuset. *Proposals:* pub/sub memory = 25% of
+the budget; spill disk = 50% of free space; hold publisher 5 s. When full:
+at-most-once → `skip_ahead`; at-least-once and exactly-once → `spill_to_disk`,
+then `hold_publisher`, then fail.
 
 ```
 pubsub: memory budget 4.0 GiB (cgroup v2 memory.max /kubepods/.../zetta-0; host 256 GiB ignored)
@@ -185,18 +225,9 @@ pubsub: spill disk 180 GiB (50% of 360 GiB free on /var/lib/zetta; override: pub
 pubsub: cpu 1.5 (cgroup v2 cpu.max 150000/100000; cpuset 0-15)
 ```
 
-When full: at-most-once → `skip_ahead`; at-least-once and exactly-once →
-`spill_to_disk`, then `hold_publisher`, then fail.
-
-**Disk tier:** a full memory segment is written whole to a file under the node's
-data dir and dropped from memory; the ring's segment list records where each
-segment lives. Readers find a segment by sequence number, so a cursor never
-cares which tier it is in. Spilled segments are reloaded on start
-(D17); ephemeral topics never spill. Spilling is not a durability guarantee
-([research/03](research/03-memory-limits-and-spill.md)).
-
-**Spilling is logged** per topic ([D12](decisions.md)): on the first spill, every 30 s
-while it continues, and when it ends.
+**Spilling (D10, D12).** A full ring is written whole to a file in the data
+directory; positions are sequence numbers, so a reader does not care which tier
+a ring is in. Spilling is logged on start, every 30 s while it lasts, and on end:
 
 ```
 pubsub: WARN orders spilling to disk: memory 1.0 GiB full; slowest subscriber billing-sync at seq 88121004 (lag 1.0 GiB); expect higher latency
@@ -204,30 +235,12 @@ pubsub: WARN orders still spilling (2m30s): 6.2 GiB on disk, +41 MiB/s; reading 
 pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
 ```
 
-## Topics as objects (D14–D16)
+## 9. Shutdown (D20)
 
-- **Defined at runtime:** `CREATE TOPIC orders WITH (persistent = true, ...)`
-  over SQL, or `create_topic` over MCP/REST; `DROP TOPIC`; listed in
-  `system.pubsub_topics`; governed by `pubsub:manage`.
-- **Definitions are replicated state** (a CRDT key, like tables and roles), so
-  they are persisted and reloaded after any shutdown and visible on every node.
-- **Default topics** (D17, D18) keep events in memory, write them to disk on
-  graceful shutdown, spill on overflow, and reload on start. Crash recovery is
-  best effort (memory-mapped segments are one cheap way, research/06). Start-up
-  logs what was recovered and what was lost:
-  `pubsub: INFO orders recovered 1,204,339 events (seq 88121004..89325342); 0 torn`.
-- **Ephemeral topics** (non-default): never touch disk; events discarded on
-  shutdown.
-- **Durable topics** (fsync guarantees, replay): later.
-- **Auto-creation** is a pub/sub configuration setting, per name prefix;
-  governed by `pubsub:create`; logged and audited with the defaults applied.
-
-## Shutdown (D20)
-
-SIGTERM (what Kubernetes sends) or SIGINT sets zetta's stop flag. Pub/sub then
-stops accepting publishes, writes each topic's held events to disk within a
-budget (default proposal 25 s, under Kubernetes' 30 s default grace period;
-configurable), and logs:
+SIGTERM (what Kubernetes sends) or SIGINT sets zetta's stop flag
+(`src/core/signals.cpp`). Pub/sub stops accepting publishes and writes held
+events to disk within a budget, *proposal* 25 s, under Kubernetes' 30 s default
+grace period, configurable:
 
 ```
 pubsub: INFO shutdown: flushing 14 topics, 3.1 GiB held; budget 25s
@@ -235,22 +248,22 @@ pubsub: INFO shutdown: flushed 14/14 topics in 11.4s
 pubsub: WARN shutdown: budget spent; orders lost 212,004 events (seq 90011002..90223005)
 ```
 
-## Exposure (D22)
+## 10. Exposure (D22)
 
-Internal by default. A topic can be exposed over MCP/REST by configuration:
-`publish`, `subscribe` (events streamed over SSE), and `create_topic` /
-`drop_topic`, governed like any capability.
+Internal by default. By configuration, a topic's capabilities are exposed over
+MCP/REST: `publish`, `subscribe` (streamed over SSE), `create_topic`,
+`drop_topic`, governed like any capability. They are registered in the
+capability registry either way, gated by the exposure setting.
 
-## Inboxes and wildcards (D28, D30, D31)
+## 11. Observability
 
-- Every addressable entity has an **inbox** (a consumer queue, D23).
-- A wildcard address is resolved through a **cache**: computed on first use,
-  refreshed only when the subscriber list changes, bounded in size.
-- An inbox outlives its subscriber's disconnect for a retention the subscriber
-  chooses: **24 hours by default for agents**, or not at all. A waiting inbox
-  counts against limits and spills like any queue.
+*Proposal*, per zetta's observability rule: publish, subscribe, ack and
+dead-letter open spans; `system.pubsub_topics` shows per topic memory held, disk
+held, spilling since, subscriber count, slowest subscriber and its lag, and
+dispatch mode.
 
-## Dead letters (D32)
+## 12. Open
 
-Undeliverable events go to `topic:dead-letter` (configurable at every level)
-with a reason. If that fails too, the event is dropped and logged.
+- What drains a `table:` inbox by default (e.g. insert each event as a row) (D28).
+- The link to the agent-task design, once it has a home (D25).
+- The proposals marked above, until confirmed.
