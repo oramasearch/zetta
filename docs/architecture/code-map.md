@@ -253,6 +253,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     burst_approval_gate.hpp  zetta::cloud::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
     cloud_provider.hpp      zetta::cloud::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access); each inspect command is an InspectCommand (display + no-shell argv)
     cloud_inspector.hpp     zetta::cloud::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
+  pubsub/                   in-memory pub/sub (#1024, docs/pubsub/)
+    address.hpp             zetta::pubsub::Address/parse_address/address_matches — `kind:name` addresses, prefix-glob wildcards (#1025)
+    event.hpp               zetta::pubsub::Event/Envelope/Payload/MimeRegistry — the envelope (from, sender stack, to/cc/bcc, reply-to, correlation id, topics-chain), inline vs shared payloads, envelope checks, the on-disk frame (#1025)
   governance/               access control (principals, keys, scopes, capabilities) + users/roles/tokens + the audit trail
     principal.hpp           zetta::governance::Principal — an authenticated actor; owns access keys
     access_key.hpp          zetta::governance::AccessKey — a scoped + capability-bearing login credential + authorize()
@@ -495,6 +498,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     burst_approval_gate.cpp  zetta::cloud::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
     cloud_provider.cpp      zetta::cloud::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
     cloud_inspector.cpp     zetta::cloud::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
+  pubsub/
+    address.cpp             zetta::pubsub address parsing + wildcard matching (#1025)
+    event.cpp               zetta::pubsub payloads, MIME interning, bcc stripping, envelope checks, frame encode/decode with crc32 (#1025)
   governance/
     principal.cpp           zetta::governance::Principal — persist/rename principal.json + key CRUD
     access_key.cpp          zetta::governance::AccessKey — persist key.json + authorize() decisions (resource + operation)
@@ -580,7 +586,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)
-  api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ repl/ testkit/ usecases/churn/
+  api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
 build/generated/            embedded font header (generated; git-ignored)
 ```
