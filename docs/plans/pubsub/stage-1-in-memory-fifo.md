@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 14 (after [D1–D17](decisions.md)). No partitions:
+**Status:** draft, revision 15 (after [D1–D18](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -185,10 +185,11 @@ pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
   `system.pubsub_topics`; governed by `pubsub:manage`.
 - **Definitions are replicated state** (a CRDT key, like tables and roles), so
   they are persisted and reloaded after any shutdown and visible on every node.
-- **Default topics** (D17) keep events in memory, write them to disk on
-  graceful shutdown, recover them after a crash (proposal: memory-mapped
-  segments, [Q24](questions.md)), spill on overflow, and reload all of it on
-  start.
+- **Default topics** (D17, D18) keep events in memory, write them to disk on
+  graceful shutdown, spill on overflow, and reload on start. Crash recovery is
+  best effort (memory-mapped segments are one cheap way, research/06). Start-up
+  logs what was recovered and what was lost:
+  `pubsub: INFO orders recovered 1,204,339 events (seq 88121004..89325342); 0 torn`.
 - **Ephemeral topics** (non-default): never touch disk; events discarded on
   shutdown.
 - **Durable topics** (fsync guarantees, replay): later.

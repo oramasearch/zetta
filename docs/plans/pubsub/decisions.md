@@ -302,3 +302,15 @@ must be the one you ask for.
 segments to live somewhere the process's death does not erase (research/06).
 Recovery must handle a torn last event (framing + checksum). The node needs a
 data directory with room for the whole in-memory contents at shutdown.
+
+## D18 — Restart and crash survival is best effort and logged; persistence is designed later (2026-09-27)
+
+**What.** For stage 1, surviving restarts and crashes (D17) is **best effort**:
+write what we can on shutdown, recover what we can on start, and **log what was
+saved, recovered and lost**. No fsync policy, no machine-failure guarantee.
+Answers [Q24](questions.md). The real guarantees are part of designing
+persistent topics, later.
+
+**Why.** Keep stage 1 moving; persistence deserves its own design.
+
+**Cost.** None hidden: the log says exactly what survived.

@@ -148,7 +148,10 @@ design past several of these questions. Still open from round 1:
 
 ## Round 10 — 2026-09-27
 
-24. **Which crash must a default topic survive?** Proposal (research/06): keep
+24. ~~**Which crash must a default topic survive?**~~ → *Answered 2026-09-27
+    (Steve): don't worry about persistence now; best effort, and log the
+    outcome; persistent topics are designed later* ([D18](decisions.md)).
+    Original question: **Which crash must a default topic survive?** Proposal (research/06): keep
     ring segments in **memory-mapped files** in the data directory. Writes stay
     memory writes; if the **process** dies (kill -9, segfault, OOM kill), the
     kernel still holds the pages and writes them back, so nothing is lost and no
@@ -157,3 +160,9 @@ design past several of these questions. Still open from round 1:
     process crash enough for the default, with machine-failure durability left
     to the later durable topics? Or must the default also survive machine
     failure (which needs periodic fsync, i.e. D15's policy question)?
+
+## Round 11 — 2026-09-27
+
+7. *(reopened from round 1)* **Where does a new subscriber start?** Proposal:
+   at the **next** event published (default), configurable to the **oldest
+   event still held**, or to a given sequence number.
