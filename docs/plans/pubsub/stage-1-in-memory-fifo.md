@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 18 (after [D1–D23](decisions.md)). No partitions:
+**Status:** draft, revision 19 (after [D1–D24](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -81,8 +81,13 @@ producers ──► producer queue ──► internal queue (TopicRingStack) ─
 
 Each hop has one writer side and one reader side. Payloads move as refcounted
 event pointers, never copied per hop. The simplest configuration is the
-internal queue alone, with subscribers reading it directly. What moves events
-between queues is [Q26](questions.md).
+internal queue alone, with subscribers reading it directly.
+
+**Dispatch** ([D24](decisions.md)): a dispatcher thread per topic by default; a
+shared pool (sized to the detected CPUs) once topics exceed a threshold (proposal
+2 × CPUs, with hysteresis) or a heuristic fires; inline (the publisher's thread
+does the hops) by configuration. Topics can be pinned to a mode. Every switch is
+logged.
 
 ## Delivery (D3)
 

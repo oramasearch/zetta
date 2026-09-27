@@ -203,9 +203,20 @@ id per node.
 
 ## Round 14 — 2026-09-27
 
-26. **What moves events along the chain** (producer queue → internal queue →
+26. ~~**What moves events along the chain**~~ → *Answered 2026-09-27 (Steve):
+    configurable; default a thread per topic, moving to a shared pool past a
+    topic-count threshold or when heuristics trigger; inline is also an option*
+    ([D24](decisions.md)). Original: **What moves events along the chain** (producer queue → internal queue →
     consumer queues)? (a) a **dispatcher thread per topic**: simple, one thread
     per topic; (b) a **shared pool** of dispatcher threads serving every topic:
     bounded threads, needs fairness between topics; or (c) **no dispatcher**: the
     producer's own thread carries its event through every hop (no extra thread,
     but a slow consumer queue slows the publisher).
+
+## Round 15 — 2026-09-27
+
+1. *(reopened from round 1)* **What will publish first, and what will subscribe
+   first?** The design is now general enough that the first real use decides
+   what stage 1 builds first and what its tests look like. Candidates seen in
+   zetta: agent events for Ask Orama / Train → Agents, pipeline run progress,
+   table change events, cluster signals, the GUI's live activity feed.

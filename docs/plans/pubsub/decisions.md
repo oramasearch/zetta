@@ -391,3 +391,28 @@ with producers, and each consumer only with the dispatcher feeding it. Answers
 **Cost.** Each hop adds latency and a handoff; payloads must not be copied per
 hop (refcounted event pointers, D4). Something has to move events along the
 chain ([Q26](questions.md)).
+
+## D24 — Dispatch: a thread per topic by default, a shared pool past a threshold, inline as an option (2026-09-27)
+
+**What.** Configurable. **Default: a dispatcher thread per topic.** When the
+topic count passes a threshold, or a heuristic fires, the node **moves to a
+shared pool** of dispatcher threads. **Inline dispatch** (the publisher's thread
+carries its event through every queue, no dispatcher) is a configuration option.
+Answers [Q26](questions.md).
+
+**Proposals under the standing rule** (overrulable):
+- the threshold is derived from the detected CPU budget (D11): switch when
+  topics exceed **2 × detected CPUs**; the pool size is the detected CPU count;
+- heuristics that also trigger the switch: total pub/sub threads over a limit,
+  or most dispatcher threads idle most of the time;
+- **hysteresis**: switch back to per-topic threads only when the count falls
+  well below the threshold (e.g. half), so the node does not flap;
+- a topic can be **pinned** to a dedicated thread (or to inline) by
+  configuration, and keeps it in pool mode;
+- the pool serves topics fairly: round robin, with a cap on events moved per
+  turn;
+- **every switch is logged** with the reason:
+  `pubsub: INFO dispatch: 34 topics > threshold 32 (2 × 16 cpus); moving 32 topics to a pool of 16 threads`.
+
+**Cost.** Two dispatch modes to test, and a migration step that must hand a
+topic from its thread to the pool without losing or reordering events.
