@@ -329,3 +329,34 @@ starts receiving events published after it joined, as its delivery rules
 define. Where it starts is configurable at every level (the standing rule):
 e.g. the oldest event still held, or a given sequence number. Answers
 [Q7](questions.md).
+
+## D20 — Shutdown flush runs from the signal handler and aims to finish in under 30 s (2026-09-27)
+
+**What.** Zetta runs in Kubernetes, which sends **SIGTERM** on pod shutdown and
+**SIGKILL** after `terminationGracePeriodSeconds` (Kubernetes default 30 s).
+Zetta already handles SIGINT and SIGTERM (`src/core/signals.cpp` sets a stop
+flag the run loops poll). On that signal, pub/sub stops accepting publishes and
+writes topics to disk (D17), with a **budget that finishes under 30 s by
+default** (proposal: 25 s, leaving margin before SIGKILL), configurable. It logs
+start, progress and outcome; whatever does not fit in the budget is logged as
+lost (D18).
+
+**Why.** A flush that outlives the grace period is killed halfway; better to
+finish within it and say what was left.
+
+**Cost.** Large in-memory topics may not fit in 25 s of disk bandwidth; the
+operator sets 60 s for stores today (orama-operator `docs/components.md`), so
+the budget could be read from configuration the operator sets. The handler only
+sets a flag (async-signal-safe); the flush runs on the node's shutdown path, not
+inside the handler.
+
+## D21 — The default store is a `TopicRingStack`: a deque of ring buffers under one mutex (2026-09-27)
+
+**What.** The default store (D2) is named **`TopicRingStack`**. It is a
+`std::deque` that **holds ring buffers**; the deque is not an alternative store.
+The `TopicRingStack`'s **mutex protects changes to the stack**: pushing a new
+ring when the newest is full, and removing a ring every subscriber has passed.
+Corrects the Q12 settlement, which had treated the deque as a second store type.
+
+**Open:** whether appends and reads inside a ring take the same mutex or the
+ring's own ([Q25](questions.md)).

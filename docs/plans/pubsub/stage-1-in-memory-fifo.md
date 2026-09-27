@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 16 (after [D1–D19](decisions.md)). No partitions:
+**Status:** draft, revision 17 (after [D1–D21](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -11,7 +11,7 @@ their decision; everything else is a proposal waiting on
 publish ──► [ topic ]
               a mutex + condition_variable per queue  (D1, D5)
               event_store  ◄── pluggable               (D2)
-                 default: segmented_ring = deque of vector rings
+                 default: TopicRingStack = std::deque of ring buffers (D21)
                  alt:     std::queue (std::deque)
               subscriptions: each has a cursor + delivery options (D3)
               message heap: events too big for a slot   (D4)
@@ -51,13 +51,15 @@ public:
 };
 ```
 
-- **`segmented_ring`** (default): a `std::deque` of fixed-capacity
-  `std::vector<slot>` rings. Full → push a new ring (from a small free list if
+- **`TopicRingStack`** (default, [D21](decisions.md)): a `std::deque` holding
+  fixed-capacity ring buffers (`std::vector<slot>`). The stack's mutex protects
+  changes to the stack (pushing and removing rings); whether it also guards
+  appends and reads is [Q25](questions.md). Full → push a new ring (from a small free list if
   one is spare). A ring is returned to the free list when every entitled cursor
   has passed its last sequence.
-- **`deque_store`**: a `std::deque` used by index. (`std::queue` only has
-  `front`/`pop`, so it can feed one reader and cannot serve broadcast; settled as
-  a `std::deque` under the standing rule, Q12.)
+- **`std::queue`-backed** (alternative, D2): `std::queue` only has
+  `front`/`pop`, so it feeds one reader; suitable for work-queue topics, not
+  broadcast.
 
 ## Subscribing (D19)
 
@@ -200,3 +202,16 @@ pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
 - **Durable topics** (fsync guarantees, replay): later.
 - **Auto-creation** is a pub/sub configuration setting, per name prefix;
   governed by `pubsub:create`; logged and audited with the defaults applied.
+
+## Shutdown (D20)
+
+SIGTERM (what Kubernetes sends) or SIGINT sets zetta's stop flag. Pub/sub then
+stops accepting publishes, writes each topic's held events to disk within a
+budget (default proposal 25 s, under Kubernetes' 30 s default grace period;
+configurable), and logs:
+
+```
+pubsub: INFO shutdown: flushing 14 topics, 3.1 GiB held; budget 25s
+pubsub: INFO shutdown: flushed 14/14 topics in 11.4s
+pubsub: WARN shutdown: budget spent; orders lost 212,004 events (seq 90011002..90223005)
+```

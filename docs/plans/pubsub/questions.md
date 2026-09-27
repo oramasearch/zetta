@@ -179,8 +179,20 @@ design past several of these questions. Still open from round 1:
    already uses it), with the in-process C++ API underneath for engine code.
 
 Settled without asking, under the standing rule (Steve may overrule):
-Q12 the second store is an indexable `std::deque` (broadcast needs indexed
-reads); Q14 heap events are immutable and refcounted, and the inline threshold
+Q12 ~~the second store is an indexable `std::deque`~~ — *corrected by Steve
+(D21): the deque is the holder of ring buffers inside the `TopicRingStack`, not
+a second store*; Q14 heap events are immutable and refcounted, and the inline threshold
 is a per-topic setting defaulting to 256 bytes; Q15 stage 1 encodings are
 `blob` (with MIME type), `json` and `text`, with MIME types interned to a 16-bit
 id per node.
+
+## Round 13 — 2026-09-27
+
+25. **Inside the `TopicRingStack`, which lock guards an append or a read?** (a)
+    the **stack's mutex** for everything: one lock per topic, simplest, but every
+    publisher and subscriber of a topic contend on it; or (b) the stack's mutex
+    only for adding/removing rings, and **each ring has its own mutex** for
+    appends and reads, so readers of an older ring never contend with the
+    publisher writing the newest. Lock order in (b): stack before ring.
+
+Still open from round 12: Q8 (MCP/REST exposure in stage 1).
