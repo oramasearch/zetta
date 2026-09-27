@@ -63,6 +63,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **In review (PR [#1035](https://github.com/oramasearch/zetta/pull/1035), stacked on the
+  design PR [#1023](https://github.com/oramasearch/zetta/pull/1023)) — pub/sub stage 1**
+  (epic [#1024](https://github.com/oramasearch/zetta/issues/1024)): an in-memory,
+  addressed, governed pub/sub in `zetta::pubsub`, owned by the node. Design and decisions:
+  [plans/pubsub/](plans/pubsub/README.md); what is built: [pubsub/](pubsub/README.md). One
+  node only (the cluster is stage 2, designed later); locks and condition variables by
+  decision D1/D5 (the one exception to the coroutine rule).
+
 - **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
   datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)
   makes a connector result set a **cache the cluster holds on disk** rather than rows in the

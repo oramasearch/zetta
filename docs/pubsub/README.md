@@ -35,3 +35,7 @@ and logged), no rate limits. New JSON formats: the on-disk event frame header on
   including after a crash (#1031).
 - [drains.md](drains.md) — inbox drains by address kind; replies; dead letters; error
   topics (#1032).
+- [node.md](node.md) — the node owns pub/sub: start and stop, the governance-backed
+  authorizer, the `table:` drain, `system.pubsub_topics`, spans (#1029, #1031, #1032, #1034).
+- [exposure.md](exposure.md) — `create_topic`, `drop_topic`, `list_topics`,
+  `publish_event`, `receive_events`; only exposed topics are reachable (#1033).

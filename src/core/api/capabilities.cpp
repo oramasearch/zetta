@@ -7175,6 +7175,9 @@ void register_core_capabilities(Registry& registry) {
     // The cloud-touching tools + the consent protocol tools (#621) — the
     // consent-gated slice, in its own TU (cloud_capabilities.cpp).
     register_cloud_capabilities(registry);
+
+    // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
+    register_pubsub_capabilities(registry);
 }
 
 std::string pipeline_tool_name(const std::string& graph) {

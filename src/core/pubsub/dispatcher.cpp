@@ -220,9 +220,29 @@ void Dispatcher::remove_key(const std::string& key) {
     maybe_switch();
 }
 
+void Dispatcher::set_idle_pump(std::function<void()> pump) {
+    std::lock_guard lock(mutex_);
+    idle_pump_ = std::move(pump);
+}
+
+void Dispatcher::wait_idle(std::unique_lock<std::mutex>& lock) {
+    while (outstanding_ != 0) {
+        if (!idle_pump_) {
+            idle_.wait(lock, [&] { return outstanding_ == 0; });
+            return;
+        }
+        idle_.wait_for(lock, std::chrono::milliseconds(5), [&] { return outstanding_ == 0; });
+        if (outstanding_ == 0) return;
+        auto pump = idle_pump_;
+        lock.unlock();
+        pump();
+        lock.lock();
+    }
+}
+
 void Dispatcher::drain() {
     std::unique_lock lock(mutex_);
-    idle_.wait(lock, [&] { return outstanding_ == 0; });
+    wait_idle(lock);
 }
 
 void Dispatcher::stop() {
@@ -230,7 +250,7 @@ void Dispatcher::stop() {
         std::unique_lock lock(mutex_);
         if (stopping_ && per_key_workers_.empty() && pool_.empty() && retired_.empty()) return;
         stopping_ = true;
-        idle_.wait(lock, [&] { return outstanding_ == 0; });
+        wait_idle(lock);
         for (auto& [key, worker] : per_key_workers_) {
             worker->stop = true;
             worker->wake.notify_all();

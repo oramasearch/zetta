@@ -1,5 +1,8 @@
 #include "zetta/node.hpp"
 
+#include "zetta/pubsub/node_integration.hpp"
+#include "zetta/pubsub/pubsub.hpp"
+
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
@@ -295,6 +298,21 @@ bool Node::start() {
                 integrity_.dangling_access_keys);
         }
     }
+    // Pub/sub (#1024): governed by this node's users and roles, tables reachable
+    // as table:<database>.<table>; reloads what the last run flushed or spilled.
+    if (config_.pubsub) {
+        zetta::pubsub::PubSubConfig pubsub_config;
+        pubsub_config.data_directory = config_.data_dir;
+        pubsub_config.auto_create_prefixes = config_.pubsub_auto_create_prefixes;
+        // Drains and authorization marshal onto the owner loop; while stop()
+        // waits for them on this thread, it keeps that queue moving.
+        pubsub_config.idle_pump = [this] { if (on_owner_thread()) drain_owner_work(); };
+        pubsub_config.spans = &span_recorder();
+        pubsub_ = std::make_unique<zetta::pubsub::PubSub>(
+            std::move(pubsub_config), zetta::pubsub::make_node_authorizer(*this));
+        pubsub_->register_drain("table", zetta::pubsub::make_table_drain(*this));
+        pubsub_->start();
+    }
     // Re-establish the compute plane if a cluster was attached before this start
     // (a stop()/start() cycle). On first boot main attaches after start(), so this
     // is a no-op then and attach_cluster brings the coordinator up itself.
@@ -470,6 +488,12 @@ void Node::stop() {
     // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
     // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
     stop_coordinator();
+    // Pub/sub flushes its default topics within its budget (#1031, D20), before
+    // the replicated document is persisted.
+    if (pubsub_) {
+        pubsub_->shutdown();
+        pubsub_.reset();
+    }
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");

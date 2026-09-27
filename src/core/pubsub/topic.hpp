@@ -107,6 +107,10 @@ public:
     // addresses (for the log).
     void maintain(SteadyTime now, std::chrono::milliseconds spill_log_interval);
 
+    // Held events with sequence >= from, oldest first, at most `max`; waits up to
+    // `wait` when there are none.
+    std::vector<Event> read_from(std::uint64_t from_sequence, std::size_t max, std::chrono::milliseconds wait);
+
     // Every held event per level (the shutdown flush; spilled rings are read back).
     std::vector<std::vector<Event>> snapshot();
     // Restore events per level at start-up.

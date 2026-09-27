@@ -42,6 +42,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/testkit/test_suite.hpp"
+#include "zetta/pubsub/node_integration.hpp"
 
 namespace zetta::query {
 namespace {
@@ -149,6 +150,7 @@ constexpr std::string_view kJobsTable = "jobs";
 constexpr std::string_view kCloudProvidersTable = "cloud_providers";
 constexpr std::string_view kCloudStatusTable = "cloud_status";
 constexpr std::string_view kProvisionersTable = "provisioners";
+constexpr std::string_view kPubSubTopicsTable = "pubsub_topics";
 constexpr std::string_view kConsentRequestsTable = "consent_requests";
 constexpr std::string_view kConnectionsTable = "connections";
 constexpr std::string_view kRunsTable = "runs";
@@ -258,6 +260,10 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kProvisionersTable,
                     "cloud-burst provisioners detected from this node's local "
                     "CLIs; carries no credentials"},
+    SystemTableInfo{kPubSubTopicsTable,
+                    "pub/sub topics and inboxes on this node: subscribers, held "
+                    "events, memory and disk, spilling, the slowest subscriber "
+                    "(#1034; ephemeral, not replicated)"},
     SystemTableInfo{kRolesTable,
                     "the role registry: named permission sets (scope + rights) "
                     "granted to users"},
@@ -983,6 +989,7 @@ std::string render_scoped_grant(const zetta::governance::ScopedGrant& grant) {
             break;
         case RK::Blob: object = "blob:" + r.name; break;
         case RK::Tool: object = "tool:" + r.name; break;
+        case RK::Topic: object = "topic:" + r.name; break;
     }
     return permission_name_of(grant.operation) + " ON " + object;
 }
@@ -2493,6 +2500,12 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kProvisionersTable) {
                         return select_over_rows(s, provisioner_rows(node_));
+                    }
+                    if (sys == kPubSubTopicsTable) {
+                        return select_over_rows(
+                            s, node_.pubsub() != nullptr
+                                   ? zetta::pubsub::pubsub_topic_rows(*node_.pubsub())
+                                   : std::vector<nlohmann::json>{});
                     }
                     if (sys == kConsentRequestsTable) {
                         return select_over_rows(s, consent_request_rows(node_));

@@ -491,6 +491,7 @@ add_library(zetta-core STATIC
   src/core/pubsub/resources.cpp
   src/core/pubsub/topic.cpp
   src/core/pubsub/pubsub.cpp
+  src/core/pubsub/node_integration.cpp
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp
@@ -498,6 +499,7 @@ add_library(zetta-core STATIC
   src/core/api/background.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
+  src/core/api/pubsub_capabilities.cpp
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp

@@ -107,6 +107,8 @@ add_executable(zetta-tests
   pubsub/test_delivery.cpp
   pubsub/test_dispatch_and_resources.cpp
   pubsub/test_pubsub.cpp
+  pubsub/test_node_pubsub.cpp
+  pubsub/test_pubsub_capabilities.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
   governance/test_scoped_grants.cpp

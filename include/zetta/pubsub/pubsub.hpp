@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "zetta/observability/trace.hpp"
 #include "zetta/pubsub/address.hpp"
 #include "zetta/pubsub/authorizer.hpp"
 #include "zetta/pubsub/delivery.hpp"
@@ -252,6 +253,12 @@ struct PubSubConfig {
     std::size_t max_sender_chain = kMaxSenderChainDepth;
     std::chrono::milliseconds spill_log_interval{30'000};  // D12
     std::chrono::milliseconds maintenance_interval{1'000};
+    // Called while shutdown or drain_dispatch waits for dispatched work (the
+    // node passes its owner-queue pump; see Dispatcher::set_idle_pump).
+    std::function<void()> idle_pump;
+    // Where spans go (#1034): publish, subscribe, ack, dead letters, topic
+    // create/drop. Null: no spans (bare library use). The node passes its ring.
+    zetta::observability::SpanRecorder* spans = nullptr;
     bool detect_resources = true;  // false: tests pass limits directly
     std::optional<PubSubLimits> limits;  // used when detect_resources is false
 };
@@ -293,6 +300,15 @@ public:
 
     PublishResult publish(const Identity& identity, PublishRequest request);
 
+    // Read a topic's held events with sequence >= `from_sequence`, oldest first,
+    // at most `max`, waiting up to `wait` when there are none yet. Stateless (no
+    // subscription): the long-poll read behind the `receive_events` capability.
+    // Governed by pubsub:subscribe. nullopt with `reason` when refused or missing.
+    std::optional<std::vector<Event>> read_events(const Identity& identity, const Address& topic,
+                                                  std::uint64_t from_sequence, std::size_t max,
+                                                  std::chrono::milliseconds wait,
+                                                  std::string* reason = nullptr);
+
     // Drains by address kind (D35).
     void register_drain(const std::string& kind, std::shared_ptr<InboxDrain> drain);
 
@@ -324,8 +340,10 @@ private:
     std::shared_ptr<Topic> inbox_topic_for(const Address& owner, bool create);
     std::vector<Address> resolve_wildcard(const Address& pattern);
     void entities_changed();
+    // `trusted`: engine-generated events (drain replies) skip the authorizer.
+    PublishResult publish_as(const Identity& identity, PublishRequest request, bool trusted);
     void deliver_to(const Identity& identity, const Event& event, const Address& target,
-                    PublishResult& result);
+                    PublishResult& result, bool trusted);
     void run_drain(std::shared_ptr<InboxDrain> drain, Address target, Event event);
     void send_reply(const Address& from, const Event& request, ReplyPolicy policy,
                     std::string payload, Encoding encoding);
@@ -339,6 +357,7 @@ private:
     std::filesystem::path spill_directory_for(const Address& topic) const;
     void persist_definition(const Topic& topic) const;
     void log(LogLevel level, std::string message) const;
+    zetta::observability::SpanRecorder* spans() const { return config_.spans; }
 
     PubSubConfig config_;
     std::shared_ptr<Authorizer> authorizer_;

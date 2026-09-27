@@ -28,6 +28,13 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
         {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
         {"cluster:admin", {{CapabilityDomain::Api, "cluster_admin"}}},
+        // Pub/sub (#1029): publish and subscribe are data rights, creating and
+        // managing topics orchestration; sending to a wildcard is its own right.
+        {"pubsub:publish", {{CapabilityDomain::Data, "pubsub_publish"}}},
+        {"pubsub:subscribe", {{CapabilityDomain::Data, "pubsub_subscribe"}}},
+        {"pubsub:send_wildcard", {{CapabilityDomain::Data, "pubsub_send_wildcard"}}},
+        {"pubsub:create", {{CapabilityDomain::Orchestration, "pubsub_create"}}},
+        {"pubsub:manage", {{CapabilityDomain::Orchestration, "pubsub_manage"}}},
         // Orchestration — the pipeline authoring/deploy/run + serving + cloud
         // control surface. The capability model is exact-match (no wildcards), so
         // every registry Orchestration op must appear here or NO role can grant it.

@@ -36,6 +36,9 @@ MCP/HTTP work.
 - [native-http-transport.md](native-http-transport.md) — the **outbound** HTTP
   client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
   it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
+- [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
+  (#1033): create_topic / drop_topic / list_topics / publish_event / receive_events,
+  reaching only topics created `exposed` (engine-internal by default).
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,

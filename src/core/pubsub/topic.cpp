@@ -490,6 +490,12 @@ std::optional<Delivery> Topic::receive(Subscription::State& state, std::chrono::
 }
 
 bool Topic::ack(Subscription::State& state, std::uint64_t sequence) {
+    auto* owner = this->owner();
+    zetta::observability::ScopedSpan span(owner != nullptr ? owner->spans() : nullptr,
+                                          zetta::observability::make_root_trace(), "pubsub:ack");
+    span.set_attribute("intent", {{"topic", address_.to_string()},
+                                  {"subscriber", state.subscriber.to_string()},
+                                  {"sequence", sequence}});
     std::lock_guard lock(mutex_);
     auto flight = state.in_flight.find(sequence);
     if (flight == state.in_flight.end()) return false;
@@ -671,6 +677,42 @@ TopicStats Topic::stats() const {
     }
     stats.slowest_lag_events = worst;
     return stats;
+}
+
+std::vector<Event> Topic::read_from(std::uint64_t from_sequence, std::size_t max,
+                                   std::chrono::milliseconds wait) {
+    auto collect = [&] {
+        std::vector<Event> events;
+        for (auto& level : levels_) {
+            // Sequences only grow along a level's positions: binary-search the first.
+            std::uint64_t low = level->first_position();
+            std::uint64_t high = level->next_position();
+            while (low < high) {
+                const auto middle = low + (high - low) / 2;
+                auto event = level->read(middle);
+                if (event && event->sequence >= from_sequence) {
+                    high = middle;
+                } else {
+                    low = middle + 1;
+                }
+            }
+            for (auto position = low; position < level->next_position() && events.size() < max * levels_.size();
+                 ++position) {
+                if (auto event = level->read(position); event) events.push_back(std::move(*event));
+            }
+        }
+        std::ranges::sort(events, {}, &Event::sequence);
+        if (events.size() > max) events.resize(max);
+        return events;
+    };
+    auto events = collect();
+    if (!events.empty() || wait.count() <= 0) return events;
+    {
+        std::unique_lock lock(mutex_);
+        const auto generation = publish_generation_;
+        published_.wait_for(lock, wait, [&] { return publish_generation_ != generation || closing_; });
+    }
+    return collect();
 }
 
 std::vector<std::vector<Event>> Topic::snapshot() {

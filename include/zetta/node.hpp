@@ -56,6 +56,7 @@ namespace zetta::compute { class JobCoordinator; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
+namespace zetta::pubsub { class PubSub; }
 
 
 
@@ -78,6 +79,11 @@ struct NodeConfig {
     // a gated capability executes like any other call and the bypass is
     // audited. `--governance` (or ZETTA_GOVERNANCE=1) turns enforcement on.
     bool enforce_consent = false;
+    // In-memory pub/sub (#1024, docs/pubsub/). On by default; its limits are
+    // detected from the environment and logged at start. Topic names matching
+    // one of these prefixes are auto-created on first use (D16); empty = off.
+    bool pubsub = true;
+    std::vector<std::string> pubsub_auto_create_prefixes;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -188,7 +194,11 @@ public:
     void drain_owner_work();
 
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
+    // Flushes pub/sub topics first, within their shutdown budget (#1031).
     void stop();
+
+    // The node's pub/sub (#1024); null while stopped or when disabled.
+    zetta::pubsub::PubSub* pubsub() const { return pubsub_.get(); }
 
     // CRUD for databases. create/rename yield an empty handle / false on an
     // empty name or a name clash; the UI surfaces that inline. An optional
@@ -1159,6 +1169,8 @@ private:
     // the cluster, so its handler unwind never touches a dead cluster.
     zetta::cluster::Cluster* cluster_ = nullptr;
     unsigned compute_workers_ = 0;
+    // In-memory pub/sub (#1024): created in start(), flushed + destroyed in stop().
+    std::unique_ptr<zetta::pubsub::PubSub> pubsub_;
     // Cluster-wide live telemetry over the signal plane (#584): the cache of this
     // node's + peers' `node.metrics` events, wired as the coordinator's signal
     // handler fallback. Declared BEFORE coordinator_ so it outlives it (the

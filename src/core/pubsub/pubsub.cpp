@@ -174,6 +174,12 @@ TopicSettings settings_from_json(const nlohmann::json& json) {
     return settings;
 }
 
+nlohmann::json address_list(const std::vector<Address>& addresses) {
+    nlohmann::json list = nlohmann::json::array();
+    for (const auto& address : addresses) list.push_back(address.to_string());
+    return list;
+}
+
 bool matches_prefix(const std::vector<std::string>& prefixes, const std::string& name) {
     return std::ranges::any_of(prefixes, [&](const std::string& prefix) { return name.starts_with(prefix); });
 }
@@ -231,6 +237,7 @@ PubSub::PubSub(PubSubConfig config, std::shared_ptr<Authorizer> authorizer, LogS
                           .threshold = limits_.dispatch_threshold,
                           .pool_threads = limits_.pool_threads},
         log_);
+    if (config_.idle_pump) dispatcher_->set_idle_pump(config_.idle_pump);
 }
 
 PubSub::~PubSub() {
@@ -462,7 +469,10 @@ std::shared_ptr<Topic> PubSub::find_topic(const Address& topic) const {
 
 bool PubSub::create_topic(const Identity& identity, const Address& address, TopicSettings settings,
                           std::string* reason) {
+    zetta::observability::ScopedSpan span(spans(), zetta::observability::make_root_trace(), "pubsub:create_topic");
+    span.set_attribute("intent", {{"principal", identity.principal.to_string()}, {"topic", address.to_string()}});
     auto fail = [&](std::string text) {
+        span.finish(false, text);
         if (reason != nullptr) *reason = text;
         return false;
     };
@@ -487,6 +497,8 @@ bool PubSub::create_topic(const Identity& identity, const Address& address, Topi
 }
 
 bool PubSub::drop_topic(const Identity& identity, const Address& address, std::string* reason) {
+    zetta::observability::ScopedSpan span(spans(), zetta::observability::make_root_trace(), "pubsub:drop_topic");
+    span.set_attribute("intent", {{"principal", identity.principal.to_string()}, {"topic", address.to_string()}});
     if (!authorizer_->authorize(identity.principal, PubSubOperation::Manage, address)) {
         if (reason != nullptr) *reason = identity.principal.to_string() + " may not drop " + address.to_string();
         audit("drop_refused", identity.principal, address, "no pubsub:manage");
@@ -602,17 +614,23 @@ std::shared_ptr<Topic> PubSub::inbox_topic_for(const Address& owner, bool create
 std::unique_ptr<Subscription> PubSub::subscribe(const Identity& identity, const Address& subscriber,
                                                 const Address& address, SubscribeOptions options,
                                                 std::string* reason) {
-    if (!accepting_.load()) {
-        if (reason != nullptr) *reason = "pub/sub is shutting down";
+    zetta::observability::ScopedSpan span(spans(), zetta::observability::make_root_trace(), "pubsub:subscribe");
+    span.set_attribute("intent", {{"principal", identity.principal.to_string()},
+                                  {"subscriber", subscriber.to_string()},
+                                  {"topic", address.to_string()}});
+    auto refuse = [&](std::string text) -> std::unique_ptr<Subscription> {
+        span.finish(false, text);
+        if (reason != nullptr) *reason = std::move(text);
         return nullptr;
-    }
+    };
+    if (!accepting_.load()) return refuse("pub/sub is shutting down");
     if (!authorizer_->authorize(identity.principal, PubSubOperation::Subscribe, address)) {
-        if (reason != nullptr) *reason = identity.principal.to_string() + " may not subscribe to " + address.to_string();
         audit("subscribe_refused", identity.principal, address, "no pubsub:subscribe");
-        return nullptr;
+        return refuse(identity.principal.to_string() + " may not subscribe to " + address.to_string());
     }
-    auto topic = find_or_auto_create(identity, address, reason);
-    if (!topic) return nullptr;
+    std::string missing;
+    auto topic = find_or_auto_create(identity, address, &missing);
+    if (!topic) return refuse(missing);
     const auto id = next_subscription_id.fetch_add(1);
     auto state = topic->add_subscription(subscriber, std::move(options), id);
     entities_changed();
@@ -714,6 +732,23 @@ std::uint64_t PubSub::total_disk_bytes() const {
 }
 
 PublishResult PubSub::publish(const Identity& identity, PublishRequest request) {
+    zetta::observability::ScopedSpan span(spans(), zetta::observability::make_root_trace(), "pubsub:publish");
+    span.set_attribute("intent", {{"from", identity.principal.to_string()},
+                                  {"to", address_list(request.to)},
+                                  {"cc", address_list(request.cc)},
+                                  {"bcc_count", request.bcc.size()},
+                                  {"correlation_id", request.correlation_id},
+                                  {"payload_bytes", request.payload.size()}});
+    auto result = publish_as(identity, std::move(request), /*trusted=*/false);
+    nlohmann::json refused = nlohmann::json::array();
+    for (const auto& [target, reason] : result.refused) refused.push_back({{"target", target.to_string()}, {"reason", reason}});
+    span.set_attribute("plan", {{"delivered_to", address_list(result.delivered_to)}, {"clamped", result.clamped}});
+    span.set_attribute("result_shape", {{"event_id", result.event_id}, {"accepted", result.accepted}, {"refused", refused}});
+    span.finish(result.accepted, result.error);
+    return result;
+}
+
+PublishResult PubSub::publish_as(const Identity& identity, PublishRequest request, bool trusted) {
     PublishResult result;
     if (!accepting_.load()) {
         result.error = "pub/sub is shutting down";
@@ -749,7 +784,7 @@ PublishResult PubSub::publish(const Identity& identity, PublishRequest request) 
     // Every link of the delegation stack must be allowed to act for the one before it.
     const Address* acting_for = &identity.principal;
     for (const auto& actor : identity.acting_chain) {
-        if (!authorizer_->may_act_for(actor, *acting_for)) {
+        if (!trusted && !authorizer_->may_act_for(actor, *acting_for)) {
             result.error = actor.to_string() + " may not act for " + acting_for->to_string();
             audit("publish_refused", identity.principal, actor, result.error);
             log(LogLevel::Warn, "refused event " + event.id + ": " + result.error);
@@ -762,10 +797,10 @@ PublishResult PubSub::publish(const Identity& identity, PublishRequest request) 
     auto deliver_list = [&](const std::vector<Address>& list) {
         for (const auto& address : list) {
             if (!address.is_wildcard()) {
-                deliver_to(identity, copy_for_recipient(event, address), address, result);
+                deliver_to(identity, copy_for_recipient(event, address), address, result, trusted);
                 continue;
             }
-            if (!authorizer_->authorize(identity.principal, PubSubOperation::SendWildcard, address)) {
+            if (!trusted && !authorizer_->authorize(identity.principal, PubSubOperation::SendWildcard, address)) {
                 result.refused.emplace_back(address, "no right to send to a wildcard");
                 audit("publish_refused", identity.principal, address, "no pubsub:send_wildcard");
                 continue;
@@ -785,7 +820,9 @@ PublishResult PubSub::publish(const Identity& identity, PublishRequest request) 
                 continue;
             }
             audit("wildcard_send", identity.principal, address, std::to_string(matches.size()) + " recipients");
-            for (const auto& target : matches) deliver_to(identity, copy_for_recipient(event, address), target, result);
+            for (const auto& target : matches) {
+                deliver_to(identity, copy_for_recipient(event, address), target, result, trusted);
+            }
         }
     };
     deliver_list(event.envelope.to);
@@ -798,9 +835,25 @@ PublishResult PubSub::publish(const Identity& identity, PublishRequest request) 
     return result;
 }
 
+std::optional<std::vector<Event>> PubSub::read_events(const Identity& identity, const Address& address,
+                                                      std::uint64_t from_sequence, std::size_t max,
+                                                      std::chrono::milliseconds wait, std::string* reason) {
+    if (!authorizer_->authorize(identity.principal, PubSubOperation::Subscribe, address)) {
+        if (reason != nullptr) *reason = identity.principal.to_string() + " may not read " + address.to_string();
+        audit("subscribe_refused", identity.principal, address, "no pubsub:subscribe");
+        return std::nullopt;
+    }
+    auto topic = find_topic(address);
+    if (!topic) {
+        if (reason != nullptr) *reason = address.to_string() + " does not exist";
+        return std::nullopt;
+    }
+    return topic->read_from(from_sequence, std::max<std::size_t>(1, max), wait);
+}
+
 void PubSub::deliver_to(const Identity& identity, const Event& event, const Address& target,
-                        PublishResult& result) {
-    if (!authorizer_->authorize(identity.principal, PubSubOperation::Publish, target)) {
+                        PublishResult& result, bool trusted) {
+    if (!trusted && !authorizer_->authorize(identity.principal, PubSubOperation::Publish, target)) {
         result.refused.emplace_back(target, "no pubsub:publish on " + target.to_string());
         audit("publish_refused", identity.principal, target, "no pubsub:publish");
         return;
@@ -824,8 +877,9 @@ void PubSub::deliver_to(const Identity& identity, const Event& event, const Addr
         Event copy = event;
         copy.envelope.topics_chain.push_back(target);
         const auto requested = resolve_delivery(copy.delivery, {}, settings.delivery);
-        const auto bounded = apply_bounds(requested, authorizer_->bounds(identity.principal, target),
-                                          settings.over_bound);
+        const auto bounded = apply_bounds(
+            requested, trusted ? DeliveryBounds{} : authorizer_->bounds(identity.principal, target),
+            settings.over_bound);
         if (bounded.rejected) {
             result.refused.emplace_back(target, bounded.reason);
             audit("publish_rejected", identity.principal, target, bounded.reason);
@@ -919,11 +973,13 @@ void PubSub::send_reply(const Address& from, const Event& request, ReplyPolicy p
     reply.correlation_id = request.envelope.correlation_id;
     reply.encoding = encoding;
     reply.payload = std::move(payload);
-    const auto result = publish(Identity{from, {}}, std::move(reply));
+    const auto result = publish_as(Identity{from, {}}, std::move(reply), /*trusted=*/true);
     if (!result.accepted) log(LogLevel::Warn, "reply from " + from.to_string() + " not delivered: " + result.error);
 }
 
 void PubSub::dead_letter(const Event& event, std::string reason) {
+    zetta::observability::ScopedSpan span(spans(), zetta::observability::make_root_trace(), "pubsub:dead_letter");
+    span.set_attribute("intent", {{"event_id", event.id}, {"reason", reason}});
     if (std::ranges::find(event.envelope.topics_chain, dead_letter_address()) != event.envelope.topics_chain.end()) {
         log(LogLevel::Warn, "dropped event " + event.id + " (" + reason + "); it was already a dead letter");
         return;

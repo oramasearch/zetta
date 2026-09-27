@@ -63,6 +63,11 @@ public:
     DispatchMode effective_mode() const;
     std::size_t key_count() const;
 
+    // Called repeatedly while drain() or stop() waits, on the waiting thread.
+    // The node passes its owner-queue pump so a job that marshals work onto
+    // the owner thread cannot deadlock a shutdown running on that thread.
+    void set_idle_pump(std::function<void()> pump);
+
     // Block until every job submitted so far has run.
     void drain();
 
@@ -89,6 +94,7 @@ private:
     void maybe_switch();                                 // mutex held
     void switch_to(DispatchMode mode, std::string reason);  // mutex held; releases/reacquires
     void note_done(std::unique_lock<std::mutex>& lock);
+    void wait_idle(std::unique_lock<std::mutex>& lock);  // pumps while waiting
 
     DispatcherOptions options_;
     LogSink log_;
@@ -102,6 +108,7 @@ private:
     DispatchMode current_ = DispatchMode::PerKey;
     std::size_t outstanding_ = 0;
     bool stopping_ = false;
+    std::function<void()> idle_pump_;
 };
 
 }  // namespace zetta::pubsub
