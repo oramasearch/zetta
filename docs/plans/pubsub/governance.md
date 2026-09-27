@@ -23,7 +23,8 @@ inherits it for free.
 - **A new resource kind, `Topic`**, matched by name or name prefix (like
   `Blob`), so `GRANT pubsub:subscribe ON topic 'orders.*' TO ROLE analyst` works.
 - **New permission atoms:** `pubsub:publish`, `pubsub:subscribe`,
-  `pubsub:manage` (create/drop topics, set topic defaults). Possibly finer ones
+  `pubsub:create` (create a topic, including implicitly by auto-creation, D16),
+  `pubsub:manage` (drop topics, change their settings). Possibly finer ones
   for delivery options (below).
 - **Delivery options are governed like rows.** A `WITH CHECK`-style policy on a
   topic bounds what a publish or a subscription may request (max priority,

@@ -28,15 +28,18 @@ first principle — see [`context.md`](context.md)).
 5. [`research/04-detecting-resource-budgets.md`](research/04-detecting-resource-budgets.md)
    — detecting memory, CPU and disk budgets from cgroups, the Downward API and the
    host, and how the JVM, Go and .NET size themselves.
-6. [`decisions.md`](decisions.md) — every settled decision (D1–D13), each with its
+6. [`research/05-auto-creation-and-durability.md`](research/05-auto-creation-and-durability.md)
+   — Kafka/Pulsar auto-creation and its pitfalls; how Kafka, NATS, RabbitMQ and
+   Redis survive shutdown and crash (segments, index, checkpoint, fsync).
+7. [`decisions.md`](decisions.md) — every settled decision (D1–D16), each with its
    cost and what would make us revisit it.
-7. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
+8. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.
-8. [`governance.md`](governance.md) — how topics join zetta's central governance
+9. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
-9. [`questions.md`](questions.md) — open questions, answered ones kept with their
+10. [`questions.md`](questions.md) — open questions, answered ones kept with their
    answers.
 
 ## Stages (proposed, not agreed)
@@ -45,5 +48,5 @@ first principle — see [`context.md`](context.md)).
 |---|---|---|
 | 1 | In-memory topic on one node, thread-safe, thread subscribers | designing |
 | 2 | The same API across the cluster (a topic owned by a partition, subscribers on any node) | not started |
-| 3 | Retention / replay (a log with per-subscriber offsets) | not started |
+| 3 | Retention / replay (a log with per-subscriber offsets); durable topics are now designed with stage 1 (D15) | not started |
 | 4 | Change events from tables and datasets (CDC) as topics | not started |

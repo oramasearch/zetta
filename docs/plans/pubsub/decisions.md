@@ -236,3 +236,47 @@ across cores and nodes (stage 2), so the door stays open.
 
 **Cost.** Callers may come to rely on one total order per topic; the API docs
 must say that order is only promised per store.
+
+## D14 — Topics are runtime objects, listed like tables, and survive restarts (2026-09-27)
+
+**What.** Topics are created at runtime (`CREATE TOPIC` over SQL, a
+`create_topic` capability over MCP/REST), listed in `system.pubsub_topics`,
+governed by `pubsub:manage`, and their definitions are **persisted to disk and
+reloaded** after any shutdown, graceful or not. Like every other zetta entity, a
+topic definition is replicated state (a CRDT key), which gives both persistence
+and cluster-wide visibility. Answers [Q22](questions.md).
+
+**Interpretation to confirm:** every topic's *definition* survives a restart;
+its *events* survive only if it is a persistent topic (D15).
+
+## D15 — Persistent topics keep their events across graceful shutdown and crash (2026-09-27)
+
+**What.** A topic can be declared **persistent**. Its events are written to
+append-only segment files with an index and a checkpoint, and are reloaded after
+a restart, including after a crash (research/05). Non-persistent topics keep
+events only in memory (and spill files, deleted on startup, D10).
+
+**Why.** Some topics are worth their disk cost (at-least-once across restarts,
+replay), most are not; the caller chooses.
+
+**Cost.** This pulls durability forward from stage 3 into the design now. For a
+persistent topic the disk tier *is* the log, so spilling and persistence become
+one mechanism. A crash loses whatever was not yet `fsync`ed; that window is the
+fsync policy ([Q23](questions.md)). Recovery after a crash scans and repairs the
+tail past the last checkpoint.
+
+## D16 — Topics can be auto-created from pub/sub configuration, like Kafka (2026-09-27)
+
+**What.** Besides explicitly defined topics, the pub/sub configuration can allow
+**implicit creation**: publishing or subscribing to a topic that does not exist
+creates it with configured defaults.
+
+**Why.** Convenient for development and for engine-internal topics.
+
+**Cost (research/05):** Kafka users often turn this off because a typo creates
+a topic that silently inherits generic defaults. Proposals: auto-creation is
+still governed (the caller needs `pubsub:create` on the name or prefix, as Kafka
+requires `CREATE`); it can be enabled per name prefix (like Pulsar's
+per-namespace override) rather than only all-or-nothing; every auto-creation is
+logged and audited with the defaults it received; and auto-created topics are
+non-persistent unless configuration says otherwise.

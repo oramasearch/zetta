@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 12 (after [D1–D13](decisions.md)). No partitions:
+**Status:** draft, revision 13 (after [D1–D16](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -176,3 +176,16 @@ pubsub: WARN orders spilling to disk: memory 1.0 GiB full; slowest subscriber bi
 pubsub: WARN orders still spilling (2m30s): 6.2 GiB on disk, +41 MiB/s; reading from disk: billing-sync (lag 6.9 GiB)
 pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
 ```
+
+## Topics as objects (D14–D16)
+
+- **Defined at runtime:** `CREATE TOPIC orders WITH (persistent = true, ...)`
+  over SQL, or `create_topic` over MCP/REST; `DROP TOPIC`; listed in
+  `system.pubsub_topics`; governed by `pubsub:manage`.
+- **Definitions are replicated state** (a CRDT key, like tables and roles), so
+  they are persisted and reloaded after any shutdown and visible on every node.
+- **Persistent topics** write events to segment files + index + checkpoint under
+  the data dir; on startup the node reloads them, repairing the tail after a
+  crash. The fsync policy is [Q23](questions.md).
+- **Auto-creation** is a pub/sub configuration setting, per name prefix;
+  governed by `pubsub:create`; logged and audited with the defaults applied.

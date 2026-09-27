@@ -120,8 +120,23 @@ design past several of these questions. Still open from round 1:
 
 ## Round 8 — 2026-09-27
 
-22. **Are topics named at runtime and listed like tables?** E.g. `CREATE TOPIC
+22. ~~**Are topics named at runtime and listed like tables?**~~ → *Answered
+    2026-09-27 (Steve): yes, and persisted to disk and reloaded after any
+    shutdown, graceful or not; persistent topics can be defined; topics can also
+    be auto-created implicitly from configuration, like Kafka* ([D14–D16](decisions.md)).
+    Original question: **Are topics named at runtime and listed like tables?** E.g. `CREATE TOPIC
     orders` over SQL (or a `create_topic` capability over MCP/REST), visible in
     `system.pubsub_topics`, governed by `pubsub:manage`, and replicated so every
     node knows the topic exists (its events stay in memory on one node for now).
     Or declared in C++ code only, for engine-internal use, in stage 1?
+
+## Round 9 — 2026-09-27
+
+23. **What is the default fsync policy for a persistent topic** (how much a crash
+    may lose)? Options, from research/05: (a) **every event** before `publish`
+    returns: no loss, lowest throughput (RabbitMQ confirms, Redis `always`);
+    (b) **on an interval**, e.g. every 1 s: lose up to that interval (Redis
+    `everysec`; NATS defaults to 2 min); (c) **leave it to the OS**: highest
+    throughput, loss depends on the OS (Kafka's usual setting, which relies on
+    replication). Presumably configurable at every level like the rest; the
+    question is the default.
