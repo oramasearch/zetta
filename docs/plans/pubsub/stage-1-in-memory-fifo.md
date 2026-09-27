@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 2 (after [D1–D4](decisions.md)). Settled parts cite
+**Status:** draft, revision 3 (after [D1–D5](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -8,7 +8,7 @@ their decision; everything else is a proposal waiting on
 
 ```
 publish ──► [ topic ]
-              mutex + condition_variable              (D1)
+              a mutex + condition_variable per queue  (D1, D5)
               event_store  ◄── pluggable               (D2)
                  default: segmented_ring = deque of vector rings
                  alt:     std::queue (std::deque)
@@ -58,17 +58,16 @@ public:
   independent cursors. A `std::deque` used directly can, because it is indexable.
   See [Q12](questions.md).
 
-## Subscribers and waiting (D1)
+## Subscribers and waiting (D1, D5)
 
-One `std::mutex` guards the store and the subscriber list. `publish` appends
-under the lock, then wakes:
+No coroutines in stage 1. Subscribers are threads. **Each queue carries its own
+`std::mutex` and `std::condition_variable`**: the shared ring (or deque) has
+one, and each per-consumer queue, if the delivery mode uses them, has its own.
+`publish` appends under the target queue's lock, releases it, then notifies.
 
-- **thread subscribers** wait on the topic's `std::condition_variable`
-  (`notify_all`, each checks its own cursor);
-- **coroutine subscribers** are held in a waiter list; `publish` posts each
-  ready one to its own executor, so a coroutine never blocks a pool thread.
-
-Whether we need both, or only one, is [Q10](questions.md).
+Open: where the per-consumer queues exist at all depends on how delivery is
+chosen ([Q11](questions.md)); if a publish touches several queues, the lock
+order goes here.
 
 ## Delivery (D3)
 

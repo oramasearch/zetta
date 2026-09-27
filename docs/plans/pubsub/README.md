@@ -24,7 +24,8 @@ first principle — see [`context.md`](context.md)).
    choose recipients, ordering, priority and QoS.
 4. [`decisions.md`](decisions.md) — settled decisions with cost and revisit
    condition (D1 locks + condition variables, D2 pluggable stores / growing ring,
-   D3 runtime delivery semantics, D4 binary events with a heap).
+   D3 runtime delivery semantics, D4 binary events with a heap, D5 no coroutines
+   in stage 1, a mutex per queue).
 5. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft, revision 2.
 6. [`questions.md`](questions.md) — open questions, answered ones kept with their
@@ -34,7 +35,7 @@ first principle — see [`context.md`](context.md)).
 
 | Stage | What | Status |
 |---|---|---|
-| 1 | In-memory FIFO topic on one node, thread-safe, coroutine subscribers | designing |
+| 1 | In-memory topic on one node, thread-safe, thread subscribers | designing |
 | 2 | The same API across the cluster (a topic owned by a partition, subscribers on any node) | not started |
 | 3 | Retention / replay (a log with per-subscriber offsets) | not started |
 | 4 | Change events from tables and datasets (CDC) as topics | not started |

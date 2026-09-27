@@ -24,7 +24,10 @@ design past several of these questions. Still open from round 1:
 
 ## Round 2 — 2026-09-27
 
-10. **How do coroutine subscribers wait?** A coroutine that blocks on a
+10. ~~**How do coroutine subscribers wait?**~~ → *Answered 2026-09-27 (Steve):
+    don't use coroutines for this; subscribers wait on condition variables, with
+    a mutex per queue, deque or consumer queue* ([D5](decisions.md)). Original
+    question: A coroutine that blocks on a
     `condition_variable` holds a pool thread. Options: (a) thread subscribers use
     the condition variable, coroutine subscribers get a waiter list that
     `publish` posts to their executor (both, one mutex); (b) condition variable

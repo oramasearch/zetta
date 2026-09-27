@@ -33,8 +33,8 @@ Two things follow for pub/sub:
   raw `std::mutex` is allowed only as the lowest cross-thread handoff, contained
   and commented, never in a public API. **Steve overrode this for pub/sub on
   2026-09-27** ([D1](decisions.md)): locks and condition variables are allowed
-  inside the topic. How coroutine subscribers wait without holding a pool thread
-  is [Q10](questions.md).
+  inside the topic, and stage 1 does not use coroutines at all: subscribers are
+  threads, with a mutex per queue ([D5](decisions.md)).
 - **Distributed:** "single-node now, distribute later" is valid only as a
   reference implementation *with the distributed path designed behind the same
   API*. Stage 1 can be in-memory on one node, but its API has to be one a

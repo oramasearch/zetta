@@ -12,11 +12,9 @@ Lock-freedom is not a goal.
 bounded critical section around a queue push/pop is cheap.
 
 **Cost.** This departs from zetta's first principle ("never a blocking
-mutex/condition-variable surface", zetta `CLAUDE.md`). A coroutine that waits on
-a condition variable blocks its pool thread, so how coroutine subscribers wait is
-still open ([Q10](questions.md)). The zetta `CLAUDE.md` rule needs an explicit
-exception for this component, or the design keeps the blocking wait out of the
-coroutine path.
+mutex/condition-variable surface", zetta `CLAUDE.md`). See D5 for how subscribers
+wait. The zetta `CLAUDE.md` rule needs an explicit exception for this component
+before code lands.
 
 **Revisit if** measurement shows lock contention on a hot topic, or coroutine
 subscribers pin pool threads.
@@ -61,3 +59,23 @@ second format; inline storage avoids an allocation for the common small event.
 
 **Cost.** Two storage paths; the heap path needs a lifetime rule when several
 subscribers read one event ([Q14](questions.md)).
+
+## D5 — No coroutines in stage 1; a mutex per queue (2026-09-27)
+
+**What.** Stage 1 does not integrate with the coroutine runtime. Subscribers are
+threads that wait on a `std::condition_variable`. Locking is fine-grained: **a
+mutex per queue** (per ring, per deque, or per consumer queue), not one lock for
+the whole topic. Answers [Q10](questions.md).
+
+**Why.** Keeps the first slice a plain, testable concurrent data structure; a
+lock per queue keeps publishers and consumers of different queues from
+contending.
+
+**Cost.** A subscriber waiting on a condition variable holds a thread, so a
+coroutine caller inside zetta has to wait from a dedicated thread or through
+`runtime::run_blocking`. Several locks mean a lock order must be written down
+wherever an operation touches more than one queue (e.g. a broadcast publish that
+appends to every consumer queue).
+
+**Revisit if** zetta code needs to subscribe from coroutines at scale; a
+coroutine waiter list can then be added behind the same API.
