@@ -1,6 +1,7 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 11 (after [D1–D12](decisions.md)). Settled parts cite
+**Status:** draft, revision 12 (after [D1–D13](decisions.md)). No partitions:
+a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
 
@@ -28,6 +29,7 @@ struct event_header {
     std::uint16_t mime;       // interned MIME type id (blob); 0 = none
     std::uint8_t  priority;   // D3, if priority is per message
     std::uint8_t  flags;      // inline | heap
+    // reserved: partition key (D13; unused while topics are unpartitioned)
 };
 // payload: inline bytes when size <= inline_capacity, else an event_ptr
 // to an immutable, refcounted event on the message heap.
@@ -144,7 +146,7 @@ limit if exposed). CPU from `cpu.max` / `cfs_quota_us` and the cpuset.
 
 **Derived defaults** (fractions of the detected budget; the fractions are
 proposals): pub/sub memory for the node = 25% of the memory budget, shared by
-every partition on it; a subscription may lag as far as its partition holds;
+every topic on it; a subscription may lag as far as its partition holds;
 spill disk = 50% of the data directory's free space; hold publisher 5 s, then
 fail.
 
@@ -166,11 +168,11 @@ segment lives. Readers find a segment by sequence number, so a cursor never
 cares which tier it is in. Spill files are not `fsync`ed and are deleted on
 startup: this is overflow, not durability ([research/03](research/03-memory-limits-and-spill.md)).
 
-**Spilling is logged** ([D12](decisions.md)): on the first spill, every 30 s
+**Spilling is logged** per topic ([D12](decisions.md)): on the first spill, every 30 s
 while it continues, and when it ends.
 
 ```
-pubsub: WARN orders/3 spilling to disk: memory 1.0 GiB full; slowest subscriber billing-sync at seq 88121004 (lag 1.0 GiB); expect higher latency
-pubsub: WARN orders/3 still spilling (2m30s): 6.2 GiB on disk, +41 MiB/s; reading from disk: billing-sync (lag 6.9 GiB)
-pubsub: INFO orders/3 no longer spilling after 4m10s; 9.8 GiB spilled in total
+pubsub: WARN orders spilling to disk: memory 1.0 GiB full; slowest subscriber billing-sync at seq 88121004 (lag 1.0 GiB); expect higher latency
+pubsub: WARN orders still spilling (2m30s): 6.2 GiB on disk, +41 MiB/s; reading from disk: billing-sync (lag 6.9 GiB)
+pubsub: INFO orders no longer spilling after 4m10s; 9.8 GiB spilled in total
 ```

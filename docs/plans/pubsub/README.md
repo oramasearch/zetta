@@ -28,7 +28,7 @@ first principle — see [`context.md`](context.md)).
 5. [`research/04-detecting-resource-budgets.md`](research/04-detecting-resource-budgets.md)
    — detecting memory, CPU and disk budgets from cgroups, the Downward API and the
    host, and how the JVM, Go and .NET size themselves.
-6. [`decisions.md`](decisions.md) — every settled decision (D1–D12), each with its
+6. [`decisions.md`](decisions.md) — every settled decision (D1–D13), each with its
    cost and what would make us revisit it.
 7. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the

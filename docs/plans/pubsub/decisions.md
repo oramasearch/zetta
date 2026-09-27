@@ -213,5 +213,26 @@ without having to guess; a single line at the start is easy to miss in a long
 spill.
 
 **Cost.** Log volume, hence the rate limit. Proposal (zetta RULE-7): the same
-state is also a read view (`system.pubsub_partitions`: memory, disk, spilling
+state is also a read view (`system.pubsub_topics`: memory, disk, spilling
 since, slowest subscriber) so it can be queried rather than only grepped.
+
+## D13 — No partitions now; nothing may rule them out later (2026-09-27)
+
+**What.** Stage 1 topics are not partitioned: a topic is one ordered store. We
+may add partitions later, so the design must not preclude them. Answers
+[Q21](questions.md).
+
+**Why.** Keep stage 1 small; partitions are the likely route to scaling a topic
+across cores and nodes (stage 2), so the door stays open.
+
+**How the door stays open (proposal):**
+- sequence numbers are per topic today and become per partition later, so no
+  API promises a total order beyond "within this topic's store";
+- the event header keeps room for a **partition key** (unused now);
+- limits, logs and read views are written per topic now and gain a partition
+  column later, without renaming (`system.pubsub_topics`);
+- a subscription names a topic, never a store, so a later partitioned topic can
+  hand it several stores.
+
+**Cost.** Callers may come to rely on one total order per topic; the API docs
+must say that order is only promised per store.

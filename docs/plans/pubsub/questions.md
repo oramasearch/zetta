@@ -111,7 +111,17 @@ design past several of these questions. Still open from round 1:
 
 ## Round 7 — 2026-09-27
 
-21. **Partitions.** You said "per partition": is a topic partitioned, like a
+21. ~~**Partitions.**~~ → *Answered 2026-09-27 (Steve): we might implement
+    partitions in the future, but not now* ([D13](decisions.md)). Original
+    question: **Partitions.** You said "per partition": is a topic partitioned, like a
     Kafka topic, with each partition its own ordered ring? If so, what picks an
     event's partition (a key hash, round robin, the publisher naming it), and is
     ordering guaranteed only within a partition?
+
+## Round 8 — 2026-09-27
+
+22. **Are topics named at runtime and listed like tables?** E.g. `CREATE TOPIC
+    orders` over SQL (or a `create_topic` capability over MCP/REST), visible in
+    `system.pubsub_topics`, governed by `pubsub:manage`, and replicated so every
+    node knows the topic exists (its events stay in memory on one node for now).
+    Or declared in C++ code only, for engine-internal use, in stage 1?
