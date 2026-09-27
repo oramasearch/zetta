@@ -431,3 +431,40 @@ request/reply) must be expressible with the options already decided, and the
 stage 1 tests should include an agent-task-shaped workload.
 
 **Open:** a link to the agent-task design once it has a home.
+
+## D26 — Everything addressable has a unique typed name (2026-09-27)
+
+**What.** Topics, agents (subscribers) and other entities each have a **unique
+name of the form `kind:name`**: `topic:abc123`, `agent:405`, `table:logs`. These
+are the addresses events are sent to and replies come back to.
+
+**Why.** One address space for every participant, so an event can go to a
+topic, straight to an agent, or to a table without separate APIs.
+
+**Cost.** Pub/sub now routes to more than topics; what it means to deliver to a
+non-topic address is [Q28](questions.md). The `kind` list should line up with
+governance's `ResourceKind` (database, table, blob, tool, …) plus `topic` and
+`agent`, so one name works for both routing and grants.
+
+## D27 — Events carry an email-style envelope: to, cc, bcc, reply-to, correlation id; wildcards allowed (2026-09-27)
+
+**What.** Every event may carry:
+
+| Field | Meaning |
+|---|---|
+| `to` | list of addresses: primary recipients |
+| `cc` | list of addresses: also receive it |
+| `bcc` | list of addresses: receive it, **not shown** to the other recipients |
+| `reply-to` | list of addresses replies should go to |
+| `correlation-id` | ties a reply to its request |
+
+Any address may be a **wildcard**: `agent:*`, `agent:security-*` (a prefix glob
+within the name). Request/reply is built in this way rather than left to the
+agent-task layer. Answers [Q27](questions.md).
+
+**Cost (research/07):** a sender addressing a wildcard is unusual (NATS, MQTT and
+RabbitMQ only allow wildcards on the subscribing side), so: sending to a
+wildcard is a separately governed right; its fan-out is capped and logged; and
+whether a wildcard is expanded at send time or also reaches future matches must
+be defined. Bcc must be stripped from every copy except the bcc recipient's own.
+The envelope never proves the sender; identity comes from governance.

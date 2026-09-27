@@ -1,6 +1,6 @@
 # Stage 1 — an in-memory topic
 
-**Status:** draft, revision 19 (after [D1–D24](decisions.md)). No partitions:
+**Status:** draft, revision 20 (after [D1–D27](decisions.md)). No partitions:
 a topic is one ordered store ([D13](decisions.md)). Settled parts cite
 their decision; everything else is a proposal waiting on
 [`questions.md`](questions.md).
@@ -18,6 +18,12 @@ publish ──► [ topic ]
 ```
 
 ## Events (D4)
+
+An event has an **envelope** ([D26–D27](decisions.md)): `to`, `cc`, `bcc` and
+`reply-to` (lists of `kind:name` addresses, wildcards allowed, e.g.
+`agent:security-*`) and a `correlation-id`. The envelope is variable-length, so
+it is stored with the payload (inline or on the heap), not in the fixed header;
+`bcc` is removed from every copy except the bcc recipient's own.
 
 A slot in the ring holds a fixed-size header plus a small inline area:
 

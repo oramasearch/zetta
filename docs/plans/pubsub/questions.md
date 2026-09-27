@@ -225,9 +225,23 @@ id per node.
 
 ## Round 16 — 2026-09-27
 
-27. **Request/reply.** Agent tasks usually need an answer: "do this task, send me
+27. ~~**Request/reply.**~~ → *Answered 2026-09-27 (Steve): every topic and
+    agent has a unique name (`topic:abc123`, `agent:405`, `table:logs`);
+    reply-to is a list of those, with a correlation id; addresses can be
+    wildcards (`agent:*`, `agent:security-*`); events also have to, cc and bcc*
+    ([D26–D27](decisions.md)). Original: **Request/reply.** Agent tasks usually need an answer: "do this task, send me
     the result". Should pub/sub support it directly, the way NATS does (a publish
     carries a **reply-to** topic and a **correlation id**; the requester waits for
     the reply with a timeout; a short-lived reply topic is created and dropped
     automatically)? Or is that left to the agent-task layer, built from plain
     topics?
+
+## Round 17 — 2026-09-27
+
+28. **What does delivering to a non-topic address mean?** Proposal: every
+    addressable entity has an **inbox**, a queue of its own. `to: agent:405` puts
+    the event in agent 405's inbox (its consumer queue, D23); `to: topic:abc123`
+    publishes to that topic, whose subscribers get it by their rules. And
+    `to: table:logs`: does it **insert the event as a row** into the table (the
+    table as a sink), or does something subscribed on the table's behalf
+    receive it?

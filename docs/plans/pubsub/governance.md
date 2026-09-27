@@ -26,6 +26,11 @@ inherits it for free.
   `pubsub:create` (create a topic, including implicitly by auto-creation, D16),
   `pubsub:manage` (drop topics, change their settings). Possibly finer ones
   for delivery options (below).
+- **Addresses and wildcards (D26–D27):** every addressable entity has a `kind:name`
+  that lines up with `ResourceKind`, so a grant names what it routes to. Sending
+  to one address and sending to a **wildcard** (`agent:*`) are separate rights,
+  and a wildcard's fan-out is capped and logged. The envelope's `reply-to`
+  never proves who sent an event.
 - **Delivery options are governed like rows.** A `WITH CHECK`-style policy on a
   topic bounds what a publish or a subscription may request (max priority,
   allowed recipient modes, guarantee level), per role. A `USING`-style policy on

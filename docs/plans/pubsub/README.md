@@ -38,15 +38,18 @@ first principle — see [`context.md`](context.md)).
 7. [`research/06-mmap-crash-survival.md`](research/06-mmap-crash-survival.md)
    — what memory-mapped segments survive (process crash yes, machine failure no),
    cgroup page-cache charging, SIGBUS and other pitfalls.
-8. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
-   governed, with detected defaults) and every settled decision (D1–D25).
-9. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
+8. [`research/07-addressing-and-wildcards.md`](research/07-addressing-and-wildcards.md)
+   — NATS/MQTT/RabbitMQ/Kafka/Akka wildcards, email To/Cc/Bcc/Reply-To and
+   threading, and the pitfalls of sender-side wildcards.
+9. [`decisions.md`](decisions.md) — the standing rule (every setting at every level,
+   governed, with detected defaults) and every settled decision (D1–D27).
+10. [`stage-1-in-memory-fifo.md`](stage-1-in-memory-fifo.md) — the first slice: an
    in-memory topic with a list of subscribers. Draft; its status line carries the
    revision.
-10. [`governance.md`](governance.md) — how topics join zetta's central governance
+11. [`governance.md`](governance.md) — how topics join zetta's central governance
    model (a `Topic` resource kind, `pubsub:*` permissions, policies over delivery
    options, audit).
-11. [`questions.md`](questions.md) — open questions, answered ones kept with their
+12. [`questions.md`](questions.md) — open questions, answered ones kept with their
    answers.
 
 ## Stages (proposed, not agreed)
