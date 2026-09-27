@@ -379,7 +379,7 @@ private:
     std::atomic<bool> started_{false};
     std::jthread maintenance_;
     std::mutex maintenance_mutex_;
-    std::condition_variable maintenance_wake_;
+    std::condition_variable_any maintenance_wake_;  // stop-token aware: no lost wakeup on shutdown
 };
 
 }  // namespace zetta::pubsub

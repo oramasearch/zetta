@@ -378,7 +378,9 @@ void PubSub::start() {
     maintenance_ = std::jthread([this](std::stop_token stop) {
         std::unique_lock lock(maintenance_mutex_);
         while (!stop.stop_requested()) {
-            maintenance_wake_.wait_for(lock, config_.maintenance_interval);
+            // Returns at once when a stop is requested, even one requested
+            // before the wait began.
+            maintenance_wake_.wait_for(lock, stop, config_.maintenance_interval, [] { return false; });
             if (stop.stop_requested()) break;
             lock.unlock();
             maintain();
@@ -394,7 +396,6 @@ void PubSub::shutdown(std::optional<std::chrono::milliseconds> budget) {
     const auto deadline = started + limit;
     if (maintenance_.joinable()) {
         maintenance_.request_stop();
-        maintenance_wake_.notify_all();
         maintenance_.join();
     }
     dispatcher_->stop();
