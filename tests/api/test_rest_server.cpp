@@ -311,7 +311,9 @@ TEST(Shutdown, SigtermWithLongPollsInFlightExitsPromptly) {
     EXPECT_TRUE(exited) << "node did not exit after SIGTERM\n"
                         << read_text(log_path);
     if (exited) {
-        EXPECT_TRUE(WIFEXITED(status)) << read_text(log_path);
+        EXPECT_TRUE(WIFEXITED(status))
+            << "termination signal: " << (WIFSIGNALED(status) ? WTERMSIG(status) : 0)
+            << '\n' << read_text(log_path);
         if (WIFEXITED(status)) {
             EXPECT_EQ(WEXITSTATUS(status), 0) << read_text(log_path);
         }

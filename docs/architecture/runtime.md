@@ -31,6 +31,7 @@ Today the interface exposes:
 | `zetta::runtime` | Backed by | Purpose |
 |---|---|---|
 | `task<T>` (default `task<>`) | `boost::capy::task<T>` | a coroutine returning `T` |
+| `with_stop_token(task, token)` | Capy task runner | inherit the executor while overriding cancellation; an empty token protects completion waits over borrowed state (#1077) |
 | `thread_pool` | `boost::capy::thread_pool` | worker threads + an executor |
 | `async_event` | serialized Capy event adapter | suspend without holding a thread; publish/close wakes all waiters on their executors (#1076) |
 | `block_on(task)` / `block_on(task<T>)` | Capy blocking runner | synchronous bridge: run a task to completion from non-coroutine code (e.g. `main()`, tests) and get its result |
@@ -60,6 +61,13 @@ between them. The lock is released before suspension; waiting uses a coroutine
 frame and never parks a thread. `runtime::timeout(event.wait(), duration)`
 cancels and removes a waiter when its deadline expires. Shared event state
 outlives pending waits (#1076, [pub/sub exposure](../pubsub/exposure.md)).
+
+Cancellation is still enabled for topic waits, including their timeout. A queued
+owner-thread closure is different: it can borrow data from the awaiting request
+frame, so `MainThreadBridge` waits for its completion under
+`with_stop_token(completed->wait(), std::stop_token{})`. Transport cancellation
+cannot release that frame until the owner has executed the closure (#1077).
+The shutdown owner loop must continue draining during that completion wait.
 
 No JSON or wire format changes. Coverage includes signals before registration,
 500 waiters across pool threads, and publication racing timeout cleanup.

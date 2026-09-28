@@ -20,10 +20,12 @@ runtime::task<> MainThreadBridge::run_on_owner(std::function<void()> work) {
     // headed frame loop's event wait.
     work_ready_.notify_one();
     if (wakeup) wakeup();
-    // The owner ran the work; the wait's io_result carries only whether the
-    // event was cancelled, which cannot happen here (the event is set by
-    // drain() before this resumes). Bound, like runtime::offload().
-    [[maybe_unused]] auto ready = co_await completed->wait();
+    // Queued work can borrow the awaiting request's frame. Transport shutdown
+    // must not cancel this completion wait and destroy that frame before the
+    // owner runs the closure (#1077). Keep the executor, but mask cancellation
+    // until drain() has run the work and signaled completion.
+    [[maybe_unused]] auto ready = co_await runtime::with_stop_token(
+        completed->wait(), std::stop_token{});
 }
 
 void MainThreadBridge::drain() {

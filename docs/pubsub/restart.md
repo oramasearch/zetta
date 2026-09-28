@@ -31,3 +31,9 @@ the owner loop is still available. Closing the topics wakes every REST
 `receive_events` long poll; the API server drains those request coroutines and
 their owner-thread work before its I/O context is destroyed (#1077). `Node::stop`
 then sees pub/sub already stopped and performs the remaining node teardown.
+
+Awaitable long polls (#1076) follow the same order. Closing a topic signals its
+`runtime::async_event` waiters; the final bridge read cannot be cancelled before
+its owner-thread closure completes. That keeps the request frame alive through
+the read, and keeps pub/sub, the Node and the API context alive until the route
+has finished (#1077).

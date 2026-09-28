@@ -55,16 +55,14 @@ The `Node` tree is **main-thread-only** (the same invariant the network thread
 obeys). The HTTP server runs on its own thread, so **no handler may touch the
 `Node` directly**. The bridge:
 
-- `zetta::api::MainThreadBridge` — a mutex-guarded queue of packaged tasks.
+- `zetta::api::MainThreadBridge` — a mutex-guarded queue of owner-thread closures.
   The owning loop **drains it**: `run_headless`'s tick loop and the headed
   app's frame loop both call `bridge.drain()` right where `Node::tick()`
-  already runs. An HTTP handler posts a closure and blocks on its future with
-  a timeout (default 10 s; a saturated loop returns a clear busy error, never
-  a hang).
-- Consequence: handler latency is bounded by the loop cadence (≤ ~100 ms
-  headless at 10 Hz, one frame headed). That is the correct price for never
-  violating the ownership invariant — the alternative (locking the tree) is
-  against the architecture and is not on the table.
+  already runs. An HTTP handler posts a closure and suspends on its completion
+  event. It resumes only after the closure has run, including during transport
+  cancellation, because the closure can borrow the request frame (#1077).
+- Enqueueing wakes the owner loop, which drains work before its next timed tick.
+  Handlers keep the Node ownership invariant without blocking the I/O thread.
 - Everything routes through the bridge, including reads that could arguably
   go direct — uniformity beats cleverness here; the thread-safety table lives
   in one place.
@@ -105,6 +103,16 @@ blocking pool there may briefly be no completion queued on the I/O executor.
 Without the hold, `io_context::run()` can return before the pool posts the
 completion, leaving the request coroutine to be destroyed while its stop
 callback is still running. No new wire or JSON format is introduced.
+
+With the awaitable long polls from #1076, shutdown cancellation can also resume a
+bridge wait before its queued closure has run. That closure borrows the route's
+`ApiResult` and input; letting the route finish first leaves dangling references
+for the owner drain. `MainThreadBridge::run_on_owner` therefore masks cancellation
+only while waiting for queued work to complete. Topic waits remain cancellable,
+and `PubSub::shutdown()` signals them while the topics, Node and API context are
+still alive. Their final owner-thread reads complete before the routes finish and
+the request count reaches zero. The bridge regression covers cancellation both
+before queueing and while queued (#1077, stacked on #1100).
 
 `Shutdown.SigtermWithLongPollsInFlightExitsPromptly` starts a real headless
 node, opens eleven 30-second REST long polls, and requires a normal exit within

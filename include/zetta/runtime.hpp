@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <type_traits>
 #include <utility>
 
@@ -25,6 +26,14 @@ namespace zetta::runtime {
 // A coroutine returning Value (void by default).
 template <class Value = void>
 using task = boost::capy::task<Value>;
+
+// Run on the caller's executor with an explicit cancellation token. An empty
+// token defers cancellation for completion waits that protect borrowed state
+// (#1077; docs/architecture/runtime.md).
+template <class Value>
+task<Value> with_stop_token(task<Value> coroutine, std::stop_token token) {
+    co_return co_await boost::capy::run(std::move(token))(std::move(coroutine));
+}
 
 // The `(error_code, values…)` pair every I/O awaitable in the stack yields, so a
 // caller writes `auto [error, value] = co_await …` and never throws across the
