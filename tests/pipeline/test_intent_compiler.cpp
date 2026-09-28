@@ -95,6 +95,45 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, StreamingBuildsItsOwnEventTimeShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-21";
+    options.hints = {{"source", "live"},
+                     {"table", "transactions"},
+                     {"entity_column", "account_id"},
+                     {"time_column", "occurred_at"},
+                     {"label_column", "fraud"},
+                     {"feature_columns", {"amount"}},
+                     {"output_topic", "fraud.scores"}};
+    const auto compiled =
+        compile_intent("Score transactions as they arrive", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-21");
+    EXPECT_EQ(compiled->shape, IntentShape::Generic);
+    EXPECT_EQ(compiled->graph.node_count(), 4u);
+    EXPECT_TRUE(compiled->graph.has_node("subscribe_events"));
+    EXPECT_TRUE(compiled->graph.has_node("window_features"));
+    const auto model = compiled->graph.find_node("train_streaming_model");
+    ASSERT_TRUE(model);
+    EXPECT_EQ(model->attributes.at("model_kind"), "streaming");
+    EXPECT_EQ(model->attributes.at("time_column"), "occurred_at");
+    EXPECT_TRUE(model->attributes.at("prequential").get<bool>());
+    EXPECT_TRUE(zetta::pipeline::default_gate()
+                    .run(compiled->graph)
+                    .passed());
+}
+
+TEST(IntentCompilerTest, StreamingPrimarySolutionSelectsM21) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    const auto compiled =
+        compile_intent("Score events as they arrive", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-21");
+    EXPECT_TRUE(compiled->graph.has_node("train_streaming_model"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
     std::string error;
     EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));

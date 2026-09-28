@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m21_methodology();
 
 namespace {
 
@@ -211,14 +212,7 @@ const std::vector<Methodology>& methodologies() {
                  input("feature", true, "protected training data")},
                 {"private model", "synthetic dataset", "guarantee report"},
                 {"privacy budget", "TSTR", "attack success"}, 1059),
-        planned("M-21", "Online / streaming learning", "Time & vigilance",
-                {"online_learning", "streaming"}, {},
-                {"online learning", "streaming", "real time learning"},
-                {input("time", true, "event time"),
-                 input("feature", true, "event features"),
-                 input("label", false, "delayed outcome")},
-                {"online model", "streaming scores"},
-                {"prequential loss", "drift", "latency"}, 1060),
+        make_m21_methodology(),
     };
     return table;
 }
@@ -228,8 +222,18 @@ find_methodology(std::string_view id_or_model_kind_or_solution) {
     const std::string wanted = lower(id_or_model_kind_or_solution);
     for (const Methodology& methodology : methodologies()) {
         if (lower(methodology.id) == wanted ||
-            contains_value(methodology.model_kinds, wanted) ||
-            contains_value(methodology.solutions, wanted)) {
+            contains_value(methodology.model_kinds, wanted)) {
+            return &methodology;
+        }
+    }
+    for (const Methodology& methodology : methodologies()) {
+        if (!methodology.solutions.empty() &&
+            lower(methodology.solutions.front()) == wanted) {
+            return &methodology;
+        }
+    }
+    for (const Methodology& methodology : methodologies()) {
+        if (contains_value(methodology.solutions, wanted)) {
             return &methodology;
         }
     }

@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -7,17 +7,27 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `StreamingCorrectnessCheck` | `streaming_correctness` | an M-21 model without event-time ordering, allowed lateness, future-event buffering, delayed-label protection, or prequential evaluation |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
+
+### `streaming_correctness` — M-21 event and label order
+
+This check engages only on model steps whose `model_kind` is `streaming` or
+`online_learning`. It requires `event_time_ordered: true`, a non-negative
+`allowed_lateness`, `future_event_policy: "buffer_until_watermark"`,
+`label_time_policy: "not_before_event_time"`, and `prequential: true`. Missing
+or contradictory policy blocks the graph before run. Runtime processing applies
+the same rules to each event; see [online and streaming learning](../ml/streaming.md).
 
 ## How a check reads a step
 

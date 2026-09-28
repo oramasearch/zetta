@@ -276,11 +276,12 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "streaming_correctness");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -438,6 +439,59 @@ TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
     const auto graph = model_graph(nlohmann::json::object());
     EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
               zetta::pipeline::CheckStatus::Pass);
+}
+
+TEST(StreamingGraphCheck, CorrectEventTimeAndPrequentialPolicyPasses) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(StreamingGraphCheck, RefusesAStreamingModelWithoutEventTimeOrdering) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("event_time_ordered"), std::string::npos);
+}
+
+TEST(StreamingGraphCheck, RefusesEarlyLabelsAndTrainThenTestMetrics) {
+    const auto early_label = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "use_on_arrival"},
+         {"prequential", true}});
+    const auto early_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(early_label);
+    EXPECT_EQ(early_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(early_result.reason.find("label_time_policy"), std::string::npos);
+
+    const auto train_then_test = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", false}});
+    const auto metric_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(train_then_test);
+    EXPECT_EQ(metric_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(metric_result.reason.find("prequential"), std::string::npos);
 }
 
 // The two checks together are what the corpus's neighbouring-solution negative control needs:

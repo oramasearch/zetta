@@ -61,6 +61,7 @@
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
 #include "zetta/ml/playbook.hpp"
+#include "zetta/ml/streaming.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/parquet/column_decoder.hpp"
@@ -97,6 +98,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"calibration", "calibration.schema.json", &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
         {"gbdt_params", "gbdt_params.schema.json", &zetta::ml::gbdt_params_schema},
+        {"streaming_model", "streaming_model.schema.json",
+         &zetta::ml::streaming_model_schema},
+        {"streaming_params", "streaming_params.schema.json",
+         &zetta::ml::streaming_params_schema},
         {"golden_oracle", "golden_oracle.schema.json",
          &zetta::ml::golden_oracle_schema},
         {"playbook_entry", "playbook_entry.schema.json",
