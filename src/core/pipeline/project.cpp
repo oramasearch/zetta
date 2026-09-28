@@ -337,7 +337,7 @@ Project::compile_intent_to_graph(const std::string& input_id, std::string name,
     if (!compiled) return nullptr;
 
     if (name.empty()) {
-        name = std::string(to_string(compiled->shape)) + " skeleton";
+        name = compiled->name;
     }
     // create_graph rejects an empty/colliding name and captures the new graph
     // into the CRDT, so the compiled skeleton replicates + is editable in the

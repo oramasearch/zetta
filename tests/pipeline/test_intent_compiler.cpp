@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -84,6 +85,23 @@ TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
     EXPECT_FALSE(compile_intent("Group customers", options, &error));
     EXPECT_NE(error.find("Online / streaming learning (M-21)"), std::string::npos);
     EXPECT_NE(error.find("1060"), std::string::npos);
+}
+
+TEST(IntentCompilerTest, NamesEveryRunnablePipelineAfterItsMethodology) {
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        if (!methodology.runnable) {
+            continue;
+        }
+        zetta::pipeline::IntentCompileOptions options;
+        options.methodology = methodology.id;
+        const auto compiled = compile_intent("Build the selected pipeline", options);
+        ASSERT_TRUE(compiled) << methodology.id;
+        EXPECT_EQ(compiled->methodology, methodology.id);
+        EXPECT_EQ(compiled->name, methodology.id == "M-1"
+                                      ? "churn skeleton"
+                                      : methodology.name + " pipeline");
+        EXPECT_NE(compiled->name, "generic skeleton");
+    }
 }
 
 TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {

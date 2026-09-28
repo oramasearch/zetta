@@ -292,7 +292,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("list_methodologies", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
-    for (std::size_t index = 0; index < 13; ++index) {
+    for (std::size_t index = 0; index < 16; ++index) {
         const auto& methodology = listed.value.at("methodologies")[index];
         EXPECT_EQ(methodology.at("id"), "M-" + std::to_string(index + 1));
         EXPECT_TRUE(methodology.at("runnable"));
@@ -314,6 +314,8 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_TRUE(explicit_m3.ok) << explicit_m3.error.message;
     EXPECT_EQ(explicit_m3.value.at("methodology"), "M-3");
     EXPECT_TRUE(explicit_m3.value.at("runnable"));
+    EXPECT_EQ(explicit_m3.value.at("name"), "Segmentation / clustering pipeline");
+    EXPECT_NE(explicit_m3.value.at("name"), "generic skeleton");
 
     const ApiResult solution =
         call("compile_intent", {{"project", "portfolio"},

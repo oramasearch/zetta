@@ -38,6 +38,11 @@ their unsupported status and issue links.
   now require graph ML and use M-21's `online_learning` as their unsupported
   example. Refusals for invalid graphs, unsafe parameters, unauthorized input,
   and unmatched intent remain unchanged.
+- The round-three audit extends discovery and support assertions through M-16;
+  M-21 remains the unsupported fixture. The naming regression checks every
+  runnable method and the M-3 capability response: default names come from
+  `CompiledIntent::name`, not the legacy `IntentShape::Generic` label.
+  Explicit names and M-1's `churn skeleton` remain unchanged.
 - GBDT retains binary-logistic and squared-error behavior alongside the
   LambdaMART gradient callback. Forecasting and uplift retain regression.
 - Reports retain every method's metrics, tables and dataset facts. Survival

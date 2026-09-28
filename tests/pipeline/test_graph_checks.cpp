@@ -928,6 +928,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
               implemented.end())
         << "M-16 optimization ships today";
+    for (const char* shipped : {"speech", "audio", "bandit"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
@@ -1209,6 +1213,10 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"), implemented.end());
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bandit"),
               implemented.end());
+    for (const char* shipped : {"speech", "audio", "optimization"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())

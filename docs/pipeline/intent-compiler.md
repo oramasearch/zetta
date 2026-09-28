@@ -64,7 +64,13 @@ if (compiled) {
 ```
 
 The API capability accepts the same optional `methodology`, `solution`, and
-`hints` fields. Its answer includes the methodology id it compiled.
+`hints` fields. Its answer includes the methodology id it compiled. Unless a
+caller supplies a name, M-1 keeps `churn skeleton`; every other resolved method
+uses `<methodology name> pipeline`. For example, M-3 returns
+`Segmentation / clustering pipeline`, not `generic skeleton` (#1082).
+`CompiledIntent::name` supplies this default independently of the legacy
+`IntentShape` classification. Unresolved intents still fail rather than
+producing a generic pipeline.
 
 ## M-1 reference shape
 

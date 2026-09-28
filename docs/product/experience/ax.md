@@ -45,13 +45,16 @@ relay it to a person.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
   metrics, and runnable status. `compile_intent` accepts a methodology or
-  solution selector; M-1 and M-12 are runnable, while unsupported work names
+  solution selector; M-1 through M-16 are runnable, while unsupported work names
   its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. M-15 compiles and runs its own
   bandit shape against the connect step's table, then reports policy metrics
   and its output tables. See
   [the registry contract](../../ml/methodologies.md).
+  Default pipeline names also identify the method: M-3 returns
+  `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
+  Explicit caller names are unchanged.
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
   then run the stored pipeline and poll its Run. The report carries temporal

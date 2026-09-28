@@ -117,8 +117,11 @@ compile_intent(std::string_view intent, const IntentCompileOptions& options,
     request.hints = options.hints;
     const IntentShape shape =
         methodology->id == "M-1" ? IntentShape::Churn : IntentShape::Generic;
+    const std::string name = methodology->id == "M-1"
+                                 ? "churn skeleton"
+                                 : methodology->name + " pipeline";
     return CompiledIntent{methodology->build_shape(request), shape,
-                          methodology->id};
+                          methodology->id, name};
 }
 
 } // namespace zetta::pipeline
