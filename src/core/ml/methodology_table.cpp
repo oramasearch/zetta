@@ -14,6 +14,7 @@ namespace zetta::ml {
 Methodology make_m1_methodology();
 Methodology make_m2_methodology();
 Methodology make_m3_methodology();
+Methodology make_m5_methodology();
 
 namespace {
 
@@ -70,14 +71,7 @@ const std::vector<Methodology>& methodologies() {
         make_m2_methodology(),
         make_m3_methodology(),
         make_m4_methodology(),
-        planned("M-5", "Survival / time-to-event", "The tabular decision core",
-                {"survival", "time_to_event"}, {"S-8"},
-                {"time to", "when will", "survival", "remaining useful life"},
-                {input("entity", true, "entity whose event time is modeled"),
-                 input("time", true, "duration or event time"),
-                 input("label", true, "event and censor indicator")},
-                {"risk curves", "expected time to event"},
-                {"concordance", "time-dependent AUC", "IPCW Brier"}, 1044),
+        make_m5_methodology(),
         planned("M-6", "Causal inference & uplift", "Action & decision",
                 {"causal", "uplift"}, {},
                 {"uplift", "treatment", "who to target", "incremental effect"},

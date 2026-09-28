@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-4 and M-7 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-5 and M-7 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -108,6 +108,15 @@ horizon bounds. Actual history bounds are also enforced per series at runtime.
 `get_run_report` renders forecast metrics and table rows without classification
 metrics or probability language. See [forecast.md](forecast.md#running-it) for
 the tool sequence and supported inputs.
+
+## M-5 survival implementation
+
+`src/core/ml/survival_methodology.cpp` builds a dedicated survival cohort →
+validation → discrete-hazard model → survival-table → calibration-table graph.
+Its ownership callback recognizes only `survival` and `time_to_event`. Its run
+callback resolves the connect step's own table, calls the native distributed
+runner, and returns the durable Run record read by `get_run` and
+`get_run_report`. See [survival.md](survival.md).
 
 ## M-7 anomaly implementation
 

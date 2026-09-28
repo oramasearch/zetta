@@ -559,6 +559,8 @@ add_library(zetta-core STATIC
   src/core/ml/entity_resolution.cpp
   src/core/ml/entity_resolution_methodology.cpp
   src/core/ml/model.cpp
+  src/core/ml/survival.cpp
+  src/core/ml/survival_methodology.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
   src/core/index/index.cpp

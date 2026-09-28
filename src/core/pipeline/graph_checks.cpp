@@ -52,6 +52,12 @@ const nlohmann::json& graph_step_annotations_schema() {
       "type": "string",
       "minLength": 1
     },
+    "duration_column": { "type": "string", "minLength": 1 },
+    "event_indicator": { "type": "string", "minLength": 1 },
+    "censoring_handled": { "type": "boolean" },
+    "stop_after_event": { "type": "boolean" },
+    "point_in_time_features": { "type": "boolean" },
+    "temporal_validation": { "type": "boolean" },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "type": "array",
@@ -395,6 +401,52 @@ CheckResult EntityResolutionGraphCheck::evaluate(
         name(), CheckStatus::Pass,
         "every entity-resolution model states safe blocking, thresholds, and "
         "conflict handling"};
+}
+
+CheckResult SurvivalCensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "survival" && model_kind != "time_to_event") {
+            continue;
+        }
+        if (const auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto requires_true = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_boolean() &&
+                   found->get<bool>();
+        };
+        const auto requires_string = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_string() &&
+                   !found->get_ref<const std::string&>().empty();
+        };
+        if (!requires_string("duration_column") ||
+            !requires_string("event_indicator") ||
+            !requires_true("censoring_handled") ||
+            !requires_true("stop_after_event") ||
+            !requires_true("point_in_time_features")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": survival requires duration_column, event_indicator, "
+                        "censoring_handled=true, stop_after_event=true, and "
+                        "point_in_time_features=true"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "survival steps preserve censoring and point-in-time boundaries"};
 }
 
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {

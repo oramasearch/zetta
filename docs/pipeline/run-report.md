@@ -42,6 +42,8 @@ state, and `get_run_report` puts them together at query time:
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| survival quality | the survival Model's concordance and IPCW Brier metrics |
+| survival outputs | the run's survival and interval-calibration table refs |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match

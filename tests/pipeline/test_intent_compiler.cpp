@@ -95,6 +95,18 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, SurvivalBuildsItsOwnRunnableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-5";
+    const auto compiled = compile_intent("When will each subject fail?", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-5");
+    EXPECT_TRUE(compiled->graph.has_node("train_survival_model"));
+    EXPECT_TRUE(compiled->graph.has_node("write_survival_table"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordBuildsItsOwnShape) {
     std::string error;
     const auto compiled =

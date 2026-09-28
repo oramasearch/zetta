@@ -77,9 +77,11 @@ CorrectnessGate default_gate() {
     // annotations passes them), so they are safe to ship in the baseline gate.
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
+    gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());
     gate.add_check(std::make_shared<ForecastGraphCheck>());
+    gate.add_check(std::make_shared<SurvivalCensoringCheck>());
     gate.add_check(std::make_shared<AnomalyGraphCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the

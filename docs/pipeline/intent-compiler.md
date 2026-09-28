@@ -10,6 +10,7 @@ include/zetta/pipeline/intent_compiler.hpp   compile options and result
 src/core/pipeline/intent_compiler.cpp         deterministic resolution
 include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
+src/core/ml/survival_methodology.cpp          M-5 shape callback
 ```
 
 ## Resolution order
@@ -23,6 +24,10 @@ The compiler uses the first applicable signal:
 
 M-2 is selected explicitly by id/model kind or by its identity-resolution
 keywords; it is not used as a generic fallback.
+
+M-5 is also selected explicitly by `methodology: M-5`, by `solution: S-8`, or
+by its registered time-to-event keywords. It returns a dedicated cohort →
+validation → discrete-hazard model → survival/calibration output graph.
 
 An empty intent is `invalid_input`. An unknown methodology or solution is also
 `invalid_input`. If the resolved methodology is registered but not runnable,

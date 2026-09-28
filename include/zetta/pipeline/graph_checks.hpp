@@ -100,6 +100,15 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// Survival-censoring check (#1044): a survival graph must declare that censored
+// observations remain non-events, person-period expansion stops after an event,
+// and feature values are bounded by their subject cutoff.
+class SurvivalCensoringCheck final : public Check {
+public:
+    std::string name() const override { return "survival_censoring"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

@@ -178,6 +178,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     forecast.hpp            zetta::ml::ForecastParams/ForecastResult/train_forecast_partitions — lagged squared-error forecasting with rolling temporal origins, seasonal-naive FVA, and residual-quantile intervals (#1043)
     forecast_runner.hpp     zetta::ml::run_forecast_job/run_forecast_table — distributed ComputeJob and ResolvedDataset entry points; write a `forecast` Model plus forecast table, RunOutputs, and lineage (#1043)
     forecast_methodology.hpp zetta::ml — M-4 graph contract, registry callbacks and coordinated-launch registration (#1043)
+    survival.hpp            zetta::ml discrete-time survival API: subject/person-period types, distributed train collectives, censoring-aware metrics, curves, resolved-dataset runner, and async run handle (#1044)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -443,6 +444,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     anomaly_table.cpp       zetta::ml::run_anomaly_on_table — resolved partition-body loader, anomaly Model/output-table materialization, and Run lineage attachment (#1046)
     anomaly_plan.cpp        M-7 plan parser and AnomalyGraphCheck: executable shape, roles, exact budget, robust scaling, and causal windows (#1046)
     anomaly_methodology.cpp M-7 shape/ownership/run callbacks, label-free catalog resolution, asynchronous coordinated launch, and report assembly (#1046)
+    survival.cpp            person-period expansion, time-aware subject split, distributed hazard GBDT, survival curves, concordance/IPCW Brier/calibration, partitioned-table runner, model/table/run materialization (#1044)
+    survival_methodology.cpp M-5 survival graph builder, ownership predicate, resolved-table run callback (#1044)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -646,6 +649,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_forecast_launch.cpp
                             non-root forecast submission, peer launch validation, replicated artifacts and single-member equivalence (#1043)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
+  ml/test_survival.cpp      survival censor labels, known-hazard ranking, monotone curves, determinism, and multi-member partition equivalence (#1044)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

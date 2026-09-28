@@ -16,6 +16,7 @@ using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::SchemaTypeCheck;
+using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::ValidationReport;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
@@ -168,6 +169,47 @@ TEST(DataLeakageCheck, FeatureAfterCutoffFailsWithReason) {
         << result.reason;
     EXPECT_NE(result.reason.find("spend_after_cutoff"), std::string::npos)
         << result.reason;
+}
+
+TEST(SurvivalGraphCheck, RefusesMissingCensoringGuarantees) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "survival",
+                   json{{"model_kind", "survival"},
+                        {"duration_column", "duration"},
+                        {"event_indicator", "event"}},
+                   "survival");
+
+    const CheckResult result = SurvivalCensoringCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("censoring_handled"), std::string::npos);
+}
+
+TEST(SurvivalGraphCheck, RefusesFeatureAfterCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "survival",
+        json{{"model_kind", "survival"},
+             {"as_of", "2024-01-01"},
+             {"features", json::array({json{{"name", "future_usage"},
+                                              {"data_as_of", "2024-02-01"}}})}},
+        "survival");
+
+    EXPECT_EQ(DataLeakageCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SurvivalGraphCheck, AcceptsRequiredCensoringGuarantees) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "survival",
+                   json{{"model_kind", "survival"},
+                        {"duration_column", "duration"},
+                        {"event_indicator", "event"},
+                        {"censoring_handled", true},
+                        {"stop_after_event", true},
+                        {"point_in_time_features", true}},
+                   "survival");
+
+    EXPECT_EQ(SurvivalCensoringCheck{}.evaluate(graph).status,
+              CheckStatus::Pass);
 }
 
 TEST(DataLeakageCheck, FeatureAtCutoffPasses) {
@@ -326,15 +368,17 @@ TEST(EntityResolutionGraphCheck, AcceptsTheM2Profile) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 8u);
+    ASSERT_EQ(gate.check_count(), 10u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution_profile");
-    EXPECT_EQ(gate.checks()[4]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[5]->name(), "forecast_correctness");
-    EXPECT_EQ(gate.checks()[6]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[7]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "temporal_validation");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[5]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[6]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[7]->name(), "survival_censoring");
+    EXPECT_EQ(gate.checks()[8]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[9]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -393,16 +437,16 @@ TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
     zetta::ir::ExecutionGraph graph;
     const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
     const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
-                                      nlohmann::json{{"model_kind", "survival"}});
+                                      nlohmann::json{{"model_kind", "forecast"}});
     graph.add_edge(connect->id, model->id);
 
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("Survival / time-to-event (M-5)"),
+    EXPECT_NE(result.reason.find("Time-series forecasting (M-4)"),
               std::string::npos)
         << "the reason must name the methodology that was refused";
-    EXPECT_NE(result.reason.find("1044"), std::string::npos)
+    EXPECT_NE(result.reason.find("1043"), std::string::npos)
         << "the reason must name the methodology's implementation issue";
 }
 
@@ -426,8 +470,11 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
-    for (const char *unshipped :
-         {"uplift", "survival"}) {
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
+              implemented.end())
+        << "M-5 survival ships today";
+    for (const char* unshipped :
+         {"uplift"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -644,8 +691,10 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
-    for (const char *unshipped :
-         {"uplift", "survival", "graph"}) {
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
+              implemented.end());
+    for (const char* unshipped :
+         {"uplift", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }
