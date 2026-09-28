@@ -31,6 +31,58 @@ TEST(Replication, MergePropagatesState) {
     EXPECT_EQ(snapshot["nested"]["b"], 2);
 }
 
+TEST(Replication, SharedSnapshotsAreImmutableAcrossWrites) {
+    ReplicationManager manager{zetta::util::new_uuid()};
+    manager.set("one", 1);
+    const auto before = manager.shared_snapshot();
+
+    manager.set("two", 2);
+    const auto after = manager.shared_snapshot();
+
+    ASSERT_TRUE(before);
+    ASSERT_TRUE(after);
+    EXPECT_EQ(before->size(), 1u);
+    EXPECT_FALSE(before->contains("two"));
+    EXPECT_EQ(after->at("two"), 2);
+}
+
+TEST(Replication, ChangesTrackLocalWritesAndRemovals) {
+    ReplicationManager manager{zetta::util::new_uuid()};
+    const auto initial = manager.changes_since(0);
+    ASSERT_TRUE(initial.full_resync);
+    ASSERT_TRUE(initial.snapshot);
+
+    manager.set("one", 1);
+    manager.set("two", 2);
+    const auto writes = manager.changes_since(initial.next_token);
+    EXPECT_FALSE(writes.full_resync);
+    EXPECT_EQ(writes.keys, (std::vector<std::string>{"one", "two"}));
+    ASSERT_TRUE(writes.snapshot);
+    EXPECT_EQ(writes.snapshot->size(), 2u);
+
+    manager.remove("one");
+    const auto removal = manager.changes_since(writes.next_token);
+    EXPECT_FALSE(removal.full_resync);
+    EXPECT_EQ(removal.keys, (std::vector<std::string>{"one"}));
+    ASSERT_TRUE(removal.snapshot);
+    EXPECT_FALSE(removal.snapshot->contains("one"));
+}
+
+TEST(Replication, ChangesTrackPeerMerges) {
+    ReplicationManager source{zetta::util::new_uuid()};
+    ReplicationManager replica{zetta::util::new_uuid()};
+    const auto baseline = replica.changes_since(0);
+
+    source.set("peer", nlohmann::json{{"value", 1}});
+    replica.merge(source.save());
+    const auto merged = replica.changes_since(baseline.next_token);
+
+    EXPECT_FALSE(merged.full_resync);
+    EXPECT_EQ(merged.keys, (std::vector<std::string>{"peer"}));
+    ASSERT_TRUE(merged.snapshot);
+    EXPECT_EQ(merged.snapshot->at("peer").at("value"), 1);
+}
+
 TEST(Replication, EntryCountAndVersionTrackTheDocument) {
     ReplicationManager manager{zetta::util::new_uuid()};
     EXPECT_EQ(manager.entry_count(), 0u);

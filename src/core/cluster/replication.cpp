@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <format>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <automerge-cpp/automerge.hpp>
@@ -18,7 +21,17 @@ namespace zetta::cluster {
 namespace am = automerge_cpp;
 
 struct ReplicationManager::State {
+    struct ChangeRecord {
+        ReplicationChangeToken token;
+        std::string key;
+    };
+
     am::Document document;
+    std::shared_ptr<nlohmann::json> snapshot =
+        std::make_shared<nlohmann::json>(nlohmann::json::object());
+    std::unordered_map<std::string, std::string> encoded_values;
+    std::deque<ChangeRecord> changes;
+    ReplicationChangeToken current_token = 1;
     mutable std::mutex mutex;
 };
 
@@ -34,6 +47,37 @@ ReplicationManager::ReplicationManager(std::string node_id,
 
 ReplicationManager::~ReplicationManager() = default;
 
+namespace {
+
+constexpr std::size_t kChangeJournalCapacity = 65536;
+
+template <typename StateType>
+void make_snapshot_mutable(StateType& state) {
+    if (state.snapshot.use_count() == 1) return;
+    state.snapshot = std::make_shared<nlohmann::json>(*state.snapshot);
+}
+
+template <typename StateType>
+void record_change(StateType& state, const std::string& key) {
+    ++state.current_token;
+    state.changes.push_back({state.current_token, key});
+    if (state.changes.size() > kChangeJournalCapacity) {
+        state.changes.pop_front();
+    }
+}
+
+template <typename StateType>
+void cache_live_value(StateType& state, const std::string& key,
+                      const std::string& encoded) {
+    state.encoded_values[key] = encoded;
+    nlohmann::json value =
+        nlohmann::json::parse(encoded, nullptr, /*allow_exceptions=*/false);
+    (*state.snapshot)[key] =
+        value.is_discarded() ? nlohmann::json(encoded) : std::move(value);
+}
+
+}  // namespace
+
 void ReplicationManager::set(const std::string& key,
                              const nlohmann::json& value) {
     // Store each value as its JSON text — supports any value (incl. nested) and
@@ -43,6 +87,9 @@ void ReplicationManager::set(const std::string& key,
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    make_snapshot_mutable(*state_);
+    cache_live_value(*state_, key, encoded);
+    record_change(*state_, key);
 }
 
 namespace {
@@ -74,6 +121,10 @@ void ReplicationManager::remove(const std::string& key) {
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
+    make_snapshot_mutable(*state_);
+    state_->encoded_values[key] = encoded;
+    state_->snapshot->erase(key);
+    record_change(*state_, key);
 }
 
 // Is the key tombstoned in ANY of its concurrent values? Two nodes that
@@ -96,16 +147,35 @@ bool ReplicationManager::removed_locked(const std::string& key) const {
 
 nlohmann::json ReplicationManager::snapshot() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
-    nlohmann::json result = nlohmann::json::object();
-    for (const std::string& key : state_->document.keys(am::root)) {
-        const std::optional<std::string> encoded =
-            state_->document.get<std::string>(am::root, key);
-        if (!encoded) continue;
-        if (is_tombstone(*encoded) || removed_locked(key)) continue;
-        nlohmann::json value =
-            nlohmann::json::parse(*encoded, nullptr, /*allow_exceptions=*/false);
-        result[key] = value.is_discarded() ? nlohmann::json(*encoded)
-                                            : std::move(value);
+    return *state_->snapshot;
+}
+
+std::shared_ptr<const nlohmann::json> ReplicationManager::shared_snapshot() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->snapshot;
+}
+
+ReplicationChanges ReplicationManager::changes_since(
+    ReplicationChangeToken token) const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    ReplicationChanges result;
+    result.next_token = state_->current_token;
+    result.snapshot = state_->snapshot;
+    if (token == 0 || token > state_->current_token) {
+        result.full_resync = true;
+        return result;
+    }
+    if (token == state_->current_token) return result;
+    if (state_->changes.empty() ||
+        token + 1 < state_->changes.front().token) {
+        result.full_resync = true;
+        return result;
+    }
+
+    std::unordered_set<std::string> seen;
+    for (const State::ChangeRecord& change : state_->changes) {
+        if (change.token <= token || !seen.insert(change.key).second) continue;
+        result.keys.push_back(change.key);
     }
     return result;
 }
@@ -117,15 +187,7 @@ bool ReplicationManager::knows_key(const std::string& key) const {
 
 std::size_t ReplicationManager::entry_count() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
-    std::size_t live = 0;
-    for (const std::string& key : state_->document.keys(am::root)) {
-        const std::optional<std::string> encoded =
-            state_->document.get<std::string>(am::root, key);
-        if (!encoded) continue;
-        if (is_tombstone(*encoded) || removed_locked(key)) continue;
-        ++live;
-    }
-    return live;
+    return state_->snapshot->size();
 }
 
 std::string ReplicationManager::version() const {
@@ -159,6 +221,51 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
     if (!other) return;
     const std::lock_guard<std::mutex> lock(state_->mutex);
     state_->document.merge(*other);
+
+    std::unordered_set<std::string> document_keys;
+    std::vector<std::string> changed_keys;
+    for (const std::string& key : state_->document.keys(am::root)) {
+        const std::optional<std::string> encoded =
+            state_->document.get<std::string>(am::root, key);
+        if (!encoded) continue;
+        document_keys.insert(key);
+        const bool removed = is_tombstone(*encoded) || removed_locked(key);
+        const std::string effective =
+            removed
+                ? nlohmann::json{{std::string(kRemovedMarker), true}}.dump()
+                : *encoded;
+        const auto cached = state_->encoded_values.find(key);
+        if (cached != state_->encoded_values.end() &&
+            cached->second == effective) {
+            continue;
+        }
+        changed_keys.push_back(key);
+    }
+    for (const auto& [key, encoded] : state_->encoded_values) {
+        if (!document_keys.contains(key)) changed_keys.push_back(key);
+    }
+    if (changed_keys.empty()) return;
+
+    make_snapshot_mutable(*state_);
+    for (const std::string& key : changed_keys) {
+        const std::optional<std::string> encoded =
+            state_->document.get<std::string>(am::root, key);
+        if (!encoded) {
+            state_->encoded_values.erase(key);
+            state_->snapshot->erase(key);
+            record_change(*state_, key);
+            continue;
+        }
+        const bool removed = is_tombstone(*encoded) || removed_locked(key);
+        if (removed) {
+            state_->encoded_values[key] =
+                nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
+            state_->snapshot->erase(key);
+        } else {
+            cache_live_value(*state_, key, *encoded);
+        }
+        record_change(*state_, key);
+    }
 }
 
 }  // namespace zetta::cluster

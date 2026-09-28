@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
@@ -11,9 +12,18 @@
 
 namespace zetta::cluster {
 
+using ReplicationChangeToken = std::uint64_t;
+
+struct ReplicationChanges {
+    ReplicationChangeToken next_token = 0;
+    std::shared_ptr<const nlohmann::json> snapshot;
+    std::vector<std::string> keys;
+    bool full_resync = false;
+};
+
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
-// More policies (sharded, quorum, ...) will be added behind this enum/seam.
+// More policies (sharded, quorum, ...) will be added through this policy enum.
 enum class ReplicationPolicy { ReplicateToAllNodes };
 
 // The node's replicated state, backed by an Automerge CRDT document.
@@ -21,7 +31,7 @@ enum class ReplicationPolicy { ReplicateToAllNodes };
 // Local changes are made with set(); peers exchange save()/merge() blobs (the
 // cluster gossips them) and the CRDT converges conflict-free — concurrent
 // changes to different keys both survive, with no coordination. Automerge is
-// hidden behind this facade (pImpl); the rest of zetta sees only JSON + bytes.
+// hidden behind this adapter (pImpl); the rest of zetta sees only JSON + bytes.
 // Thread-safe (the cluster's network thread and local callers both touch it).
 //
 // Holds the node's DDL / metadata / rows for replication. (Hooking the live
@@ -71,7 +81,18 @@ public:
     void remove(const std::string& key);
 
     // The merged document as JSON — live entries only, tombstoned keys omitted.
+    // This compatibility accessor copies the writer-maintained parsed cache.
     nlohmann::json snapshot() const;
+
+    // A shared immutable view of the writer-maintained parsed cache. Writers use
+    // copy-on-write when a reader still holds the current view (#1079).
+    std::shared_ptr<const nlohmann::json> shared_snapshot() const;
+
+    // Return the keys whose effective values changed after `token`, together
+    // with the immutable snapshot that contains those values. Token zero means
+    // that the caller has no baseline and requires a full reconcile. A bounded
+    // journal also requests a full reconcile when the token is too old (#1079).
+    ReplicationChanges changes_since(ReplicationChangeToken token) const;
 
     // Whether the document knows this key at all, INCLUDING as a tombstone. This
     // is the question "was this ever replicated?", as opposed to `snapshot()`'s
