@@ -60,6 +60,7 @@
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/next_best_action_methodology.hpp"
 #include "zetta/ml/playbook.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/observability/crash.hpp"
@@ -115,6 +116,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::ml::playbook_entry_schema},
         {"playbook_policy", "playbook_policy.schema.json",
          &zetta::ml::playbook_policy_schema},
+        {"next_best_action_step", "next_best_action_step.schema.json",
+         &zetta::ml::next_best_action_step_schema},
+        {"next_best_action_launch", "next_best_action_launch.schema.json",
+         &zetta::ml::next_best_action_launch_schema},
         // index
         {"index", "index.schema.json", &zetta::index::index_value_schema},
         {"fulltext_query", "fulltext_query.schema.json",

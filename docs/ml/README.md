@@ -27,6 +27,7 @@ for model work.
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
 - [entity_resolution.md](entity_resolution.md) — M-2 native multi-route blocking, probabilistic or labelled-pair scoring, conflict-safe clustering, result tables, and metrics (#1041).
+- [next_best_action.md](next_best_action.md) — M-8 propensity composition, implicit-feedback ALS, hard policy constraints, recommendation tables, and offline IPS/DR evaluation (#1047).
 
 ## Methodology portfolio
 
@@ -44,7 +45,7 @@ carry `*`. Regenerate it with
 | M-5 | Survival / time-to-event | The tabular decision core | survival, time_to_event | S-8 | entity*, time*, label*, feature_time*, feature* | survival table, interval hazards, expected time to event, median survival, interval calibration | censoring-aware concordance, IPCW integrated Brier score | runnable | — |
 | M-6 | Causal inference & uplift | Action & decision | causal, uplift | — | entity*, treatment*, label*, time, feature* | uplift model, treatment effects, targeting policy, Qini curve, run report | held-out AUUC, Qini coefficient, uplift at targeting fraction | runnable | [#1045](https://github.com/oramasearch/zetta/issues/1045) |
 | M-7 | Anomaly detection | Time & vigilance | anomaly, anomaly_detection, outlier | S-7 | feature*, entity, label, time | anomaly table, budget report, model, lineage | threshold, contamination, alert_budget, alert_rate, precision_at_k | runnable | [#1046](https://github.com/oramasearch/zetta/issues/1046) |
-| M-8 | Recommendation / next-best-action | Action & decision | recommendation, recommender, next_best_action | S-11 | entity*, treatment*, label | ranked actions, recommendations | NDCG, recall at k, policy value | not runnable | [#1047](https://github.com/oramasearch/zetta/issues/1047) |
+| M-8 | Recommendation / next-best-action | Action & decision | next_best_action, recommendation, recommender | S-11 | entity*, treatment*, label*, time*, feature*, group | recommendation table, policy report, next-best-action model | hit rate at k, popularity hit rate at k, inverse propensity value, doubly robust value, effective sample size, maximum clipped weight | runnable | [#1047](https://github.com/oramasearch/zetta/issues/1047) |
 | M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | S-12 | entity*, group, label* | ranked list, priority scores | NDCG, precision at k, queue yield | not runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |
 | M-11 | Document intelligence | Language, documents & perception | document_intelligence, ocr, document | — | text*, label | structured fields, evidence links | field accuracy, F1, straight-through rate | not runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |

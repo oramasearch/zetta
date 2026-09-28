@@ -546,7 +546,18 @@ const nlohmann::json& get_run_report_output_schema() {
              "clustering metrics, chosen_k_reason and k_candidates. Anomaly "
              "detection reports threshold, budget, alert rate and optional precision at k. "
              "Forecast models carry rolling-origin errors, seasonal-naive comparison "
-             "and interval coverage"}}},
+             "and interval coverage. Next-best-action models return hit rate, IPS/DR "
+             "and importance-weight diagnostics"}}},
+          {"recommendations",
+           {{"type", "array"},
+            {"description",
+             "M-8 entity-action rows ordered by entity then rank, including "
+             "expected value, chosen action and why"}}},
+          {"policy",
+           {{"type", "object"},
+            {"description",
+             "M-8 policy metrics, chronological ALS holdout facts, offline "
+             "evaluation refusal when applicable, and causal warning"}}},
           {"drivers",
            {{"type", "array"},
             {"description",
@@ -681,6 +692,87 @@ std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
 }
 
+nlohmann::json next_best_action_report(Node& node,
+                                       const zetta::pipeline::Run& run,
+                                       const zetta::ml::Model& model,
+                                       std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model.id()},
+                       {"name", model.name()},
+                       {"kind", model.kind()},
+                       {"metrics", model.metrics()}};
+    const nlohmann::json& facts = model.feature_schema();
+    if (const auto dataset = facts.find("dataset"); dataset != facts.end()) {
+        report["dataset"] = *dataset;
+    }
+    report["outputs"] = nlohmann::json::array();
+    std::vector<nlohmann::json> recommendations;
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        report["outputs"].push_back(
+            {{"kind", output.kind}, {"name", output.name}, {"ref", output.ref}});
+        if (output.kind != "dataset") {
+            continue;
+        }
+        const std::size_t dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const auto database = node.find_database(output.ref.substr(0, dot));
+        const auto table =
+            database ? database->find_table(output.ref.substr(dot + 1)) : nullptr;
+        if (!table) {
+            continue;
+        }
+        const zetta::storage::StorageEngine& store = table->store();
+        if (output.name == "policy report") {
+            if (store.size() > 0) {
+                if (const auto row = store.at(0)) {
+                    report["policy"] = *row;
+                }
+            }
+            continue;
+        }
+        if (output.name != "recommendation table") {
+            continue;
+        }
+        for (std::size_t index = 0; index < store.size(); ++index) {
+            if (const auto row = store.at(index)) {
+                recommendations.push_back(*row);
+            }
+        }
+    }
+    std::ranges::sort(recommendations,
+                      [](const nlohmann::json& left,
+                         const nlohmann::json& right) {
+                          const double left_entity = row_number(left, "entity", 0.0);
+                          const double right_entity = row_number(right, "entity", 0.0);
+                          if (left_entity != right_entity) {
+                              return left_entity < right_entity;
+                          }
+                          return row_number(left, "rank", 0.0) <
+                                 row_number(right, "rank", 0.0);
+                      });
+    if (recommendations.size() > limit) {
+        recommendations.resize(limit);
+    }
+    report["recommendations"] = std::move(recommendations);
+    report["caveats"] = {
+        {{"field", "propensity"},
+         {"why", "propensity is not causal lift; use M-6 to decide whether "
+                 "to treat"}}};
+    if (!report.contains("policy")) {
+        report["missing"] = {
+            {{"field", "policy"},
+             {"why", "the policy report table is not visible on this member"}}};
+    }
+    return report;
+}
+
 nlohmann::json chronological_forecast_rows(const zetta::data::Table &table,
                                            std::size_t limit) {
     std::vector<nlohmann::json> rows;
@@ -803,6 +895,10 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     if (model->kind() == "forecast") {
         return ApiResult::success(
             forecast_report(context.node, *run, *model, limit));
+    }
+    if (model->kind() == "next_best_action") {
+        return ApiResult::success(
+            next_best_action_report(context.node, *run, *model, limit));
     }
     const nlohmann::json& metrics = model->metrics();
     const auto number = [&metrics](const char* key) -> std::optional<double> {

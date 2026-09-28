@@ -86,6 +86,9 @@ add_executable(zetta-tests
   ml/test_entity_resolution.cpp
   ml/test_survival.cpp
   ml/test_model.cpp
+  ml/test_next_best_action.cpp
+  ml/test_next_best_action_methodology.cpp
+  ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
   index/test_index.cpp

@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · leakage · causal uplift)
+# Graph correctness checks
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -18,6 +18,7 @@ The reusable annotation and methodology-specific checks are:
 | `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
 | `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
+| `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -38,6 +39,16 @@ features, probability calibration, invalid horizon limits, or omission of the
 seasonal-naive baseline. Runtime checks additionally validate each series' real
 history length and ownership. The full contract and refusal tests are documented
 in [forecast.md](../ml/forecast.md).
+### `next_best_action_correctness` — recommendation policy safety
+
+This check engages only when a model step names an M-8 model kind. It parses the
+complete five-stage pipeline through the same contract used by the initiator and
+coordinated peers. It requires the time-based interaction holdout, the explicit
+logging-propensity rule, the predictive-not-causal warning, and an Act step that
+applies eligibility and contact caps as hard constraints before budgeted
+best-action selection. Missing stages, extra transforms, altered outputs, unknown
+attributes, overlapping column roles, and invalid training parameters fail with a
+specific reason.
 
 ## How a check reads a step
 

@@ -84,6 +84,7 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<SurvivalCensoringCheck>());
     gate.add_check(std::make_shared<CausalUpliftCheck>());
     gate.add_check(std::make_shared<AnomalyGraphCheck>());
+    gate.add_check(std::make_shared<NextBestActionGraphCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.

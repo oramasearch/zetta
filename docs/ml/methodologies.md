@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-7 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-8 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -141,6 +141,18 @@ budget tables, and Run lineage. `get_run_report` exposes those tables, metrics, 
 read/excluded input facts. `AnomalyGraphCheck` and the runner share plan validation,
 including budget, label-use, robust-scaling, and causal-window refusals.
 See [anomaly.md](anomaly.md#running-it) for parameters and capability calls.
+## M-8 recommendation implementation
+
+M-8 owns graphs whose model step names `next_best_action`, `recommendation`, or
+`recommender`. Its shape is source → candidate features → propensity/ALS model →
+hard policy → recommendation outputs. The runner reads the source table recorded
+on the graph, launches every collective participant, and writes a recommendation
+table, policy report, Model, and report reference with source lineage.
+
+The graph check refuses altered shapes, non-chronological interaction evaluation,
+inferred logging propensities, causal claims for predictive propensity, or a
+policy that can bypass eligibility and contact caps. See
+[next_best_action.md](next_best_action.md) for the table contract and metrics.
 
 ## Adding a methodology
 

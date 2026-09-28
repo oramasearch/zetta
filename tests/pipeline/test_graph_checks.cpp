@@ -425,7 +425,7 @@ TEST(CausalUpliftGraphCheck, UnsafeOverlapBoundsAreRefused) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 11u);
+    ASSERT_EQ(gate.check_count(), 12u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -436,7 +436,8 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[7]->name(), "survival_censoring");
     EXPECT_EQ(gate.checks()[8]->name(), "causal_uplift");
     EXPECT_EQ(gate.checks()[9]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[10]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
+    EXPECT_EQ(gate.checks()[11]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

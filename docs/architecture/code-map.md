@@ -182,6 +182,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     forecast_runner.hpp     zetta::ml::run_forecast_job/run_forecast_table — distributed ComputeJob and ResolvedDataset entry points; write a `forecast` Model plus forecast table, RunOutputs, and lineage (#1043)
     forecast_methodology.hpp zetta::ml — M-4 graph contract, registry callbacks and coordinated-launch registration (#1043)
     survival.hpp            zetta::ml discrete-time survival API: subject/person-period types, distributed train collectives, censoring-aware metrics, curves, resolved-dataset runner, and async run handle (#1044)
+    next_best_action.hpp    zetta::ml — M-8 propensity GBDTs, implicit-feedback ALS, chronological holdout, constrained policy, and IPS/DR evaluation (#1047)
+    next_best_action_job.hpp  zetta::ml::run_next_best_action_job — distributed M-8 lifecycle over JobRound allreduce (#1047)
+    next_best_action_methodology.hpp  zetta::ml — M-8 graph contract, registry callbacks, coordinated-launch installation, and run adapter (#1047)
+    next_best_action_table.hpp  zetta::ml::run_next_best_action_on_table — load owned resolved-dataset partitions and write recommendation/report tables with lineage (#1047)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -453,6 +457,12 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     anomaly_methodology.cpp M-7 shape/ownership/run callbacks, label-free catalog resolution, asynchronous coordinated launch, and report assembly (#1046)
     survival.cpp            person-period expansion, time-aware subject split, distributed hazard GBDT, survival curves, concordance/IPCW Brier/calibration, partitioned-table runner, model/table/run materialization (#1044)
     survival_methodology.cpp M-5 survival graph builder, ownership predicate, resolved-table run callback (#1044)
+    next_best_action.cpp    native propensity composition, implicit-feedback ALS, chronological hit rate, constrained selection, and IPS/DR evaluation (#1047)
+    next_best_action_execution.cpp  asynchronous registry run, graph-owned dataset resolution, coordinated peer launch, and durable Run lifecycle for M-8 (#1047)
+    next_best_action_job.cpp  run the M-8 trainer as a recorded distributed job through the coordinator (#1047)
+    next_best_action_methodology.cpp  M-8 shape builder, strict graph parser, ownership predicate, metadata, and table/policy parameters (#1047)
+    next_best_action_table.cpp  resolved-table adapter and recommendation/report/model materialization with lineage (#1047)
+    next_best_action_graph_check.cpp  default-gate enforcement of M-8 chronological evaluation, propensity interpretation and hard policy constraints (#1047)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -659,6 +669,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_survival.cpp      survival censor labels, known-hazard ranking, monotone curves, determinism, and multi-member partition equivalence (#1044)
   ml/test_uplift.cpp        planted-effect, binary-role, positivity, and deterministic-bootstrap tests (#1045)
   ml/test_uplift_partitions.cpp  owned-partition distributed uplift versus single-node oracle (#1045)
+  ml/test_next_best_action_methodology.cpp  M-8 ownership and graph-check refusals for unsafe evaluation, column, policy and structure changes (#1047)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

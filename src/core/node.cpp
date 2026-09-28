@@ -15,6 +15,7 @@
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/ml/next_best_action_methodology.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #endif
@@ -545,6 +546,7 @@ void Node::start_coordinator() {
     zetta::ml::install_segmentation_launch_runner(*launch_listener_, *this);
     zetta::ml::install_forecast_launch_runner(*launch_listener_, *this);
     zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_next_best_action_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,

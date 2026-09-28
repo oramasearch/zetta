@@ -61,6 +61,10 @@ relay it to a person.
   columns excluded from scoring. Labels are optional evaluation data only;
   unsupported shapes, grouping, and non-causal KPI settings fail explicitly.
   See [running M-7](../../ml/anomaly.md#running-it).
+- **Next-best-action runs** (#1047):
+  M-8 and primary solution S-11 compile to a runnable recommendation graph;
+  `run` reads that graph's table and `get_run_report` returns queryable output
+  references, ranked actions, policy metrics, exclusions, and causal caveats.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

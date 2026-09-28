@@ -106,6 +106,17 @@ public:
 class SurvivalCensoringCheck final : public Check {
 public:
     std::string name() const override { return "survival_censoring"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-8 policy correctness (#1047): only the validated next-best-action graph is
+// accepted. It must retain chronological interaction holdout, explicit logging
+// propensity handling, eligibility/contact-cap constraints and budgeted
+// best-action selection.
+class NextBestActionGraphCheck final : public Check {
+public:
+    std::string name() const override { return "next_best_action_correctness"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

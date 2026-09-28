@@ -44,6 +44,7 @@ state, and `get_run_report` puts them together at query time:
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
 | survival quality | the survival Model's concordance and IPCW Brier metrics |
 | survival outputs | the run's survival and interval-calibration table refs |
+| M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -58,6 +59,12 @@ facts as one generated the moment the run ended, and that anything querying
 
 It follows RULE-7: observable state is a view computed from the live source, never a
 hand-synced copy.
+
+For a `next_best_action` Model, the report returns the Model's hit-rate and IPS/DR
+metrics, the selected and excluded input columns, every output reference, ranked
+entity-action rows with expected value and `why`, and the policy report's clipping
+diagnostics. It always includes the warning that response propensity is predictive,
+not causal lift, and directs treat/no-treat decisions to M-6.
 
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.
@@ -140,6 +147,8 @@ tool list, and the agent's read-tool allowlist.
   row counts, fitted features, excluded columns, `output_tables` and a bounded
   `segments` preview. It does not invent churn accuracy or an at-risk list for
   unsupervised clusters. See [segmentation.md](../ml/segmentation.md).
+- Other methodology engines can add their own model-kind report view without storing
+  a duplicate document.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.
 
 ## Forecast reports (M-4)
