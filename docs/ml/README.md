@@ -9,6 +9,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
+- [ensemble.md](ensemble.md) — M-18 native out-of-fold stacking: complementary GBDT variants, regularized logistic meta-model, time-ordered folds, refit bases, blended scores, and holdout lift over the best base (#1057).
 - [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: what `in_sample` vs `held_out` mean, the sharding-invariant split, and why both ride one collective (`holdout_fraction`, #953).
 - [calibration.md](calibration.md) — probability calibration: Platt + isotonic fit on a held-out split, attached to the `GbdtModel` (Brier/ECE improve, AUC preserved) (`Calibrator`, #391).
 - [gbdt-score.md](gbdt-score.md) — batch scoring / rank-at-risk: calibrated risk per entity, ranked into an at-risk list, SPMD with a device `sort_by_key` rank (`score_gbdt`, #392).

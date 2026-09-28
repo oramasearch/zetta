@@ -82,6 +82,8 @@ add_executable(zetta-tests
   cloud/test_cloud_provider.cpp
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
+  ml/test_ensemble.cpp
+  ml/test_ensemble_train_partitions.cpp
   ml/test_methodology.cpp
   ml/test_model.cpp
   workspace/test_workspace_profile.cpp
