@@ -13,6 +13,7 @@ The reusable annotation and methodology-specific checks are:
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `SnapshotLineageCheck` | `snapshot_lineage` | a feature-bearing model whose lineage ends in a live table or future snapshot, or whose label window violates its configured blackout gap |
 | `TemporalValidationCheck` | `temporal_validation` | a time-ordered model without time-aware validation |
 | `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
 | `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
@@ -177,6 +178,19 @@ A feature **fails** the check when:
 
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
+
+### `snapshot_lineage` — immutable feature sources and window separation
+
+Engages on model steps with a non-empty `features` array. The model must declare
+`as_of`, `feature_window_end`, `label_window_start`, and a non-negative
+`blackout_gap_seconds`. Every terminal data-flow ancestor must be a Connect step
+with `source_kind: "snapshot"` and `snapshot_as_of <= as_of`; a live table is a
+hard refusal. The feature window may not extend after prediction time, and the
+label window must satisfy
+`label_window_start >= feature_window_end + blackout_gap_seconds`.
+
+The snapshot materializer and row-level join that produce these sources are
+documented in [point-in-time snapshots](../solutions/point-in-time-snapshots.md).
 
 ### `entity_resolution_profile` — mandatory M-2 safety declarations
 

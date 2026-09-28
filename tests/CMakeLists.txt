@@ -47,6 +47,7 @@ add_executable(zetta-tests
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
   pipeline/test_graph_checks.cpp
+  solutions/test_snapshot.cpp
   usecases/churn/test_entity_resolution_check.cpp
   usecases/churn/test_entity_resolution.cpp
   util/test_duration.cpp

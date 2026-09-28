@@ -66,6 +66,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/solutions/snapshot.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -5263,6 +5264,51 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- snapshot (#1103) -------------------------------------------------------
+
+const nlohmann::json& snapshot_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"database", "table", "source_rows", "materialized_rows",
+          "existing_rows", "future_rows_excluded", "as_of"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"source_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"materialized_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"existing_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"future_rows_excluded", {{"type", "integer"}, {"minimum", 0}}},
+          {"as_of",
+           {{"oneOf",
+             nlohmann::json::array({nlohmann::json{{"type", "number"}},
+                                    nlohmann::json{{"type", "string"}}})}}}}}};
+    return schema;
+}
+
+ApiResult handle_snapshot(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const std::optional<zetta::solutions::SnapshotSpec> spec =
+        zetta::solutions::SnapshotSpec::from_json(input, &error);
+    if (!spec) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    const zetta::solutions::SnapshotResult snapshot =
+        zetta::solutions::materialize_snapshot(context.node, *spec);
+    if (!snapshot.ok()) {
+        return ApiResult::failure("engine_error", snapshot.error);
+    }
+    return ApiResult::success(
+        {{"database", spec->database},
+         {"table", snapshot.table->name()},
+         {"source_rows", snapshot.source_rows},
+         {"materialized_rows", snapshot.materialized_rows},
+         {"existing_rows", snapshot.existing_rows},
+         {"future_rows_excluded", snapshot.future_rows_excluded},
+         {"as_of", spec->as_of}});
+}
+
 // --- upload_dataset (#1008) ---------------------------------------------------------
 //
 // add_dataset reads a file on the NODE's filesystem, which a remote caller cannot
@@ -8698,6 +8744,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_add_dataset});
+
+    registry.add(Capability{
+        "snapshot",
+        "Materialize a point-in-time snapshot",
+        "Materialize the latest source row per entity at or before the requested "
+        "cutoff into a replicated table keyed by entity_id and as_of. Existing "
+        "identical keys make retries idempotent; conflicting keys are refused.",
+        zetta::solutions::snapshot_spec_schema(),
+        snapshot_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "snapshot"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_snapshot});
 
     registry.add(Capability{
         "upload_dataset",

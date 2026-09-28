@@ -12900,6 +12900,178 @@
         ]
       }
     },
+    "/v1/snapshot": {
+      "post": {
+        "description": "Materialize the latest source row per entity at or before the requested cutoff into a replicated table keyed by entity_id and as_of. Existing identical keys make retries idempotent; conflicting keys are refused. Requires orchestration:snapshot.",
+        "operationId": "snapshot",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$id": "https://oramasearch.github.io/zetta/schemas/snapshot_spec.schema.json",
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false,
+                "description": "Materialize the latest source observation per entity at or before a point-in-time cutoff (#1103).",
+                "properties": {
+                  "as_of": {
+                    "description": "Inclusive cutoff, as a finite number or ISO-8601 UTC date/date-time.",
+                    "oneOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "database": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "entity_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "source_table": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "target_table": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "time_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "database",
+                  "source_table",
+                  "target_table",
+                  "entity_column",
+                  "time_column",
+                  "as_of"
+                ],
+                "title": "SnapshotSpec",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "as_of": {
+                          "oneOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "database": {
+                          "type": "string"
+                        },
+                        "existing_rows": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "future_rows_excluded": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "materialized_rows": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "source_rows": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "table",
+                        "source_rows",
+                        "materialized_rows",
+                        "existing_rows",
+                        "future_rows_excluded",
+                        "as_of"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Materialize a point-in-time snapshot",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/sql": {
       "get": {
         "description": "Run one governed SQL statement (Postgres subset). Every system.* observability view is readable here. DDL/INSERT mutate the database. Requires api:query.",

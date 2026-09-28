@@ -64,7 +64,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        87u); // +snapshot (#1103), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -126,7 +126,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"create_project", "delete_project", "capture_intent", "import_n8n",
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
-          "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
+          "add_dataset", "snapshot", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
           "update_workspace_profile", "create_plan", "update_plan"}) {
         const auto entry = registry.find(name);
@@ -219,6 +219,35 @@ TEST_F(RegistryFixture, SqlReadsTheSystemViews) {
         call("sql", nlohmann::json{{"statement", "SELECT * FROM system.datasets;"}});
     ASSERT_TRUE(result.ok) << result.error.message;
     EXPECT_TRUE(result.value.contains("rows"));
+}
+
+TEST_F(RegistryFixture, SnapshotMaterializesAReplicatedPointInTimeTable) {
+    const auto database = node.create_database("features");
+    ASSERT_TRUE(database);
+    const auto events = database->create_table("events");
+    ASSERT_TRUE(events);
+    events->add_row({{"account", "a"}, {"observed_at", 1}, {"value", 10}});
+    events->add_row({{"account", "a"}, {"observed_at", 3}, {"value", 30}});
+
+    const ApiResult result = call(
+        "snapshot",
+        {{"database", "features"},
+         {"source_table", "events"},
+         {"target_table", "account_snapshots"},
+         {"entity_column", "account"},
+         {"time_column", "observed_at"},
+         {"as_of", 2}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("materialized_rows"), 1u);
+    EXPECT_EQ(result.value.at("future_rows_excluded"), 1u);
+    const auto snapshots = database->find_table("account_snapshots");
+    ASSERT_TRUE(snapshots);
+    ASSERT_EQ(snapshots->row_count(), 1u);
+    const auto row = snapshots->store().at(0);
+    ASSERT_TRUE(row) << row.error();
+    EXPECT_EQ(row->at("value"), 10);
+    EXPECT_EQ(row->at("entity_id"), "a");
+    EXPECT_EQ(row->at("as_of"), 2);
 }
 
 // Journey: seed a table + Search index, then `search` — the capability is a

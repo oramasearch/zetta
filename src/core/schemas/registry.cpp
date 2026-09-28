@@ -74,6 +74,7 @@
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/snapshot.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -93,6 +94,11 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::pipeline::graph_step_annotations_schema},
         {"n8n_workflow", "n8n_workflow.schema.json",
          &zetta::pipeline::n8n_workflow_schema},
+        // solutions
+        {"snapshot_spec", "snapshot_spec.schema.json",
+         &zetta::solutions::snapshot_spec_schema},
+        {"as_of_join_spec", "as_of_join_spec.schema.json",
+         &zetta::solutions::as_of_join_spec_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
         {"segmentation_config", "segmentation_config.schema.json",

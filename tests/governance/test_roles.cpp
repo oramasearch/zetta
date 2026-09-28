@@ -102,8 +102,12 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // authoring trio create/update/delete_agent, #849; approve_plan, #885;
     // create/update_workspace_profile, #886; create/update_plan, Conflict D;
     // agent_training_status + set_training_schedule, #941;
-    // list_source_tables, #994; delete_project, #1009).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 31u);
+    // list_source_tables, #994; delete_project, #1009; snapshot, #1103).
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 32u);
+    EXPECT_TRUE(zetta::governance::capabilities_for_permissions(
+                    {"pipelines:manage"})
+                    .permits({CapabilityDomain::Orchestration, "snapshot"},
+                             "2026-09-28T00:00:00.000Z"));
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
