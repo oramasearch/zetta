@@ -79,11 +79,11 @@ TEST(IntentCompilerTest, RecognizesChurnSynonyms) {
 
 TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
     zetta::pipeline::IntentCompileOptions options;
-    options.methodology = "M-2";
+    options.methodology = "M-21";
     std::string error;
     EXPECT_FALSE(compile_intent("Group customers", options, &error));
-    EXPECT_NE(error.find("Entity resolution (M-2)"), std::string::npos);
-    EXPECT_NE(error.find("1041"), std::string::npos);
+    EXPECT_NE(error.find("Online / streaming learning (M-21)"), std::string::npos);
+    EXPECT_NE(error.find("1060"), std::string::npos);
 }
 
 TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {

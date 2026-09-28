@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1, M-3, M-4 and M-7 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-4 and M-7 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -66,6 +66,19 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-2 entity resolution
+
+`src/core/ml/entity_resolution_methodology.cpp` builds M-2's connect, blocking,
+pair-scoring, conflict-safe clustering, and table-output pipeline. Its ownership
+callback recognizes only entity-resolution model kinds. The run callback reads
+the connect step's own `source.table` unless `dataset_path` explicitly overrides
+it, calls the native runner, writes resolved-entity and match-pair tables, and
+registers its metrics and thresholds on a model record for `get_run_report`.
+
+The default correctness gate requires non-empty blocking keys, stated match and
+review thresholds, and the verified-identifier conflict policy. The runtime then
+enforces those declarations while clustering.
 
 ## M-3 segmentation implementation
 

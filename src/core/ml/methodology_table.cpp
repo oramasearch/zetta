@@ -12,6 +12,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m2_methodology();
 Methodology make_m3_methodology();
 
 namespace {
@@ -66,13 +67,7 @@ bool contains_value(const std::vector<std::string>& values,
 const std::vector<Methodology>& methodologies() {
     static const std::vector<Methodology> table = {
         make_m1_methodology(),
-        planned("M-2", "Entity resolution", "Identity & structure",
-                {"entity_resolution", "entity-resolution"}, {},
-                {"resolve identity", "deduplicate", "match records"},
-                {input("entity", true, "records to resolve"),
-                 input("group", false, "source system or entity type")},
-                {"entity map", "match evidence"},
-                {"pair precision", "pair recall", "blocking recall"}, 1041),
+        make_m2_methodology(),
         make_m3_methodology(),
         make_m4_methodology(),
         planned("M-5", "Survival / time-to-event", "The tabular decision core",

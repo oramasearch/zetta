@@ -19,7 +19,10 @@ The compiler uses the first applicable signal:
 1. the optional `methodology` id or model kind;
 2. the optional `solution`, resolved to its primary methodology;
 3. a registered methodology keyword in the intent; or
-4. M-1 only when the intent clearly asks for supervised prediction.
+4. M-1 when the intent clearly asks for supervised prediction.
+
+M-2 is selected explicitly by id/model kind or by its identity-resolution
+keywords; it is not used as a generic fallback.
 
 An empty intent is `invalid_input`. An unknown methodology or solution is also
 `invalid_input`. If the resolved methodology is registered but not runnable,
@@ -58,7 +61,7 @@ The API capability accepts the same optional `methodology`, `solution`, and
 
 ## M-1 reference shape
 
-M-1 is the first runnable registry entry. It builds the existing churn graph:
+M-1 is the tabular runnable registry entry. It builds the existing churn graph:
 
 ```
 load_customers ─┐
@@ -70,6 +73,12 @@ load_activity ──┘
 The model node carries `model_kind: "gbdt"` as the dispatch identity and keeps
 the existing `algo: "gradient_boosting"` configuration. All attributes remain
 editable starting-point hints for review.
+
+M-2 is also runnable. Its entity-resolution shape connects the selected records
+table, normalizes and blocks candidate pairs, scores them with
+`model_kind: "entity_resolution"`, clusters conflict-safe matches, and writes
+the resolved-entity and match-pair tables. See
+[entity resolution](../ml/entity_resolution.md).
 
 ## Stored intent bridge
 

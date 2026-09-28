@@ -336,6 +336,67 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
                        "every model step names a methodology the engine can execute"};
 }
 
+CheckResult EntityResolutionGraphCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "entity_resolution" &&
+            model_kind != "entity-resolution") {
+            continue;
+        }
+
+        const auto blocking = node->attributes.find("blocking_keys");
+        if (blocking == node->attributes.end() || !blocking->is_array() ||
+            blocking->empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must declare non-empty blocking_keys"};
+        }
+        const auto match = node->attributes.find("match_threshold");
+        const auto review = node->attributes.find("review_threshold");
+        if (match == node->attributes.end() || !match->is_number() ||
+            review == node->attributes.end() || !review->is_number()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must state numeric match_threshold and "
+                    "review_threshold"};
+        }
+        const double match_value = match->get<double>();
+        const double review_value = review->get<double>();
+        if (review_value < 0.0 || match_value > 1.0 ||
+            review_value >= match_value) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": thresholds must satisfy 0 <= review < match <= 1"};
+        }
+        const auto policy = node->attributes.find("conflict_policy");
+        if (policy == node->attributes.end() || !policy->is_string() ||
+            policy->get<std::string>() !=
+                "reject_verified_identifier_conflicts") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must reject verified identifier "
+                    "conflicts"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every entity-resolution model states safe blocking, thresholds, and "
+        "conflict handling"};
+}
+
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     const auto fail = [this](std::string reason) {
         return CheckResult{name(), CheckStatus::Fail, std::move(reason)};

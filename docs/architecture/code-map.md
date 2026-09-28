@@ -429,6 +429,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     featurize_job.cpp       run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
+    entity_resolution.cpp   M-2 normalized blocking, deterministic pair ownership, Fellegi-Sunter EM or labelled-pair GBDT scoring, conflict-safe clustering, metrics, and table outputs (#1041)
+    entity_resolution_methodology.cpp  M-2 registry shape, graph ownership, resolved-dataset run adapter, Run/Model/output-table lineage (#1041)
     segmentation.cpp        native k-means training, global transforms, deterministic sampling, collective Lloyd rounds, selection and profiles (#1042)
     segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
     segmentation_graph.cpp  M-3 config schema and correctness gate: excluded roles, global transforms, K criterion and connected outputs (#1042)

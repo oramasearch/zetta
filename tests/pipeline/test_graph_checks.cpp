@@ -51,6 +51,19 @@ ExecutionGraph clean_graph() {
     return graph;
 }
 
+ExecutionGraph entity_resolution_graph() {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "resolve entities",
+        json{{"model_kind", "entity_resolution"},
+             {"blocking_keys", {"email", "phone", "name"}},
+             {"match_threshold", 0.82},
+             {"review_threshold", 0.55},
+             {"conflict_policy", "reject_verified_identifier_conflicts"}},
+        "resolve");
+    return graph;
+}
+
 }  // namespace
 
 // ---- schema_type ------------------------------------------------------------
@@ -272,18 +285,56 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+TEST(EntityResolutionGraphCheck, RefusesMissingBlockingKeys) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes.erase("blocking_keys");
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("blocking_keys"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, RefusesUnstatedThresholds) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes.erase("review_threshold");
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("threshold"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, RefusesUnsafeConflictPolicy) {
+    ExecutionGraph graph = entity_resolution_graph();
+    graph.find_node("resolve")->attributes["conflict_policy"] = "allow";
+
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("verified identifier"), std::string::npos);
+}
+
+TEST(EntityResolutionGraphCheck, AcceptsTheM2Profile) {
+    const CheckResult result =
+        zetta::pipeline::EntityResolutionGraphCheck{}.evaluate(
+            entity_resolution_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 7u);
+    ASSERT_EQ(gate.check_count(), 8u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[4]->name(), "forecast_correctness");
-    EXPECT_EQ(gate.checks()[5]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[6]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[4]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[5]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[6]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[7]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

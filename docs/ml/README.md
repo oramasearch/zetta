@@ -24,6 +24,7 @@ for model work.
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [entity_resolution.md](entity_resolution.md) — M-2 native multi-route blocking, probabilistic or labelled-pair scoring, conflict-safe clustering, result tables, and metrics (#1041).
 
 ## Methodology portfolio
 
@@ -35,7 +36,7 @@ carry `*`. Regenerate it with
 | ID | Methodology | Family | Model kinds | Solutions | Inputs | Outputs | Metrics | Status | Issue |
 |---|---|---|---|---|---|---|---|---|---|
 | M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
-| M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group | entity map, match evidence | pair precision, pair recall, blocking recall | not runnable | [#1041](https://github.com/oramasearch/zetta/issues/1041) |
+| M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group*, label, time | resolved entities, match pairs, review band | pair precision, pair recall, B-cubed precision, B-cubed recall, blocking recall, merge rate, review-band size | runnable | — |
 | M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature*, label, time | model, segment assignments, segment profiles, run report | chosen k, silhouette, Davies-Bouldin, stability (ARI), inertia per k, segment size/share | runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
 | M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecast table with prediction intervals, forecast model | MAE, MASE, sMAPE, seasonal-naive MAE, forecast value added, interval coverage | runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
 | M-5 | Survival / time-to-event | The tabular decision core | survival, time_to_event | S-8 | entity*, time*, label* | risk curves, expected time to event | concordance, time-dependent AUC, IPCW Brier | not runnable | [#1044](https://github.com/oramasearch/zetta/issues/1044) |

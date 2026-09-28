@@ -4,7 +4,8 @@
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
 **Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp` ·
-**Tests:** `tests/usecases/churn/test_churn_solution.cpp`
+**Tests:** `tests/usecases/churn/test_churn_solution.cpp`,
+`tests/api/test_action_journeys.cpp`
 
 A run's outputs say what it *produced* — a dataset, a model, an index. A run's
 **report** says what it *found*: how good the model is, what drives the outcome, and
@@ -41,6 +42,12 @@ state, and `get_run_report` puts them together at query time:
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+
+For an M-2 entity-resolution run, the same capability returns the registered
+model's native metrics and scoring method, the stated match/review/non-match
+thresholds, rows read and excluded, and both output-table references. Labelled
+runs include blocking recall, pairwise precision/recall/F1, and B-cubed
+precision/recall. Unlabelled runs omit those label-dependent measurements.
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same

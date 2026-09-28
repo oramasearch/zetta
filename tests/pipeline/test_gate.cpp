@@ -74,7 +74,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
     const ValidationReport report = gate.run(empty_graph);
 
     // Only the non-empty check fails; the other checks have no matching steps.
-    ASSERT_EQ(report.checks.size(), 7u);
+    ASSERT_EQ(report.checks.size(), 8u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -88,7 +88,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
     const ValidationReport report = gate.run(one_step_graph());
 
     // All default checks pass an unannotated single-step graph.
-    ASSERT_EQ(report.checks.size(), 7u);
+    ASSERT_EQ(report.checks.size(), 8u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -96,14 +96,15 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 7u);
+    ASSERT_EQ(gate.check_count(), 8u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[4]->name(), "forecast_correctness");
-    EXPECT_EQ(gate.checks()[5]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[6]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[4]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[5]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[6]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[7]->name(), "entity_resolution");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

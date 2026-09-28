@@ -84,7 +84,7 @@ What's inside, by domain (each links to that domain's docs):
   M-4 runs on the pipeline's own table through the methodology registry and
   reports metrics, read/excluded data, and output tables through `get_run_report`.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1, M-3, M-4 and M-7 run today, M-10 has partial retrieval support, and the others
+  approaches: M-1 through M-4 and M-7 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
