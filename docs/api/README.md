@@ -163,6 +163,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `update_policy` | action | orchestration:update_policy | append a replacement version or apply bounded numeric tuning |
 | `decide` | action | orchestration:decide | apply a policy to one scored entity or a scored table and persist versioned decisions |
 | `approve_decision` | action | orchestration:approve_decision | approve a pending A1 decision without changing its policy version |
+| `publish_report` | action | orchestration:publish_report | publish a driver report and decision log to a forum webhook with retry, idempotency, acknowledgement, and ledger evidence |
+| `enqueue_action_task` | action | orchestration:enqueue_action_task | write an owner- and SLA-bound task to the replicated outbox after holdout and policy checks |
+| `deliver_action_task` | action | orchestration:deliver_action_task | deliver an outbox task through webhook, Salesforce, or HubSpot with bounded retries and dead-letter handling |
+| `execute_closed_loop` | action | orchestration:execute_closed_loop | enqueue and deliver one task while rechecking holdout and the current policy kill-switch before HTTP |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |

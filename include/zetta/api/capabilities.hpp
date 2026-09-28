@@ -64,6 +64,10 @@ void register_pubsub_capabilities(Registry& registry);
 // docs/solutions/decision-policy.md).
 void register_decision_policy_capabilities(Registry& registry);
 
+// Action delivery, report publication, and bounded execution (#1109,
+// docs/solutions/action-integration.md).
+void register_action_capabilities(Registry& registry);
+
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the
 // version the grant pinned; it is gated, then run (`dataset`, `holdout`, `model_name` pass through).

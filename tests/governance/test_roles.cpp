@@ -102,8 +102,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // authoring trio create/update/delete_agent, #849; approve_plan, #885;
     // create/update_workspace_profile, #886; create/update_plan, Conflict D;
     // agent_training_status + set_training_schedule, #941;
-    // list_source_tables, #994; delete_project, #1009).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 37u);
+    // list_source_tables, #994; delete_project, #1009; action integration's
+    // publish/enqueue/deliver/closed-loop capabilities, #1109).
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 41u);
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 

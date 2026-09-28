@@ -74,6 +74,7 @@
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/solutions/decision_policy.hpp"
+#include "zetta/solutions/action_integration.hpp"
 #include "zetta/query/distributed_select.hpp"
 #include "zetta/solutions/audit_ledger.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
@@ -134,6 +135,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         // solutions
         {"audit_ledger_entry", "audit_ledger_entry.schema.json",
          &zetta::solutions::audit_ledger_entry_schema},
+        {"action_task", "action_task.schema.json",
+         &zetta::solutions::action_task_schema},
+        {"report_publication", "report_publication.schema.json",
+         &zetta::solutions::report_publication_schema},
         // index
         {"index", "index.schema.json", &zetta::index::index_value_schema},
         {"fulltext_query", "fulltext_query.schema.json",

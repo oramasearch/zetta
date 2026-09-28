@@ -120,6 +120,12 @@ public:
         std::string actor,
         std::string* error = nullptr);
 
+    // Empty when a recorded decision may be delivered now. This re-checks the
+    // latest policy kill-switch immediately before execution while preserving
+    // the decision's original policy version for auditability.
+    std::optional<std::string> delivery_blocker(
+        const DecisionRecord& decision) const;
+
 private:
     zetta::cluster::ReplicationManager& replication_;
     zetta::governance::AuditSink* audit_;

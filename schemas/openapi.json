@@ -4886,6 +4886,219 @@
         ]
       }
     },
+    "/v1/deliver_action_task": {
+      "post": {
+        "description": "Deliver one outbox task with retries, an idempotency key, acknowledgements, and dead-letter handling. Requires orchestration:deliver_action_task.",
+        "operationId": "deliver_action_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "task_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "acknowledgement": {
+                          "type": "object"
+                        },
+                        "agent_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "attempts": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "cell": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "connector": {
+                          "enum": [
+                            "webhook",
+                            "salesforce",
+                            "hubspot"
+                          ],
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "currency": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "decision_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "idempotency_key": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "last_error": {
+                          "type": "string"
+                        },
+                        "ledger_action_id": {
+                          "type": "string"
+                        },
+                        "max_attempts": {
+                          "maximum": 100,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "model_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "payload": {
+                          "type": "object"
+                        },
+                        "sla_due_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "delivered",
+                            "blocked",
+                            "dead_letter"
+                          ],
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "timeout_seconds": {
+                          "maximum": 300,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "decision_id",
+                        "owner",
+                        "sla_due_at",
+                        "connector",
+                        "endpoint",
+                        "timeout_seconds",
+                        "payload",
+                        "idempotency_key",
+                        "max_attempts",
+                        "attempts",
+                        "status",
+                        "ledger_action_id",
+                        "last_error",
+                        "acknowledgement",
+                        "model_version",
+                        "agent_version",
+                        "cell",
+                        "currency",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "title": "zetta.ActionTask",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Deliver an action task",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/deny_consent": {
       "post": {
         "description": "Refuse one pending consent challenge; the named action never runs. The requesting key may withdraw its own challenge. Requires orchestration:deny_consent.",
@@ -5498,6 +5711,576 @@
           }
         },
         "summary": "Drop topic",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/enqueue_action_task": {
+      "post": {
+        "description": "Write an owned, SLA-bound task to the replicated action outbox after policy and holdout checks. Requires orchestration:enqueue_action_task.",
+        "operationId": "enqueue_action_task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cell": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "endpoint": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "webhook",
+                          "salesforce",
+                          "hubspot"
+                        ],
+                        "type": "string"
+                      },
+                      "timeout_seconds": {
+                        "maximum": 300,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "token": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "endpoint"
+                    ],
+                    "type": "object"
+                  },
+                  "currency": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_attempts": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "model_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "owner": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object"
+                  },
+                  "sla_due_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision_id",
+                  "owner",
+                  "sla_due_at",
+                  "connector",
+                  "payload",
+                  "idempotency_key",
+                  "model_version",
+                  "agent_version",
+                  "cell",
+                  "currency"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "acknowledgement": {
+                          "type": "object"
+                        },
+                        "agent_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "attempts": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "cell": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "connector": {
+                          "enum": [
+                            "webhook",
+                            "salesforce",
+                            "hubspot"
+                          ],
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "currency": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "decision_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "idempotency_key": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "last_error": {
+                          "type": "string"
+                        },
+                        "ledger_action_id": {
+                          "type": "string"
+                        },
+                        "max_attempts": {
+                          "maximum": 100,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "model_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "payload": {
+                          "type": "object"
+                        },
+                        "sla_due_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "delivered",
+                            "blocked",
+                            "dead_letter"
+                          ],
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "timeout_seconds": {
+                          "maximum": 300,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "decision_id",
+                        "owner",
+                        "sla_due_at",
+                        "connector",
+                        "endpoint",
+                        "timeout_seconds",
+                        "payload",
+                        "idempotency_key",
+                        "max_attempts",
+                        "attempts",
+                        "status",
+                        "ledger_action_id",
+                        "last_error",
+                        "acknowledgement",
+                        "model_version",
+                        "agent_version",
+                        "cell",
+                        "currency",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "title": "zetta.ActionTask",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Enqueue an action task",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/execute_closed_loop": {
+      "post": {
+        "description": "Enqueue and deliver one policy-approved task while rechecking holdout and the policy kill-switch before execution. Requires orchestration:execute_closed_loop.",
+        "operationId": "execute_closed_loop",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cell": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "endpoint": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "webhook",
+                          "salesforce",
+                          "hubspot"
+                        ],
+                        "type": "string"
+                      },
+                      "timeout_seconds": {
+                        "maximum": 300,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "token": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "endpoint"
+                    ],
+                    "type": "object"
+                  },
+                  "currency": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_attempts": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "model_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "owner": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object"
+                  },
+                  "sla_due_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision_id",
+                  "owner",
+                  "sla_due_at",
+                  "connector",
+                  "payload",
+                  "idempotency_key",
+                  "model_version",
+                  "agent_version",
+                  "cell",
+                  "currency"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "acknowledgement": {
+                          "type": "object"
+                        },
+                        "agent_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "attempts": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "cell": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "connector": {
+                          "enum": [
+                            "webhook",
+                            "salesforce",
+                            "hubspot"
+                          ],
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "currency": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "decision_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "endpoint": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "idempotency_key": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "last_error": {
+                          "type": "string"
+                        },
+                        "ledger_action_id": {
+                          "type": "string"
+                        },
+                        "max_attempts": {
+                          "maximum": 100,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "model_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "owner": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "payload": {
+                          "type": "object"
+                        },
+                        "sla_due_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "delivered",
+                            "blocked",
+                            "dead_letter"
+                          ],
+                          "type": "string"
+                        },
+                        "task_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "timeout_seconds": {
+                          "maximum": 300,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "updated_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "task_id",
+                        "decision_id",
+                        "owner",
+                        "sla_due_at",
+                        "connector",
+                        "endpoint",
+                        "timeout_seconds",
+                        "payload",
+                        "idempotency_key",
+                        "max_attempts",
+                        "attempts",
+                        "status",
+                        "ledger_action_id",
+                        "last_error",
+                        "acknowledgement",
+                        "model_version",
+                        "agent_version",
+                        "cell",
+                        "currency",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "title": "zetta.ActionTask",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Execute a bounded closed loop",
         "tags": [
           "action"
         ]
@@ -12650,6 +13433,290 @@
           }
         },
         "summary": "Publish event",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/publish_report": {
+      "post": {
+        "description": "Publish a driver report and decision log to a forum webhook with bounded retries and ledger evidence. Requires orchestration:publish_report.",
+        "operationId": "publish_report",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cell": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "endpoint": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "enum": [
+                          "webhook",
+                          "salesforce",
+                          "hubspot"
+                        ],
+                        "type": "string"
+                      },
+                      "timeout_seconds": {
+                        "maximum": 300,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "token": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "endpoint"
+                    ],
+                    "type": "object"
+                  },
+                  "currency": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decision_log": {
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "driver_report": {
+                    "type": "object"
+                  },
+                  "idempotency_key": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_attempts": {
+                    "maximum": 100,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "model_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "policy_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "run_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "run_id",
+                  "title",
+                  "driver_report",
+                  "decision_log",
+                  "connector",
+                  "idempotency_key",
+                  "model_version",
+                  "policy_version",
+                  "agent_version",
+                  "cell",
+                  "currency"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "acknowledgement": {
+                          "type": "object"
+                        },
+                        "agent_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "attempts": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "cell": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "created_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "currency": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "decision_log": {
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "driver_report": {
+                          "type": "object"
+                        },
+                        "endpoint": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "idempotency_key": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "last_error": {
+                          "type": "string"
+                        },
+                        "ledger_action_id": {
+                          "type": "string"
+                        },
+                        "max_attempts": {
+                          "maximum": 100,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "model_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "policy_version": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "publication_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "run_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "pending",
+                            "delivered",
+                            "blocked",
+                            "dead_letter"
+                          ],
+                          "type": "string"
+                        },
+                        "title": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "updated_at": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "publication_id",
+                        "run_id",
+                        "title",
+                        "driver_report",
+                        "decision_log",
+                        "endpoint",
+                        "idempotency_key",
+                        "max_attempts",
+                        "attempts",
+                        "status",
+                        "ledger_action_id",
+                        "last_error",
+                        "acknowledgement",
+                        "model_version",
+                        "policy_version",
+                        "agent_version",
+                        "cell",
+                        "currency",
+                        "created_at",
+                        "updated_at"
+                      ],
+                      "title": "zetta.ReportPublication",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Publish a driver report",
         "tags": [
           "action"
         ]

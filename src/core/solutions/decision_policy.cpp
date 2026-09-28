@@ -834,6 +834,24 @@ std::optional<DecisionRecord> DecisionPolicyStore::approve(
     return decision;
 }
 
+std::optional<std::string> DecisionPolicyStore::delivery_blocker(
+    const DecisionRecord& decision) const {
+    if (decision.holdout) {
+        return "entity is in a holdout cell and must not be delivered";
+    }
+    if (!decision.actionable) {
+        return "decision is not actionable";
+    }
+    const std::optional<DecisionPolicy> policy = get(decision.policy_id);
+    if (!policy || policy->current() == nullptr) {
+        return "decision policy no longer exists";
+    }
+    if (policy->current()->config.value("kill_switch", false)) {
+        return "policy kill-switch is active";
+    }
+    return std::nullopt;
+}
+
 BatchDecisionResult decide_table(
     zetta::Node& node,
     DecisionPolicyStore& store,

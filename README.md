@@ -109,7 +109,10 @@ What's inside, by domain (each links to that domain's docs):
   **audit ledger** connects every score and policy decision to the agent or
   human action taken (including deliberate no-contact) and its connector or
   manual outcome, preserving versions, experiment cell, cost, and timestamps
-  for reward and ROI consumers.
+  for reward and ROI consumers. The action runtime publishes driver reports,
+  places owned SLA tasks in a replicated outbox, delivers webhook and CRM tasks
+  with retry/idempotency/dead-letter handling, and stops held-out or
+  kill-switched closed-loop actions before delivery.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
