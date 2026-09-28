@@ -93,6 +93,16 @@ behavior. An unannotated graph without a matching model kind still passes.
 
 ## Using it
 
+Composed solutions (#1128) declare methodology stages in their manifest.
+The gate applies every registered check to each stage and to the foundation
+nodes separately, prefixing result names with the stage number. A segmentation
+stage therefore validates its own source/model rather than counting unrelated
+M-1/M-2 nodes as extra segmentation inputs. Undeclared/missing stages, models
+outside a stage, and cross-stage data-flow edges are refused; only control edges
+cross the boundary. Existing graphs without a solution manifest are unchanged.
+`run_solution` uses this same gate before it creates a Run or delivers actions,
+and the ROI certificate evaluates the identical composed graph.
+
 ```cpp
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"

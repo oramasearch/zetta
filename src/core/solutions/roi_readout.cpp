@@ -18,6 +18,7 @@
 #include "zetta/solutions/decision_policy.hpp"
 #include "zetta/solutions/experiment.hpp"
 #include "zetta/solutions/monitor.hpp"
+#include "zetta/solutions/solution_templates.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -320,6 +321,12 @@ std::optional<ReadoutEvidence> collect_evidence(
             continue;
         }
         const ActionLedgerValue& action = evidence.actions.at(outcome->action_id);
+        const auto action_time = zetta::util::parse_iso8601_seconds(action.action_at);
+        const auto outcome_time = zetta::util::parse_iso8601_seconds(outcome->occurred_at);
+        if (!action_time || !outcome_time || *outcome_time < *action_time ||
+            *outcome_time > *action_time + definition.spec.outcome_window_days * 86400.0) {
+            continue;
+        }
         evidence.response_by_subject[action.subject] += outcome->value;
     }
     return evidence;
@@ -358,7 +365,10 @@ IncrementalityReadout build_incrementality(
     }
     readout.holdout_samples = holdout.size();
 
-    if (!correctness.passed()) {
+    if (definition.spec.measurement_design == "fva" ||
+        definition.spec.measurement_design == "phased") {
+        readout.reason = "Incrementality cannot be claimed: this measurement design requires its module-specific estimator.";
+    } else if (!correctness.passed()) {
         readout.reason =
             "Incrementality cannot be claimed: correctness checks did not pass.";
     } else if (holdout.empty()) {
@@ -448,6 +458,9 @@ Json to_json(const RoiReadoutDefinition& definition) {
         {"project", definition.spec.project},
         {"graph", definition.spec.graph},
         {"experiment", definition.spec.experiment},
+        {"measurement_design", definition.spec.measurement_design},
+        {"outcome_window_days", definition.spec.outcome_window_days},
+        {"outcome_unit", definition.spec.outcome_unit},
         {"roi_model", to_json(definition.spec.roi_model)},
         {"created_by", definition.created_by},
         {"created", definition.created}};
@@ -504,6 +517,11 @@ Json to_json(const RoiReadout& readout) {
         {"solution", readout.definition.spec.solution},
         {"version", readout.definition.version},
         {"generated_at", readout.generated_at},
+        {"measurement", to_json(SolutionMeasurement{
+            readout.definition.spec.measurement_design,
+            readout.definition.spec.roi_model.outcome,
+            readout.definition.spec.outcome_unit,
+            readout.definition.spec.outcome_window_days})},
         {"sources",
          {{"project", readout.definition.spec.project},
           {"graph", readout.definition.spec.graph},
@@ -534,6 +552,10 @@ const Json& roi_readout_definition_schema() {
           {"project", {{"type", "string"}, {"minLength", 1}}},
           {"graph", {{"type", "string"}, {"minLength", 1}}},
           {"experiment", {{"type", "string"}, {"minLength", 1}}},
+          {"measurement_design", {{"type", "string"},
+              {"enum", {"holdout", "uplift_cells", "champion_challenger", "fva", "phased"}}}},
+          {"outcome_window_days", {{"type", "integer"}, {"minimum", 1}}},
+          {"outcome_unit", {{"type", "string"}}},
           {"roi_model", roi_model_schema()},
           {"created_by", {{"type", "string"}, {"minLength", 1}}},
           {"created", {{"type", "string"}, {"minLength", 1}}}}}};
@@ -557,6 +579,7 @@ const Json& roi_readout_schema() {
               "guardrail_panel", "agent_operations", "audit_extract"}},
             {"properties",
              {{"id", {{"type", "string"}}},
+              {"measurement", solution_measurement_schema()},
               {"solution", {{"type", "string"}}},
               {"version", {{"type", "integer"}, {"minimum", 1}}},
               {"generated_at", {{"type", "string"}}},
@@ -651,6 +674,9 @@ std::optional<RoiReadoutDefinition> parse_roi_readout_definition(
     definition.spec.project = value.at("project").get<std::string>();
     definition.spec.graph = value.at("graph").get<std::string>();
     definition.spec.experiment = value.at("experiment").get<std::string>();
+    definition.spec.measurement_design = value.value("measurement_design", "holdout");
+    definition.spec.outcome_window_days = value.value("outcome_window_days", 30);
+    definition.spec.outcome_unit = value.value("outcome_unit", "");
     const Json& model = value.at("roi_model");
     definition.spec.roi_model.outcome = model.at("outcome").get<std::string>();
     definition.spec.roi_model.value_per_outcome =

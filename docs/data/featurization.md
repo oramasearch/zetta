@@ -199,6 +199,14 @@ encoder, embedding runtime, or silent table writes. Native temporal featurizers
 retain their existing cutoff/split checks instead of inventing a snapshot date.
 
 Each accepted run stores its feature provenance in the replicated Run record.
+Composed solutions (#1128) annotate their Connect nodes with `source_kind:
+snapshot` and the caller's explicit `snapshot_as_of`. When no dataset time
+override is present, feature planning uses that cutoff and the snapshot's
+canonical `as_of` column. The solution runner also passes the validated cutoff
+directly to child callbacks, preserving numeric as well as ISO representations.
+It never substitutes wall-clock time; the snapshot
+engine has already excluded observations beyond that boundary.
+
 `get_run_report` presents `features.used` and `features.excluded` with reasons for
 every methodology, as described in [run-report.md](../pipeline/run-report.md).
 Legacy records remain readable and only report what their fitted model recorded.

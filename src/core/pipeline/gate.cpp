@@ -1,6 +1,7 @@
 #include "zetta/pipeline/gate.hpp"
 
 #include <string>
+#include <map>
 #include <utility>
 
 #include "zetta/usecases/churn/entity_resolution_check.hpp"
@@ -32,6 +33,50 @@ private:
     std::function<CheckResult(const ir::ExecutionGraph&)> evaluate_;
 };
 
+std::map<int, ir::ExecutionGraph> solution_stages(const ir::ExecutionGraph& graph,
+                                                std::string& error) {
+    std::map<int, ir::ExecutionGraph> stages;
+    const auto manifest = graph.find_node("solution_manifest");
+    const auto declared = manifest->attributes.find("methodologies");
+    if (declared == manifest->attributes.end() || !declared->is_array() || declared->empty()) {
+        error = "solution manifest must declare its methodology stages";
+        return stages;
+    }
+    std::map<std::string, int> membership;
+    for (const auto& node : graph.nodes()) {
+        const auto stage = node->attributes.find("solution_stage");
+        int index = 0;
+        if (stage != node->attributes.end()) {
+            if (!stage->is_number_integer() || stage->get<int>() < 1 ||
+                stage->get<int>() > static_cast<int>(declared->size())) {
+                error = "solution node has an undeclared stage";
+                return {};
+            }
+            index = stage->get<int>();
+        } else if (node->kind == ir::StepKind::Model) {
+            error = "solution model must belong to a declared methodology stage";
+            return {};
+        }
+        membership[node->id] = index;
+        stages[index].add_node(node->kind, node->name, node->attributes, node->id);
+    }
+    for (const auto& edge : graph.edges()) {
+        if (membership.at(edge.from) == membership.at(edge.to)) {
+            stages[membership.at(edge.from)].add_edge(edge.from, edge.to, edge.kind);
+        } else if (edge.kind != ir::EdgeKind::Control) {
+            error = "solution stages may only cross through control edges; data dependencies must stay inside a checked stage";
+            return {};
+        }
+    }
+    for (int index = 1; index <= static_cast<int>(declared->size()); ++index) {
+        if (!stages.contains(index)) {
+            error = "solution graph is missing a declared methodology stage";
+            return {};
+        }
+    }
+    return stages;
+}
+
 }  // namespace
 
 std::shared_ptr<Check> make_check(
@@ -59,6 +104,23 @@ CorrectnessGate& CorrectnessGate::add_check(std::shared_ptr<Check> check) {
 
 ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
     ValidationReport report;
+    if (graph.find_node("solution_manifest")) {
+        std::string error;
+        const auto stages = solution_stages(graph, error);
+        if (!error.empty()) {
+            report.add("solution_composition", CheckStatus::Fail, error);
+        } else {
+            for (const auto& [index, stage] : stages) {
+                for (const auto& check : checks_) {
+                    const CheckResult result = check->evaluate(stage);
+                    report.add("stage_" + std::to_string(index) + "/" + result.name,
+                               result.status, result.reason);
+                }
+            }
+        }
+        report.block_deploy = !report.passed();
+        return report;
+    }
     for (const auto& check : checks_) {
         const CheckResult result = check->evaluate(graph);
         report.add(result.name, result.status, result.reason);

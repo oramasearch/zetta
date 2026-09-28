@@ -101,10 +101,12 @@ What's inside, by domain (each links to that domain's docs):
   approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
   The [solution registry](docs/solutions/README.md) lists the 12 catalogue
-  modules and eight Band-B sketches, then composes selected preview levels
-  through those methodology callbacks. Production readiness remains false
-  until the shared policy, action, experiment, monitoring, ledger, snapshot,
-  and readout components land.
+  modules and eight Band-B sketches. Selected levels now execute snapshots,
+  methodology callbacks, typed policy defaults, protected holdouts, action
+  delivery, ledger recording and monitoring, with versioned ROI readouts.
+  S-1 has the complete retention template; S-2 through S-12 have explicitly
+  minimal editable defaults. Snapshot cutoffs, delivery destinations and ROI
+  economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

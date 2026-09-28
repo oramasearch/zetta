@@ -4523,7 +4523,7 @@
     },
     "/v1/create_solution": {
       "post": {
-        "description": "Compose a selected solution level through methodology registry callbacks and store its replicated preview Pipeline on the project; missing production components are returned. Requires orchestration:create_solution.",
+        "description": "Create a composed Pipeline, versioned policy, protected experiment, guardrail monitor and ROI definition from executable defaults and explicit data, delivery and economics settings. Requires orchestration:create_solution.",
         "operationId": "create_solution",
         "requestBody": {
           "content": {
@@ -4531,6 +4531,173 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "foundation": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "dataset": {
+                        "additionalProperties": false,
+                        "description": "What a table's columns mean, for a dataset_path of the form database.table (#947). Every field is optional: what is omitted is inferred from the column names and a sample of the rows, and every inference is reported back.",
+                        "properties": {
+                          "as_of": {
+                            "description": "the cutoff: only rows with time_column <= as_of contribute",
+                            "type": "number"
+                          },
+                          "entity_column": {
+                            "description": "the integer key of the thing being scored, one row per entity",
+                            "type": "string"
+                          },
+                          "feature_columns": {
+                            "description": "the numeric columns to train on; omit to use every numeric column that is not the entity, label, or time column",
+                            "items": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "label_column": {
+                            "description": "the {0,1} training target",
+                            "type": "string"
+                          },
+                          "time_column": {
+                            "description": "optional point-in-time cutoff column; requires as_of. Never inferred — it decides the leakage boundary",
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "decision_source": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "entity_column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "methodology": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "output_name": {
+                            "type": "string"
+                          },
+                          "score_column": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "methodology",
+                          "entity_column",
+                          "score_column"
+                        ],
+                        "type": "object"
+                      },
+                      "delivery": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "endpoint": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "kind": {
+                            "enum": [
+                              "webhook",
+                              "salesforce",
+                              "hubspot"
+                            ],
+                            "type": "string"
+                          },
+                          "owner": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "endpoint",
+                          "owner"
+                        ],
+                        "type": "object"
+                      },
+                      "roi_model": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "currency": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "investment": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "value_per_outcome": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "value_per_outcome",
+                          "investment",
+                          "currency"
+                        ],
+                        "type": "object"
+                      },
+                      "snapshot": {
+                        "$id": "https://oramasearch.github.io/zetta/schemas/snapshot_spec.schema.json",
+                        "$schema": "http://json-schema.org/draft-07/schema#",
+                        "additionalProperties": false,
+                        "description": "Materialize the latest source observation per entity at or before a point-in-time cutoff (#1103).",
+                        "properties": {
+                          "as_of": {
+                            "description": "Inclusive cutoff, as a finite number or ISO-8601 UTC date/date-time.",
+                            "oneOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "database": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "entity_column": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "source_table": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "target_table": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "time_column": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "database",
+                          "source_table",
+                          "target_table",
+                          "entity_column",
+                          "time_column",
+                          "as_of"
+                        ],
+                        "title": "SnapshotSpec",
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "snapshot",
+                      "delivery",
+                      "roi_model",
+                      "dataset"
+                    ],
+                    "type": "object"
+                  },
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
@@ -4561,7 +4728,8 @@
                   "project",
                   "solution",
                   "level",
-                  "sources"
+                  "sources",
+                  "foundation"
                 ],
                 "type": "object"
               }
@@ -4591,6 +4759,9 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "experiment_id": {
+                          "type": "string"
+                        },
                         "graph": {
                           "type": "string"
                         },
@@ -4626,10 +4797,19 @@
                           },
                           "type": "array"
                         },
+                        "monitor_id": {
+                          "type": "string"
+                        },
+                        "policy_id": {
+                          "type": "string"
+                        },
                         "preview": {
                           "type": "boolean"
                         },
                         "project": {
+                          "type": "string"
+                        },
+                        "readout_id": {
                           "type": "string"
                         },
                         "solution": {
@@ -4643,7 +4823,11 @@
                         "graph",
                         "preview",
                         "methodologies",
-                        "missing_components"
+                        "missing_components",
+                        "policy_id",
+                        "experiment_id",
+                        "monitor_id",
+                        "readout_id"
                       ],
                       "type": "object"
                     }
@@ -4682,7 +4866,7 @@
             "description": "the engine refused or the owning loop is saturated (busy)"
           }
         },
-        "summary": "Create solution preview",
+        "summary": "Create solution",
         "tags": [
           "action"
         ]
@@ -10407,6 +10591,47 @@
                           ],
                           "type": "object"
                         },
+                        "measurement": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "design": {
+                              "enum": [
+                                "holdout",
+                                "uplift_cells",
+                                "champion_challenger",
+                                "fva",
+                                "phased"
+                              ],
+                              "type": "string"
+                            },
+                            "outcome": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "unit": {
+                                  "type": "string"
+                                },
+                                "window_days": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "unit",
+                                "window_days"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "design",
+                            "outcome"
+                          ],
+                          "type": "object"
+                        },
                         "roi_statement": {
                           "additionalProperties": false,
                           "properties": {
@@ -11256,9 +11481,75 @@
                             "decision_policy_template": {
                               "type": "string"
                             },
+                            "experiment_template": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "holdout_per_tier": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "fraction": {
+                                        "maximum": 1,
+                                        "minimum": 0,
+                                        "type": "number"
+                                      },
+                                      "tier": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "tier",
+                                      "fraction"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "seed_rule": {
+                                  "enum": [
+                                    "project_solution_v1"
+                                  ],
+                                  "type": "string"
+                                },
+                                "treatment_cells": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "holdout_per_tier",
+                                "treatment_cells",
+                                "seed_rule"
+                              ],
+                              "type": "object"
+                            },
                             "guardrails": {
                               "items": {
-                                "type": "string"
+                                "additionalProperties": false,
+                                "properties": {
+                                  "bound": {
+                                    "type": "number"
+                                  },
+                                  "direction": {
+                                    "enum": [
+                                      "minimum",
+                                      "maximum"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "metric": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "metric",
+                                  "bound",
+                                  "direction"
+                                ],
+                                "type": "object"
                               },
                               "type": "array"
                             },
@@ -11274,8 +11565,52 @@
                               },
                               "type": "array"
                             },
+                            "measurement": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "design": {
+                                  "enum": [
+                                    "holdout",
+                                    "uplift_cells",
+                                    "champion_challenger",
+                                    "fva",
+                                    "phased"
+                                  ],
+                                  "type": "string"
+                                },
+                                "outcome": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "unit": {
+                                      "type": "string"
+                                    },
+                                    "window_days": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "unit",
+                                    "window_days"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "design",
+                                "outcome"
+                              ],
+                              "type": "object"
+                            },
                             "measurement_design": {
                               "type": "string"
+                            },
+                            "minimal_template": {
+                              "type": "boolean"
                             },
                             "missing_components": {
                               "items": {
@@ -11308,6 +11643,248 @@
                                 "type": "string"
                               },
                               "type": "array"
+                            },
+                            "policy_template": {
+                              "$schema": "http://json-schema.org/draft-07/schema#",
+                              "additionalProperties": false,
+                              "properties": {
+                                "actions": {
+                                  "additionalProperties": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approval_above": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      },
+                                      "autonomy": {
+                                        "enum": [
+                                          "A0",
+                                          "A1",
+                                          "A2",
+                                          "A3"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "contact_cap": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "frequency_cap": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "max_actions": {
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "window_seconds": {
+                                            "minimum": 1,
+                                            "type": "integer"
+                                          }
+                                        },
+                                        "required": [
+                                          "max_actions",
+                                          "window_seconds"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "sla_seconds": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "autonomy"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "object"
+                                },
+                                "autonomy": {
+                                  "enum": [
+                                    "A0",
+                                    "A1",
+                                    "A2",
+                                    "A3"
+                                  ],
+                                  "type": "string"
+                                },
+                                "budget": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "limit": {
+                                      "minimum": 0,
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "limit"
+                                  ],
+                                  "type": "object"
+                                },
+                                "contact_cap": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "eligibility_rules": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "field": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "operator": {
+                                        "enum": [
+                                          "eq",
+                                          "neq",
+                                          "lt",
+                                          "lte",
+                                          "gt",
+                                          "gte",
+                                          "in",
+                                          "not_in",
+                                          "exists"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "required": [
+                                      "field",
+                                      "operator"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "exclusion_rules": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "field": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "name": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "operator": {
+                                        "enum": [
+                                          "eq",
+                                          "neq",
+                                          "lt",
+                                          "lte",
+                                          "gt",
+                                          "gte",
+                                          "in",
+                                          "not_in",
+                                          "exists"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "role": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "value": {}
+                                    },
+                                    "required": [
+                                      "field",
+                                      "operator"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "frequency_cap": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "max_actions": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "window_seconds": {
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "max_actions",
+                                    "window_seconds"
+                                  ],
+                                  "type": "object"
+                                },
+                                "kill_switch": {
+                                  "type": "boolean"
+                                },
+                                "threshold": {
+                                  "type": "number"
+                                },
+                                "tiers": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "action": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "allowed_actions": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "minimum_score": {
+                                        "type": "number"
+                                      },
+                                      "name": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "minimum_score",
+                                      "action"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "tunable_bounds": {
+                                  "additionalProperties": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "maximum": {
+                                        "type": "number"
+                                      },
+                                      "minimum": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "minimum",
+                                      "maximum"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "autonomy"
+                              ],
+                              "title": "zetta.DecisionPolicyConfig",
+                              "type": "object"
                             },
                             "promise": {
                               "type": "string"
@@ -11361,6 +11938,10 @@
                             "required_data_roles",
                             "decision_policy_template",
                             "measurement_design",
+                            "policy_template",
+                            "experiment_template",
+                            "measurement",
+                            "minimal_template",
                             "guardrails",
                             "capability_levels",
                             "missing_components",
@@ -14055,9 +14636,75 @@
                               "decision_policy_template": {
                                 "type": "string"
                               },
+                              "experiment_template": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "holdout_per_tier": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "fraction": {
+                                          "maximum": 1,
+                                          "minimum": 0,
+                                          "type": "number"
+                                        },
+                                        "tier": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "tier",
+                                        "fraction"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "seed_rule": {
+                                    "enum": [
+                                      "project_solution_v1"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "treatment_cells": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  }
+                                },
+                                "required": [
+                                  "holdout_per_tier",
+                                  "treatment_cells",
+                                  "seed_rule"
+                                ],
+                                "type": "object"
+                              },
                               "guardrails": {
                                 "items": {
-                                  "type": "string"
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "bound": {
+                                      "type": "number"
+                                    },
+                                    "direction": {
+                                      "enum": [
+                                        "minimum",
+                                        "maximum"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "metric": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "metric",
+                                    "bound",
+                                    "direction"
+                                  ],
+                                  "type": "object"
                                 },
                                 "type": "array"
                               },
@@ -14073,8 +14720,52 @@
                                 },
                                 "type": "array"
                               },
+                              "measurement": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "design": {
+                                    "enum": [
+                                      "holdout",
+                                      "uplift_cells",
+                                      "champion_challenger",
+                                      "fva",
+                                      "phased"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "outcome": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "name": {
+                                        "type": "string"
+                                      },
+                                      "unit": {
+                                        "type": "string"
+                                      },
+                                      "window_days": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "name",
+                                      "unit",
+                                      "window_days"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "design",
+                                  "outcome"
+                                ],
+                                "type": "object"
+                              },
                               "measurement_design": {
                                 "type": "string"
+                              },
+                              "minimal_template": {
+                                "type": "boolean"
                               },
                               "missing_components": {
                                 "items": {
@@ -14107,6 +14798,248 @@
                                   "type": "string"
                                 },
                                 "type": "array"
+                              },
+                              "policy_template": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "actions": {
+                                    "additionalProperties": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "approval_above": {
+                                          "minimum": 0,
+                                          "type": "number"
+                                        },
+                                        "autonomy": {
+                                          "enum": [
+                                            "A0",
+                                            "A1",
+                                            "A2",
+                                            "A3"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "contact_cap": {
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        "frequency_cap": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "max_actions": {
+                                              "minimum": 0,
+                                              "type": "integer"
+                                            },
+                                            "window_seconds": {
+                                              "minimum": 1,
+                                              "type": "integer"
+                                            }
+                                          },
+                                          "required": [
+                                            "max_actions",
+                                            "window_seconds"
+                                          ],
+                                          "type": "object"
+                                        },
+                                        "sla_seconds": {
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        }
+                                      },
+                                      "required": [
+                                        "autonomy"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "object"
+                                  },
+                                  "autonomy": {
+                                    "enum": [
+                                      "A0",
+                                      "A1",
+                                      "A2",
+                                      "A3"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "budget": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "limit": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "limit"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "contact_cap": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "eligibility_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "exclusion_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "frequency_cap": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "max_actions": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "window_seconds": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "max_actions",
+                                      "window_seconds"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "kill_switch": {
+                                    "type": "boolean"
+                                  },
+                                  "threshold": {
+                                    "type": "number"
+                                  },
+                                  "tiers": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "action": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "allowed_actions": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "minimum_score": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "minimum_score",
+                                        "action"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "tunable_bounds": {
+                                    "additionalProperties": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "minimum",
+                                        "maximum"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "autonomy"
+                                ],
+                                "title": "zetta.DecisionPolicyConfig",
+                                "type": "object"
                               },
                               "promise": {
                                 "type": "string"
@@ -14160,6 +15093,10 @@
                               "required_data_roles",
                               "decision_policy_template",
                               "measurement_design",
+                              "policy_template",
+                              "experiment_template",
+                              "measurement",
+                              "minimal_template",
                               "guardrails",
                               "capability_levels",
                               "missing_components",
@@ -17662,7 +18599,7 @@
     },
     "/v1/run_solution": {
       "post": {
-        "description": "Run a composed preview's runnable methodology stages in order and return a durable Run with stage lineage; absent production foundation components are explicitly skipped. Requires orchestration:run_solution. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Materialize the explicit snapshot, run registered methodologies, apply policy and holdout protection, deliver governed actions and record the ledger in a durable Run. Requires orchestration:run_solution. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "run_solution",
         "requestBody": {
           "content": {
@@ -17670,6 +18607,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "delivery_token": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
                   "graph": {
                     "minLength": 1,
                     "type": "string"
@@ -17771,7 +18712,7 @@
             "description": "the engine refused or the owning loop is saturated (busy)"
           }
         },
-        "summary": "Run solution preview",
+        "summary": "Run solution",
         "tags": [
           "job"
         ]

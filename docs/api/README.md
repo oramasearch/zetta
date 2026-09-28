@@ -182,13 +182,13 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |
-| `create_solution` | action | orchestration:create_solution | compose a selected solution level through methodology callbacks and store the replicated preview Pipeline, returning every missing production component |
+| `create_solution` | action | orchestration:create_solution | compose a selected level and create its versioned policy, experiment, monitor and ROI definition from typed defaults and explicit snapshot/delivery/economics inputs |
 | `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
 | `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner, including M-5 survival, M-12 graph ML and M-21 streaming over their connect-step tables; M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
-| `run_solution` | job | orchestration:run_solution | run a composed preview's methodology stages in order, returning a durable Run whose lineage names every stage; production-foundation steps remain explicitly skipped |
+| `run_solution` | job | orchestration:run_solution | run snapshot and methodology stages, enforce policy/holdout protection, deliver actions and record ledger/monitor state; return a durable Run and decision-table output |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `snapshot` | action | orchestration:snapshot | materialize the latest row per entity at or before an inclusive cutoff into a replicated table keyed by `(entity_id, as_of)` (#1103) |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008, [add-dataset.md](../data/add-dataset.md)) |

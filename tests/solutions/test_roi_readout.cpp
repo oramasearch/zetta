@@ -233,6 +233,46 @@ TEST(RoiReadout, MissingHoldoutOutcomesRefusesIncrementalityClaim) {
     node.stop();
 }
 
+TEST(RoiReadout, HonorsMeasurementWindowAndRefusesFvaLiftClaims) {
+    zetta::test::TempDir directory;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(node.start());
+    create_valid_graph(node);
+    const auto experiment = node.experiment_manager().create(experiment_value());
+    ASSERT_TRUE(experiment);
+    for (int index = 0; index < 20; ++index) {
+        const auto assignment = node.experiment_manager().assign(experiment->id, std::to_string(index));
+        ASSERT_TRUE(assignment);
+        record_response(node, *assignment, 1.0);
+    }
+    auto spec = readout_spec(experiment->id);
+    spec.outcome_window_days = 1;
+    spec.outcome_unit = "customer";
+    std::string error;
+    RoiReadoutStore store(replication);
+    const auto definition = store.configure(spec, "owner", &error);
+    ASSERT_TRUE(definition) << error;
+    const auto read = store.get(definition->id, &error);
+    ASSERT_TRUE(read) << error;
+    EXPECT_EQ(read->spec.outcome_window_days, 1);
+    const auto outside_window = zetta::solutions::generate_roi_readout(
+        node, replication, definition->id, &error);
+    ASSERT_TRUE(outside_window) << error;
+    EXPECT_FALSE(outside_window->incrementality.claimable);
+    EXPECT_EQ(outside_window->incrementality.holdout_samples, 0u);
+    spec.measurement_design = "fva";
+    spec.outcome_window_days = 30;
+    const auto fva = store.configure(spec, "owner", &error);
+    ASSERT_TRUE(fva) << error;
+    const auto readout = zetta::solutions::generate_roi_readout(node, replication, fva->id, &error);
+    ASSERT_TRUE(readout) << error;
+    EXPECT_FALSE(readout->incrementality.claimable);
+    EXPECT_NE(readout->incrementality.reason.find("module-specific estimator"), std::string::npos);
+    EXPECT_EQ(zetta::solutions::to_json(*readout).at("measurement").at("design"), "fva");
+    node.stop();
+}
+
 TEST(RoiReadout, ReportsPolicyApprovalsAndExperimentOverrides) {
     zetta::test::TempDir directory;
     zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};

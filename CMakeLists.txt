@@ -563,6 +563,8 @@ add_library(zetta-core STATIC
   src/core/solutions/monitor.cpp
   src/core/solutions/roi_readout.cpp
   src/core/solutions/solution_templates.cpp
+  src/core/solutions/solution_foundation.cpp
+  src/core/solutions/solution_execution.cpp
   src/core/ml/ensemble.cpp
   src/core/ml/ensemble_methodology.cpp
   src/core/ml/ensemble_runner.cpp

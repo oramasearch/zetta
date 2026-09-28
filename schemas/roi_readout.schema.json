@@ -204,6 +204,47 @@
       ],
       "type": "object"
     },
+    "measurement": {
+      "additionalProperties": false,
+      "properties": {
+        "design": {
+          "enum": [
+            "holdout",
+            "uplift_cells",
+            "champion_challenger",
+            "fva",
+            "phased"
+          ],
+          "type": "string"
+        },
+        "outcome": {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string"
+            },
+            "window_days": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "unit",
+            "window_days"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "design",
+        "outcome"
+      ],
+      "type": "object"
+    },
     "roi_statement": {
       "additionalProperties": false,
       "properties": {

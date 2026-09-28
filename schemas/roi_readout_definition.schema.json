@@ -23,6 +23,23 @@
       "minLength": 1,
       "type": "string"
     },
+    "measurement_design": {
+      "enum": [
+        "holdout",
+        "uplift_cells",
+        "champion_challenger",
+        "fva",
+        "phased"
+      ],
+      "type": "string"
+    },
+    "outcome_unit": {
+      "type": "string"
+    },
+    "outcome_window_days": {
+      "minimum": 1,
+      "type": "integer"
+    },
     "project": {
       "minLength": 1,
       "type": "string"

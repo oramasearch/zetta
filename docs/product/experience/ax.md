@@ -83,10 +83,14 @@ relay it to a person.
   `list_solutions` and `get_solution` expose all twelve catalogue modules and eight
   sketches with plain product copy, portfolio-number composition, data roles,
   autonomy, policy, measurement, guardrails, levels, and missing components.
-  `create_solution` stores a callback-built preview Pipeline on an existing
-  project; `run_solution` executes its runnable methodology stages in order and
-  records stage Run ids in lineage. The response and Run both say `preview`:
-  absent shared-foundation components are never presented as production-ready.
+  `create_solution` uses typed defaults to create a callback-built Pipeline,
+  versioned policy, experiment, monitor and ROI definition on an existing project.
+  Explicit snapshot, data-role, delivery and economics settings are required.
+  `run_solution` executes the snapshot and methodology stages, then the policy's
+  combined holdout protection, governed delivery, ledger and monitoring path.
+  It returns `preview: false`; read-backs include child Run lineage and a decision
+  table. S-1 has full retention defaults; S-2 through S-12 are marked minimal.
+  See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
   then run the stored pipeline and poll its Run. The report carries temporal

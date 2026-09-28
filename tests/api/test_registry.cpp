@@ -129,7 +129,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     ASSERT_TRUE(solutions.ok);
     ASSERT_EQ(solutions.value.at("solutions").size(), 20u);
     EXPECT_EQ(solutions.value.at("solutions").front().at("id"), "S-1");
-    EXPECT_FALSE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
     EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.

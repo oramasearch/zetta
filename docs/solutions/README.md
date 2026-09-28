@@ -46,18 +46,17 @@ types. `solutions()` returns 20 stable entries in catalogue order:
 - B-1 through B-8 have `status: "sketch"`, `runnable: false`, and a promotion
   condition. Their data roles describe what promotion would require. They
   cannot be built; the refusal repeats that promotion condition.
-- Every S entry currently has `runnable: false`. The methodology callbacks are
-  present, but production operation also needs snapshot history (#1103), the
-  decision-policy engine (#1104), holdout manager (#1105), monitor (#1106),
-  decision ledger (#1107), measured-value readout (#1108), and action
-  connectors (#1109). Each missing component and issue is returned explicitly.
+- All seven production foundation components are integrated (#1128).
+  `runnable` describes the default level's methodology availability;
+  `missing_components` lists unavailable methodology callbacks only. It is
+  empty for the currently runnable S modules. Band-B entries remain sketches.
 
 The product copy contains no pricing or numerical return claims. It says what
 problem the module solves and what data roles it needs.
 
 `list_solutions` and `get_solution` are read capabilities on the REST and MCP
 surfaces. They are also eligible for an agent's opt-in, read-only capability
-list. `pipelines:manage` grants the two preview write operations. The permission
+list. `pipelines:manage` grants the two solution write operations. The permission
 vocabulary test checks both `create_solution` and `run_solution` explicitly,
 alongside the owner-authorizes-every-registry-operation invariant.
 
@@ -79,46 +78,86 @@ Language work uses portfolio M-10. The customer agent is a shared foundation
 component rather than an extra methodology stage unless a solution explicitly
 attaches M-10, as S-9 can at CL-4.
 
-## Composition
+## Executable templates
 
-The write surface accepts the existing Project plus a catalogue level and
-source hints:
+`policy_template` is validated by the decision-policy engine's config schema.
+`experiment_template`, `guardrails`, and `measurement` have typed capability
+schemas; prose in `decision_policy_template` / `measurement_design` remains
+descriptive only. Execution never interprets that prose.
 
-```text
-create_solution {"project":"retention","solution":"S-1","level":1,"sources":{"source":"datasets","table":"customers"}}
-run_solution    {"project":"retention","graph":"S-1 CL-1 preview"}
-```
+S-1 is the complete retention default:
 
-`compose_solution` selects every composition entry whose `minimum_level` is at
-or below the requested integer level (1 through 4). It invokes that
-methodology's `build_shape` callback, tags the returned steps with methodology
-and stage order, and joins the stages with control edges. Source hints may be
-given once or overridden under an M-id key. The resulting graph also names the
-missing production-foundation steps and is marked `preview`.
+| Setting | Executable default |
+|---|---|
+| High risk | score ≥ 0.7; CSM task, A2, one-day SLA |
+| Medium risk | score ≥ 0.4; retention journey, A2, at most one action per 30-day window |
+| Low risk | score ≥ 0; deliberate no-contact recommendation, A0 |
+| Discount | optional high-tier action; A2 through 50 currency units; above 50 requires A1 approval |
+| Contact limits | 12 lifetime contacts and one action per 30-day window; recorded decisions and supplied counts both constrain execution |
+| Exclusions | named entity predicates `in_collections`, `open_complaint`, `vulnerable`; each must explicitly be false, so missing evidence blocks |
+| Budget / stop | 1,000 currency units per policy version; kill switch off |
+| Experiment | independent 10% holdout probability in each high/medium/low tier, 90% treatment |
+| Guardrails | maximum complaint fraction 0.01; discount budget 1,000; maximum monthly contact count 1 |
+| Measurement | holdout; named `retained` outcome per customer over 30 days |
 
-Composition and execution order are intentionally distinct. The public
-composition keeps the catalogue's primary-first numbering, while the Pipeline
-can resolve identity before downstream modeling. A selected methodology with a
-missing shape or run callback is refused with `not_supported` and its issue.
+These numerical defaults are editable starter settings, not calibrated risk
+cutoffs, business recommendations, prices, or ROI promises. Currency and the
+value/investment used in ROI always come from the caller. Owners use
+`update_policy` to create later policy versions.
 
-The composed graph is stored through the owning Project's normal
-`create_graph` path, so persistence, replication, audit, and owner-thread rules
-remain the existing `ProjectGraph` contract.
+The experiment seed is the low 63 bits of FNV-1a-64 over
+`<project UUID>/<solution graph name>` (`project_solution_v1`).
+The manager hashes each entity with that fixed seed, independently of its score.
+Thus each tier has the same 10% probability, not an exact small-sample quota.
+Re-scoring an entity does not move its cell when its risk tier changes. Cell
+names include the project/graph scope so unrelated experiments cannot share
+ledger evidence accidentally.
 
-`run_solution` accepts that stored graph, creates a durable parent Run, and
-executes each tagged methodology subgraph in order through its registered `run`
-callback. Each child Run must succeed before the next begins. The parent lineage
-records methodology ids and child Run ids; its warning log states that the seven
-production components were skipped. If a selected callback is missing, the call
-returns `not_supported` with its implementation issue.
+### Minimal defaults
 
-## Boundaries and deferred work
+**S-2 through S-12 are minimal**, marked `minimal_template: true`. Their module
+issues refine the business settings; none is presented as a completed
+industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
+an explicit `eligible == true` predicate, `excluded == true` suppression,
+12 lifetime contacts, one action per 30 days, zero default spend, a 10% holdout,
+and the kill switch off. Task SLAs default to one day. Monetary actions therefore
+require an owner-approved policy change before spending.
 
-The registry adds no replicated entity and no new stored JSON format. Capability
-input and output schemas are owned by the capability registry and generated into
-OpenAPI. Production execution of policy, action, holdout, monitoring, ledger,
-and readout steps remains with #1103 through #1109; preview execution must not be
-presented as production-ready.
+| Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
+|---|---|---|---|
+| S-2 | sales queue task / A2 | holdout / converted | SLA misses: 0 |
+| S-3 | audience sync / A2 | holdout / net_value | consent violations: 0 |
+| S-4 | collections queue / A2 | champion_challenger / net_recovery | complaints: 0 |
+| S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
+| S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
+| S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
+| S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
+| S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
+| S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
+| S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
+| S-12 | referral task / A0 | phased / referral_confirmed | automated denials: 0 |
 
-The internal catalogue source remains linked from issue #1102 and is not copied
-into this repository.
+Minimal guardrails are registered but remain unobserved until their metric
+producer supplies evidence; absence of an observation is not a healthy reading.
+The readout refuses causal/ROI claims for FVA and phased designs until their
+module-specific estimators exist.
+
+## Composition and execution
+
+See [executable solution pipelines](executable-pipelines.md) for the input
+contract, example, read-backs, failure behavior, and the S-1 journey.
+
+`compose_solution` selects methodologies at the requested capability level,
+calls each registered `build_shape`, tags its nodes, and connects the stages
+with control edges. A missing selected shape or runner is refused explicitly.
+The composed order is snapshot → methodologies → policy/holdout protection →
+actions → ledger → monitor, with a readout definition linked to the graph.
+`create_solution` persists real versioned policy, experiment, monitor, graph,
+and ROI definition records; `run_solution` uses those records and returns
+`preview: false`.
+
+No parallel record system is introduced. Policies, decisions, experiments,
+monitors, ledger entries, ROI definitions, snapshot tables, graphs, and Runs use
+their existing replicated storage and owner-thread contracts. Capability
+schemas and the stored-record schemas remain generated and drift checked.
+The internal catalogue source is linked from issue #1102 and is not copied here.

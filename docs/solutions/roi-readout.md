@@ -43,11 +43,19 @@ The public capability is read-only. Solution setup code owns configuration;
 `get_roi_readout` does not change the definition, experiment, ledger, policy,
 or monitor.
 
+Integrated `create_solution` persists the typed measurement design, outcome
+unit and observation window with the definition (#1128). The readout exposes
+them as `measurement`; older definitions default to a 30-day holdout design.
+FVA and phased templates return an explicit non-claimable result until their
+module-specific estimators exist, rather than using an inappropriate lift claim.
+
 ## Incrementality
 
 The generator joins experiment assignments to ledger actions by subject and
 allocation, then joins outcomes by action ID. Only outcomes matching the ROI
-model's outcome name enter the calculation. Exempt holdout assignments are not
+model's outcome name and occurring between the recorded action time and the
+configured outcome-window end enter the calculation. Invalid, earlier or later
+timestamps are excluded. Exempt holdout assignments are not
 controls.
 
 For each treatment or exploration cell:

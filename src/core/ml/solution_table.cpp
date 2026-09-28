@@ -18,18 +18,6 @@ std::string issue(int number) {
     return std::string(kIssueBase) + std::to_string(number);
 }
 
-std::vector<MissingSolutionComponent> missing_foundation() {
-    return {
-        {"snapshots", "Snapshot and feature history", issue(1103)},
-        {"policy", "Decision-policy engine", issue(1104)},
-        {"holdout", "Holdout and experiment manager", issue(1105)},
-        {"monitor", "Drift and guardrail monitor", issue(1106)},
-        {"ledger", "Decision audit ledger", issue(1107)},
-        {"readout", "Measured-value readout", issue(1108)},
-        {"actions", "Systems-of-action connectors", issue(1109)},
-    };
-}
-
 std::vector<SolutionCapabilityLevel>
 levels(std::string first, std::string second, std::string third,
        std::string fourth) {
@@ -67,7 +55,18 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
-    solution.missing_components = missing_foundation();
+    solution.templates = zetta::solutions::solution_templates(solution.id);
+    solution.runnable = true;
+    for (const SolutionMethodology& entry : solution.composition) {
+        const Methodology* method = find_methodology(entry.id);
+        if (method == nullptr || !method->runnable || !method->build_shape || !method->run) {
+            solution.missing_components.push_back(
+                {entry.id, method == nullptr ? entry.id : method->name, issue(984)});
+            if (entry.minimum_level == 1) {
+                solution.runnable = false;
+            }
+        }
+    }
     solution.status = "catalogue";
     solution.issue = issue(1102);
     return solution;
@@ -152,7 +151,7 @@ copy_stage(ir::ExecutionGraph& destination, const ir::ExecutionGraph& source,
                                         : nlohmann::json::object();
         attributes["methodology"] = methodology;
         attributes["solution_stage"] = stage;
-        attributes["preview"] = true;
+        attributes["preview"] = false;
         destination.add_node(node->kind, node->name, std::move(attributes),
                              prefix + node->id);
     }
@@ -482,6 +481,10 @@ const Solution* find_solution(std::string_view id) {
 }
 
 nlohmann::json solution_json(const Solution& solution) {
+    nlohmann::json guardrails = nlohmann::json::array();
+    for (const auto& guardrail : solution.templates.guardrails) {
+        guardrails.push_back(zetta::solutions::to_json(guardrail));
+    }
     nlohmann::json autonomy = nlohmann::json::array();
     for (const SolutionAutonomyDefault& entry : solution.autonomy_defaults) {
         autonomy.push_back({{"action_class", entry.action_class},
@@ -517,7 +520,11 @@ nlohmann::json solution_json(const Solution& solution) {
             {"required_data_roles", std::move(data_roles)},
             {"decision_policy_template", solution.decision_policy_template},
             {"measurement_design", solution.measurement_design},
-            {"guardrails", solution.guardrails},
+            {"policy_template", solution.templates.policy},
+            {"experiment_template", zetta::solutions::to_json(solution.templates.experiment)},
+            {"measurement", zetta::solutions::to_json(solution.templates.measurement)},
+            {"minimal_template", solution.templates.minimal},
+            {"guardrails", std::move(guardrails)},
             {"capability_levels", std::move(capability_levels)},
             {"missing_components", std::move(missing)},
             {"status", solution.status},
@@ -548,17 +555,17 @@ ComposedSolution compose_solution(const Solution& solution, int level,
     }
 
     result.graph.add_node(
-        ir::StepKind::Connect, "Solution preview manifest",
+        ir::StepKind::Connect, "Solution execution manifest",
         {{"solution", solution.id},
          {"level", level},
-         {"preview", true},
+         {"preview", false},
          {"methodologies", selected},
          {"sources", sources}},
         "solution_manifest");
     result.graph.add_node(
         ir::StepKind::Clean, "Read point-in-time snapshots",
         {{"foundation_component", "snapshots"},
-         {"runnable", false},
+         {"runnable", true},
          {"issue", issue(1103)}},
         "solution_snapshots");
     result.graph.add_edge("solution_manifest", "solution_snapshots",
@@ -605,8 +612,8 @@ ComposedSolution compose_solution(const Solution& solution, int level,
 
     const std::vector<MissingSolutionComponent> after_model = {
         {"policy", "Apply decision policy", issue(1104)},
-        {"actions", "Dispatch governed actions", issue(1109)},
         {"holdout", "Maintain holdout cells", issue(1105)},
+        {"actions", "Dispatch governed actions", issue(1109)},
         {"ledger", "Record score, action, and outcome", issue(1107)},
         {"monitor", "Monitor drift and guardrails", issue(1106)},
         {"readout", "Publish measured-value readout", issue(1108)},
@@ -621,7 +628,7 @@ ComposedSolution compose_solution(const Solution& solution, int level,
         result.graph.add_node(
             kind, component.name,
             {{"foundation_component", component.id},
-             {"runnable", false},
+             {"runnable", true},
              {"issue", component.issue}},
             node_id);
         for (const std::string& from : previous) {

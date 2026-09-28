@@ -36,6 +36,9 @@ struct RoiReadoutSpec {
     std::string graph;
     std::string experiment;
     RoiModel roi_model;
+    std::string measurement_design = "holdout";
+    int outcome_window_days = 30;
+    std::string outcome_unit;
 };
 
 // One immutable configuration version stored as `roi_readout:<uuid>` in the
