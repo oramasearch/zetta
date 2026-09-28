@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "zetta/governance/access_key.hpp"
@@ -1159,6 +1160,11 @@ private:
     std::function<void()> owner_wakeup_;  // guarded by owner_work_mutex_
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    // id -> event, beside audit_events_: membership in O(1) (#1070). Every
+    // reconcile walks all the document's audit keys; a linear scan per key made
+    // that O(n^2) per changed tick.
+    std::unordered_map<std::string, std::shared_ptr<zetta::governance::AuditEvent>>
+        audit_events_by_id_;
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials

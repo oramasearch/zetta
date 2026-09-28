@@ -36,7 +36,10 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | `time` | `std::string` | ISO-8601 UTC stamp of when the action was recorded. |
 
 Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
-chronologically as plain text); the trail is kept sorted by `(time, id)`.
+chronologically as plain text); the trail is kept sorted by `time`. A new
+event is inserted at its place (a local one lands at the end; a peer's older
+one is placed by binary search), and events sharing a stamp keep the order they
+arrived in. Loading the trail from disk sorts it by `(time, id)`.
 
 ## What emits an event
 
@@ -100,6 +103,16 @@ the document (when replicated) then materializes the on-disk file;
 `reconcile_from_replication` materializes peer events merged in by gossip. The
 distributed, convergent, tamper-evident trail every node agrees on is a natural
 fit for the CRDT model.
+
+**Reconciliation cost (#1070).** Every tick whose document changed walks every
+`audit:` key, and every audited call changes the document, so on a busy node this
+runs about ten times a second over the whole trail. The node keeps an id index
+beside the trail: a known event is skipped before its value is parsed, and
+nothing is re-sorted, so the walk is linear. Before, each key was parsed and
+searched for linearly, which is O(n²) per tick. At 25k events, lake's bus Zetta
+fell to three ticks a second and every request waited over a second behind them.
+The copy of the whole document into the snapshot, and persisting it each changed
+tick, remain linear in the trail's length; see #1070 for the follow-up.
 
 On disk, audit events project to a **single shared `audit/` folder** — one file
 per event — rather than a folder per event, the natural shape for a high-volume
