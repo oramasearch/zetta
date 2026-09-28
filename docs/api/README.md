@@ -136,6 +136,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
+| `get_monitor` | read | api:query | one solution's input/score drift, calibration, cohort performance, guardrails, active breaches, and retrain request by solution name or monitor uuid |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
 | `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |

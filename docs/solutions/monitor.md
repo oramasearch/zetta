@@ -31,6 +31,14 @@ is refused before state is created.
 One solution name maps to one monitor on a node. The UUID remains the durable
 identity; `Node::find_monitor` accepts either the UUID or solution name.
 
+## Control surface
+
+`get_monitor` is the read-only MCP and REST capability. Its required `solution`
+argument accepts either the solution name or monitor UUID. The result is the
+schema-validated replicated value plus its UUID, including current
+distributions, calibration, cohort performance, guardrails, active breaches,
+and retrain request. It has no side effects and requires `api:query`.
+
 ## Recording observations
 
 The returned `Monitor` handle exposes owner-thread operations:
@@ -98,6 +106,8 @@ layer.
 The monitor value is a new schema-as-code boundary, generated as
 `schemas/solution_monitor.schema.json`. Breach events use the existing pub/sub
 JSON payload boundary and remain node-local like all stage-1 pub/sub events.
+The generated OpenAPI document includes the `GET /v1/get_monitor` route and the
+same input and output schemas used by MCP.
 
 Deliberately later: automatic ingestion from solution runs, policy decisions,
 holdout assignments, and audit entries. Those foundations call this public

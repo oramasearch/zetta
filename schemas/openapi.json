@@ -6228,6 +6228,406 @@
         ]
       }
     },
+    "/v1/get_monitor": {
+      "get": {
+        "description": "Read one solution's current input and score drift, calibration, closed-window cohort performance, guardrails, active breaches, and retrain request by solution name or monitor uuid. No side effects. Requires api:query.",
+        "operationId": "get_monitor",
+        "parameters": [
+          {
+            "description": "the solution name or monitor uuid",
+            "in": "query",
+            "name": "solution",
+            "required": true,
+            "schema": {
+              "description": "the solution name or monitor uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "definitions": {
+                        "bound": {
+                          "additionalProperties": false,
+                          "anyOf": [
+                            {
+                              "required": [
+                                "minimum"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "maximum"
+                              ]
+                            }
+                          ],
+                          "properties": {
+                            "maximum": {
+                              "type": "number"
+                            },
+                            "minimum": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name"
+                          ],
+                          "type": "object"
+                        },
+                        "breach": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "enum": [
+                                "input_psi",
+                                "score_psi",
+                                "calibration",
+                                "guardrail"
+                              ],
+                              "type": "string"
+                            },
+                            "maximum": {
+                              "type": "number"
+                            },
+                            "metric": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "minimum": {
+                              "type": "number"
+                            },
+                            "monitor_id": {
+                              "type": "string"
+                            },
+                            "observed_at": {
+                              "type": "string"
+                            },
+                            "retrain_requested": {
+                              "type": "boolean"
+                            },
+                            "solution": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "monitor_id",
+                            "solution",
+                            "kind",
+                            "metric",
+                            "value",
+                            "observed_at",
+                            "retrain_requested"
+                          ],
+                          "type": "object"
+                        },
+                        "distribution": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "boundaries": {
+                              "items": {
+                                "type": "number"
+                              },
+                              "type": "array"
+                            },
+                            "breached": {
+                              "type": "boolean"
+                            },
+                            "expected": {
+                              "items": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "observed": {
+                              "items": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "type": "array"
+                            },
+                            "observed_at": {
+                              "type": "string"
+                            },
+                            "psi": {
+                              "minimum": 0,
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "boundaries",
+                            "expected",
+                            "observed",
+                            "psi",
+                            "breached",
+                            "observed_at"
+                          ],
+                          "type": "object"
+                        },
+                        "guardrail": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bound": {
+                              "$ref": "#/definitions/bound"
+                            },
+                            "breached": {
+                              "type": "boolean"
+                            },
+                            "observed_at": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "bound",
+                            "breached",
+                            "observed_at"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "properties": {
+                        "breaches": {
+                          "items": {
+                            "$ref": "#/definitions/breach"
+                          },
+                          "type": "array"
+                        },
+                        "calibration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "breached": {
+                              "type": "boolean"
+                            },
+                            "brier_score": {
+                              "maximum": 1,
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "expected_calibration_error": {
+                              "maximum": 1,
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "observed_at": {
+                              "type": "string"
+                            },
+                            "samples": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "samples",
+                            "expected_calibration_error",
+                            "brier_score",
+                            "breached",
+                            "observed_at"
+                          ],
+                          "type": "object"
+                        },
+                        "calibration_bins": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "calibration_error_threshold": {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "cohorts": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "accuracy": {
+                                "maximum": 1,
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "brier_score": {
+                                "maximum": 1,
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "closed_at": {
+                                "type": "string"
+                              },
+                              "cohort": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "log_loss": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "samples": {
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "window": {
+                                "minLength": 1,
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "window",
+                              "cohort",
+                              "samples",
+                              "accuracy",
+                              "brier_score",
+                              "log_loss",
+                              "closed_at"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "created": {
+                          "type": "string"
+                        },
+                        "guardrails": {
+                          "items": {
+                            "$ref": "#/definitions/guardrail"
+                          },
+                          "type": "array"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "inputs": {
+                          "items": {
+                            "$ref": "#/definitions/distribution"
+                          },
+                          "type": "array"
+                        },
+                        "psi_threshold": {
+                          "exclusiveMinimum": 0,
+                          "type": "number"
+                        },
+                        "retrain_on_breach": {
+                          "type": "boolean"
+                        },
+                        "retrain_requested": {
+                          "type": "boolean"
+                        },
+                        "scores": {
+                          "$ref": "#/definitions/distribution"
+                        },
+                        "solution": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "solution",
+                        "inputs",
+                        "psi_threshold",
+                        "calibration_error_threshold",
+                        "calibration_bins",
+                        "calibration",
+                        "cohorts",
+                        "guardrails",
+                        "breaches",
+                        "retrain_on_breach",
+                        "retrain_requested",
+                        "created",
+                        "updated",
+                        "id"
+                      ],
+                      "title": "zetta.SolutionMonitor",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one solution monitor",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_plan": {
       "get": {
         "description": "Read one Plan's full validated record (name, tier, quota limits) by its uuid. Metered usage is read live from system.usage. (Conflict D) Requires api:query.",

@@ -64,7 +64,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        87u); // +get_monitor (#1106), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -107,7 +107,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("testsuite_list"));
     // The #616 read-parity slice: typed detail reads + list_* siblings.
     for (const char* name :
-         {"get_project", "get_run", "get_model", "get_job", "get_index",
+         {"get_project", "get_run", "get_model", "get_monitor", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
           "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
           "list_methodologies"}) {
@@ -461,6 +461,17 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     auto model = node.create_model(std::move(model_value));
     ASSERT_TRUE(model);
 
+    zetta::solutions::MonitorSpec monitor_spec;
+    monitor_spec.solution = "renewal-risk";
+    monitor_spec.inputs = {
+        {"tenure", {12.0}, {0.5, 0.5}},
+    };
+    monitor_spec.guardrails = {
+        {"cost", 0.0, 100.0},
+    };
+    auto monitor = node.create_monitor(std::move(monitor_spec));
+    ASSERT_TRUE(monitor);
+
     auto job = node.create_job(zetta::compute::JobKind::Featurize, "proj-uuid");
     ASSERT_TRUE(job);
 
@@ -481,6 +492,7 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     const DetailCase cases[] = {
         {"get_run", "run_id", run->id(), run->metadata()},
         {"get_model", "model_id", model->id(), model->metadata()},
+        {"get_monitor", "solution", monitor->id(), monitor->metadata()},
         {"get_job", "job_id", job->id(), job->metadata()},
         {"get_index", "index_id", index->id(), index->metadata()},
     };
@@ -505,6 +517,12 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     EXPECT_EQ(fetched_run.value.at("status"), "running");
     ASSERT_EQ(fetched_run.value.at("logs").size(), 1u);
     EXPECT_EQ(fetched_run.value.at("logs")[0].at("message"), "step one");
+
+    auto monitor_by_solution = call(
+        "get_monitor",
+        nlohmann::json{{"solution", "renewal-risk"}});
+    ASSERT_TRUE(monitor_by_solution.ok) << monitor_by_solution.error.message;
+    EXPECT_EQ(monitor_by_solution.value.at("id"), monitor->id());
 }
 
 // Journey (#616): the list_* siblings return compact structured rows over the
