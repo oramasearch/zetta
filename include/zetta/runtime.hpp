@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <boost/capy.hpp>
+#include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/test/run_blocking.hpp>
 
 // zetta's async runtime interface.
@@ -80,6 +81,14 @@ using boost::capy::delay;
 
 // A pool of worker threads exposing an executor (`pool.get_executor()`).
 using thread_pool = boost::capy::thread_pool;
+
+// Launch on a specified executor (network adapters), retaining its work until
+// the coroutine completes. Unlike spawn(), this does not use the compute pool.
+using boost::capy::run_async;
+
+// Requeue this coroutine on its current executor so ready peers can run. This
+// is a scheduling boundary, not a timer or a thread-blocking sleep (#1076).
+task<> yield();
 
 // A coroutine-native one-shot event: awaiters suspend on `co_await
 // event.wait()` and are all resumed when any thread calls `set()` (each on

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -30,11 +31,15 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    // Connections served at once. A receive_events long poll suspends its worker
-    // coroutine without holding a thread, so this count is inexpensive capacity
-    // for concurrent HTTP connections. It leaves headroom above the 500-waiter
-    // acceptance load (#1076).
-    int worker_coroutines = 1024;
+    // Sessions are allocated on accept, independently of held long polls. Cache
+    // only this many idle parser/serializer objects; this is not a concurrency
+    // cap. Cached sessions hold no socket descriptors (#1076).
+    std::size_t idle_connection_cache = 32;
+    // Explicit admission cap. Accept continues at capacity and answers new
+    // connections with HTTP 503 / busy, rather than waiting for a session slot.
+    std::size_t max_connections = 4096;
+    // Pending kernel handshakes, not admitted sessions; the OS may clamp this.
+    int listen_backlog = 1024;
     // The built Studio web app (the design repo's React bundle). When set, the
     // node serves it statically at /app with an SPA fallback to index.html —
     // the app's only data path is the /v1 surface. Empty = /app is 404.
@@ -77,6 +82,8 @@ public:
     // callers can wake request waiters and keep draining owner work before
     // stop() joins the server thread (#1077).
     void stop_accepting();
+    // Call on the Node owner thread: closes admitted sockets, wakes held polls
+    // and drains their queued owner work before joining the IO thread (#1076).
     void stop();
     bool running() const;
 
