@@ -42,6 +42,12 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Data evidence before methodology choice**: `analyze_dataset` reports semantic
+  types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
+  into explicit features and exclusions. When the prediction unit is wrong or a
+  required field is absent, the read returns a named `transform_required` correction
+  and proposed SQL or clean step. It never changes the dataset for the agent
+  ([featurization.md](../../data/featurization.md), #1062).
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

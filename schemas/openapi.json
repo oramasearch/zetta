@@ -663,6 +663,296 @@
         ]
       }
     },
+    "/v1/analyze_dataset": {
+      "get": {
+        "description": "Read a landed dataset's semantic types, evidence, distributions, grain, candidate keys, same-database joins, and leakage candidates. No side effects. Requires api:query.",
+        "operationId": "analyze_dataset",
+        "parameters": [
+          {
+            "description": "point-in-time cutoff for later-timestamp leakage checks",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "description": "point-in-time cutoff for later-timestamp leakage checks",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          {
+            "description": "database for a bare dataset name",
+            "in": "query",
+            "name": "database",
+            "required": false,
+            "schema": {
+              "description": "database for a bare dataset name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "a dataset name, or database.table; a bare name must be unique",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "description": "a dataset name, or database.table; a bare name must be unique",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the canonical dataset_path grammar; this capability reads landed database.table datasets",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "the canonical dataset_path grammar; this capability reads landed database.table datasets",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "label column for single-feature leakage checks",
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "description": "label column for single-feature leakage checks",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "maximum rows sampled for evidence (default 256)",
+            "in": "query",
+            "name": "sample_rows",
+            "required": false,
+            "schema": {
+              "description": "maximum rows sampled for evidence (default 256)",
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "declared observation/event time column",
+            "in": "query",
+            "name": "time_column",
+            "required": false,
+            "schema": {
+              "description": "declared observation/event time column",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "candidate_keys": {
+                          "type": "array"
+                        },
+                        "columns": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "distinct_count": {
+                                "type": "integer"
+                              },
+                              "distinct_ratio": {
+                                "type": "number"
+                              },
+                              "evidence": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "null_count": {
+                                "type": "integer"
+                              },
+                              "null_rate": {
+                                "type": "number"
+                              },
+                              "quantiles": {
+                                "type": "object"
+                              },
+                              "role_candidates": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "semantic_type": {
+                                "enum": [
+                                  "boolean",
+                                  "datetime",
+                                  "free_text",
+                                  "identifier",
+                                  "categorical",
+                                  "numeric",
+                                  "json",
+                                  "unknown"
+                                ],
+                                "type": "string"
+                              },
+                              "sentinel_values": {
+                                "type": "array"
+                              },
+                              "string_lengths": {
+                                "type": "object"
+                              },
+                              "top_values": {
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "semantic_type",
+                              "evidence",
+                              "role_candidates",
+                              "null_count",
+                              "null_rate",
+                              "distinct_count",
+                              "distinct_ratio",
+                              "top_values",
+                              "quantiles",
+                              "string_lengths",
+                              "sentinel_values"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "database": {
+                          "type": "string"
+                        },
+                        "grain": {
+                          "enum": [
+                            "entity",
+                            "event",
+                            "time_series",
+                            "snapshot",
+                            "ambiguous"
+                          ],
+                          "type": "string"
+                        },
+                        "grain_evidence": {
+                          "type": "string"
+                        },
+                        "joinable_tables": {
+                          "type": "array"
+                        },
+                        "leakage_candidates": {
+                          "type": "array"
+                        },
+                        "rows": {
+                          "type": "integer"
+                        },
+                        "sampled_rows": {
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        },
+                        "table_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "table_id",
+                        "database",
+                        "table",
+                        "rows",
+                        "sampled_rows",
+                        "columns",
+                        "grain",
+                        "grain_evidence",
+                        "candidate_keys",
+                        "joinable_tables",
+                        "leakage_candidates"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Analyze a dataset",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/approve_consent": {
       "post": {
         "description": "Approve one pending consent challenge and execute exactly the named action once. Requires a named approver key of a DIFFERENT principal than the requester — a key can never approve its own cloud action. Requires orchestration:approve_consent.",
@@ -9528,6 +9818,388 @@
         "summary": "Predict (served model endpoint)",
         "tags": [
           "serving"
+        ]
+      }
+    },
+    "/v1/plan_features": {
+      "get": {
+        "description": "Read a methodology-specific feature and exclusion plan from dataset analysis, or an explicit transform_required proposal. No side effects and no transform is applied. Requires api:query.",
+        "operationId": "plan_features",
+        "parameters": [
+          {
+            "description": "point-in-time cutoff for later-timestamp leakage checks",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "description": "point-in-time cutoff for later-timestamp leakage checks",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          {
+            "description": "database for a bare dataset name",
+            "in": "query",
+            "name": "database",
+            "required": false,
+            "schema": {
+              "description": "database for a bare dataset name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "a dataset name, or database.table; a bare name must be unique",
+            "in": "query",
+            "name": "dataset",
+            "required": false,
+            "schema": {
+              "description": "a dataset name, or database.table; a bare name must be unique",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the canonical dataset_path grammar; this capability reads landed database.table datasets",
+            "in": "query",
+            "name": "dataset_path",
+            "required": false,
+            "schema": {
+              "description": "the canonical dataset_path grammar; this capability reads landed database.table datasets",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "ranking query/session group column",
+            "in": "query",
+            "name": "group_column",
+            "required": false,
+            "schema": {
+              "description": "ranking query/session group column",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "label column for single-feature leakage checks",
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "description": "label column for single-feature leakage checks",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "methodology string such as M-1, segmentation, or forecast",
+            "in": "query",
+            "name": "methodology",
+            "required": false,
+            "schema": {
+              "description": "methodology string such as M-1, segmentation, or forecast",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "maximum rows sampled for evidence (default 256)",
+            "in": "query",
+            "name": "sample_rows",
+            "required": false,
+            "schema": {
+              "description": "maximum rows sampled for evidence (default 256)",
+              "maximum": 10000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "declared observation/event time column",
+            "in": "query",
+            "name": "time_column",
+            "required": false,
+            "schema": {
+              "description": "declared observation/event time column",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "analysis": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "candidate_keys": {
+                              "type": "array"
+                            },
+                            "columns": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "distinct_count": {
+                                    "type": "integer"
+                                  },
+                                  "distinct_ratio": {
+                                    "type": "number"
+                                  },
+                                  "evidence": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "null_count": {
+                                    "type": "integer"
+                                  },
+                                  "null_rate": {
+                                    "type": "number"
+                                  },
+                                  "quantiles": {
+                                    "type": "object"
+                                  },
+                                  "role_candidates": {
+                                    "items": {
+                                      "type": "string"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "semantic_type": {
+                                    "enum": [
+                                      "boolean",
+                                      "datetime",
+                                      "free_text",
+                                      "identifier",
+                                      "categorical",
+                                      "numeric",
+                                      "json",
+                                      "unknown"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "sentinel_values": {
+                                    "type": "array"
+                                  },
+                                  "string_lengths": {
+                                    "type": "object"
+                                  },
+                                  "top_values": {
+                                    "type": "array"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "semantic_type",
+                                  "evidence",
+                                  "role_candidates",
+                                  "null_count",
+                                  "null_rate",
+                                  "distinct_count",
+                                  "distinct_ratio",
+                                  "top_values",
+                                  "quantiles",
+                                  "string_lengths",
+                                  "sentinel_values"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "database": {
+                              "type": "string"
+                            },
+                            "grain": {
+                              "enum": [
+                                "entity",
+                                "event",
+                                "time_series",
+                                "snapshot",
+                                "ambiguous"
+                              ],
+                              "type": "string"
+                            },
+                            "grain_evidence": {
+                              "type": "string"
+                            },
+                            "joinable_tables": {
+                              "type": "array"
+                            },
+                            "leakage_candidates": {
+                              "type": "array"
+                            },
+                            "rows": {
+                              "type": "integer"
+                            },
+                            "sampled_rows": {
+                              "type": "integer"
+                            },
+                            "table": {
+                              "type": "string"
+                            },
+                            "table_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "table_id",
+                            "database",
+                            "table",
+                            "rows",
+                            "sampled_rows",
+                            "columns",
+                            "grain",
+                            "grain_evidence",
+                            "candidate_keys",
+                            "joinable_tables",
+                            "leakage_candidates"
+                          ],
+                          "type": "object"
+                        },
+                        "dataset": {
+                          "type": "string"
+                        },
+                        "entries": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "features": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "source_columns": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "transform": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "source_columns",
+                              "features",
+                              "transform",
+                              "reason"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "excluded": {
+                          "type": "array"
+                        },
+                        "methodology": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "enum": [
+                            "ready",
+                            "transform_required"
+                          ],
+                          "type": "string"
+                        },
+                        "transform_required": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "dataset",
+                        "methodology",
+                        "analysis",
+                        "entries",
+                        "excluded",
+                        "transform_required"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Plan dataset features",
+        "tags": [
+          "read"
         ]
       }
     },
