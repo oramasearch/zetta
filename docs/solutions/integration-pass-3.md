@@ -18,6 +18,8 @@ passes one and two (#1152 and #1159), preserving S-1 through S-9 and S-12.
    S-11 checks following S-10 in both ordered inventories. Earlier modules keep
    their specialized forecast, survival, uplift, and fraud handling. All twelve
    catalogue modules have complete templates; the eight sketches are unchanged.
+3. Current `dev` after #1159 (`4c54eec1`): merge its history without content
+   conflicts. The per-file line-count audit shows no incoming content changes.
 
 Module branches are joined with merge commits. Per-file line counts are
 audited after each merge. No formatter is run. The integration adds no new
