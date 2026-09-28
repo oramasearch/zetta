@@ -92,7 +92,7 @@ struct GbdtParams {
     //
     // Nothing else in the learner changes — histogram building, split finding and the allreduce
     // are objective-agnostic. That is why M-4 needed an objective, not a second learner.
-    std::string objective = "binary_logistic";  // or "squared_error"
+    std::string objective = "binary_logistic";  // squared_error or lambdamart
     double holdout_fraction = 0.0;
 
     // The JSON form (only the fields above; all optional with the defaults).
@@ -220,6 +220,15 @@ using AllReduce =
 // scratch, no hook" — exactly the unchanged loop, so existing callers are unaffected.
 // See docs/compute/job-checkpoint.md.
 struct TrainHooks {
+    // Optional objective callback evaluated before every boosting round. It
+    // receives this shard's current raw scores and labels and fills one
+    // gradient/Hessian pair per row. Ranking uses this to supply group-local
+    // LambdaMART derivatives while reusing the distributed GBDT core (#1048).
+    std::function<compute::ComputeStatus(
+        const std::vector<double>& raw, const std::vector<double>& labels,
+        std::vector<double>& gradient, std::vector<double>& hessian)>
+        objective_gradient;
+
     // Seed the ensemble from a previously-checkpointed partial model + its
     // accumulated per-feature gains: training resumes at tree index
     // resume_model->trees.size() (the running predictions are recomputed from those
