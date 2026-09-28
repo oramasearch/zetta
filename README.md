@@ -106,6 +106,9 @@ What's inside, by domain (each links to that domain's docs):
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
   approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
+  [AutoML studies](docs/ml/studies.md) search those native learners with typed
+  conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
+  tracked Run trials; analysis and governed model promotion have REST/MCP parity.
   The [solution registry](docs/solutions/README.md) lists the 12 catalogue
   modules and eight Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action

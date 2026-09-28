@@ -5501,6 +5501,597 @@
         ]
       }
     },
+    "/v1/create_study": {
+      "post": {
+        "description": "Create a replicated AutoML study after validating its non-test objective and Pipeline; this mutates state. Requires orchestration:create_study.",
+        "operationId": "create_study",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "budgets": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "cost_cap": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "max_parallel_trials": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "max_trials": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "max_wall_time_ms": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "max_trials",
+                      "max_wall_time_ms",
+                      "max_parallel_trials",
+                      "cost_cap"
+                    ],
+                    "type": "object"
+                  },
+                  "dataset": {
+                    "type": "string"
+                  },
+                  "differential_privacy": {
+                    "type": "boolean"
+                  },
+                  "from_defaults": {
+                    "type": "boolean"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "methodology": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "objective": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "direction": {
+                        "enum": [
+                          "minimize",
+                          "maximize"
+                        ],
+                        "type": "string"
+                      },
+                      "metric": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "validation_split": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "metric",
+                      "direction",
+                      "validation_split"
+                    ],
+                    "type": "object"
+                  },
+                  "pipeline": {
+                    "type": "string"
+                  },
+                  "project": {
+                    "type": "string"
+                  },
+                  "pruner": {
+                    "enum": [
+                      "none",
+                      "median",
+                      "asha"
+                    ],
+                    "type": "string"
+                  },
+                  "released_metrics": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "sampler": {
+                    "enum": [
+                      "grid",
+                      "random",
+                      "tpe"
+                    ],
+                    "type": "string"
+                  },
+                  "search_space": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "choices": {
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "integer",
+                              "boolean"
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "condition_parameter": {
+                          "type": "string"
+                        },
+                        "condition_values": {
+                          "items": {
+                            "type": [
+                              "string",
+                              "number",
+                              "integer",
+                              "boolean"
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "kind": {
+                          "enum": [
+                            "int",
+                            "float",
+                            "categorical"
+                          ],
+                          "type": "string"
+                        },
+                        "log": {
+                          "type": "boolean"
+                        },
+                        "maximum": {
+                          "type": "number"
+                        },
+                        "minimum": {
+                          "type": "number"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "step": {
+                          "minimum": 0,
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "kind",
+                        "minimum",
+                        "maximum",
+                        "step",
+                        "log",
+                        "choices",
+                        "condition_parameter",
+                        "condition_values"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "seed": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "name",
+                  "methodology",
+                  "objective",
+                  "budgets"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "promoted_model": {
+                          "type": "string"
+                        },
+                        "spec": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "budgets": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cost_cap": {
+                                  "minimum": 0,
+                                  "type": "number"
+                                },
+                                "max_parallel_trials": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_trials": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_wall_time_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "max_trials",
+                                "max_wall_time_ms",
+                                "max_parallel_trials",
+                                "cost_cap"
+                              ],
+                              "type": "object"
+                            },
+                            "dataset": {
+                              "type": "string"
+                            },
+                            "differential_privacy": {
+                              "type": "boolean"
+                            },
+                            "methodology": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "objective": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "direction": {
+                                  "enum": [
+                                    "minimize",
+                                    "maximize"
+                                  ],
+                                  "type": "string"
+                                },
+                                "metric": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "validation_split": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "metric",
+                                "direction",
+                                "validation_split"
+                              ],
+                              "type": "object"
+                            },
+                            "pipeline": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "pruner": {
+                              "enum": [
+                                "none",
+                                "median",
+                                "asha"
+                              ],
+                              "type": "string"
+                            },
+                            "released_metrics": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "sampler": {
+                              "enum": [
+                                "grid",
+                                "random",
+                                "tpe"
+                              ],
+                              "type": "string"
+                            },
+                            "search_space": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "choices": {
+                                    "items": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "integer",
+                                        "boolean"
+                                      ]
+                                    },
+                                    "type": "array"
+                                  },
+                                  "condition_parameter": {
+                                    "type": "string"
+                                  },
+                                  "condition_values": {
+                                    "items": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "integer",
+                                        "boolean"
+                                      ]
+                                    },
+                                    "type": "array"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "int",
+                                      "float",
+                                      "categorical"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "log": {
+                                    "type": "boolean"
+                                  },
+                                  "maximum": {
+                                    "type": "number"
+                                  },
+                                  "minimum": {
+                                    "type": "number"
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "step": {
+                                    "minimum": 0,
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "kind",
+                                  "minimum",
+                                  "maximum",
+                                  "step",
+                                  "log",
+                                  "choices",
+                                  "condition_parameter",
+                                  "condition_values"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "seed": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "project",
+                            "pipeline",
+                            "dataset",
+                            "methodology",
+                            "objective",
+                            "search_space",
+                            "sampler",
+                            "pruner",
+                            "budgets",
+                            "seed",
+                            "differential_privacy",
+                            "released_metrics"
+                          ],
+                          "type": "object"
+                        },
+                        "spent_cost": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "status": {
+                          "enum": [
+                            "running",
+                            "stopped",
+                            "complete"
+                          ],
+                          "type": "string"
+                        },
+                        "stop_reason": {
+                          "type": "string"
+                        },
+                        "trials": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "cost": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "intermediate": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "step",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "objective": {
+                                "type": "number"
+                              },
+                              "params": {
+                                "additionalProperties": false,
+                                "patternProperties": {
+                                  "^[A-Za-z0-9_.-]{1,128}$": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "integer",
+                                      "boolean"
+                                    ]
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "run": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "state": {
+                                "enum": [
+                                  "running",
+                                  "pruned",
+                                  "failed",
+                                  "complete"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "number",
+                              "run",
+                              "params",
+                              "state",
+                              "seed",
+                              "cost",
+                              "intermediate",
+                              "reason",
+                              "model"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "spec",
+                        "status",
+                        "created",
+                        "updated",
+                        "trials",
+                        "spent_cost",
+                        "stop_reason",
+                        "promoted_model",
+                        "id"
+                      ],
+                      "title": "zetta.Study",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create study",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_topic": {
       "post": {
         "description": "Create a node-local topic or concrete inbox with full settings. Only explicitly exposed topics are reachable through topic/message CRUD. Requires orchestration:pubsub_create.",
@@ -14174,6 +14765,664 @@
         ]
       }
     },
+    "/v1/get_study": {
+      "get": {
+        "description": "Read one study's objective, search configuration, budgets and enforced usage. No side effects. Requires api:query.",
+        "operationId": "get_study",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "study",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "promoted_model": {
+                          "type": "string"
+                        },
+                        "spec": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "budgets": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cost_cap": {
+                                  "minimum": 0,
+                                  "type": "number"
+                                },
+                                "max_parallel_trials": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_trials": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "max_wall_time_ms": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "max_trials",
+                                "max_wall_time_ms",
+                                "max_parallel_trials",
+                                "cost_cap"
+                              ],
+                              "type": "object"
+                            },
+                            "dataset": {
+                              "type": "string"
+                            },
+                            "differential_privacy": {
+                              "type": "boolean"
+                            },
+                            "methodology": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "objective": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "direction": {
+                                  "enum": [
+                                    "minimize",
+                                    "maximize"
+                                  ],
+                                  "type": "string"
+                                },
+                                "metric": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "validation_split": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "metric",
+                                "direction",
+                                "validation_split"
+                              ],
+                              "type": "object"
+                            },
+                            "pipeline": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            },
+                            "pruner": {
+                              "enum": [
+                                "none",
+                                "median",
+                                "asha"
+                              ],
+                              "type": "string"
+                            },
+                            "released_metrics": {
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array",
+                              "uniqueItems": true
+                            },
+                            "sampler": {
+                              "enum": [
+                                "grid",
+                                "random",
+                                "tpe"
+                              ],
+                              "type": "string"
+                            },
+                            "search_space": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "choices": {
+                                    "items": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "integer",
+                                        "boolean"
+                                      ]
+                                    },
+                                    "type": "array"
+                                  },
+                                  "condition_parameter": {
+                                    "type": "string"
+                                  },
+                                  "condition_values": {
+                                    "items": {
+                                      "type": [
+                                        "string",
+                                        "number",
+                                        "integer",
+                                        "boolean"
+                                      ]
+                                    },
+                                    "type": "array"
+                                  },
+                                  "kind": {
+                                    "enum": [
+                                      "int",
+                                      "float",
+                                      "categorical"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "log": {
+                                    "type": "boolean"
+                                  },
+                                  "maximum": {
+                                    "type": "number"
+                                  },
+                                  "minimum": {
+                                    "type": "number"
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "step": {
+                                    "minimum": 0,
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "kind",
+                                  "minimum",
+                                  "maximum",
+                                  "step",
+                                  "log",
+                                  "choices",
+                                  "condition_parameter",
+                                  "condition_values"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 1,
+                              "type": "array"
+                            },
+                            "seed": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "project",
+                            "pipeline",
+                            "dataset",
+                            "methodology",
+                            "objective",
+                            "search_space",
+                            "sampler",
+                            "pruner",
+                            "budgets",
+                            "seed",
+                            "differential_privacy",
+                            "released_metrics"
+                          ],
+                          "type": "object"
+                        },
+                        "spent_cost": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "status": {
+                          "enum": [
+                            "running",
+                            "stopped",
+                            "complete"
+                          ],
+                          "type": "string"
+                        },
+                        "stop_reason": {
+                          "type": "string"
+                        },
+                        "trials": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "cost": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "intermediate": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "step",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "objective": {
+                                "type": "number"
+                              },
+                              "params": {
+                                "additionalProperties": false,
+                                "patternProperties": {
+                                  "^[A-Za-z0-9_.-]{1,128}$": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "integer",
+                                      "boolean"
+                                    ]
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "run": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "state": {
+                                "enum": [
+                                  "running",
+                                  "pruned",
+                                  "failed",
+                                  "complete"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "number",
+                              "run",
+                              "params",
+                              "state",
+                              "seed",
+                              "cost",
+                              "intermediate",
+                              "reason",
+                              "model"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updated": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "spec",
+                        "status",
+                        "created",
+                        "updated",
+                        "trials",
+                        "spent_cost",
+                        "stop_reason",
+                        "promoted_model",
+                        "id"
+                      ],
+                      "title": "zetta.Study",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get study",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_study_analysis": {
+      "get": {
+        "description": "Read the best trial, optimization history, parameter importances, parallel-coordinate data and confidence leaderboard. No side effects. Requires api:query.",
+        "operationId": "get_study_analysis",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "study",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "best_trial": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "number": {
+                              "type": "integer"
+                            },
+                            "params": {
+                              "additionalProperties": false,
+                              "patternProperties": {
+                                "^[A-Za-z0-9_.-]{1,128}$": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "run": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "run",
+                            "number",
+                            "value",
+                            "params"
+                          ],
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        },
+                        "leaderboard": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "confidence_high": {
+                                "type": "number"
+                              },
+                              "confidence_low": {
+                                "type": "number"
+                              },
+                              "rank": {
+                                "type": "integer"
+                              },
+                              "run": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "rank",
+                              "run",
+                              "value",
+                              "confidence_low",
+                              "confidence_high"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "optimization_history": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "best": {
+                                "type": "number"
+                              },
+                              "number": {
+                                "type": "integer"
+                              },
+                              "run": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "number",
+                              "run",
+                              "value",
+                              "best"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "parallel_coordinates": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "params": {
+                                "additionalProperties": false,
+                                "patternProperties": {
+                                  "^[A-Za-z0-9_.-]{1,128}$": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "integer",
+                                      "boolean"
+                                    ]
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "run": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "run",
+                              "params",
+                              "value"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "parameter_importances": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "importance": {
+                                "type": "number"
+                              },
+                              "parameter": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "parameter",
+                              "importance"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "best_trial",
+                        "optimization_history",
+                        "parameter_importances",
+                        "parallel_coordinates",
+                        "leaderboard"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get study analysis",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_topic": {
       "get": {
         "description": "Inspect an exposed node-local topic without consuming events. Requires data:topics_read.",
@@ -18426,6 +19675,421 @@
         ]
       }
     },
+    "/v1/list_studies": {
+      "get": {
+        "description": "Read every study and its current budget status. No side effects. Requires api:query.",
+        "operationId": "list_studies",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "studies": {
+                          "items": {
+                            "$schema": "http://json-schema.org/draft-07/schema#",
+                            "additionalProperties": false,
+                            "properties": {
+                              "created": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "promoted_model": {
+                                "type": "string"
+                              },
+                              "spec": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "budgets": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "cost_cap": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      },
+                                      "max_parallel_trials": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "max_trials": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "max_wall_time_ms": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "max_trials",
+                                      "max_wall_time_ms",
+                                      "max_parallel_trials",
+                                      "cost_cap"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "dataset": {
+                                    "type": "string"
+                                  },
+                                  "differential_privacy": {
+                                    "type": "boolean"
+                                  },
+                                  "methodology": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "objective": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "direction": {
+                                        "enum": [
+                                          "minimize",
+                                          "maximize"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "metric": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "validation_split": {
+                                        "minLength": 1,
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "metric",
+                                      "direction",
+                                      "validation_split"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "pipeline": {
+                                    "type": "string"
+                                  },
+                                  "project": {
+                                    "type": "string"
+                                  },
+                                  "pruner": {
+                                    "enum": [
+                                      "none",
+                                      "median",
+                                      "asha"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "released_metrics": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "type": "array",
+                                    "uniqueItems": true
+                                  },
+                                  "sampler": {
+                                    "enum": [
+                                      "grid",
+                                      "random",
+                                      "tpe"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "search_space": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "choices": {
+                                          "items": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "type": "array"
+                                        },
+                                        "condition_parameter": {
+                                          "type": "string"
+                                        },
+                                        "condition_values": {
+                                          "items": {
+                                            "type": [
+                                              "string",
+                                              "number",
+                                              "integer",
+                                              "boolean"
+                                            ]
+                                          },
+                                          "type": "array"
+                                        },
+                                        "kind": {
+                                          "enum": [
+                                            "int",
+                                            "float",
+                                            "categorical"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "log": {
+                                          "type": "boolean"
+                                        },
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "step": {
+                                          "minimum": 0,
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "kind",
+                                        "minimum",
+                                        "maximum",
+                                        "step",
+                                        "log",
+                                        "choices",
+                                        "condition_parameter",
+                                        "condition_values"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array"
+                                  },
+                                  "seed": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "project",
+                                  "pipeline",
+                                  "dataset",
+                                  "methodology",
+                                  "objective",
+                                  "search_space",
+                                  "sampler",
+                                  "pruner",
+                                  "budgets",
+                                  "seed",
+                                  "differential_privacy",
+                                  "released_metrics"
+                                ],
+                                "type": "object"
+                              },
+                              "spent_cost": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "status": {
+                                "enum": [
+                                  "running",
+                                  "stopped",
+                                  "complete"
+                                ],
+                                "type": "string"
+                              },
+                              "stop_reason": {
+                                "type": "string"
+                              },
+                              "trials": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "cost": {
+                                      "minimum": 0,
+                                      "type": "number"
+                                    },
+                                    "intermediate": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "step": {
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "value": {
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "step",
+                                          "value"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "model": {
+                                      "type": "string"
+                                    },
+                                    "number": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "objective": {
+                                      "type": "number"
+                                    },
+                                    "params": {
+                                      "additionalProperties": false,
+                                      "patternProperties": {
+                                        "^[A-Za-z0-9_.-]{1,128}$": {
+                                          "type": [
+                                            "string",
+                                            "number",
+                                            "integer",
+                                            "boolean"
+                                          ]
+                                        }
+                                      },
+                                      "type": "object"
+                                    },
+                                    "reason": {
+                                      "type": "string"
+                                    },
+                                    "run": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "seed": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "state": {
+                                      "enum": [
+                                        "running",
+                                        "pruned",
+                                        "failed",
+                                        "complete"
+                                      ],
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "number",
+                                    "run",
+                                    "params",
+                                    "state",
+                                    "seed",
+                                    "cost",
+                                    "intermediate",
+                                    "reason",
+                                    "model"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "updated": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "spec",
+                              "status",
+                              "created",
+                              "updated",
+                              "trials",
+                              "spent_cost",
+                              "stop_reason",
+                              "promoted_model",
+                              "id"
+                            ],
+                            "title": "zetta.Study",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "studies"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List studies",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_topics": {
       "get": {
         "description": "The exposed pub/sub topics on this node with their subscriber counts, held events and next sequence number. Requires data:topics_read.",
@@ -18776,6 +20440,206 @@
           }
         },
         "summary": "List recent traces",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_trials": {
+      "get": {
+        "description": "Read the Runs belonging to a study, optionally filtered by trial state. No side effects. Requires api:query.",
+        "operationId": "list_trials",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "enum": [
+                "running",
+                "pruned",
+                "failed",
+                "complete"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "study",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "study": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "trials": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "cost": {
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "intermediate": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "step",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "model": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "objective": {
+                                "type": "number"
+                              },
+                              "params": {
+                                "additionalProperties": false,
+                                "patternProperties": {
+                                  "^[A-Za-z0-9_.-]{1,128}$": {
+                                    "type": [
+                                      "string",
+                                      "number",
+                                      "integer",
+                                      "boolean"
+                                    ]
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "run": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "seed": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "state": {
+                                "enum": [
+                                  "running",
+                                  "pruned",
+                                  "failed",
+                                  "complete"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "number",
+                              "run",
+                              "params",
+                              "state",
+                              "seed",
+                              "cost",
+                              "intermediate",
+                              "reason",
+                              "model"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "study",
+                        "trials"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List trials",
         "tags": [
           "read"
         ]
@@ -20431,6 +22295,126 @@
           }
         },
         "summary": "Promote a cached dataset to durable",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/promote_trial": {
+      "post": {
+        "description": "Register a complete trial's existing model as the study project's promoted model version; this requires the dedicated promotion permission. Requires orchestration:promote_trial.",
+        "operationId": "promote_trial",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "run": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "study": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "study",
+                  "run"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "model": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "study": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "study",
+                        "run",
+                        "model",
+                        "project"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Promote trial",
         "tags": [
           "action"
         ]
@@ -23815,6 +25799,232 @@
         "summary": "Run SQL",
         "tags": [
           "read"
+        ]
+      }
+    },
+    "/v1/stop_study": {
+      "post": {
+        "description": "Stop a running study and cooperatively stop its running trial Runs; this mutates state. Requires orchestration:stop_study.",
+        "operationId": "stop_study",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "study": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "study"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "reason": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "stopped",
+                          "type": "string"
+                        },
+                        "study": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "study",
+                        "status",
+                        "reason"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Stop study",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/stop_trial": {
+      "post": {
+        "description": "Stop one running trial Run without stopping its study; this mutates state. Requires orchestration:stop_trial.",
+        "operationId": "stop_trial",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "run": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "study": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "study",
+                  "run"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "state": {
+                          "const": "failed",
+                          "type": "string"
+                        },
+                        "study": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "study",
+                        "run",
+                        "state"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Stop trial",
+        "tags": [
+          "action"
         ]
       }
     },

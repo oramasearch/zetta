@@ -107,7 +107,7 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // experiment creation and assignment, #1105; publish/enqueue/deliver/closed-loop, #1109).
     const std::vector<Operation> pipeline_operations =
         permission_operations("pipelines:manage");
-    EXPECT_EQ(pipeline_operations.size(), 49u);
+    EXPECT_EQ(pipeline_operations.size(), 52u);
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "create_solution"}));
@@ -118,6 +118,14 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
                     {"pipelines:manage"})
                     .permits({CapabilityDomain::Orchestration, "snapshot"},
                              "2026-09-28T00:00:00.000Z"));
+    EXPECT_FALSE(zetta::governance::capabilities_for_permissions(
+                     {"pipelines:manage"})
+                     .permits({CapabilityDomain::Orchestration,
+                               "promote_trial"},
+                              "2026-09-28T00:00:00.000Z"));
+    EXPECT_EQ(permission_operations("studies:promote"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "promote_trial"}}));
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
@@ -135,8 +143,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
               (std::vector<Operation>{{CapabilityDomain::Orchestration, "pubsub_manage"}}));
 
     // The canonical list carries the #746 atoms, blob:read (#747), the three
-    // Orchestration atoms (#799), and the five pub/sub atoms (#1029).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 21u);
+    // Orchestration atoms (#799), eight pub/sub atoms (#1029/#1136), and the
+    // study promotion atom (#1138).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 22u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {
