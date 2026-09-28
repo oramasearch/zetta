@@ -126,6 +126,37 @@ TEST(IntentCompilerTest, SurvivalBuildsItsOwnRunnableShape) {
     EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
 }
 
+TEST(IntentCompilerTest, GraphMethodologyBuildsItsOwnPipeline) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-12";
+    options.hints = {{"source", "fraud"},
+                     {"table", "payments"},
+                     {"prediction_time", 100.0}};
+    const auto compiled =
+        compile_intent("Learn risk from payment relationships", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-12");
+    EXPECT_TRUE(compiled->graph.has_node("load_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("filter_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("train_graph_model"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph.find_node("train_graph_model")
+                  ->attributes.at("model_kind"),
+              "graph");
+    const auto report = zetta::pipeline::default_gate().run(compiled->graph);
+    EXPECT_TRUE(report.passed());
+}
+
+TEST(IntentCompilerTest, FraudPrimarySolutionSelectsM1) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    options.hints = {{"prediction_time", 100.0}};
+    const auto compiled = compile_intent("Review transaction fraud", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-1");
+    EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordBuildsItsOwnShape) {
     std::string error;
     const auto compiled =

@@ -22,6 +22,7 @@ The reusable annotation and methodology-specific checks are:
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
+| `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -142,6 +143,15 @@ name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
 `overlap_upper` annotations must remain within `[0.05,0.95]` and be ordered.
 Features named like the outcome, equal to the treatment column, or carrying a
 `data_as_of` later than `treatment_time` fail before execution.
+
+### `graph_edge_time` — graph rows available at prediction time
+
+This check engages only for `graph` and `graph_ml` model steps. The model must
+declare `time_column` and a finite `prediction_time`. An enabled clean step must
+feed the graph model through a data-flow edge and declare the same
+`filter_time_column` and cutoff plus
+`exclude_after_prediction_time: true`. Missing, disabled, or mismatched filters
+fail the gate before the graph can run.
 
 ## Example
 

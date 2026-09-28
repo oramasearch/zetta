@@ -86,8 +86,10 @@ What's inside, by domain (each links to that domain's docs):
   M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
   hard eligibility/contact-cap policy selection, recommendation tables, and
   IPS/DR policy reporting through `get_run_report`.
+  Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
+  and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 through M-9 run today, M-10 has partial retrieval support, and the others
+  approaches: M-1 through M-9 and M-12 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -723,6 +724,63 @@ CheckResult RankCorrectnessCheck::evaluate(
                 : std::to_string(checked) +
                       " rank model(s) require groups, whole-group splits, and "
                       "ranking-time features"};
+}
+
+CheckResult GraphEdgeTimeCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& model : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model || !model->attributes.is_object()) continue;
+        const std::string kind =
+            model->attributes.value("model_kind", std::string{});
+        if (kind != "graph" && kind != "graph_ml") continue;
+
+        const auto time = model->attributes.find("time_column");
+        const auto cutoff = model->attributes.find("prediction_time");
+        if (time == model->attributes.end() || !time->is_string() ||
+            time->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name its edge time_column"};
+        }
+        if (cutoff == model->attributes.end() || !cutoff->is_number() ||
+            !std::isfinite(cutoff->get<double>())) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name a finite prediction_time cutoff"};
+        }
+
+        for (const auto& clean : graph.nodes_of_kind(ir::StepKind::Clean)) {
+            if (!clean || !clean->attributes.is_object()) continue;
+            const std::vector<ir::Edge> outgoing = graph.edges_from(clean->id);
+            const bool feeds_model =
+                std::any_of(outgoing.begin(), outgoing.end(),
+                            [&](const ir::Edge& edge) {
+                                return edge.to == model->id &&
+                                       edge.kind == ir::EdgeKind::DataFlow;
+                            });
+            if (!feeds_model) continue;
+            const auto filter_time =
+                clean->attributes.find("filter_time_column");
+            const auto filter_cutoff = clean->attributes.find("prediction_time");
+            if (filter_time == clean->attributes.end() ||
+                !filter_time->is_string() ||
+                filter_time->get<std::string>() != time->get<std::string>()) {
+                continue;
+            }
+            if (filter_cutoff == clean->attributes.end() ||
+                !filter_cutoff->is_number() ||
+                filter_cutoff->get<double>() != cutoff->get<double>()) {
+                continue;
+            }
+            if (!clean->attributes.value("exclude_after_prediction_time", false)) {
+                return {name(), CheckStatus::Fail,
+                        "graph edge-time filter is disabled"};
+            }
+            return {name(), CheckStatus::Pass,
+                    "graph edges are filtered at the prediction cutoff"};
+        }
+        return {name(), CheckStatus::Fail,
+                "graph model requires an edge-time filter with the same "
+                "column and prediction cutoff"};
+    }
+    return {name(), CheckStatus::Pass, "no graph model step to check"};
 }
 
 } // namespace zetta::pipeline

@@ -558,6 +558,10 @@ add_library(zetta-core STATIC
   src/core/ml/methodology_table.cpp
   src/core/ml/entity_resolution.cpp
   src/core/ml/entity_resolution_methodology.cpp
+  src/core/ml/graph.cpp
+  src/core/ml/graph_job.cpp
+  src/core/ml/graph_methodology.cpp
+  src/core/ml/graph_runner.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp

@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-9 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-9 and M-12 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -165,6 +165,15 @@ or an explicit `dataset_path`, then calls the shared resolved-dataset runner.
 
 The objective, distributed job, output table, metrics, correctness refusals,
 and API example are documented in [rank.md](rank.md).
+
+## M-12 graph implementation
+
+`src/core/ml/graph_methodology.cpp` owns `graph` and `graph_ml` model steps. Its
+shape is relationship-specific: connect an edge table, enforce a prediction-time
+filter, compute graph features and embeddings, then write joinable output tables.
+Its run callback resolves the pipeline's connect-step table when the caller does
+not override `dataset_path`, executes the native graph runner, and returns the
+Run read by `get_run` and `get_run_report`. See [graph.md](graph.md).
 
 ## Adding a methodology
 

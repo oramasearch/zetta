@@ -8,7 +8,8 @@ histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exac
 rather than a reference runtime. M-3 segmentation compiles its own customer-table graph,
 runs distributed k-means and reports entity assignments, descriptive profiles and separation
 metrics through the methodology registry. Forecasting uses temporal backtests and prediction
-intervals without probability calibration; M-4 is runnable on its pipeline's table. Read here
+intervals without probability calibration; M-4 is runnable on its pipeline's table. M-12 adds time-safe graph features and
+native node embeddings over partitioned relationship edges. Read here
 for model work.
 
 - [segmentation.md](segmentation.md) — runnable M-3 / S-9: native distributed k-means, global preprocessing, graph checks, table outputs and run reports (#1042).
@@ -19,6 +20,7 @@ for model work.
 - [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).
 - [survival.md](survival.md) — M-5 discrete-time survival: person-period expansion, distributed hazard GBDT, curves, censoring-aware metrics, and result tables (#1044).
 - [uplift.md](uplift.md) — runnable M-6 causal uplift: native T- and X-learners, propensity overlap enforcement, held-out Qini/AUUC selection, effect and Qini tables, and registry execution (#1045).
+- [graph.md](graph.md) — M-12 graph ML: time-bounded degrees, PageRank, components, label propagation, clustering coefficient, and node2vec-style embeddings; runnable through the methodology registry (#1051).
 - [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: what `in_sample` vs `held_out` mean, the sharding-invariant split, and why both ride one collective (`holdout_fraction`, #953).
 - [calibration.md](calibration.md) — probability calibration: Platt + isotonic fit on a held-out split, attached to the `GbdtModel` (Brier/ECE improve, AUC preserved) (`Calibrator`, #391).
 - [gbdt-score.md](gbdt-score.md) — batch scoring / rank-at-risk: calibrated risk per entity, ranked into an at-risk list, SPMD with a device `sort_by_key` rank (`score_gbdt`, #392).
@@ -51,7 +53,7 @@ carry `*`. Regenerate it with
 | M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | S-12 | entity*, group*, label*, time, feature* | ranked-queue table, priority scores, model | NDCG@k, yield at budget | runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |
 | M-11 | Document intelligence | Language, documents & perception | document_intelligence, ocr, document | — | text*, label | structured fields, evidence links | field accuracy, F1, straight-through rate | not runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |
-| M-12 | Graph ML | Identity & structure | graph_ml, graph | — | entity*, group*, time | node scores, links, graph embeddings | average precision, AUC, lift | not runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
+| M-12 | Graph ML | Identity & structure | graph, graph_ml | — | entity*, group*, feature*, time*, label* | node feature table, graph summary, node scores, graph embeddings | held-out node accuracy, component count, degree distribution, PageRank top nodes | runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
 | M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label | classifications, detections, masks | mAP, IoU, escape rate | not runnable | [#1052](https://github.com/oramasearch/zetta/issues/1052) |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, label | transcripts, speaker segments, audio scores | word error rate, F1 | not runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
 | M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |

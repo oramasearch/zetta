@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 8;
+        const bool runnable = index <= 8 || index == 11;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
 
         EXPECT_EQ(methodologies[index].runnable, runnable);
@@ -156,6 +156,8 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("uplift")->id, "M-6");
     EXPECT_EQ(zetta::ml::find_methodology("S-11")->id, "M-8");
     EXPECT_EQ(zetta::ml::find_methodology("M-6")->id, "M-6");
+    EXPECT_EQ(zetta::ml::find_methodology("graph")->id, "M-12");
+    EXPECT_EQ(zetta::ml::find_methodology("S-10")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
     EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-5");
 }

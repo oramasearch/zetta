@@ -162,6 +162,16 @@ public:
 class RankCorrectnessCheck final : public Check {
 public:
     std::string name() const override { return "rank_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-12 edge-time check (#1051): graph learning must name a prediction cutoff
+// and an explicit filter over the same edge-time column. A graph that omits,
+// disables, or disagrees about that filter is refused before execution.
+class GraphEdgeTimeCheck final : public Check {
+public:
+    std::string name() const override { return "graph_edge_time"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
