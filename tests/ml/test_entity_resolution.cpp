@@ -136,7 +136,8 @@ TEST(EntityResolution, FellegiSunterReducesSufficientStatistics) {
   EntityResolutionParams params;
   params.allreduce = [&reductions](const std::string &round,
                                    const std::vector<double> &statistics) {
-    EXPECT_EQ(round, "entity_resolution.fs_em");
+    EXPECT_EQ(round,
+              "entity_resolution.fs_em." + std::to_string(reductions));
     ++reductions;
     return statistics;
   };

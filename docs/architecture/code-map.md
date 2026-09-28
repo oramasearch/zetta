@@ -168,6 +168,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
+    entity_resolution.hpp  zetta::ml M-2 records, owned candidate pairs, scoring, conflict-safe entities, metrics, and resolved-table runner (#1041/#1072)
+    entity_resolution_job.hpp  zetta::ml::run_entity_resolution_job — distributed candidate ownership, iterative statistics allreduce, component merge, bounded pair streaming, and coordinated-launch contract (#1072)
     segmentation.hpp        zetta::ml — segmentation parameters, trainer, metrics and resolved-dataset runner (#1042; docs/ml/segmentation.md)
     segmentation_methodology.hpp M-3 graph/launch contracts, peer runner installation and typed report reader (#1042)
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
@@ -461,8 +463,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     featurize_job.cpp       run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
-    entity_resolution.cpp   M-2 normalized blocking, deterministic pair ownership, Fellegi-Sunter EM or labelled-pair GBDT scoring, conflict-safe clustering, metrics, and table outputs (#1041)
-    entity_resolution_methodology.cpp  M-2 registry shape, graph ownership, resolved-dataset run adapter, Run/Model/output-table lineage (#1041)
+    entity_resolution.cpp   M-2 owner-filtered blocking, distributed Fellegi-Sunter EM or labelled-pair GBDT scoring, per-member conflict-safe components, deterministic component merge, metrics, and table outputs (#1041/#1072)
+    entity_resolution_job.cpp  M-2 JobRound adapter, collective pair-page transport, output-member streaming, and recorded distributed train job (#1072)
+    entity_resolution_methodology.cpp  M-2 registry shape, graph ownership, coordinated peer launch, resolved-dataset run adapter, Run/Model/output-table lineage (#1041/#1072)
     segmentation.cpp        native k-means training, global transforms, deterministic sampling, collective Lloyd rounds, selection and profiles (#1042)
     segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
     segmentation_graph.cpp  M-3 config schema and correctness gate: excluded roles, global transforms, K criterion and connected outputs (#1042)
@@ -697,7 +700,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app_test_suite.cpp        the in-app Test-suite panel (draw_test_suite + start_test; #462) — a thin renderer over the headless zetta::testkit catalog
   repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
-schemas/                    generated, drift-checked JSON schemas (the C++ embedded schema is the source of truth)
+schemas/                    generated, drift-checked JSON schemas (the C++ embedded schema is the source of truth), including the M-2 coordinated `entity_resolution_launch` boundary (#1072)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
 docs/                       domain-organized system docs (see docs/README.md)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
@@ -705,6 +708,8 @@ modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
+  ml/test_entity_resolution.cpp  M-2 blocking, scoring, conflict-safe clustering, metric, and threshold tests (#1041/#1072)
+  ml/test_entity_resolution_partitions.cpp  three-member owned-pair, EM allreduce, bounded-stream, component-merge oracle equivalence, and malformed-launch refusal (#1072)
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   ml/test_segmentation_methodology.cpp M-3/S-9/intent shape and graph-gate refusal tests (#1042)
   ml/test_segmentation_launch.cpp off-root registry submission over three owned partitions and single-node metric equivalence (#1042)

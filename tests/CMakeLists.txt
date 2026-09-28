@@ -87,6 +87,7 @@ add_executable(zetta-tests
   ml/test_methodology.cpp
   ml/test_solution.cpp
   ml/test_entity_resolution.cpp
+  ml/test_entity_resolution_partitions.cpp
   ml/test_survival.cpp
   ml/test_graph.cpp
   ml/test_graph_partitions.cpp
