@@ -29,7 +29,7 @@ problem the module solves and what data roles it needs.
 
 `list_solutions` and `get_solution` are read capabilities on the REST and MCP
 surfaces. They are also eligible for an agent's opt-in, read-only capability
-list.
+list. `pipelines:manage` grants the two preview write operations.
 
 ## Portfolio-number mapping
 
