@@ -168,6 +168,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+    anomaly.hpp             zetta::ml — native M-7 anomaly types and algorithms: deterministic partition-assigned isolation forest, robust median/MAD contributions, causal KPI decomposition, exact contamination/alert-budget thresholding (#1046)
+    anomaly_job.hpp         zetta::ml::run_anomaly_job — distributed tabular anomaly ComputeJob: tree and robust-summary allreduces, compact score gather, exact global budget, result broadcast; multi-member KPI refused in phase A (#1046)
+    anomaly_table.hpp       zetta::ml::run_anomaly_on_table — resolved-dataset entry: primary-owned partition reads, `anomaly` Model registration, queryable anomaly/report tables, optional Run outputs and lineage (#1046)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -418,6 +421,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+    anomaly.cpp             zetta::ml — isolation-tree training/scoring, partition-summary median/MAD reductions, causal KPI trend/season/residual scoring, exact threshold policy (#1046)
+    anomaly_job.cpp         zetta::ml::run_anomaly_job — JobRound collective adapter and compact result wire over existing collectives (#1046)
+    anomaly_table.cpp       zetta::ml::run_anomaly_on_table — resolved partition-body loader, anomaly Model/output-table materialization, and Run lineage attachment (#1046)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -598,6 +604,9 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
+  ml/test_anomaly.cpp       tabular/KPI anomaly correctness: planted outliers, exact budgets, label-only evaluation, seasonal spike handling, and future-point invariance (#1046)
+  ml/test_anomaly_partitions.cpp  real multi-member isolation-forest collectives compared row-for-row with the single-member partition oracle (#1046)
+  ml/test_anomaly_table.cpp  resolved label-free table in, `anomaly` Model plus queryable anomaly/report tables and Run lineage out (#1046)
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)

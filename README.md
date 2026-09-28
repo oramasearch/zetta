@@ -73,9 +73,10 @@ What's inside, by domain (each links to that domain's docs):
   composing into **leakage-free featurization**; single-node == multi-node.
 - **[Native ML](docs/ml/README.md)** — distributed **histogram GBDT** training
   (allreduced histograms), probability **calibration**, batch **scoring /
-  rank-at-risk**, **exact TreeSHAP** explanation, a registered **Model** entity
-  (weights as verified large-object bodies), all proven by a **native
-  correctness oracle** (no Python/XGBoost anywhere).
+  rank-at-risk**, **exact TreeSHAP** explanation, label-free **anomaly detection**
+  (distributed isolation forest + causal KPI residuals), and a registered
+  **Model** entity (weights as verified large-object bodies), all proven by a
+  **native correctness oracle** (no Python/XGBoost anywhere).
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
