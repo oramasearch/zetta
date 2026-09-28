@@ -3,13 +3,14 @@
 Refs #1122 and #1128. The integration branch combines S-1 (#1135), S-2
 (#1141), S-3 (#1140), S-4 (#1139), and S-12 (#1142), followed by `dev`.
 Module branches retain merge commits and their original tests. This landing
-does not complete the catalogue epic: S-5 through S-11 and the live lake
+does not complete the catalogue epic: S-5 through S-9, S-11, and the live lake
 acceptance remain outside this work order.
 
 ## Shared code resolutions
 
-- The correctness gate keeps all 51 checks. After S-1, module checks register
-  in S-2, S-3, S-4, S-12 order. Both ordered-name tests assert the full list.
+- The base landing keeps all 51 checks. S-10 registers four additional checks,
+  bringing this module branch to 55 checks in S-2, S-3, S-4, S-12, S-10
+  order after S-1. Both ordered-name tests assert the full list.
 - M-1 keeps lead conversion, continuous-value regression, collections recovery,
   and claim referral shapes. The shared executor honors each shape's result
   database, table prefix, entity column, and score column; squared-error
