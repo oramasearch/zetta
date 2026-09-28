@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -285,6 +286,58 @@ TEST(SignalPlane, EventAndTaskAreDeliveredToAPeer) {
     EXPECT_EQ(handler_b.tasks()[0].kind, SignalKind::Task);
     EXPECT_EQ(handler_b.tasks()[0].method, "work");
     EXPECT_EQ(handler_b.tasks()[0].payload, "payload");
+
+    b.stop();
+    a.stop();
+}
+
+// #1131: set_signal_handler returns only after a dispatch already inside the
+// previous handler has finished, so the caller may destroy that handler. Before,
+// Node::stop_coordinator freed the coordinated-launch listener while the network
+// thread was still calling it (a heap use-after-free under repeat).
+TEST(SignalPlane, SwappingTheHandlerWaitsOutADispatchInTheOldOne) {
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+
+    // A handler whose event callback is still running when the swap happens.
+    class SlowHandler : public SignalHandler {
+    public:
+        SignalResponse on_request(const Signal&) override { return {}; }
+        void on_event(const Signal&) override {
+            entered.store(true);
+            sleep_ms(300);
+            finished.store(true);
+        }
+        void on_task(const Signal&) override {}
+        std::atomic<bool> entered{false};
+        std::atomic<bool> finished{false};
+    };
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 44140;
+    config_a.port_range = 1;
+    Cluster a{id_a, config_a};
+    a.start();
+    sleep_ms(100);
+
+    auto slow = std::make_unique<SlowHandler>();
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 44141;
+    config_b.port_range = 1;
+    config_b.seeds = {"127.0.0.1:44140"};
+    Cluster b{id_b, config_b};
+    b.set_signal_handler(slow.get());
+    b.start();
+    ASSERT_TRUE(wait_for([&] { return a.peer_count() == 1 && b.peer_count() == 1; }));
+
+    ASSERT_TRUE(a.send_event(id_b, "slow", "x"));
+    ASSERT_TRUE(wait_for([&] { return slow->entered.load(); }));
+    b.set_signal_handler(nullptr);
+    EXPECT_TRUE(slow->finished.load())
+        << "set_signal_handler returned while the old handler was still running";
+    slow.reset();  // safe now: nothing can still be inside it
 
     b.stop();
     a.stop();
