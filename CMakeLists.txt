@@ -243,6 +243,9 @@ add_subdirectory(modules/http EXCLUDE_FROM_ALL)
 set(BOOST_BEAST2_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_BEAST2_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/beast2 EXCLUDE_FROM_ALL)
+# Beast2 compiles its HTTPS server into boost_beast2, so a shared Beast2
+# library must resolve Corosio's OpenSSL stream symbols itself (#1096).
+target_link_libraries(boost_beast2 PRIVATE Boost::corosio_openssl)
 
 # automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
 # DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
@@ -501,7 +504,9 @@ add_library(zetta-core STATIC
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/pubsub_capabilities.cpp
+  src/core/api/decision_policy_capabilities.cpp
   src/core/api/solution_capabilities.cpp
+  src/core/api/action_capabilities.cpp
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
@@ -512,6 +517,8 @@ add_library(zetta-core STATIC
   src/core/api/specs.cpp
   src/core/api/web_ui.cpp
   src/core/schemas/registry.cpp
+  src/core/solutions/decision_policy.cpp
+  src/core/solutions/action_integration.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/security.cpp
   src/core/cluster/signal.cpp
@@ -556,6 +563,11 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_provider.cpp
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
+  src/core/solutions/monitor.cpp
+  src/core/solutions/roi_readout.cpp
+  src/core/solutions/solution_templates.cpp
+  src/core/solutions/solution_foundation.cpp
+  src/core/solutions/solution_execution.cpp
   src/core/ml/ensemble.cpp
   src/core/ml/ensemble_methodology.cpp
   src/core/ml/ensemble_runner.cpp
@@ -595,6 +607,7 @@ add_library(zetta-core STATIC
   src/core/ml/survival_methodology.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
+  src/core/solutions/experiment.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp
@@ -625,6 +638,7 @@ add_library(zetta-core STATIC
   src/core/governance/token.cpp
   src/core/governance/user_role.cpp
   src/core/governance/policy.cpp
+  src/core/solutions/audit_ledger.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/data/partition_body.cpp
@@ -638,6 +652,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/gate.cpp
   src/core/pipeline/graph_checks.cpp
   src/core/pipeline/next_best_action_graph_check.cpp
+  src/core/solutions/snapshot.cpp
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp

@@ -19,9 +19,14 @@
 //   get_trace        read    every span of one trace id (#640)
 //   submit_feedback  action  snapshot a feedback bundle as a large object (#640)
 //   create_project   action  the action template: mutates, audited, replicated
+//   create_experiment action create a seeded, replicated allocation definition
+//   assign           action  assign first, then protect a proposed action
+//   get_experiment   read    sizes, balance, erosion, and training rows
 //   list_specs       read    the spec index (#646): OpenAPI + every capability
 //                            and boundary schema as names, kinds, links
 //   get_spec         read    one spec document by its list_specs name
+//   get_monitor      read    one solution's current monitoring state (#1106)
+//   get_roi_readout  read    versioned solution outcome and ROI readout (#1108)
 //
 // The #616 slice adds the typed detail reads + list_* siblings; the #617 slice
 // adds governed action parity — the rest of the product loop as thin callers
@@ -60,9 +65,17 @@ void register_cloud_capabilities(Registry& registry);
 //   receive_events  read    long-poll an exposed topic from a sequence number
 void register_pubsub_capabilities(Registry& registry);
 
+// The versioned decision-policy control surface (#1104,
+// docs/solutions/decision-policy.md).
+void register_decision_policy_capabilities(Registry& registry);
+
 // Catalogue solutions (#1102): discovery plus composed preview creation and
 // ordered execution through methodology callbacks.
 void register_solution_capabilities(Registry& registry);
+
+// Action delivery, report publication, and bounded execution (#1109,
+// docs/solutions/action-integration.md).
+void register_action_capabilities(Registry& registry);
 
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the

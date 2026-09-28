@@ -28,6 +28,12 @@ enum class AuditAction {
     ConsentRequested,  // a remote consent challenge was issued (#621)
     ConsentDecided,    // a consent challenge was approved/denied (#621)
     ConsentBypassed,   // a consent-gated call ran ungated: enforcement is off (#995)
+    DecisionPolicyCreated,  // a versioned decision policy was created (#1104)
+    DecisionPolicyUpdated,  // a new immutable policy version was created (#1104)
+    DecisionApproved,       // a pending A1 decision was approved (#1104)
+    PubSubTopicUpdated,
+    PubSubEventUpdated,
+    PubSubEventDeleted,
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the
@@ -72,7 +78,7 @@ bool validate_audit_event_value(const nlohmann::json& value,
 std::optional<AuditEventValue> parse_audit_event_value(
     const nlohmann::json& value, std::string* error = nullptr);
 
-// A seam for appending audit events, decoupling the entities that *emit* them
+// An interface for appending audit events, decoupling the entities that *emit* them
 // (e.g. a Project's graph CRUD) from the Node that *owns* the append-only trail.
 // `Node` is the implementation; a Project holds a non-owning AuditSink* the same
 // way it holds a ReplicationManager*. A null sink means "not audited" (the entity

@@ -8,6 +8,12 @@ renderings, zero drift**. Realizes the rendering the design settled in
 
 ## The route table — derived, never authored
 
+Read capabilities may declare `post_alias` to also accept a JSON-body
+`POST /v1/<name>` without changing read classification or removing GET.
+The router and OpenAPI derive both from that registry flag. Pub/sub get/list/browse
+declare it (#1136); aliases use `<name>_post` as their distinct OpenAPI operation id.
+Revision conflicts use HTTP 409. See [pub/sub CRUD](../pubsub/crud.md).
+
 `zetta::api` (`include/zetta/api/rest.hpp`, `src/core/api/rest.cpp` — HTTP-free
 zetta-core) derives everything mechanically from each registry entry:
 

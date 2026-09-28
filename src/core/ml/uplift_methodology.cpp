@@ -40,6 +40,21 @@ nlohmann::json feature_annotations(const nlohmann::json &hints) {
   return features;
 }
 
+std::vector<std::string> model_feature_names(const ir::Node &model) {
+  std::vector<std::string> names;
+  const auto features = model.attributes.find("features");
+  if (features == model.attributes.end() || !features->is_array()) {
+    return names;
+  }
+  for (const nlohmann::json &feature : *features) {
+    if (feature.is_object() && feature.contains("name") &&
+        feature.at("name").is_string()) {
+      names.push_back(feature.at("name").get<std::string>());
+    }
+  }
+  return names;
+}
+
 ir::ExecutionGraph build_m6_shape(const ShapeRequest &request) {
   const std::string source = hint_string(request.hints, "source", "datasets");
   const std::string table =
@@ -57,8 +72,23 @@ ir::ExecutionGraph build_m6_shape(const ShapeRequest &request) {
   const nlohmann::json features = feature_annotations(request.hints);
   if (!features.empty()) {
     model["features"] = features;
-    model["as_of"] =
-        hint_string(request.hints, "treatment_time", "1970-01-01T00:00:00Z");
+    model["as_of"] = hint_string(
+        request.hints, "as_of",
+        hint_string(request.hints, "treatment_time", "1970-01-01T00:00:00Z"));
+    const std::string feature_window_end =
+        hint_string(request.hints, "feature_window_end");
+    const std::string label_window_start =
+        hint_string(request.hints, "label_window_start");
+    if (!feature_window_end.empty()) {
+      model["feature_window_end"] = feature_window_end;
+    }
+    if (!label_window_start.empty()) {
+      model["label_window_start"] = label_window_start;
+    }
+    const auto blackout = request.hints.find("blackout_gap_seconds");
+    if (blackout != request.hints.end() && blackout->is_number()) {
+      model["blackout_gap_seconds"] = *blackout;
+    }
   }
   if (const auto time = request.hints.find("treatment_time");
       time != request.hints.end() && time->is_string()) {
@@ -67,9 +97,17 @@ ir::ExecutionGraph build_m6_shape(const ShapeRequest &request) {
   model["overlap_lower"] = 0.05;
   model["overlap_upper"] = 0.95;
 
+  nlohmann::json source_attributes = {{"source", source}, {"table", table}};
+  const std::string snapshot_as_of =
+      hint_string(request.hints, "snapshot_as_of");
+  if (!snapshot_as_of.empty()) {
+    source_attributes["source_kind"] = "snapshot";
+    source_attributes["snapshot_as_of"] = snapshot_as_of;
+  }
+
   ir::ExecutionGraph graph;
   graph.add_node(ir::StepKind::Connect, "Load treatment population",
-                 {{"source", source}, {"table", table}}, "load_population");
+                 std::move(source_attributes), "load_population");
   graph.add_node(
       ir::StepKind::Clean, "Select pre-treatment features",
       {{"note", "exclude outcome-derived and post-treatment columns"}},
@@ -181,6 +219,11 @@ api::ApiResult run_m6(RunRequest &request) {
     return run_dataset_failure(request, "M-6", resolved);
   }
   resolved.contract.label_column = outcome;
+  const std::vector<std::string> declared_features =
+      model_feature_names(*model);
+  if (!declared_features.empty()) {
+    resolved.contract.feature_columns = declared_features;
+  }
   std::erase(resolved.contract.feature_columns, treatment);
   std::erase(resolved.contract.feature_columns, outcome);
   std::erase(resolved.contract.feature_columns,
@@ -207,6 +250,10 @@ api::ApiResult run_m6(RunRequest &request) {
 
   data::FeaturePlanOptions feature_options;
   feature_options.treatment_column = treatment;
+  const auto as_of = model->attributes.find("as_of");
+  if (as_of != model->attributes.end() && as_of->is_string()) {
+    feature_options.as_of = as_of->get<std::string>();
+  }
   const auto feature_plan = plan_run_features(request, "M-6", resolved, feature_options);
   if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
     return api::ApiResult::failure("invalid_input", error);

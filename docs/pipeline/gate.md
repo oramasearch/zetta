@@ -83,15 +83,25 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free: twenty-eight checks on the methodology integration branch (#1082).
-`NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck` and
-`TemporalValidationCheck` precede the M-2 through M-16 checks in methodology order,
+for free: twenty-nine checks on the methodology integration branch (#1082).
+`NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck`,
+`SnapshotLineageCheck` and `TemporalValidationCheck` precede the M-2 through M-16 checks in methodology order,
 followed by [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md)
 (`#312` / TC-4). See [gate-checks.md](gate-checks.md). Method-specific checks
 engage on their own model kinds; shared annotation checks retain their opt-in
 behavior. An unannotated graph without a matching model kind still passes.
 
 ## Using it
+
+Composed solutions (#1128) declare methodology stages in their manifest.
+The gate applies every registered check to each stage and to the foundation
+nodes separately, prefixing result names with the stage number. A segmentation
+stage therefore validates its own source/model rather than counting unrelated
+M-1/M-2 nodes as extra segmentation inputs. Undeclared/missing stages, models
+outside a stage, and cross-stage data-flow edges are refused; only control edges
+cross the boundary. Existing graphs without a solution manifest are unchanged.
+`run_solution` uses this same gate before it creates a Run or delivers actions,
+and the ROI certificate evaluates the identical composed graph.
 
 ```cpp
 #include "zetta/pipeline/gate.hpp"

@@ -17,6 +17,11 @@
       "description": "Audio samples remain on their owner node.",
       "type": "boolean"
     },
+    "blackout_gap_seconds": {
+      "description": "Minimum interval between feature_window_end and label_window_start.",
+      "minimum": 0,
+      "type": "number"
+    },
     "caller_read_required": {
       "description": "Marks a source whose selected columns all require caller read access.",
       "type": "boolean"
@@ -48,6 +53,11 @@
     "event_time_ordered": {
       "description": "Streaming work is released in event-time order behind its watermark.",
       "type": "boolean"
+    },
+    "feature_window_end": {
+      "description": "The final instant any feature window may observe; it must not be after prediction as_of.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
     },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
@@ -107,6 +117,11 @@
       ],
       "type": "string"
     },
+    "label_window_start": {
+      "description": "The first instant from which labels may be observed.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
     "outcome": {
       "description": "The binary observed-outcome column for an uplift model.",
       "minLength": 1,
@@ -153,6 +168,11 @@
       "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
       "type": "object"
     },
+    "snapshot_as_of": {
+      "description": "The inclusive cutoff used to materialize a terminal snapshot source.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
     "source_column": {
       "description": "The camera, site, document, or other source-group column used for a vision holdout.",
       "minLength": 1,
@@ -161,6 +181,14 @@
     "source_disjoint": {
       "description": "Vision models must split whole source groups between train and test.",
       "type": "boolean"
+    },
+    "source_kind": {
+      "description": "Whether a terminal feature source is an immutable point-in-time snapshot or a live table. Feature lineage accepts only snapshot.",
+      "enum": [
+        "snapshot",
+        "live"
+      ],
+      "type": "string"
     },
     "stop_after_event": {
       "type": "boolean"

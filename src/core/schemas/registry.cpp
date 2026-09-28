@@ -74,7 +74,14 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/solutions/action_integration.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/audit_ledger.hpp"
+#include "zetta/solutions/decision_policy.hpp"
+#include "zetta/solutions/experiment.hpp"
+#include "zetta/solutions/monitor.hpp"
+#include "zetta/solutions/snapshot.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -94,6 +101,11 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::pipeline::graph_step_annotations_schema},
         {"n8n_workflow", "n8n_workflow.schema.json",
          &zetta::pipeline::n8n_workflow_schema},
+        // solutions
+        {"snapshot_spec", "snapshot_spec.schema.json",
+         &zetta::solutions::snapshot_spec_schema},
+        {"as_of_join_spec", "as_of_join_spec.schema.json",
+         &zetta::solutions::as_of_join_spec_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
         {"entity_resolution_launch", "entity_resolution_launch.schema.json",
@@ -105,6 +117,17 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"workspace_profile", "workspace_profile.schema.json",
          &zetta::workspace::workspace_profile_value_schema},
         {"plan", "plan.schema.json", &zetta::billing::plan_value_schema},
+        // solutions
+        {"decision_policy", "decision_policy.schema.json",
+         &zetta::solutions::decision_policy_schema},
+        {"decision_record", "decision_record.schema.json",
+         &zetta::solutions::decision_record_schema},
+        {"solution_monitor", "solution_monitor.schema.json",
+         &zetta::solutions::monitor_value_schema},
+        {"roi_readout_definition", "roi_readout_definition.schema.json",
+         &zetta::solutions::roi_readout_definition_schema},
+        {"roi_readout", "roi_readout.schema.json",
+         &zetta::solutions::roi_readout_schema},
         {"calibration", "calibration.schema.json",
          &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
@@ -128,6 +151,17 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::ml::next_best_action_step_schema},
         {"next_best_action_launch", "next_best_action_launch.schema.json",
          &zetta::ml::next_best_action_launch_schema},
+        // solutions
+        {"audit_ledger_entry", "audit_ledger_entry.schema.json",
+         &zetta::solutions::audit_ledger_entry_schema},
+        {"experiment", "experiment.schema.json",
+         &zetta::solutions::experiment_value_schema},
+        {"experiment_assignment", "experiment_assignment.schema.json",
+         &zetta::solutions::experiment_assignment_value_schema},
+        {"action_task", "action_task.schema.json",
+         &zetta::solutions::action_task_schema},
+        {"report_publication", "report_publication.schema.json",
+         &zetta::solutions::report_publication_schema},
         // index
         {"index", "index.schema.json", &zetta::index::index_value_schema},
         {"fulltext_query", "fulltext_query.schema.json",

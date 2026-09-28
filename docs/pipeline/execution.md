@@ -218,6 +218,14 @@ https://github.com/oramasearch/lake/issues/253):
   `dataset: trained on <database>.<table>` plus each of `resolve_dataset`'s notes. Every other
   connect step logs `connect: <name> was not read: this run trained on <database>.<table>` instead
   of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these lines.
+- **A run given no `dataset_path` reads its pipeline's own table** when there is one: the first
+  connect step whose `source` + `table` attributes name a dataset this node holds, with the first
+  model step's `target` as the label (`dataset.label_column`). It logs `dataset: read from the
+  pipeline's connect step '<name>': <database>.<table>, label '<target>'` and `run` answers it in
+  `dataset_notes`. Only a pipeline that names no existing table trains on the built-in demo
+  dataset, as before. lake points a project's pipeline at a table this way (a project made from an
+  Opportunity, *Build a Pipeline* from a dataset), and such runs used to train on the demo data
+  silently. Verify: `Uc1Journey.ARunWithoutADatasetReadsItsPipelinesTable`.
 - **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric;
   categorical columns are not supported yet)` (#957 is categorical support), and
   `get_run_report`'s `dataset` adds `source` and `not_used` (from the run's lineage and logs; a

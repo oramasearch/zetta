@@ -6,6 +6,10 @@
 #include <vector>
 
 #include "zetta/ml/solution.hpp"
+#include "zetta/ml/methodology.hpp"
+#include "zetta/pipeline/gate.hpp"
+#include "zetta/solutions/decision_policy.hpp"
+#include <nlohmann/json-schema.hpp>
 
 namespace {
 
@@ -16,7 +20,6 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
     std::size_t sketches = 0;
     for (const zetta::ml::Solution& solution : zetta::ml::solutions()) {
         EXPECT_TRUE(ids.insert(solution.id).second) << solution.id;
-        EXPECT_FALSE(solution.runnable);
         EXPECT_FALSE(solution.promise.empty());
         EXPECT_FALSE(solution.use_case.empty());
         if (solution.status == "sketch") {
@@ -25,7 +28,14 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_FALSE(solution.required_data_roles.empty());
         } else {
             ++catalogue;
-            EXPECT_EQ(solution.missing_components.size(), 7u);
+            for (const auto& missing : solution.missing_components) {
+                EXPECT_TRUE(missing.id.starts_with("M-"));
+            }
+            nlohmann::json_schema::json_validator validator(
+                zetta::solutions::decision_policy_config_schema());
+            EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
+            EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
+            EXPECT_EQ(solution.templates.minimal, solution.id != "S-1");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -75,11 +85,12 @@ TEST(SolutionRegistry, ComposesEverySelectedMethodologyThroughItsCallback) {
     const zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
         *churn, 1, {{"source", "datasets"}, {"table", "customers"}});
     ASSERT_TRUE(composed.ok()) << composed.error;
-    EXPECT_TRUE(composed.preview);
+    EXPECT_FALSE(composed.preview);
     EXPECT_EQ(composed.methodologies,
               (std::vector<std::string>{"M-2", "M-1", "M-3"}));
     EXPECT_GT(composed.graph.node_count(), 12u);
-    EXPECT_EQ(composed.missing_components.size(), 7u);
+    EXPECT_TRUE(composed.missing_components.empty());
+    EXPECT_TRUE(churn->runnable);
 
     for (int stage = 1; stage <= 3; ++stage) {
         const zetta::ir::ExecutionGraph stage_graph =
@@ -101,6 +112,24 @@ TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
     ASSERT_NE(churn, nullptr);
     EXPECT_FALSE(zetta::ml::compose_solution(*churn, 0, {}).ok());
     EXPECT_FALSE(zetta::ml::compose_solution(*churn, 5, {}).ok());
+}
+
+TEST(SolutionRegistry, ComposedGateChecksEachStageAndRejectsHiddenDataDependencies) {
+    const auto* solution = zetta::ml::find_solution("S-1");
+    ASSERT_NE(solution, nullptr);
+    auto composed = zetta::ml::compose_solution(*solution, 1, {});
+    ASSERT_TRUE(composed.ok());
+    const auto gate = zetta::pipeline::default_gate();
+    const auto initial = gate.run(composed.graph);
+    EXPECT_TRUE(initial.passed()) << nlohmann::json(initial).dump(2);
+    auto model = composed.graph.find_node("solution_stage_3_train_segments");
+    ASSERT_TRUE(model);
+    model->attributes["segmentation"]["scaling"] = "none";
+    EXPECT_FALSE(gate.run(composed.graph).passed());
+    model->attributes["segmentation"]["scaling"] = "global_auto";
+    composed.graph.add_edge("solution_stage_2_train_churn_model", model->id,
+                            zetta::ir::EdgeKind::DataFlow);
+    EXPECT_FALSE(gate.run(composed.graph).passed());
 }
 
 } // namespace

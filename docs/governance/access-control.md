@@ -98,7 +98,7 @@ node.authorize("no-such-key", {ResourceKind::Database, "churn"});// denied
 ```
 
 `zetta::governance::authorize(const AccessKey&, const Resource&)` is the pure decision over a
-known key; `Node::authorize(key_id, resource)` is the seam a request path calls.
+known key; `Node::authorize(key_id, resource)` is the boundary a request path calls.
 
 ## The capability decision (ENT-22)
 
@@ -137,7 +137,7 @@ node.authorize(key->id(), Operation{CapabilityDomain::Data, "write"});          
 pure decision (the injectable `now` makes TTL deterministic in tests). Its deny
 reason **distinguishes** a right that was never granted from one whose TTL has
 expired — context the audit trail will record.
-`Node::authorize(key_id, operation)` is the request-path seam; it resolves the key
+`Node::authorize(key_id, operation)` is the request-path boundary; it resolves the key
 (denying an unknown/empty id) and supplies the current time.
 
 > **TTL'd; audited.** A capability is the unit of authority for orchestration +
@@ -229,13 +229,13 @@ decision records an immutable `data_access` [`AuditEvent`](audit-trail.md). A
 later slice threads the login key through the request path (the query executor,
 the cluster protocol) so every data access is checked against `Node::authorize` —
 both the resource scope and the capability for the operation being performed — and
-thereby audited, not just the seam itself; **approval gates** for risky actions
+thereby audited, not just the boundary itself; **approval gates** for risky actions
 are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
 access **tiers** (team / partner / per-dataset) extend `ResourceKind` (which already
 has `Topic` for pub/sub, a name-prefix grant like `Blob`, #1029) and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
-without changing this seam. Principals + keys + their scope/capability grants are
+without changing this interface. Principals + keys + their scope/capability grants are
 now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel.md)
 (SCR-7 / CMP-5); issuing keys and granting capabilities from the GUI is a later
 slice.
@@ -362,7 +362,7 @@ issued programmatically via `Node::create_token`.
 
 Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
 openapi + llms.txt), and the governed serving endpoints — is fronted by **one
-auth gate**: a single middleware at the router seam (`src/core/api/http_server.cpp`,
+auth gate**: a single middleware at the router boundary (`src/core/api/http_server.cpp`,
 beside `router.use(cors())`), not a shared-secret check duplicated per handler.
 It resolves the acting identity **once** per request and hands it to the matched
 handler through the request's `route_data`; the handlers carry no auth logic of
@@ -458,7 +458,7 @@ can never disagree:
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
 | `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
-| `pipelines:manage` | `orchestration:{create_project, delete_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, create_solution, run_solution, gate, deploy, run, start_run, testsuite_run}` | drive the pipeline and solution authoring → gate → deploy → run control surface over MCP/REST |
+| `pipelines:manage` | all pipeline, dataset/connector, snapshot, graph, agent/profile/plan, solution, decision-policy, and experiment orchestration operations in `permission.cpp` | drive the authoring → gate → deploy → run → governed-action control surface over MCP/REST, including solution creation and execution (#1102), snapshots (#1103), policy decisions (#1104), and experiment assignment (#1105) |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
 | `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |
 
@@ -682,7 +682,7 @@ access.
 
 ### Enforcement (deny-by-default; admin / unrestricted / local bypass)
 
-The executor is the one choke point — the same per-statement seam that #747 enforces
+The executor is the one choke point — the same per-statement boundary that #747 enforces
 column grants on:
 
 - On **`SELECT`**, the applicable policies' `USING` predicates are AND-ed into the
@@ -728,7 +728,7 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
 - `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
 - `include/zetta/api/server.hpp` — the embedded `ApiServer` + `ServerOptions`; the auth gate is **unconditional** (#799 removed the `require_auth` and `bearer_token` options — a bearer that resolves to a user is required on every gated route).
-- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router seam (`bearer → user`, else 401; #745).
+- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router boundary (`bearer → user`, else 401; #745).
 - `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts).
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,

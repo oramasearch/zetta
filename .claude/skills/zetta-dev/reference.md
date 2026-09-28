@@ -50,6 +50,11 @@ deployment:<dep_uuid> -> { graph_name, target, node, node_count, edge_count, cre
                                                        a graph placed onto a target
 run:<run_uuid>        -> { project, graph, status, created, updated, logs, outputs, lineage }
                                                        a run (top-level; JSON-Schema validated)
+experiment:<uuid>     -> { name, seed, allocations, created }
+                                                       a holdout experiment (#1105)
+experiment_assignment:<experiment>:<entity_digest>
+                      -> { entity, allocation, tier, propensity, bucket, exempt, assigned_at }
+                                                       an independent uplift row (#1105)
 principal:<uuid>      -> { kind, name, created }       an authenticated actor (no parent)
 key:<uuid>            -> { principal, scope, created }  an access key (owned by a principal)
 audit:<uuid>          -> { action, actor, target, allowed, detail, time }

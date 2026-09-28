@@ -22,6 +22,9 @@ run / test.
 
 ## Domains
 
+Pub/sub [CRUD](pubsub/crud.md) covers node-local topic/message management on
+REST and MCP, non-consuming reads, revisions, retention and mutation auditing.
+
 | Domain | Covers |
 |---|---|
 | [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |
@@ -31,7 +34,7 @@ run / test.
 | [compute/](compute/README.md) | The `ComputeDevice` accelerator interface and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
 | [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, and the native correctness oracle. |
-| [solutions/](solutions/README.md) | The S-1 through S-12 solution registry, Band-B sketches, portfolio-number mapping, capability levels, and composed preview Pipelines. |
+| [solutions/](solutions/README.md) | The S-1 through S-12 registry, Band-B sketches, executable composed Pipelines, snapshots, incremental replicated projections, and shared audit, policy, experiment, monitoring, action delivery and ROI foundations. |
 | [agent/](agent/README.md) | The native RLVR agent (#555 base, #853 per-customer): the deterministic reward grader, and — as they ship — rollouts and the training loop. The model Orama post-trains and ships. Its data + model [cards](agent/cards/README.md). |
 | [dataset/](dataset/README.md) | Native, in-Zetta training-dataset generation (#873): the `DatasetGenerator` interface + factory (base-agent + Auto-Suggest), plan-grounded + admission-gated — the native replacement for the offline Python corpus generators, and what a per-customer fork grows its own corpus with. |
 | [autograd/](autograd/README.md) | zetta's own reverse-mode autodiff engine (native C++26, no foreign runtime): the `Tensor` value graph + `backward()`, the Qwen3-parity model, checkpoint I/O, and the RLVR training math the agent is built on. |
@@ -44,6 +47,7 @@ run / test.
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
 | [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |
+| [solutions/](solutions/README.md) | Shared solution components: deterministic experimental assignment, protected holdouts, treatment/exploration cells, exemptions, and uplift-training records. |
 | [gui/](gui/README.md) | The headed app: the Orama design system (read before GUI work), every panel, and the load-bearing rendering notes. |
 | [use-cases/](use-cases/README.md) | The use-case catalog framing + UC-1 churn end to end: dataset, entity resolution, the real step executor, the playbook, the at-scale tests. |
 | [testing/](testing/README.md) | The in-app test suite, the sim-Python example-script harness, and per-test runbooks. |

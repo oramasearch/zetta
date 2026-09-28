@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/solutions/solution_templates.hpp"
 
 // The solution registry (#1102): catalogue modules are configurations over the
 // methodology registry and the shared production foundation.
@@ -57,6 +58,7 @@ struct Solution {
     std::string decision_policy_template;
     std::string measurement_design;
     std::vector<std::string> guardrails;
+    zetta::solutions::SolutionTemplates templates;
     std::vector<SolutionCapabilityLevel> capability_levels;
     std::vector<MissingSolutionComponent> missing_components;
     std::string status;
@@ -69,7 +71,7 @@ struct ComposedSolution {
     ir::ExecutionGraph graph;
     std::vector<std::string> methodologies;
     std::vector<MissingSolutionComponent> missing_components;
-    bool preview = true;
+    bool preview = false;
     std::string error;
 
     bool ok() const {

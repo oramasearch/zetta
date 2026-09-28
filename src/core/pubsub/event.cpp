@@ -145,7 +145,7 @@ std::size_t Event::memory_bytes() const {
     count(envelope.reply_to);
     count(envelope.topics_chain);
     for (const auto& [key, value] : headers) envelope_bytes += key.size() + value.size();
-    return sizeof(Event) + id.size() + envelope_bytes + payload.size();
+    return sizeof(Event) + id.size() + edited_by.size() + envelope_bytes + payload.size();
 }
 
 Event copy_for_recipient(const Event& event, const Address& recipient) {
@@ -181,7 +181,7 @@ EnvelopeProblem check_topic_hop(const Envelope& envelope, const Address& topic,
 
 std::string new_event_id() { return zetta::util::new_uuid(); }
 
-std::string encode_event_frame(const Event& event) {
+std::string encode_event_frame(const Event& event, std::optional<std::size_t> slot) {
     const auto& envelope = event.envelope;
     nlohmann::json header = {
         {"sequence", event.sequence},
@@ -197,6 +197,13 @@ std::string encode_event_frame(const Event& event) {
         {"reply_to", addresses_to_json(envelope.reply_to)},
         {"topics_chain", addresses_to_json(envelope.topics_chain)},
     };
+    header["revision"] = event.revision;
+    if (slot) header["slot"] = *slot;
+    if (event.edited_at) {
+        header["edited_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+            event.edited_at->time_since_epoch()).count();
+        header["edited_by"] = event.edited_by;
+    }
     if (envelope.from) header["from"] = envelope.from->to_string();
     if (!event.headers.empty()) header["headers"] = event.headers;
     header["published_at_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -256,6 +263,13 @@ DecodedFrame decode_event_frame(std::string_view buffer, std::size_t inline_thre
     Event event;
     try {
         event.sequence = header.value("sequence", std::uint64_t{0});
+        event.revision = header.value("revision", std::uint64_t{1});
+        if (header.contains("slot")) decoded.slot = header.at("slot").get<std::size_t>();
+        if (header.contains("edited_at_ms")) {
+            event.edited_at = std::chrono::system_clock::time_point(
+                std::chrono::milliseconds(header.at("edited_at_ms").get<std::int64_t>()));
+            event.edited_by = header.at("edited_by").get<std::string>();
+        }
         event.id = header.value("id", std::string());
         event.encoding =
             encoding_from_string(header.value("encoding", std::string("blob"))).value_or(Encoding::Blob);

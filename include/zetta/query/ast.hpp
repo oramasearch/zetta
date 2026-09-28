@@ -242,6 +242,13 @@ struct InsertStmt {
     std::vector<std::vector<nlohmann::json>> rows;   // one inner vector per VALUES tuple
 };
 
+// One ORDER BY key: a result column, ascending unless DESC. NULLs sort last
+// ascending and first descending, as in Postgres.
+struct OrderKey {
+    std::string column;
+    bool descending = false;
+};
+
 struct SelectStmt {
     TableRef table;
     bool all = false;                  // SELECT *
@@ -254,6 +261,14 @@ struct SelectStmt {
     // columns come back in the order written. Both are empty for a plain SELECT.
     std::vector<std::string> group_by;
     std::vector<GroupedItem> items;
+
+    // ORDER BY / LIMIT / OFFSET, applied to the finished result of every path
+    // (plain, grouped, system table, scattered over partitions). An ORDER BY key
+    // names a column of the result: a projected column, a GROUP BY key or an
+    // aggregate's alias; with SELECT *, any column.
+    std::vector<OrderKey> order_by;
+    std::optional<std::size_t> limit;
+    std::size_t offset = 0;
 
     // Whether this is an aggregating query (routes through the DDF engine).
     bool grouped() const { return !group_by.empty(); }

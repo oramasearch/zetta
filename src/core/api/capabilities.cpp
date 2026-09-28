@@ -66,6 +66,9 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/solutions/experiment.hpp"
+#include "zetta/solutions/snapshot.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -1959,6 +1962,62 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+const nlohmann::json& get_monitor_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "solution",
+        "the solution name or monitor uuid");
+    return schema;
+}
+
+const nlohmann::json& get_monitor_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(
+            zetta::solutions::monitor_value_schema());
+    return schema;
+}
+
+ApiResult handle_get_monitor(const nlohmann::json& input,
+                             ApiContext& context) {
+    const std::string solution = input.at("solution").get<std::string>();
+    const auto monitor = context.node.find_monitor(solution);
+    if (!monitor) {
+        return ApiResult::failure(
+            "not_found",
+            "no monitor for solution or id '" + solution + "'");
+    }
+    nlohmann::json output = monitor->metadata();
+    output["id"] = monitor->id();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_roi_readout_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "solution",
+        "the solution name or ROI readout definition uuid");
+    return schema;
+}
+
+ApiResult handle_get_roi_readout(
+    const nlohmann::json& input,
+    ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure(
+            "engine_error",
+            "ROI readouts require a replicated node");
+    }
+    const std::string solution = input.at("solution").get<std::string>();
+    std::string error;
+    const auto readout = zetta::solutions::generate_roi_readout(
+        context.node,
+        *context.node.replication(),
+        solution,
+        &error);
+    if (!readout) {
+        return ApiResult::failure("not_found", error);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*readout));
+}
+
 // --- model_health (Monitor, #983) -------------------------------------------------------------
 //
 // The first Monitor capability. The agent is meant to watch a deployed model and say whether it
@@ -2858,6 +2917,161 @@ ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
         entries.push_back(zetta::ml::methodology_json(methodology));
     }
     return ApiResult::success({{"methodologies", std::move(entries)}});
+}
+
+// --- solutions audit ledger (#1107) -----------------------------------------
+
+nlohmann::json ledger_entry_output_item_schema() {
+    nlohmann::json schema = zetta::solutions::audit_ledger_entry_schema();
+    for (nlohmann::json& choice : schema["oneOf"]) {
+        choice["required"].push_back("id");
+    }
+    return schema;
+}
+
+const nlohmann::json& record_action_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"subject", "score_id", "score", "decision", "action",
+          "actor_kind", "model_version", "policy_version", "agent_version",
+          "cell", "cost", "currency", "score_at", "decision_at",
+          "action_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"subject", {{"type", "string"}, {"minLength", 1}}},
+          {"score_id", {{"type", "string"}, {"minLength", 1}}},
+          {"score", {{"type", "number"}}},
+          {"decision", {{"type", "string"}, {"minLength", 1}}},
+          {"action",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the action taken; use `no_contact` for a deliberate hold"}}},
+          {"actor_kind", {{"type", "string"}, {"enum", {"agent", "human"}}}},
+          {"actor",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the acting agent or human; defaults to the authenticated caller"}}},
+          {"model_version", {{"type", "string"}, {"minLength", 1}}},
+          {"policy_version", {{"type", "string"}, {"minLength", 1}}},
+          {"agent_version", {{"type", "string"}, {"minLength", 1}}},
+          {"cell", {{"type", "string"}, {"minLength", 1}}},
+          {"cost", {{"type", "number"}, {"minimum", 0}}},
+          {"currency", {{"type", "string"}, {"minLength", 1}}},
+          {"score_at", {{"type", "string"}, {"minLength", 1}}},
+          {"decision_at", {{"type", "string"}, {"minLength", 1}}},
+          {"action_at", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& record_outcome_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"action_id", "outcome", "value", "currency", "source",
+          "occurred_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"action_id", {{"type", "string"}, {"minLength", 1}}},
+          {"outcome", {{"type", "string"}, {"minLength", 1}}},
+          {"value", {{"type", "number"}}},
+          {"currency", {{"type", "string"}, {"minLength", 1}}},
+          {"source",
+           {{"type", "string"}, {"enum", {"connector", "manual"}}}},
+          {"occurred_at", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& record_ledger_entry_output_schema() {
+    static const nlohmann::json schema = ledger_entry_output_item_schema();
+    return schema;
+}
+
+const nlohmann::json& list_ledger_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_ledger_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"entries"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"entries",
+           {{"type", "array"}, {"items", ledger_entry_output_item_schema()}}}}}};
+    return schema;
+}
+
+ApiResult handle_record_action(const nlohmann::json& input,
+                               ApiContext& context) {
+    zetta::solutions::ActionLedgerValue value;
+    value.subject = input.at("subject").get<std::string>();
+    value.score_id = input.at("score_id").get<std::string>();
+    value.score = input.at("score").get<double>();
+    value.decision = input.at("decision").get<std::string>();
+    value.action = input.at("action").get<std::string>();
+    value.actor_kind = zetta::solutions::action_actor_kind_from(
+        input.at("actor_kind").get<std::string>()).value();
+    value.actor = input.value(
+        "actor", context.acting_key.empty() ? std::string{"local"}
+                                             : context.acting_key);
+    value.model_version = input.at("model_version").get<std::string>();
+    value.policy_version = input.at("policy_version").get<std::string>();
+    value.agent_version = input.at("agent_version").get<std::string>();
+    value.cell = input.at("cell").get<std::string>();
+    value.cost = input.at("cost").get<double>();
+    value.currency = input.at("currency").get<std::string>();
+    value.score_at = input.at("score_at").get<std::string>();
+    value.decision_at = input.at("decision_at").get<std::string>();
+    value.action_at = input.at("action_at").get<std::string>();
+    const auto entry = context.node.record_action(std::move(value));
+    if (!entry) {
+        return ApiResult::failure(
+            "engine_error", "record_action rejected the ledger record");
+    }
+    nlohmann::json output = entry->metadata();
+    output["id"] = entry->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_record_outcome(const nlohmann::json& input,
+                                ApiContext& context) {
+    const std::string action_id = input.at("action_id").get<std::string>();
+    const auto action = context.node.find_ledger_entry(action_id);
+    if (!action || action->kind() != zetta::solutions::LedgerEntryKind::Action) {
+        return ApiResult::failure(
+            "not_found", "no action ledger entry with id '" + action_id + "'",
+            "/action_id");
+    }
+    zetta::solutions::OutcomeLedgerValue value;
+    value.action_id = action_id;
+    value.outcome = input.at("outcome").get<std::string>();
+    value.value = input.at("value").get<double>();
+    value.currency = input.at("currency").get<std::string>();
+    value.source = zetta::solutions::outcome_source_from(
+        input.at("source").get<std::string>()).value();
+    value.occurred_at = input.at("occurred_at").get<std::string>();
+    const auto entry = context.node.record_outcome(std::move(value));
+    if (!entry) {
+        return ApiResult::failure(
+            "engine_error", "record_outcome rejected the ledger record");
+    }
+    nlohmann::json output = entry->metadata();
+    output["id"] = entry->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_list_ledger(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const auto& entry : context.node.ledger_entries()) {
+        nlohmann::json document = entry->metadata();
+        document["id"] = entry->id();
+        entries.push_back(std::move(document));
+    }
+    return ApiResult::success({{"entries", std::move(entries)}});
 }
 
 // --- create_project ----------------------------------------------------------
@@ -4357,7 +4571,9 @@ const nlohmann::json& run_schema() {
              "the data to train on, in either form: a `database.table` landed by "
              "a connection or a query (what add_dataset / create_dataset_from_query "
              "produce), or a churn dataset directory on the node's filesystem. "
-             "Default: the built-in demo dataset"}}},
+             "Default: the table the pipeline's first connect step names (its "
+             "`source` + `table` attributes), when this node holds it, with the model "
+             "step's `target` as the label; otherwise the built-in demo dataset"}}},
           {"dataset", zetta::data::dataset_contract_schema()},
           {"model_name",
            {{"type", "string"},
@@ -4637,7 +4853,39 @@ const nlohmann::json& run_output_schema() {
     return schema;
 }
 
-ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
+// The table a pipeline reads, when its run is given none: the first connect step whose
+// `source`+`table` attributes name a dataset this node holds, with the first model step's
+// `target` as the label. lake points a project's pipeline at a table this way (a project made
+// from an Opportunity, "Build a Pipeline" from a dataset); before, such a run trained on the
+// built-in demo dataset and said nothing. Empty when no step names an existing table.
+struct PipelineDataset {
+    std::string path, step, label;
+};
+std::optional<PipelineDataset> pipeline_dataset(zetta::Node& node,
+                                                const zetta::ir::ExecutionGraph& graph) {
+    std::optional<PipelineDataset> found;
+    std::string label;
+    for (const std::shared_ptr<zetta::ir::Node>& step : graph.nodes()) {
+        if (!step || !step->attributes.is_object()) continue;
+        const auto text = [&](const char* key) {
+            const auto value = step->attributes.find(key);
+            return value != step->attributes.end() && value->is_string() ? value->get<std::string>()
+                                                                         : std::string();
+        };
+        if (step->kind == zetta::ir::StepKind::Model && label.empty()) label = text("target");
+        if (step->kind != zetta::ir::StepKind::Connect || found) continue;
+        const std::string source = text("source"), table = text("table");
+        if (source.empty() || table.empty()) continue;
+        const auto database = node.find_database(source);
+        if (!database || !database->find_table(table)) continue;
+        found = PipelineDataset{source + "." + table, step->name, ""};
+    }
+    if (found) found->label = label;
+    return found;
+}
+
+ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
+    nlohmann::json input = given;
     const std::string name = input.at("project").get<std::string>();
     auto project = resolve_project(context, name);
     if (!project) {
@@ -4708,6 +4956,20 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::success(std::move(output));
     }
 
+    // No dataset given (#1040): M-1 trains on the table the pipeline's own
+    // connect step reads, with the model step's target as the label. The other
+    // methodologies resolve their pipeline's table in their own run callbacks.
+    if (methodology->id == "M-1" && !input.contains("dataset_path")) {
+        if (const auto own = pipeline_dataset(context.node, graph->graph())) {
+            input["dataset_path"] = own->path;
+            if (!own->label.empty() && !input.contains("dataset")) {
+                input["dataset"] = {{"label_column", own->label}};
+            }
+            input["pipeline_note"] =
+                "read from the pipeline's connect step '" + own->step + "': " + own->path +
+                (own->label.empty() ? std::string() : ", label '" + own->label + "'");
+        }
+    }
     zetta::ml::RunRequest request;
     request.context = &context;
     request.project = project.get();
@@ -5261,6 +5523,51 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     output["rows"] = added.rows;
     output["partitions"] = std::move(partitions);
     return ApiResult::success(std::move(output));
+}
+
+// --- snapshot (#1103) -------------------------------------------------------
+
+const nlohmann::json& snapshot_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"database", "table", "source_rows", "materialized_rows",
+          "existing_rows", "future_rows_excluded", "as_of"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"source_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"materialized_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"existing_rows", {{"type", "integer"}, {"minimum", 0}}},
+          {"future_rows_excluded", {{"type", "integer"}, {"minimum", 0}}},
+          {"as_of",
+           {{"oneOf",
+             nlohmann::json::array({nlohmann::json{{"type", "number"}},
+                                    nlohmann::json{{"type", "string"}}})}}}}}};
+    return schema;
+}
+
+ApiResult handle_snapshot(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const std::optional<zetta::solutions::SnapshotSpec> spec =
+        zetta::solutions::SnapshotSpec::from_json(input, &error);
+    if (!spec) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    const zetta::solutions::SnapshotResult snapshot =
+        zetta::solutions::materialize_snapshot(context.node, *spec);
+    if (!snapshot.ok()) {
+        return ApiResult::failure("engine_error", snapshot.error);
+    }
+    return ApiResult::success(
+        {{"database", spec->database},
+         {"table", snapshot.table->name()},
+         {"source_rows", snapshot.source_rows},
+         {"materialized_rows", snapshot.materialized_rows},
+         {"existing_rows", snapshot.existing_rows},
+         {"future_rows_excluded", snapshot.future_rows_excluded},
+         {"as_of", spec->as_of}});
 }
 
 // --- upload_dataset (#1008) ---------------------------------------------------------
@@ -7303,6 +7610,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"get_model", "read one model: its measures, its feature columns, and "
                       "its ranked churn "
                       "drivers: {\"model\": \"<id or name>\"}"},
+        {"get_monitor",
+         "read one solution's current drift, calibration, cohort performance, "
+         "guardrails, active breaches, and retrain request: "
+         "{\"solution\": \"<solution name or monitor uuid>\"}"},
         {"score",
          "run a trained model and get accounts ranked by risk plus what drives "
          "it — "
@@ -7838,6 +8149,185 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
     return ApiResult::success(std::move(output));
 }
 
+// --- experiments ------------------------------------------------------------
+
+const nlohmann::json& create_experiment_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json value = zetta::solutions::experiment_value_schema();
+        value["title"] = "Create experiment input";
+        value["required"] = {"name", "seed", "allocations"};
+        value["properties"].erase("id");
+        value["properties"].erase("created");
+        return value;
+    }();
+    return schema;
+}
+
+const nlohmann::json& experiment_record_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::solutions::experiment_value_schema());
+    return schema;
+}
+
+const nlohmann::json& assign_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment", "entity"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "experiment uuid or unique name"}}},
+          {"entity", {{"type", "string"}, {"minLength", 1}}},
+          {"proposed_action",
+           {{"type", "string"},
+            {"description", "action to return only when the assignment permits it"}}},
+          {"model_driven", {{"type", "boolean"}, {"default", true}}},
+          {"exempt", {{"type", "boolean"}, {"default", false}}},
+          {"exemption_reason", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& assignment_record_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::solutions::experiment_assignment_value_schema());
+    return schema;
+}
+
+const nlohmann::json& assign_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"assignment", "proposed_action", "action", "model_driven", "allowed",
+          "reason"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"assignment", assignment_record_schema()},
+          {"proposed_action", {{"type", "string"}}},
+          {"action", {{"type", "string"}}},
+          {"model_driven", {{"type", "boolean"}}},
+          {"allowed", {{"type", "boolean"}}},
+          {"reason", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_experiment_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "experiment uuid or unique name"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_experiment_output_schema() {
+    static const nlohmann::json balance_row = {
+        {"type", "object"},
+        {"required",
+         {"name", "tier", "configured_fraction", "assignments", "expected",
+          "deviation", "tolerance", "balanced"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"tier", {{"type", "string"}}},
+          {"configured_fraction", {{"type", "number"}}},
+          {"assignments", {{"type", "integer"}}},
+          {"expected", {{"type", "number"}}},
+          {"deviation", {{"type", "number"}}},
+          {"tolerance", {{"type", "number"}}},
+          {"balanced", {{"type", "boolean"}}}}}};
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment", "sizes", "balance", "erosion", "training_rows"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment", experiment_record_schema()},
+          {"sizes",
+           {{"type", "object"},
+            {"required",
+             {"assignments", "exemptions", "holdout_assignments",
+              "holdout_exemptions"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"assignments", {{"type", "integer"}}},
+              {"exemptions", {{"type", "integer"}}},
+              {"holdout_assignments", {{"type", "integer"}}},
+              {"holdout_exemptions", {{"type", "integer"}}}}}}},
+          {"balance",
+           {{"type", "object"},
+            {"required", {"balanced", "allocations"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"balanced", {{"type", "boolean"}}},
+              {"allocations", {{"type", "array"}, {"items", balance_row}}}}}}},
+          {"erosion",
+           {{"type", "object"},
+            {"required", {"exemption_rate", "holdout_erosion_rate"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"exemption_rate", {{"type", "number"}}},
+              {"holdout_erosion_rate", {{"type", "number"}}}}}}},
+          {"training_rows",
+           {{"type", "array"}, {"items", assignment_record_schema()}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_experiment(const nlohmann::json& input,
+                                   ApiContext& context) {
+    zetta::solutions::ExperimentValue value;
+    value.name = input.at("name").get<std::string>();
+    value.seed = input.at("seed").get<std::uint64_t>();
+    for (const nlohmann::json& item : input.at("allocations")) {
+        value.allocations.push_back(
+            {item.at("name").get<std::string>(),
+             *zetta::solutions::experiment_tier_from(
+                 item.at("tier").get<std::string>()),
+             item.at("fraction").get<double>()});
+    }
+    std::string reason;
+    const auto record = context.node.experiment_manager().create(
+        std::move(value), &reason);
+    if (!record) {
+        return ApiResult::failure("invalid_input", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*record));
+}
+
+ApiResult handle_assign(const nlohmann::json& input, ApiContext& context) {
+    const bool exempt = input.value("exempt", false);
+    const std::string actor =
+        exempt ? (context.acting_key.empty() ? std::string("local")
+                                            : context.acting_key)
+               : std::string{};
+    std::string reason;
+    const auto decision = context.node.experiment_manager().decide(
+        input.at("experiment").get<std::string>(),
+        input.at("entity").get<std::string>(),
+        input.value("proposed_action", std::string{}),
+        input.value("model_driven", true), exempt,
+        input.value("exemption_reason", std::string{}), actor, &reason);
+    if (!decision) {
+        return ApiResult::failure("invalid_input", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*decision));
+}
+
+ApiResult handle_get_experiment(const nlohmann::json& input,
+                                ApiContext& context) {
+    std::string reason;
+    const auto report = context.node.experiment_manager().report(
+        input.at("experiment").get<std::string>(), &reason);
+    if (!report) {
+        return ApiResult::failure("not_found", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*report));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -7865,6 +8355,44 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_server_info});
+
+    registry.add(Capability{
+        "create_experiment",
+        "Create an experiment",
+        "Create and replicate a seeded holdout experiment definition. Mutates "
+        "experiment state and returns the durable record.",
+        create_experiment_schema(),
+        experiment_record_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_experiment"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_experiment});
+    registry.add(Capability{
+        "assign",
+        "Assign an experiment entity",
+        "Assign an entity deterministically before any proposed action, suppress "
+        "model-driven actions in protected tiers, and durably log explicit exemptions. "
+        "Mutates assignment state.",
+        assign_schema(),
+        assign_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "assign"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_assign});
+    registry.add(Capability{
+        "get_experiment",
+        "Get an experiment",
+        "Read an experiment's allocation sizes, balance checks, exemption erosion, "
+        "and uplift-training assignment rows. No side effects.",
+        get_experiment_schema(),
+        get_experiment_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_experiment});
 
     registry.add(Capability{
         "sql",
@@ -8062,6 +8590,34 @@ void register_core_capabilities(Registry& registry) {
         handle_get_model});
 
     registry.add(Capability{
+        "get_monitor",
+        "Get one solution monitor",
+        "Read one solution's current input and score drift, calibration, "
+        "closed-window cohort performance, guardrails, active breaches, and "
+        "retrain request by solution name or monitor uuid. No side effects.",
+        get_monitor_schema(),
+        get_monitor_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_monitor});
+
+    registry.add(Capability{
+        "get_roi_readout",
+        "Get a solution ROI readout",
+        "Read one solution's versioned correctness certificate, aggregate "
+        "incrementality with confidence intervals, customer-supplied ROI, "
+        "guardrails, agent operations, and audit extract. No side effects.",
+        get_roi_readout_schema(),
+        zetta::solutions::roi_readout_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_roi_readout});
+
+    registry.add(Capability{
         "get_workspace_profile",
         "Get one workspace profile",
         "Read one Workspace Profile's full validated record (owner, role, daily "
@@ -8257,6 +8813,19 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false, handle_list_methodologies});
 
     registry.add(Capability{
+        "list_ledger",
+        "List the solutions audit ledger",
+        "Read the immutable score, decision, action and outcome reward stream in "
+        "chronological order; no side effects.",
+        list_ledger_schema(),
+        list_ledger_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_ledger});
+
+    registry.add(Capability{
         "submit_feedback",
         "Submit feedback",
         "Snapshot a feedback bundle — your description plus the relevant "
@@ -8283,6 +8852,32 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    registry.add(Capability{
+        "record_action",
+        "Record a decision and action",
+        "Append one immutable score, decision and action record, including "
+        "deliberate no-contact, to the replicated solutions reward ledger.",
+        record_action_schema(),
+        record_ledger_entry_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "record_action"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_record_action});
+
+    registry.add(Capability{
+        "record_outcome",
+        "Record an action outcome",
+        "Append one immutable connector or manual outcome referencing an existing "
+        "action in the replicated solutions reward ledger.",
+        record_outcome_schema(),
+        record_ledger_entry_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "record_outcome"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_record_outcome});
 
     registry.add(Capability{
         "delete_project",
@@ -8703,6 +9298,20 @@ void register_core_capabilities(Registry& registry) {
         handle_add_dataset});
 
     registry.add(Capability{
+        "snapshot",
+        "Materialize a point-in-time snapshot",
+        "Materialize the latest source row per entity at or before the requested "
+        "cutoff into a replicated table keyed by entity_id and as_of. Existing "
+        "identical keys make retries idempotent; conflicting keys are refused.",
+        zetta::solutions::snapshot_spec_schema(),
+        snapshot_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "snapshot"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_snapshot});
+
+    registry.add(Capability{
         "upload_dataset",
         "Upload a dataset",
         "Load a csv or jsonl file's TEXT, sent in the request, into a new "
@@ -8905,6 +9514,12 @@ void register_core_capabilities(Registry& registry) {
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
     register_solution_capabilities(registry);
+
+    // Versioned score-to-action policy (#1104).
+    register_decision_policy_capabilities(registry);
+
+    // Report, task, and bounded closed-loop action patterns (#1109).
+    register_action_capabilities(registry);
 
     registry.add(Capability{
         "analyze_dataset",

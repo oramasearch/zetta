@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <sstream>
@@ -33,10 +34,12 @@
 #include "zetta/api/registry.hpp"
 #include "zetta/autograd/safetensors.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -47,6 +50,10 @@
 #include "zetta/ml/language.hpp"
 #include "zetta/ml/speech.hpp"
 #include "zetta/node.hpp"
+#include "zetta/connect/http_transport.hpp"
+#include "zetta/solutions/decision_policy.hpp"
+#include "zetta/solutions/experiment.hpp"
+#include "zetta/solutions/monitor.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -171,65 +178,266 @@ struct Uc1Journey : ActionJourneys {
     }
 };
 
-TEST_F(Uc1Journey, SolutionPreviewComposesAndRunsEveryMethodologyStage) {
+struct SolutionDeliveryBoundary {
+    zetta::connect::HttpTransport previous = zetta::connect::default_http_transport();
+    zetta::connect::AsyncHttpTransport previous_async = zetta::connect::default_async_http_transport();
+    std::vector<nlohmann::json> requests;
+
+    SolutionDeliveryBoundary() {
+        zetta::connect::set_default_http_transport([this](const auto& request) {
+            requests.push_back(nlohmann::json::parse(request.body));
+            return zetta::connect::HttpResponse{200, "{}", {}};
+        }, {});
+    }
+
+    ~SolutionDeliveryBoundary() {
+        zetta::connect::set_default_http_transport(previous, previous_async);
+    }
+};
+
+struct SolutionJourney : ::testing::Test {
+    TempDir dir;
+    zetta::cluster::ReplicationManager replication{"solution-journey-node"};
+    Node node{NodeConfig{dir.path().string(), false}, &replication};
+    Cluster cluster{"solution-journey-node", [] {
+        ClusterConfig config;
+        config.listen_host = "127.0.0.1";
+        config.listen_port = 24720;
+        config.port_range = 8;
+        return config;
+    }(), &replication};
+    Registry registry;
+    BackgroundActions background;
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        cluster.start();
+        node.attach_cluster(cluster, 2);
+        zetta::api::register_core_capabilities(registry);
+        node.tick();
+    }
+
+    void TearDown() override {
+        background.prune();
+        node.stop();
+    }
+
+    ApiResult call(const std::string& name, const nlohmann::json& input) {
+        ApiContext context{node, &cluster, {}, {}, &node.span_recorder(), &background};
+        return registry.call(name, input, context);
+    }
+
+    journey::Caller caller() {
+        return [this](const auto& name, const auto& input) {
+            return call(name, input);
+        };
+    }
+
+    journey::Pump pump() {
+        return [this] {
+            node.tick();
+            background.prune();
+        };
+    }
+};
+
+void land_retention_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
     const auto table = database->create_table("customers");
     ASSERT_TRUE(table);
-    table->set_partitioner(
-        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
-    for (int index = 0; index < 120; ++index) {
-        table->add_row({{"entity", index + 1},
-                        {"record_id", index + 1},
-                        {"source", "fixture"},
-                        {"name", "Customer " + std::to_string(index + 1)},
-                        {"label", index % 2},
-                        {"feature", static_cast<double>(index % 13)},
-                        {"time", index}});
+    table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        table->add_row({{"entity", index + 1}, {"record_id", index + 1},
+                       {"source", "fixture"}, {"name", "Customer " + std::to_string(index + 1)},
+                       {"label", index % 10 != 0 ? 1 : 0}, {"feature", index % 13 + 0.5},
+                       {"time", "2026-08-01T00:00:00.000Z"},
+                       {"in_collections", false}, {"open_complaint", false},
+                       {"vulnerable", false}});
     }
+    table->add_row({{"entity", 9999}, {"record_id", 9999}, {"source", "fixture"},
+                   {"name", "Future customer"}, {"label", 1}, {"feature", 999.0},
+                   {"time", "2026-10-01T00:00:00.000Z"},
+                   {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}});
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
+}
 
-    journey::Journey flow{"solution-preview", {}};
+nlohmann::json retention_configuration() {
+    return {
+        {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
+                      {"target_table", "retention_snapshot"}, {"entity_column", "entity"},
+                      {"time_column", "time"}, {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset", {{"entity_column", "entity_id"}, {"label_column", "label"},
+                     {"feature_columns", {"feature"}}}},
+        {"delivery", {{"endpoint", "https://crm.example.test/tasks"}, {"owner", "retention-team"}}},
+        {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
+}
+
+journey::Journey retention_journey(const nlohmann::json& foundation) {
+    journey::Journey flow{"solution-foundation", {}};
     flow.steps = {
-        {"discover the full solution catalogue", "list_solutions",
-         nlohmann::json::object(),
-         {.checks = {journey::size_equals("/solutions", 20),
-                     journey::any_element("/solutions", {{"/id", "B-8"},
-                                                            {"/status", "sketch"}})}}},
-        {"read the selected solution", "get_solution", {{"solution", "S-1"}},
-         {.checks = {journey::equals("/solution/id", "S-1"),
-                     journey::equals("/solution/runnable", false),
-                     journey::size_equals("/solution/missing_components", 7)}}},
-        {"create the project", "create_project", {{"name", "retention preview"}}},
-        {"compose the level-one solution", "create_solution",
-         {{"project", "retention preview"},
-          {"solution", "S-1"},
-          {"level", 1},
-          {"sources", {{"source", "datasets"}, {"table", "customers"}}}},
-         {.checks = {journey::equals("/preview", true),
+        {"discover the catalogue", "list_solutions", nlohmann::json::object(),
+         {.checks = {journey::size_equals("/solutions", 20)}}},
+        {"read executable defaults", "get_solution", {{"solution", "S-1"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/policy_template/kill_switch", false),
+                     journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the project", "create_project", {{"name", "retention"}}},
+        {"read the project", "get_project", {{"name", "retention"}}},
+        {"create the composed solution", "create_solution",
+         {{"project", "retention"}, {"solution", "S-1"}, {"level", 1},
+          {"sources", {{"source", "datasets"}, {"table", "customers"},
+                       {"M-3", {{"entity_column", "entity_id"}, {"label_column", "label"},
+                                {"feature_columns", {"feature"}}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
                      journey::size_equals("/methodologies", 3),
-                     journey::size_equals("/missing_components", 7)}},
-         {{"solution_graph", "/graph"}}},
-        {"read the composed Pipeline back", "get_project",
-         {{"name", "retention preview"}},
+                     journey::size_equals("/missing_components", 0)}},
+         {{"solution_graph", "/graph"}, {"policy", "/policy_id"},
+          {"experiment", "/experiment_id"}, {"readout", "/readout_id"}}},
+        {"read the composed Pipeline", "get_project", {{"name", "retention"}},
          {.checks = {journey::any_element("/graphs", {{"/name", "$solution_graph"}})}}},
-        {"run the methodology preview in order", "run_solution",
-         {{"project", "retention preview"}, {"graph", "$solution_graph"}},
-         {.checks = {journey::equals("/engine", "solution_preview"),
-                     journey::equals("/preview", true),
-                     journey::not_empty("/run_id")}},
+        {"read the versioned policy", "get_policy", {{"policy_id", "$policy"}},
+         {.checks = {journey::equals("/current_version", 1),
+                     journey::equals("/versions/0/config/kill_switch", false)}}},
+        {"read the experiment", "get_experiment", {{"experiment", "$experiment"}},
+         {.checks = {journey::equals("/experiment/allocations/0/fraction", 0.1)}}},
+        {"read the configured ROI model", "get_roi_readout", {{"solution", "$readout"}},
+         {.checks = {journey::equals("/incrementality/claimable", false)}}},
+        {"run the composed solution", "run_solution",
+         {{"project", "retention"}, {"graph", "$solution_graph"}, {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
          {{"solution_run", "/run_id"}}},
-        {"poll the composed preview and read its lineage", "get_run",
-         {{"run_id", "$solution_run"}},
+        {"refuse concurrent replacement of this graph's score artifacts", "run_solution",
+         {{"project", "retention"}, {"graph", "$solution_graph"}},
+         {.ok = false, .error_code = "invalid_input", .error_contains = {"already active"}}},
+        {"read the completed Run and lineage", "get_run", {{"run_id", "$solution_run"}},
          {.checks = {journey::equals("/status", "succeeded"),
-                     journey::size_equals("/lineage/steps", 3),
-                     journey::not_empty("/logs")}},
+                     journey::size_equals("/lineage/steps", 9)}},
          {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read assignments after the run", "get_experiment", {{"experiment", "$experiment"}},
+         {.checks = {journey::at_least("/sizes/assignments", 100),
+                     journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read ledger rows after the run", "list_ledger", nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}
     };
-    const journey::JourneyReport report =
-        journey::run_journey(flow, caller(), pump());
-    EXPECT_TRUE(report.ok) << report.summary();
+    return flow;
+}
+
+journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
+                                            const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"solution-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered = static_cast<double>(positions[cell]++) -
+                                (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response = 0.3 + 0.1 * centered / counts[cell] + (holdout ? 0.0 : 0.2);
+        outcomes.steps.push_back({"record observed outcome", "record_outcome",
+            {{"action_id", entry.at("id")}, {"outcome", "retained"}, {"value", response},
+             {"currency", "USD"}, {"source", "connector"}, {"occurred_at", entry.at("action_at")}},
+            {}, {{"outcome_id", "/id"}}});
+        outcomes.steps.push_back({"read the recorded outcome", "list_ledger", nlohmann::json::object(),
+            {.checks = {journey::any_element("/entries", {{"/id", "$outcome_id"}})}}});
+    }
+    outcomes.steps.push_back({"read measured treatment effect", "get_roi_readout",
+        {{"solution", binding.at("scope")}},
+        {.checks = {journey::equals("/incrementality/claimable", true),
+                    journey::predicate("planted effect is inside its confidence interval",
+                        [](const auto& value) {
+                            const auto& estimate = value.at("incrementality").at("combined");
+                            return std::abs(estimate.at("effect").template get<double>() - 0.2) < 1e-8 &&
+                                   estimate.at("confidence_interval").at("lower").template get<double>() <= 0.2 &&
+                                   estimate.at("confidence_interval").at("upper").template get<double>() >= 0.2;
+                        })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_retention_data(node);
+    const auto flow = retention_journey(retention_configuration());
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+    const auto project = node.find_project("retention");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-1 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph().find_node("solution_manifest")->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"), std::string::npos);
+    zetta::solutions::DecisionPolicyStore policies(*node.replication(), &node, &node.experiment_manager());
+    const auto experiment = node.experiment_manager().report(binding.at("experiment_id").get<std::string>());
+    ASSERT_TRUE(experiment);
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_FALSE(decision.tier.empty());
+        EXPECT_FALSE(decision.cell.empty());
+        const auto read = policies.get_decision(decision.id);
+        ASSERT_TRUE(read);
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto decision = policies.get_decision(request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+    }
+    const auto results = node.find_database("solution_results");
+    ASSERT_TRUE(results);
+    ASSERT_EQ(results->tables().size(), 1u);
+    const auto decisions_read = call("sql", {
+        {"statement", "SELECT * FROM solution_results." + results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decisions_read.ok) << decisions_read.error.message;
+    EXPECT_EQ(decisions_read.value.at("rows").size(), 240u);
+    EXPECT_EQ(node.find_database("datasets")->find_table("retention_snapshot")->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 3u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"), std::string::npos);
+    const auto outcomes = planted_retention_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
 void append_speech_u16(std::string &bytes, std::uint16_t value) {
@@ -1437,6 +1645,8 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
             out << nlohmann::json{{"entity", index},
                                   {"segment", segment},
                                   {"baseline", baseline},
+                                  {"feature_observed_at",
+                                   "2024-01-15T00:00:00Z"},
                                   {"treatment", treatment},
                                   {"outcome", draw < probability ? 1 : 0}}
                        .dump()
@@ -1449,6 +1659,15 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
                              {"table_name", "causal_population"},
                              {"partition_count", 4}});
     ASSERT_TRUE(landed.ok) << landed.error.message;
+    const ApiResult snapshot = call(
+        "snapshot",
+        {{"database", "experiments"},
+         {"source_table", "causal_population"},
+         {"target_table", "causal_population_snapshot"},
+         {"entity_column", "entity"},
+         {"time_column", "feature_observed_at"},
+         {"as_of", "2024-01-31T00:00:00Z"}});
+    ASSERT_TRUE(snapshot.ok) << snapshot.error.message;
 
     ASSERT_TRUE(call("create_project", {{"name", "causal targeting"}}).ok);
     const ApiResult captured =
@@ -1464,10 +1683,16 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
          {"name", "uplift policy"},
          {"hints",
           {{"source", "experiments"},
-           {"table", "causal_population"},
+           {"table", "causal_population_snapshot"},
            {"entity", "entity"},
            {"treatment", "treatment"},
            {"outcome", "outcome"},
+           {"as_of", "2024-02-01T00:00:00Z"},
+           {"snapshot_as_of", "2024-01-31T00:00:00Z"},
+           {"feature_window_end", "2024-01-31T00:00:00Z"},
+           {"label_window_start", "2024-02-07T00:00:00Z"},
+           {"blackout_gap_seconds", 604800},
+           {"treatment_time", "2024-02-07T00:00:00Z"},
            {"features", nlohmann::json::array({"segment", "baseline"})}}}});
     ASSERT_TRUE(compiled.ok) << compiled.error.message;
     EXPECT_EQ(compiled.value.at("methodology"), "M-6");
@@ -1499,7 +1724,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
     EXPECT_EQ(report.value.at("treatment_effects").size(), 12u);
     EXPECT_FALSE(report.value.at("qini_curve").empty());
     EXPECT_EQ(report.value.at("dataset").at("source"),
-              "experiments.causal_population");
+              "experiments.causal_population_snapshot");
 }
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
@@ -2978,4 +3203,69 @@ TEST_F(ActionJourneys, JourneyDeniedKeyIsRefusedAndAudited) {
     const journey::JourneyReport read_back_report =
         journey::run_journey(read_back, caller());
     EXPECT_TRUE(read_back_report.ok) << read_back_report.summary();
+}
+
+
+// =====================================================================
+// A run given no dataset trains on the table its pipeline's connect step names
+// (lake points a project's pipeline at a table; before, such a run trained on
+// the built-in demo dataset and said nothing).
+// =====================================================================
+TEST_F(Uc1Journey, ARunWithoutADatasetReadsItsPipelinesTable) {
+    std::vector<nlohmann::json> rows;
+    for (std::int64_t index = 0; index < 120; ++index) {
+        const std::int64_t failed = index % 5;
+        rows.push_back({{"account_id", index + 1},
+                        {"failed_payments", failed},
+                        {"tenure_months", static_cast<double>(60 - index % 50)},
+                        {"churned", (failed >= 3) != (index % 9 == 0) ? 1 : 0}});
+    }
+    zetta::data::AddDatasetOptions options;
+    options.database = "datasets";
+    options.table_name = "accounts";
+    options.partitioned = true;
+    options.members = {node.node_id()};
+    ASSERT_TRUE(zetta::data::add_dataset_rows(node, rows, options).ok());
+
+    ASSERT_TRUE(call("create_project", {{"name", "retention"}}).ok);
+    const nlohmann::json nodes = nlohmann::json::array(
+        {{{"id", "load"}, {"kind", "connect"}, {"name", "Load accounts"},
+          {"attributes", {{"source", "datasets"}, {"table", "accounts"}}}},
+         {{"id", "features"}, {"kind", "clean"}, {"name", "Build features"}},
+         {{"id", "train"}, {"kind", "model"}, {"name", "Train"},
+          {"attributes", {{"target", "churned"}, {"algo", "gbdt"}}}}});
+    const nlohmann::json edges = nlohmann::json::array(
+        {{{"from", "load"}, {"to", "features"}, {"kind", "data_flow"}},
+         {{"from", "features"}, {"to", "train"}, {"kind", "data_flow"}}});
+    const ApiResult saved = call("save_graph", {{"project", "retention"}, {"graph", "churn"},
+                                                {"nodes", nodes}, {"edges", edges}});
+    ASSERT_TRUE(saved.ok) << saved.error.message;
+    ASSERT_TRUE(call("approve_plan", {{"project", "retention"}, {"graph", "churn"}}).ok);
+
+    const ApiResult ran = call("run", {{"project", "retention"}, {"graph", "churn"}});
+    ASSERT_TRUE(ran.ok) << ran.error.message;
+    EXPECT_EQ(ran.value.value("engine", ""), "churn");
+    ASSERT_TRUE(ran.value.contains("dataset_notes")) << ran.value.dump();
+    EXPECT_NE(ran.value["dataset_notes"].dump().find(
+                  "read from the pipeline's connect step 'Load accounts': datasets.accounts, "
+                  "label 'churned'"),
+              std::string::npos)
+        << ran.value.dump();
+    EXPECT_EQ(ran.value["dataset"].value("label_column", ""), "churned");
+
+    // The run finishes (its worker joins before the node stops), trained on the table.
+    const std::string run_id = ran.value.value("run_id", "");
+    std::string status;
+    for (int attempt = 0; attempt < 3000 && status != "succeeded" && status != "failed"; ++attempt) {
+        node.tick();
+        background.prune();
+        const ApiResult read = call("get_run", {{"run_id", run_id}});
+        status = read.ok ? read.value.value("status", "") : "";
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(status, "succeeded");
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value["dataset"].value("source", ""), "datasets.accounts")
+        << report.value.dump();
 }

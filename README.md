@@ -24,6 +24,10 @@ and the per-audience [experience contracts](docs/product/experience/README.md)
 
 ## Under the hood
 
+Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
+REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
+retention updates and audited deletions. Clustered pub/sub remains deferred (D39).
+
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*
 is one running instance — **headed** (default: an SDL3 + Dear ImGui desktop UI
@@ -72,6 +76,10 @@ What's inside, by domain (each links to that domain's docs):
   device-backed frames with local ops (scan/filter/project/sort) and
   distributed ops (sort, equi-join, group-by, as-of/point-in-time windows)
   composing into **leakage-free featurization**; single-node == multi-node.
+- **[Solution foundations](docs/solutions/README.md)** — replicated
+  point-in-time snapshot tables, row-level as-of joins, and a correctness-gate
+  check that refuses live feature sources, future snapshots, and label windows
+  inside the configured blackout gap.
 - **[Native ML](docs/ml/README.md)** — distributed **histogram GBDT** training
   (allreduced histograms), probability **calibration**, batch **scoring /
   rank-at-risk**, **exact TreeSHAP** explanation, label-free **anomaly detection**
@@ -87,16 +95,25 @@ What's inside, by domain (each links to that domain's docs):
   M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
   hard eligibility/contact-cap policy selection, recommendation tables, and
   IPS/DR policy reporting through `get_run_report`.
+  The shared [decision-policy engine](docs/solutions/decision-policy.md) then
+  applies versioned thresholds, tiers, budgets, caps, exclusions, autonomy
+  classes, approvals, and kill-switches between any score and its action; every
+  decision records the exact policy version.
   Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
   and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
   approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
   The [solution registry](docs/solutions/README.md) lists the 12 catalogue
-  modules and eight Band-B sketches, then composes selected preview levels
-  through those methodology callbacks. Production readiness remains false
-  until the shared policy, action, experiment, monitoring, ledger, snapshot,
-  and readout components land.
+  modules and eight Band-B sketches. Selected levels now execute snapshots,
+  methodology callbacks, typed policy defaults, protected holdouts, action
+  delivery, ledger recording and monitoring, with versioned ROI readouts.
+  S-1 has the complete retention template; S-2 through S-12 have explicitly
+  minimal editable defaults. Snapshot cutoffs, delivery destinations and ROI
+  economics remain caller-supplied.
+  Their projected records participate in the workspace engine's
+  [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
+  policy/decision and ROI stores read directly from replicated state.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,
@@ -106,6 +123,19 @@ What's inside, by domain (each links to that domain's docs):
   M-13 runs
   native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
   governed large-object reads.
+- **[Solutions](docs/solutions/README.md)** — replicated foundations for audit,
+  policy, experiments, and solution monitoring, including drift, calibration,
+  cohort performance, guardrails, breach events, retrain requests, and durable
+  score-to-outcome evidence.
+  The action runtime publishes driver reports,
+  places owned SLA tasks in a replicated outbox, delivers webhook and CRM tasks
+  with retry/idempotency/dead-letter handling, and stops held-out or
+  kill-switched closed-loop actions before delivery.
+  Versioned
+  [ROI readouts](docs/solutions/roi-readout.md) combine correctness,
+  treated-minus-holdout effects with confidence intervals, customer-supplied
+  economics, operations, and redacted audit evidence without exposing raw
+  responses.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
@@ -118,6 +148,14 @@ What's inside, by domain (each links to that domain's docs):
   (deny-by-default scopes + TTL'd capabilities), an immutable, append-only
   **audit trail**, and a **governed console** (every statement
   capability-scoped, gated, and audited).
+- **[Solutions foundation](docs/solutions/README.md)** — the replicated
+  [holdout and experiment manager](docs/solutions/experiments.md) assigns
+  entities deterministically across holdout, treatment, exploration, and
+  below-line cells; protects control populations before model-driven actions;
+  and reports balance, exemption erosion, and uplift-training rows.
+  `get_roi_readout` turns those assignments and the audit ledger into a
+  versioned customer readout, and refuses incrementality when measured holdout
+  outcomes are unavailable.
 - **[The programmatic control surface](docs/api/README.md)** — one **capability
   registry** where each entry renders three ways at once: an **MCP tool**, a
   **REST route**, and a palette action. An embedded Beast2 server (both run
