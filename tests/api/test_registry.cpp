@@ -397,11 +397,11 @@ TEST_F(RegistryFixture, AThrowingHandlerAnswersWithAnEngineError) {
 
 // #1063: an offloadable capability (receive_events' long poll) runs on a pool
 // worker, but the call's authorization + audit gate touches owner-thread state —
-// the audit trail the tick re-sorts. The gate used to run on the worker, and the
-// lake bus's constant long polls crashed its Zetta every few minutes (a double
-// free, or a bad access inside the tick's sort). Workers hammer an offloadable
-// read while this thread ticks: every call completes, every call is audited,
-// and the handler itself still runs on the worker.
+// the audit trail the tick reconciles. The gate used to run on the worker, and
+// the lake bus's constant long polls crashed its Zetta every few minutes (a
+// double free, or a bad access inside the tick's reconciliation). Workers
+// hammer an offloadable read while this thread ticks: every call completes,
+// every call is audited, and the handler itself still runs on the worker.
 TEST_F(RegistryFixture, OffloadedCallsRunTheirGateOnTheOwnerThread) {
     node.tick();  // adopt this thread as the owner
     ASSERT_TRUE(node.on_owner_thread());
@@ -437,7 +437,7 @@ TEST_F(RegistryFixture, OffloadedCallsRunTheirGateOnTheOwnerThread) {
     }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     while (done.load() < kWorkers && std::chrono::steady_clock::now() < deadline) {
-        node.tick();  // the tick re-sorts the audit trail while the gates queue
+        node.tick();  // the tick reconciles the audit trail while the gates queue
     }
     for (auto& worker : workers) worker.join();
     ASSERT_EQ(done.load(), kWorkers);
@@ -475,6 +475,17 @@ TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
             return std::chrono::milliseconds(1);
         },
         [](const ApiResult&) { return true; }};
+    EXPECT_FALSE(registry.add(std::move(entry)));
+}
+
+TEST_F(RegistryFixture, RefusesReadSummariesOnStateChangingCapabilities) {
+    Capability entry{"summarized_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, true, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.audit_policy = zetta::api::AuditPolicy::SummarizeAuthorizedReads;
     EXPECT_FALSE(registry.add(std::move(entry)));
 }
 

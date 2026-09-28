@@ -89,8 +89,8 @@ namespace {
 //  - `tokens` — the bearer credentials per user (Node::tokens()): id, user,
 //    type, created, expiry, revoked — deliberately NO hash/salt/secret (the
 //    plaintext is shown once at creation and never stored).
-//  - `audit` — the immutable, append-only audit trail (Node::audit_events();
-//    ENT-23 / FEAT-9).
+//  - `audit` — retained immutable audit records (Node::audit_events(); ENT-23 /
+//    FEAT-9), including nullable polling-summary totals.
 //  - `ledger` — the immutable, replicated score, decision, action, and outcome
 //    reward stream (Node::ledger_entries(); #1107).
 //  - `activity` — the merged, newest-first activity feed (#622): the audit trail
@@ -195,7 +195,7 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kActivityTable,
                     "the merged, newest-first activity feed: audit trail + "
                     "runs composed chronologically"},
-    SystemTableInfo{kAuditTable, "the immutable, append-only audit trail"},
+    SystemTableInfo{kAuditTable, "the immutable, retained audit trail"},
     SystemTableInfo{kCheckpointsTable,
                     "jobs with a durable resume checkpoint in this node's "
                     "local store (ephemeral, not replicated)"},
@@ -529,7 +529,7 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
 
 // One JSON row per registered model for the models system table — the
 // model registry. Sourced from Node::models(). The serialized weights body is
-// not in the registry (it's a large binary that moves over the body seam); its
+// not in the registry (it's a large binary that moves over the body path); its
 // fingerprint (size + sha256) and presence are, so the registry shows what is
 // trained and whether its weights have landed here.
 // One JSON row per registered Workspace Profile (#886) — the input to the
@@ -1489,9 +1489,8 @@ std::vector<nlohmann::json> token_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per audit event for the audit system table — the immutable,
-// append-only audit trail (ENT-23 / FEAT-9), the queryable read view of the Admin
-// panel's audit log. Sourced from Node::audit_events() (chronological).
+// One JSON row per retained audit event (ENT-23 / FEAT-9), including structured
+// polling totals. Sourced from Node::audit_events() in chronological order.
 std::vector<nlohmann::json> audit_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& event : node.audit_events()) {
@@ -1503,6 +1502,21 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
         row["allowed"] = event->allowed();
         row["detail"] = event->detail();
         row["time"] = event->time();
+        if (event->value().summary) {
+            row["calls"] = event->value().summary->calls;
+            row["events_delivered"] =
+                event->value().summary->events_delivered;
+            row["scope"] = event->value().summary->scope;
+            row["window_started"] =
+                event->value().summary->window_started;
+            row["window_ended"] = event->value().summary->window_ended;
+        } else {
+            row["calls"] = nullptr;
+            row["events_delivered"] = nullptr;
+            row["scope"] = nullptr;
+            row["window_started"] = nullptr;
+            row["window_ended"] = nullptr;
+        }
         rows.push_back(std::move(row));
     }
     return rows;

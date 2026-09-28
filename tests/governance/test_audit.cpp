@@ -1,10 +1,19 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -62,6 +71,36 @@ bool looks_like_iso8601(const std::string& stamp) {
            stamp.back() == 'Z';
 }
 
+std::uint64_t directory_bytes(const std::filesystem::path& directory) {
+    std::uint64_t bytes = 0;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(directory)) {
+        if (entry.is_regular_file()) {
+            bytes += entry.file_size();
+        }
+    }
+    return bytes;
+}
+
+std::uint64_t resident_bytes() {
+#if defined(__APPLE__)
+    mach_task_basic_info_data_t information{};
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&information),
+                  &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    return information.resident_size;
+#else
+    std::ifstream status("/proc/self/statm");
+    std::uint64_t total_pages = 0;
+    std::uint64_t resident_pages = 0;
+    status >> total_pages >> resident_pages;
+    return resident_pages * static_cast<std::uint64_t>(::sysconf(_SC_PAGESIZE));
+#endif
+}
+
 // Tick both nodes until `done` holds (or we give up). Mirrors the run / project
 // replication tests: capture -> cluster gossip -> peer merge -> reconcile.
 template <class Predicate>
@@ -77,7 +116,7 @@ bool converge(Node& a, Node& b, Predicate done) {
 
 }  // namespace
 
-// ----- emission at the three governed seams ---------------------------------
+// ----- emission at the three governed boundaries ----------------------------
 
 TEST(AuditTrail, GraphChangesEmitEvents) {
     TempDir tmp;
@@ -178,7 +217,7 @@ TEST(AuditTrail, PersistsAcrossRestartViaDisk) {
         node.stop();
     }
 
-    // A fresh standalone node reads the trail purely from disk (audit/*.json).
+    // A fresh standalone node reads the trail purely from disk segments.
     Node reloaded{config_for(tmp)};
     reloaded.start();
     ASSERT_EQ(reloaded.audit_event_count(), 1u);
@@ -247,20 +286,43 @@ TEST(AuditTrail, ReplicatesToPeer) {
     Cluster cluster_b{id_b, cfg_b, &repl_b};
     cluster_b.start();
 
-    // Record an audit event on node A only (by deploying a graph).
+    // Record ordinary and summary audit events on node A only.
     auto deployment =
         a.deploy_graph(sample_graph(), DeploymentTarget::local(), "churn");
     ASSERT_TRUE(deployment);
+    AuditEventValue summary;
+    summary.action = AuditAction::DataAccessSummary;
+    summary.actor = "service:lake";
+    summary.target = "api:receive_events";
+    summary.summary = zetta::governance::AuditReadSummary{
+        300, 12, "topic:events", "2026-09-28T22:00:00Z",
+        "2026-09-28T22:05:00Z"};
+    a.record_audit_event(std::move(summary));
 
-    // Node B converges to the same audit event (the immutable trail replicates).
+    // Node B converges to both records, including the summary totals.
     const bool converged = converge(a, b, [&] {
         auto events = b.audit_events();
-        return events.size() == 1u &&
-               events.front()->action() == AuditAction::GraphDeployed &&
+        return events.size() == 2u &&
+               std::ranges::any_of(events, [](const auto& event) {
+                   return event->action() == AuditAction::GraphDeployed;
+               }) &&
                repl_a.version() == repl_b.version();
     });
     ASSERT_TRUE(converged);
-    EXPECT_EQ(b.audit_events().front()->target(), "churn");
+    const auto events = b.audit_events();
+    const auto deployed = std::ranges::find_if(events, [](const auto& event) {
+        return event->action() == AuditAction::GraphDeployed;
+    });
+    ASSERT_NE(deployed, events.end());
+    EXPECT_EQ((*deployed)->target(), "churn");
+    const auto summary_found = std::ranges::find_if(events, [](const auto& event) {
+        return event->action() == AuditAction::DataAccessSummary;
+    });
+    ASSERT_NE(summary_found, events.end());
+    const auto& summary_event = *summary_found;
+    ASSERT_TRUE(summary_event->value().summary);
+    EXPECT_EQ(summary_event->value().summary->calls, 300u);
+    EXPECT_EQ(summary_event->value().summary->events_delivered, 12u);
 
     cluster_b.stop();
     cluster_a.stop();
@@ -337,4 +399,119 @@ TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
     value.time = "2026-07-03T00:00:00Z";
     EXPECT_TRUE(zetta::governance::validate_audit_event_value(
         zetta::governance::to_json(value)));
+}
+
+TEST(AuditTrail, ReadSummariesRoundTripThroughTheSchema) {
+    AuditEventValue value;
+    value.action = AuditAction::DataAccessSummary;
+    value.actor = "service:lake";
+    value.target = "api:receive_events";
+    value.time = "2026-09-28T22:05:00Z";
+    value.summary = zetta::governance::AuditReadSummary{
+        600, 17, "topic:events", "2026-09-28T22:00:00Z",
+        "2026-09-28T22:05:00Z"};
+
+    const auto json = zetta::governance::to_json(value);
+    const auto parsed = zetta::governance::parse_audit_event_value(json);
+    ASSERT_TRUE(parsed);
+    ASSERT_TRUE(parsed->summary);
+    EXPECT_EQ(parsed->summary->calls, 600u);
+    EXPECT_EQ(parsed->summary->events_delivered, 17u);
+    EXPECT_EQ(parsed->summary->scope, "topic:events");
+
+    auto missing_summary = json;
+    missing_summary.erase("summary");
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
+        missing_summary));
+    auto summary_on_call = json;
+    summary_on_call["action"] = "data_access";
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
+        summary_on_call));
+}
+
+TEST(AuditTrail, MigratesLegacyFilesIntoSegmentsOnce) {
+    TempDir tmp;
+    const auto audit_directory = tmp.path() / "audit";
+    std::filesystem::create_directories(audit_directory);
+    AuditEventValue value;
+    value.action = AuditAction::GraphCreated;
+    value.target = "legacy";
+    value.time = "2026-09-28T22:00:00Z";
+    auto record = zetta::governance::to_json(value);
+    record["id"] = "legacy-event";
+    {
+        std::ofstream output(audit_directory / "legacy-event.json");
+        output << record.dump() << '\n';
+    }
+
+    zetta::governance::AuditTrail trail(audit_directory);
+    std::string error;
+    ASSERT_TRUE(trail.open(&error)) << error;
+    EXPECT_TRUE(trail.contains("legacy-event"));
+    EXPECT_EQ(trail.size(), 1u);
+    EXPECT_FALSE(std::filesystem::exists(
+        audit_directory / "legacy-event.json"));
+    EXPECT_TRUE(std::filesystem::exists(
+        audit_directory / "segment-00000000.audit.gz"));
+}
+
+TEST(AuditTrail, RetentionRemovesOldCallsButPreservesSummaries) {
+    TempDir tmp;
+    zetta::governance::AuditTrail trail(tmp.path() / "audit");
+    std::string error;
+    ASSERT_TRUE(trail.open(&error)) << error;
+
+    AuditEventValue old_call;
+    old_call.action = AuditAction::DataAccess;
+    old_call.time = "2026-01-01T00:00:00Z";
+    ASSERT_TRUE(trail.append("old-call", old_call, &error)) << error;
+    AuditEventValue old_summary;
+    old_summary.action = AuditAction::DataAccessSummary;
+    old_summary.time = "2026-01-01T00:05:00Z";
+    old_summary.summary = zetta::governance::AuditReadSummary{
+        300, 0, "topic:idle", "2026-01-01T00:00:00Z",
+        "2026-01-01T00:05:00Z"};
+    ASSERT_TRUE(trail.append("old-summary", old_summary, &error)) << error;
+    AuditEventValue current_call;
+    current_call.action = AuditAction::GraphCreated;
+    current_call.time = "2026-09-28T00:00:00Z";
+    ASSERT_TRUE(trail.append("current-call", current_call, &error)) << error;
+
+    std::vector<std::string> removed;
+    ASSERT_TRUE(trail.retain_since(
+        "2026-06-01T00:00:00Z",
+        [&removed](const std::string& id) { removed.push_back(id); },
+        &error)) << error;
+    EXPECT_EQ(removed, std::vector<std::string>{"old-call"});
+    EXPECT_FALSE(trail.contains("old-call"));
+    EXPECT_TRUE(trail.contains("old-summary"));
+    EXPECT_TRUE(trail.contains("current-call"));
+}
+
+TEST(AuditTrail, MillionRecordsStayWithinMemoryAndDiskBudgets) {
+    TempDir tmp;
+    const auto before = resident_bytes();
+    zetta::governance::AuditTrail trail(tmp.path() / "audit");
+    std::string error;
+    ASSERT_TRUE(trail.open(&error)) << error;
+    AuditEventValue value;
+    value.action = AuditAction::DataAccess;
+    value.actor = "service:load";
+    value.target = "api:get_topic";
+    value.time = "2026-09-28T22:00:00Z";
+    for (std::size_t event_index = 0; event_index < 1'000'000;
+         ++event_index) {
+        ASSERT_TRUE(trail.append("load-" + std::to_string(event_index), value,
+                                 &error)) << error;
+    }
+    trail.flush();
+    const auto after = resident_bytes();
+    const auto disk_bytes = directory_bytes(tmp.path() / "audit");
+    ASSERT_GE(after, before);
+    EXPECT_LT(after - before, 100ULL * 1024ULL * 1024ULL);
+    EXPECT_LT(disk_bytes, 50ULL * 1024ULL * 1024ULL);
+    EXPECT_EQ(trail.size(), 1'000'000u);
+    std::cout << "#1154 one million audit records: RSS delta "
+              << (after - before) << " bytes, disk " << disk_bytes
+              << " bytes\n";
 }

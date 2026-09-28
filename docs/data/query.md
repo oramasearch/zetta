@@ -212,7 +212,7 @@ SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
 `weights_present`, `exposed`, `endpoint`. The serialized weights body itself
-isn't in the registry (it's a large binary on the body seam); its fingerprint
+isn't in the registry (it's a large binary on the body path); its fingerprint
 and local presence are. `exposed` / `endpoint` are the governed serving state
 ([../api/serving.md](../api/serving.md), #648). Qualified name only (no bare
 alias), like `system.deployments`.
@@ -273,7 +273,10 @@ diverge), each computed at query time from the live `Node` accessors:
   `orchestration:start_run`, an `@<ttl>` suffix when time-bounded); a key record
   carries no secret material, so this exposes nothing the Admin panel doesn't.
 - **`system.audit`** — the immutable audit trail (`Node::audit_events()`).
-  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
+  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`,
+  plus nullable summary fields `calls`, `events_delivered`, `scope`,
+  `window_started`, `window_ended`. See the
+  [windowed read policy](../governance/audit-trail.md#audit-policy).
 - **`system.ledger`** — the immutable, replicated solutions reward ledger
   (`Node::ledger_entries()`). Action rows carry score, decision, action, actor,
   versions, experiment cell, cost, currency, and timestamps. Outcome rows carry

@@ -95,6 +95,12 @@ struct NodeConfig {
     std::size_t pubsub_topics_per_thread = 250;
     std::size_t pubsub_dispatch_min_threads = 1;
     std::optional<std::size_t> pubsub_dispatch_max_threads;
+    // Ordinary audit events expire after this age. Window summaries are kept
+    // so accountability survives compaction. A non-positive value disables
+    // retention for a test or an explicitly archival node (#1154).
+    std::chrono::hours audit_retention = std::chrono::hours(24 * 30);
+    std::chrono::milliseconds audit_summary_window = std::chrono::minutes(5);
+    std::size_t audit_recent_events = 2'048;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound
@@ -141,7 +147,7 @@ struct IntegrityReport {
 // document for at-most-once-per-second persistence; stop() forces a final save.
 // With no ReplicationManager (the default), a Node is a standalone local store.
 //
-// A Node is also the **audit sink** (FEAT-9): it owns the immutable, append-only
+// A Node is also the **audit sink** (FEAT-9): it owns the immutable, retained
 // audit trail and records a governed action (graph change / deploy / data
 // access) as an AuditEvent. It implements AuditSink so the entities it owns (a
 // Project's graph CRUD) can append events without depending on Node directly.
@@ -721,18 +727,25 @@ public:
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Resource& resource);
 
-    // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
+    // The immutable, retained audit trail (ENT-23 / FEAT-9). Graph changes,
     // deploys, and data-access decisions each record an AuditEvent; the events
-    // can be listed in chronological order. Events are never edited or removed.
+    // can be listed in chronological order. Events are never edited; retention
+    // may expire old detail while preserving summaries.
     // record_audit_event is the public append API (also the AuditSink override):
     // it stamps a fresh id + time, persists the event, captures it into the CRDT
-    // when replicated, and appends it to the trail. The (future) request path
-    // calls it to record data accesses at real read/write points.
+    // when replicated, and appends it to the trail.
     void record_audit_event(zetta::governance::AuditEventValue value) override;
-    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const {
-        return audit_events_;
-    }
-    std::size_t audit_event_count() const { return audit_events_.size(); }
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
+    std::size_t audit_event_count() const;
+
+    // Registry policy for authorised polling reads (#1154). The first call for
+    // an actor/capability/scope records a session start; calls and delivered
+    // events then land in five-minute summaries and are flushed on stop.
+    void record_authorized_read(std::string actor, std::string capability,
+                                std::string scope,
+                                std::uint64_t events_delivered);
+    void flush_audit_summaries();
 
     // The solutions reward ledger (#1107). Both methods append a fresh,
     // immutable record; outcomes reference an existing action and never update
@@ -1075,10 +1088,11 @@ private:
     // only, like every other tree walk.
     void flush_stores();
 
-    // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
-    // start(). Malformed event files are skipped at the boundary (schema).
+    // Open the segmented audit projection and migrate legacy event files.
     void load_audit_events();
     std::filesystem::path audit_dir() const;
+    void flush_due_audit_summaries();
+    void apply_audit_retention();
 
     // Rebuild the immutable solutions ledger from data_dir/ledger.
     void load_ledger_entries();
@@ -1246,6 +1260,7 @@ private:
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
                                                         zetta::governance::AuditEventValue value);
+    void flush_audit_summary(const std::string& key);
     std::shared_ptr<zetta::solutions::LedgerEntry> materialize_ledger_entry(
         std::string id, zetta::solutions::LedgerEntryValue value);
 
@@ -1304,12 +1319,18 @@ private:
     std::deque<OwnerWork> owner_work_queue_;
     std::function<void()> owner_wakeup_;  // guarded by owner_work_mutex_
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
-    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
-    // id -> event, beside audit_events_: membership in O(1) (#1070). Every
-    // reconcile walks all the document's audit keys; a linear scan per key made
-    // that O(n^2) per changed tick.
-    std::unordered_map<std::string, std::shared_ptr<zetta::governance::AuditEvent>>
-        audit_events_by_id_;
+    std::unique_ptr<zetta::governance::AuditTrail> audit_trail_;
+    struct AuditSummaryWindow {
+        std::string actor;
+        std::string capability;
+        std::string scope;
+        std::string started;
+        Clock::time_point opened_at;
+        std::uint64_t calls = 0;
+        std::uint64_t events_delivered = 0;
+    };
+    std::map<std::string, AuditSummaryWindow> audit_summary_windows_;
+    Clock::time_point last_audit_retention_{};
     std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>>
         ledger_entries_;  // sorted (recorded_at, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)

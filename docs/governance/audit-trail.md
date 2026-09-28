@@ -1,216 +1,171 @@
 # Audit trail
 
-Pub/sub CRUD (#1136) adds `pubsub_topic_updated`, `pubsub_event_updated`, and
-`pubsub_event_deleted`. The node adapter appends these on the owner thread.
-Event detail contains sequence, revision and before/after payload SHA-256
-hashes (null after deletion); actor, target and time use the standard envelope.
-No payload is copied into the audit. The activity feed names the corresponding
-topic/event change. See [pub/sub CRUD](../pubsub/crud.md#audit-and-durability).
+Zetta records governed actions as immutable `AuditEvent` values. The trail is
+replicated through the Automerge catalog, persisted in checksummed compressed
+segments, queryable through `system.audit`, and shown in the governance and
+activity views. It is the audit part of FEAT-9 and the record used by CTL-5.
 
-An **audit trail** records an immutable, append-only `AuditEvent` for every
-governed action — a **graph change**, a **deploy**, a **data-access** decision,
-a **compute-job lifecycle** event, or an **access-key issue/revoke** (e.g. a
-burst node's identity — see [burst-identity.md](../cloud/burst-identity.md)). It is a
-slice of **FEAT-9 (Governed self-service)** and realizes the
-closed domain spec **ENT-23**; it relates to **CTL-5** (audit trail + approval
-gates). It builds directly on the [key-scoped access model](access-control.md)
-(`Principal` + `AccessKey`): a data-access event is exactly the outcome of a
-`Node::authorize` decision.
+## Audit policy
 
-> **Scope, deliberately.** This slice is the **record** — emit + list + replicate
-> + validate. The first **approval gate** (blocking a risky action pending
-> sign-off) is built on top of it — the
-> [large-burst cost-cap approval gate](../cloud/burst-approval-gate.md) (APR-3) records its
-> block/approve decision here as a `provision_requested` event. Threading the
-> login key through the whole request path (so *every* read/write is authorized
-> and thereby audited) is a later slice; today the data-access boundary is
-> `Node::authorize` itself.
+The default registry policy is one audit event per call. The policy changes only
+for successful, authorised, high-frequency pub/sub reads:
 
-## The type
+| Call outcome or kind | Audit treatment |
+|---|---|
+| Write or any state-changing call | One event per call. |
+| Denied call | One event per call, including every repeated denial. |
+| Handler failure | One event per call. |
+| Ordinary authorised read | One event per call. |
+| Successful `receive_events`, `browse_topic`, `get_topic`, or `list_topics` | One session-start event, then a five-minute summary per actor, capability, and topic scope. |
 
-An `AuditEvent` (`include/zetta/governance/audit_event.hpp`) is a top-level entity with no
-parent, modeled like the other replicated entities — but, unlike them, it is
-**immutable and append-only**: there is no mutator and no drop path. Its value:
+The capability declaration selects `SummarizeAuthorizedReads`; handlers do not
+implement audit policy themselves. The registry validates that this policy is
+used only by non-mutating reads without consent gates. Adding it to a write is a
+registration error.
 
-| Field | Type | Notes |
-|---|---|---|
-| `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | Closed event vocabulary, including graph, data, job, key, provisioning, consent, decision-policy creation/update, and decision approval actions. |
-| `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
-| `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
-| `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
-| `detail` | `std::string` | Human-readable reason / summary (e.g. the access decision's reason). |
-| `time` | `std::string` | ISO-8601 UTC stamp of when the action was recorded. |
+A session-start event is a normal `data_access` row. Its target is
+`api:<capability>`, and its detail names the scope. Each
+`data_access_summary` row contains:
 
-Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
-chronologically as plain text); the trail is kept sorted by `time`. A new
-event is inserted at its place (a local one lands at the end; a peer's older
-one is placed by binary search), and events sharing a stamp keep the order they
-arrived in. Loading the trail from disk sorts it by `(time, id)`.
+- `calls`: successful authorised reads in the window;
+- `events_delivered`: pub/sub event envelopes returned by those reads;
+- `scope`: the concrete topic, or `*` for `list_topics`;
+- `window_started` and `window_ended`: the covered interval.
 
-## What emits an event
+The summary is emitted every five minutes when the node ticks, when the next
+call crosses the window boundary, and when the node stops. Both reads made by an
+asynchronous long poll are counted: the initial empty read and its final read
+after wake or timeout. A return with events contributes both one call and the
+number delivered.
 
-Events are emitted at governed boundaries, and **only for local user actions** —
-the reverse `materialize_*` paths used by reconciliation never emit (a peer's
-action arrives already-audited as its own replicated `audit:` event, so each
-action is recorded exactly once, on the node where it happened):
+This remains complete for accountability. Actor, capability, scope, interval,
+call count, and delivered-event count survive; an investigator can distinguish
+idle polling from delivered traffic. Calls needing individual scrutiny—writes,
+denials, and failures—remain separate immutable rows. The summaries remove
+transport-loop noise without hiding an access decision or state change.
 
-| Action | Boundary | Event |
-|---|---|---|
-| **Graph change** | `Project::create_graph` / `drop_graph` | `graph_created` / `graph_dropped`, `target` = graph name, `actor` = the project's owner key. |
-| **Deploy** | `Node::deploy_graph` | `graph_deployed` (on a successful placement), `target` = graph name, `detail` = node/edge counts + the placed node. |
-| **Data access** | `Node::authorize` | `data_access`, `allowed` = the decision, `target` = `kind:name`, `actor` = the login key id, `detail` = the decision's reason. |
-| **Compute job** | `Node::create_job` / `ComputeJob::set_status` | `job_created` (on create) / `job_finished` (on the first terminal transition), `target` = job id, `allowed` = success (for `job_finished`), `detail` = the job kind / note. See [compute-jobs.md](../compute/compute-jobs.md). |
-| **Burst identity** | `BurstIdentityManager::mint` / `revoke` | `key_issued` (per minted identity) / `key_revoked` (per revoked one), `target` = the access key id, `detail` = the job + burst node. See [burst-identity.md](../cloud/burst-identity.md). |
-| **Provision burst** | `BurstApprovalGate::provision` | `provision_requested`, emitted **only** when a burst exceeds the cap, `allowed` = approved (vs. blocked pending approval), `target` = the burst size, `detail` = which cap axis was exceeded + the outcome. See [burst-approval-gate.md](../cloud/burst-approval-gate.md). |
-| **Decision policy** | `DecisionPolicyStore::create` / `update` | `decision_policy_created` / `decision_policy_updated`, `target` = policy id, `actor` = capability caller, `detail` = committed version. |
-| **Decision approval** | `DecisionPolicyStore::approve` | `decision_approved`, emitted only for a pending A1 item, `target` = decision id, `actor` = approver, `detail` = original policy id and version. See [decision-policy.md](../solutions/decision-policy.md). |
+## Event value
 
-Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
-(it appends to the trail). `zetta::governance::authorize(const AccessKey&, const Resource&)`
-— the *pure* decision over a known key — stays const and is unaffected.
+`AuditEvent` (`include/zetta/governance/audit_event.hpp`) is a top-level value
+with no mutator. Its common fields are:
 
-```cpp
-auto project = node.create_project("churn", key->id());
-project->create_graph("pipeline", graph);          // -> graph_created
-node.deploy_graph(graph, DeploymentTarget::local(), "pipeline");  // -> graph_deployed
-node.authorize(key->id(), {ResourceKind::Database, "churn"});     // -> data_access (allow/deny)
+| Field | Meaning |
+|---|---|
+| `id` | UUID; also the replicated catalog suffix. |
+| `action` | Closed `AuditAction` vocabulary. |
+| `actor` | Principal or access-key identity, when known. |
+| `target` | Governed resource or `api:<capability>`. |
+| `allowed` | Access decision or action outcome. |
+| `detail` | Human-readable reason or summary. |
+| `time` | ISO-8601 UTC record time. |
+| `summary` | Optional structured read-window totals. |
 
-for (const auto& event : node.audit_events()) {    // listed, chronological
-    // event->action(), event->target(), event->allowed(), event->detail(), ...
-}
+The value is JSON-Schema validated at disk and replication boundaries. The
+embedded schema in `src/core/governance/audit_event.cpp` is the source of truth;
+`schemas/audit_event.schema.json` is its generated artifact.
+
+Pub/sub administrative changes use `pubsub_topic_updated`,
+`pubsub_event_updated`, and `pubsub_event_deleted`. Their details contain
+sequence, revision, and before/after SHA-256 values. Payloads never enter the
+audit trail. See [pub/sub CRUD](../pubsub/crud.md#audit-and-durability).
+
+## Emitters
+
+Events are emitted at governed boundaries, and reconciliation never emits a
+second event for a peer's action. Important emitters include:
+
+| Boundary | Actions |
+|---|---|
+| Capability registry | `data_access` and `data_access_summary` according to the policy above. |
+| `Node::authorize` | Per-decision `data_access`. |
+| Project graph CRUD and deployment | `graph_created`, `graph_dropped`, `graph_deployed`. |
+| Compute jobs | `job_created`, `job_finished`. |
+| Access-key and cloud governance | Key, provisioning, consent, inspection, and dataset actions. |
+| Decision policy store | Policy creation/update and decision approval. |
+| Pub/sub administration | Topic setting changes and event edits/deletions. |
+
+`AuditSink::record_audit_event` decouples these emitters from the node-owned
+store. `Node` assigns the id and time, captures the replicated value, and
+appends its local projection.
+
+## Replication and reconciliation
+
+The catalog value is:
+
+```text
+audit:<uuid> -> { action, actor, target, allowed, detail, time, summary? }
 ```
 
-## The sink interface
+Summary events use the same catalog prefix and reconciliation path as every
+other audit event. Changed-key journals route only new `audit:` keys during a
+tick. Startup still performs a full reconciliation. The local id index rejects
+known records before parsing them.
 
-A graph change happens on a `Project`, not on the `Node` that owns the trail, so
-the two are decoupled by an **`AuditSink`** (`include/zetta/governance/audit_event.hpp`):
-a one-method interface (`record_audit_event`). `Node` *is* the sink (it implements
-`AuditSink`), and a `Project` holds a non-owning `AuditSink*` the same way it
-holds a `ReplicationManager*` — null means "not audited". This mirrors how the
-[blob-store](../data/large-objects.md) and storage-engine interfaces keep `zetta-core`
-decoupled. `Node::record_audit_event` is also the **public append API**, so the
-future request-path slice can record data accesses at real read/write points
-without going through `authorize`.
+Retention removes expired catalog keys through the replication manager. This
+leaves CRDT removal metadata so an old peer cannot reintroduce an expired row.
+The local segment rewrite and replicated removals converge through the normal
+audit reconciliation path.
 
-## Replication + persistence
+## Segment storage and bounded memory
 
-An audit event is **replicated state**, like everything else in zetta (the
-Automerge CRDT document is the source of truth; the on-disk tree and in-memory
-node are its projection). It uses a flat catalog key (`src/core/catalog.hpp`):
+The local projection lives under `<data_dir>/audit/`:
 
-```
-audit:<uuid>  ->  { action, actor, target, allowed, detail, time }
+```text
+audit/
+  segment-00000000.audit.gz
+  segment-00000001.audit.gz
 ```
 
-Because the trail is **append-only and immutable**, replication is especially
-simple: the set of `audit:` keys only ever *grows* and no value is ever edited,
-so the CRDT converges trivially and reconciliation only *adds* peer events (it
-never removes or updates one). `record_audit_event` captures `audit:<uuid>` into
-the document (when replicated) then materializes the on-disk file;
-`migrate_to_replication` captures any local-only events on start, and
-`reconcile_from_replication` materializes the full startup state, while changed
-ticks route only new `audit:` keys to the audit reconciler. The
-distributed, convergent, tamper-evident trail every node agrees on is a natural
-fit for the CRDT model.
+Each segment is capped at 4 MiB of uncompressed records. A record frame has a
+length, CRC-32, and compact JSON body containing the id and validated event
+value. Gzip compression reduces disk use. A partial or corrupt trailing frame
+stops recovery at the last valid frame instead of trusting damaged bytes.
 
-**Reconciliation cost (#1070).** Every tick whose document changed walks every
-`audit:` key, and every audited call changes the document, so on a busy node this
-runs about ten times a second over the whole trail. The node keeps an id index
-beside the trail: a known event is skipped before its value is parsed, and
-nothing is re-sorted, so the walk is linear. Before, each key was parsed and
-searched for linearly, which is O(n²) per tick. At 25k events, lake's bus Zetta
-fell to three ticks a second and every request waited over a second behind them.
-The whole-document snapshot and persist that remained are made incremental by #1079 (below).
+Steady-state RAM holds a compact id-to-segment-position index and a bounded
+recent-event window (2,048 by default), not every full event. Full historical
+objects are inflated only for an explicit `audit_events()` or SQL read and are
+released with that result. `recent_audit_events()` serves bounded UI views.
 
-### Reconciliation cost (#1079)
+On first open after an upgrade, valid legacy `audit/<uuid>.json` files are
+appended to the segment store, synced, and removed. Invalid legacy files remain
+in place and are reported, preserving evidence for repair. Once migrated,
+subsequent starts read the segments directly.
 
-The append-only trail can dominate the replicated document, so a tick must not
-scan every historical event when one new event arrives. `ReplicationManager`
-keeps a parsed cache and changed-key journal; `Node::tick()` routes changed
-`audit:` keys directly to `reconcile_audit_events`. The node's audit ID index
-rejects known IDs before parsing and inserts a new event in chronological order.
-The full pass remains for startup, a journal gap, or a batch larger than one
-quarter of the live document.
+The storage regression appends one million records and requires less than
+100 MiB additional resident memory and less than 50 MiB on disk.
 
-Persistence uses a one-second debounce rather than modifying the vendored
-Automerge implementation. A dirty document is fully saved at most once per
-second and is always saved by `stop()`. This keeps clean restarts durable while
-removing a full-document rewrite from each changed tick.
+## Retention
 
-On the 100,000-event regression fixture, 40 ticks with one new local event each
-took 15,639 ms before the incremental path and 4 ms after it. The timed region
-excludes fixture creation, startup reconciliation, shutdown persistence, and
-temporary-directory cleanup. Both measurements include the audit ID index
-prerequisite from #1073; the baseline retains the old snapshot, full reconcile,
-and per-tick persistence paths, isolating the changes in #1079.
+Ordinary audit rows have a 30-day default retention window. The node applies it
+at startup and periodically while running. `--audit-retention-days N` or
+`ZETTA_AUDIT_RETENTION_DAYS=N` changes the window; zero disables expiration for
+an archival node.
 
-On disk, audit events project to a **single shared `audit/` folder** — one file
-per event — rather than a folder per event, the natural shape for a high-volume
-append-only log:
+Retention rewrites kept frames into a synced replacement directory, installs it
+with directory renames, then records replicated removals. Every
+`data_access_summary` is retained regardless of age. This preserves compact
+accountability totals while bounding the detailed per-call projection.
 
-```
-data_dir/audit/
-  <audit-uuid>.json   { id, action, actor, target, allowed, detail, time }
-  ...
+## Querying
+
+`system.audit` exposes the common fields plus nullable summary columns:
+`calls`, `events_delivered`, `scope`, `window_started`, and `window_ended`.
+For example:
+
+```sql
+SELECT action, actor, target, calls, events_delivered, scope, time
+FROM system.audit
+WHERE action = 'data_access_summary';
 ```
 
-The file name *is* the id. The `audit/` folder sits alongside the per-entity
-UUID folders; the other loaders skip it (it carries no `database.json` /
-`project.json` marker).
-
-## JSON + boundary validation
-
-The value round-trips through JSON (`to_json` / `parse_audit_event_value`) and is
-**schema-validated at every boundary** — both when read from `audit/<uuid>.json`
-on disk and when decoded from an `audit:` CRDT value — against a draft-07 JSON
-Schema, using the same `pboettch/json-schema-validator` path as the
-[Run record](../pipeline/runs.md). `action` is a closed enum and the shape is sealed
-(`additionalProperties: false`), so a malformed event (unknown action, missing
-`action`/`time`, a wrong-typed field, a stray field) **fails fast with a clear
-reason** instead of corrupting the trail — a bad file is skipped at load, a bad
-CRDT value is ignored at reconcile.
-
-The schema is the inline source of truth in `src/core/governance/audit_event.cpp`, mirrored
-for reference by
-[`schemas/audit_event.schema.json`](../../schemas/audit_event.schema.json) — keep
-the two in sync.
-
-```json
-{
-  "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "action": "data_access",
-  "actor": "a1b2c3d4-...",
-  "target": "database:churn",
-  "allowed": false,
-  "detail": "resource not in key scope — denied",
-  "time": "2026-06-25T14:03:21.123Z"
-}
-```
-
-## Where it fits
-
-This is the audit half of FEAT-9, on top of the
-[key-scoped access model](access-control.md). The pieces still ahead: **approval
-gates** (block a risky action pending sign-off), threading the login key through
-the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` boundary), and a **`system.audit`** SQL table (the trail is
-queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
-headed [Admin & Settings panel](../gui/admin-panel.md) (SCR-7 / CMP-5) renders it as a
-read-only table.
+`GROUP BY` is not supported on system tables; aggregate returned rows in the
+client when additional grouping is needed.
 
 ## Pointers
 
-- `include/zetta/governance/audit_event.hpp` — `zetta::governance::AuditEvent` / `AuditEventValue` /
-  `AuditAction` (ENT-23) + the `AuditSink` interface + JSON schema/validate/parse.
-- `src/core/governance/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
-  validation.
-- `include/zetta/node.hpp` — `Node::record_audit_event` / `audit_events` and the
-  emission boundaries (`deploy_graph`, `authorize`).
-- [access-control.md](access-control.md) — the `Principal` + `AccessKey` model a
-  `data_access` event records the decision of.
-- [admin-panel.md](../gui/admin-panel.md) — the headed **Admin & Settings panel** that
-  renders this trail (and principals/keys/grants) read-only.
-- [runs.md](../pipeline/runs.md) — the sibling immutable record whose JSON-Schema boundary
-  validation this mirrors.
-- [replication.md](../cluster/replication.md) — the CRDT model these events replicate through.
+- `include/zetta/governance/audit_event.hpp` — event schema types and `AuditTrail`.
+- `src/core/governance/audit_event.cpp` — codecs, segment store, migration, and retention.
+- `include/zetta/api/registry.hpp` — per-capability `AuditPolicy`.
+- `src/core/api/registry.cpp` — audit policy enforcement.
+- `src/core/api/pubsub_capabilities.cpp` — summarised read declarations.
+- `include/zetta/node.hpp` / `src/core/node.cpp` — windows, replication, and retention schedule.

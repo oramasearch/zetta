@@ -219,4 +219,47 @@ TEST_F(PubSubCapabilities, ReadScopeFiltersEachConcreteTopicAndBoundsGovernPubli
     EXPECT_FALSE(call("publish_event", {{"topic", "allowed.orders"}, {"payload", "two"}, {"priority", 10}}).ok);
 }
 
+TEST_F(PubSubCapabilities, TenMinutesWorthOfIdlePollsUseFewRowsAndDenialsStayPerCall) {
+    ASSERT_TRUE(call("create_topic", {{"topic", "idle"}, {"exposed", true}}).ok);
+    const auto before = node.audit_event_count();
+    // Six hundred one-hertz returns represent ten minutes of an idle agent.
+    for (std::size_t call_index = 0; call_index < 600; ++call_index) {
+        const auto received = call("receive_events", {{"topic", "idle"}});
+        ASSERT_TRUE(received.ok) << received.error.message;
+        ASSERT_TRUE(received.value["events"].empty());
+    }
+    EXPECT_EQ(node.audit_event_count(), before + 1);
+
+    node.flush_audit_summaries();
+    EXPECT_EQ(node.audit_event_count(), before + 2);
+    bool found_summary = false;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() != zetta::governance::AuditAction::DataAccessSummary ||
+            event->target() != "api:receive_events") {
+            continue;
+        }
+        ASSERT_TRUE(event->value().summary);
+        EXPECT_EQ(event->value().summary->calls, 600u);
+        EXPECT_EQ(event->value().summary->events_delivered, 0u);
+        EXPECT_EQ(event->value().summary->scope, "idle");
+        found_summary = true;
+    }
+    EXPECT_TRUE(found_summary);
+
+    ASSERT_TRUE(node.create_role("poll-denied"));
+    ASSERT_TRUE(node.grant_permissions("poll-denied", {"mcp:call"}));
+    auto user = node.create_user("poll-denied");
+    ASSERT_TRUE(user);
+    ASSERT_TRUE(node.assign_role(user->id(), node.find_role("poll-denied")->id()));
+    ApiContext context{node, nullptr, user->id(), trace, &node.span_recorder()};
+    context.acting_is_user = true;
+    const auto before_denials = node.audit_event_count();
+    for (std::size_t call_index = 0; call_index < 3; ++call_index) {
+        const auto denied = registry.call(
+            "receive_events", {{"topic", "idle"}}, context);
+        EXPECT_EQ(denied.error.code, "unauthorized");
+    }
+    EXPECT_EQ(node.audit_event_count(), before_denials + 3);
+}
+
 }  // namespace

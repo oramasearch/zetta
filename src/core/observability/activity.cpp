@@ -41,6 +41,7 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::GraphDeployed:      return "graph deployed";
         case AuditAction::GraphApproved:      return "plan approved";
         case AuditAction::DataAccess:         return "data access";
+        case AuditAction::DataAccessSummary:  return "data access summary";
         case AuditAction::JobCreated:         return "job queued";
         case AuditAction::JobFinished:        return "job finished";
         case AuditAction::KeyIssued:          return "key issued";

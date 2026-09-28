@@ -803,7 +803,7 @@ TEST_F(RestServerFixture, OpenApiDocumentIsServed) {
 // #1076: a long poll is a suspended coroutine, not a blocking-pool job. Five
 // hundred concurrent waits must all register, and a no-wait receive must still
 // reach the owner loop and finish immediately. Publishing wakes every waiter;
-// each long poll makes exactly one more governed call to collect the event.
+// the polling audit session counts both the initial and final governed reads.
 TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
     const auto created = request(
         "POST", "/v1/create_topic",
@@ -826,13 +826,12 @@ TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
 
     const auto registration_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (node.audit_event_count() < audit_before + kLongPolls &&
-           std::chrono::steady_clock::now() < registration_deadline) {
+    while (std::chrono::steady_clock::now() < registration_deadline) {
         server->drain();
         std::this_thread::yield();
     }
     const bool all_registered =
-        node.audit_event_count() >= audit_before + kLongPolls;
+        node.audit_event_count() >= audit_before + 1;
 
     HttpResponse no_wait;
     std::atomic<bool> no_wait_finished{false};
@@ -873,7 +872,14 @@ TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
     }
     no_wait_client.join();
 
-    const auto expected_audits = audit_before + (kLongPolls * 2) + 2;
+    const auto final_reads_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < final_reads_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+
+    const auto expected_audits = audit_before + 2;
     while (all_registered && node.audit_event_count() < expected_audits &&
            std::chrono::steady_clock::now() < completion_deadline) {
         server->drain();
@@ -890,7 +896,7 @@ TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
     ASSERT_TRUE(no_wait_body.at("ok").get<bool>()) << no_wait.body;
     EXPECT_LT(no_wait_body.at("duration_ms").get<double>(), 5.0);
     EXPECT_EQ(node.audit_event_count(), expected_audits)
-        << "each long poll may make only its initial and final governed calls";
+        << "all polling reads share one session row until its summary flushes";
     if (all_registered && node.audit_event_count() == expected_audits) {
         for (int& descriptor : long_polls.descriptors) {
             const auto response = read_http_response(descriptor);
@@ -901,6 +907,18 @@ TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
             ASSERT_EQ(body.at("value").at("events").size(), 1);
         }
     }
+    node.flush_audit_summaries();
+    ASSERT_EQ(node.audit_event_count(), expected_audits + 1);
+    const auto events = node.audit_events();
+    const auto summary = std::ranges::find_if(events, [](const auto& event) {
+        return event->action() ==
+                   zetta::governance::AuditAction::DataAccessSummary &&
+               event->target() == "api:receive_events";
+    });
+    ASSERT_NE(summary, events.end());
+    ASSERT_TRUE((*summary)->value().summary);
+    EXPECT_EQ((*summary)->value().summary->calls, kLongPolls * 2 + 1);
+    EXPECT_EQ((*summary)->value().summary->events_delivered, kLongPolls);
     std::cout << "#1076 500 long polls: no-wait wall "
               << std::chrono::duration<double, std::milli>(no_wait_elapsed).count()
               << " ms, registry "
@@ -929,12 +947,12 @@ TEST_F(SmallConnectionCacheFixture, FiveHundredHeldPollsLeaveTwentyFreshConnecti
     }
     const auto registration_deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (node.audit_event_count() < audit_before + kLongPolls &&
+    while (node.audit_event_count() < audit_before + 1 &&
            std::chrono::steady_clock::now() < registration_deadline) {
         server->drain();
         std::this_thread::yield();
     }
-    ASSERT_EQ(node.audit_event_count(), audit_before + kLongPolls);
+    ASSERT_EQ(node.audit_event_count(), audit_before + 1);
 
     std::vector<HttpResponse> responses;
     std::vector<double> elapsed_ms;
@@ -959,7 +977,7 @@ TEST_F(SmallConnectionCacheFixture, FiveHundredHeldPollsLeaveTwentyFreshConnecti
         std::this_thread::yield();
     }
     const bool finished_with_polls_held = finished.load();
-    EXPECT_EQ(node.audit_event_count(), audit_before + kLongPolls + kProbes);
+    EXPECT_EQ(node.audit_event_count(), audit_before + 1);
 
     const auto published = request(
         "POST", "/v1/publish_event",
@@ -999,12 +1017,12 @@ TEST_F(ConnectionLimitFixture, FullCapacityAcceptsAndRejectsPromptlyThenRecovers
         long_polls.descriptors.push_back(descriptor);
     }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (node.audit_event_count() < audit_before + 2 &&
+    while (node.audit_event_count() < audit_before + 1 &&
            std::chrono::steady_clock::now() < deadline) {
         server->drain();
         std::this_thread::yield();
     }
-    ASSERT_EQ(node.audit_event_count(), audit_before + 2);
+    ASSERT_EQ(node.audit_event_count(), audit_before + 1);
     for (int index = 0; index < 20; ++index) {
         const auto started = std::chrono::steady_clock::now();
         const auto response = request(
@@ -1014,7 +1032,7 @@ TEST_F(ConnectionLimitFixture, FullCapacityAcceptsAndRejectsPromptlyThenRecovers
         EXPECT_LT(std::chrono::steady_clock::now() - started,
                   std::chrono::milliseconds(100));
     }
-    EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+    EXPECT_EQ(node.audit_event_count(), audit_before + 1);
 
     zetta::api::ApiContext context{
         node, nullptr, "", zetta::observability::make_root_trace(),
@@ -1023,12 +1041,11 @@ TEST_F(ConnectionLimitFixture, FullCapacityAcceptsAndRejectsPromptlyThenRecovers
         "publish_event", nlohmann::json{{"topic", "limited"}, {"payload", "release"}},
         context).ok);
     const auto released = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (node.audit_event_count() < audit_before + 5 &&
-           std::chrono::steady_clock::now() < released) {
+    while (std::chrono::steady_clock::now() < released) {
         server->drain();
         std::this_thread::yield();
     }
-    ASSERT_EQ(node.audit_event_count(), audit_before + 5);
+    ASSERT_EQ(node.audit_event_count(), audit_before + 2);
     for (int& descriptor : long_polls.descriptors) {
         const auto response = read_http_response(descriptor);
         descriptor = -1;
@@ -1121,7 +1138,7 @@ TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {
     EXPECT_TRUE(body.at("value").at("events").empty());
     EXPECT_GE(elapsed, std::chrono::milliseconds(20));
     EXPECT_LT(elapsed, std::chrono::seconds(2));
-    EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+    EXPECT_EQ(node.audit_event_count(), audit_before + 1);
 }
 
 TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
@@ -1210,6 +1227,46 @@ TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
         EXPECT_EQ(rest_value, mcp_value);
         ASSERT_FALSE(rest_value.at("rows").empty());
     }
+}
+
+TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:audit-parity","exposed":true})")
+                  .status,
+              200);
+    const auto before = node.audit_event_count();
+    const auto rest = request(
+        "GET", "/v1/receive_events?topic=audit-parity&wait_ms=0");
+    ASSERT_EQ(rest.status, 200) << rest.body;
+    ASSERT_TRUE(json_of(rest).at("ok").get<bool>()) << rest.body;
+
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"},
+        {"id", 1154},
+        {"method", "tools/call"},
+        {"params", {{"name", "receive_events"},
+                    {"arguments", {{"topic", "audit-parity"},
+                                   {"wait_ms", 0}}}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+    const auto envelope =
+        json_of(mcp).at("result").at("structuredContent");
+    ASSERT_TRUE(envelope.at("ok").get<bool>()) << mcp.body;
+    EXPECT_EQ(node.audit_event_count(), before + 1);
+
+    node.flush_audit_summaries();
+    ASSERT_EQ(node.audit_event_count(), before + 2);
+    const auto events = node.audit_events();
+    const auto summary = std::ranges::find_if(events, [](const auto& event) {
+        return event->action() ==
+                   zetta::governance::AuditAction::DataAccessSummary &&
+               event->target() == "api:receive_events";
+    });
+    ASSERT_NE(summary, events.end());
+    ASSERT_TRUE((*summary)->value().summary);
+    EXPECT_EQ((*summary)->value().summary->calls, 2u);
+    EXPECT_EQ((*summary)->value().summary->events_delivered, 0u);
+    EXPECT_EQ((*summary)->value().summary->scope, "audit-parity");
 }
 
 TEST_F(RestServerFixture, BrowseLongPollWorksOnRestAndMcpWithoutConsuming) {

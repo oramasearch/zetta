@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -971,6 +972,9 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
 
     // An audit event (authorize records a data_access decision).
     node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"});
+    node.record_authorized_read(key->id(), "receive_events", "topic:idle", 0);
+    node.record_authorized_read(key->id(), "receive_events", "topic:idle", 2);
+    node.flush_audit_summaries();
 
     // runs
     auto runs = svc.run("SELECT * FROM system.runs;", "");
@@ -1004,6 +1008,13 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     ASSERT_TRUE(audit.ok()) << audit.error;
     ASSERT_GE(audit.rows.size(), 1u);
     EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
+    const auto summary = std::ranges::find_if(audit.rows, [](const auto& row) {
+        return row["action"] == "data_access_summary";
+    });
+    ASSERT_NE(summary, audit.rows.end());
+    EXPECT_EQ((*summary)["calls"].get<std::uint64_t>(), 2u);
+    EXPECT_EQ((*summary)["events_delivered"].get<std::uint64_t>(), 2u);
+    EXPECT_EQ((*summary)["scope"].get<std::string>(), "topic:idle");
 
     // system.activity — the merged chronological feed (#622): the audit trail +
     // runs composed at query time, newest first. The run above contributes a
