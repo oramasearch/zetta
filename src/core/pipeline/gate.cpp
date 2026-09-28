@@ -101,6 +101,7 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<UncertaintyValidationCheck>());
     gate.add_check(std::make_shared<EnsembleOutOfFoldCheck>());
     gate.add_check(std::make_shared<LabelEfficiencyGoldIsolationCheck>());
+    gate.add_check(std::make_shared<PrivacyBudgetCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.

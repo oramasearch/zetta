@@ -606,6 +606,10 @@ const nlohmann::json& get_run_report_output_schema() {
            {{"type", "array"},
             {"description",
              "M-18 base-model weights in the regularized logistic stacker"}}},
+          {"privacy",
+           {{"type", "object"},
+            {"description",
+             "M-20 fidelity, DCR, membership, TSTR, and epsilon/delta spend"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
@@ -1042,6 +1046,49 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "synthetic_private") {
+        report["model"] = {{"id", model->id()},
+                           {"name", model->name()},
+                           {"kind", model->kind()}};
+        nlohmann::json privacy = nlohmann::json::object();
+        for (const char* key :
+             {"marginal_distance", "correlation_distance",
+              "distance_to_closest_record", "membership_auc", "tstr_auc",
+              "epsilon_spent", "delta_spent", "privacy_mechanisms",
+              "privacy_evaluation_passed"}) {
+            if (const auto value = number(key)) {
+                privacy[key] = *value;
+            }
+        }
+        report["privacy"] = std::move(privacy);
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            outputs.push_back({{"kind", output.kind},
+                               {"name", output.name},
+                               {"ref", output.ref}});
+        }
+        report["outputs"] = std::move(outputs);
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(18));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        return ApiResult::success(std::move(report));
+    }
 
     if (model->kind() == "label_efficiency") {
         report["model"] = {
@@ -4005,7 +4052,7 @@ const nlohmann::json& run_schema() {
           {"seed",
            {{"type", "integer"},
             {"minimum", 0},
-            {"description", "deterministic seed for document, bandit, and Bayesian runs"}}},
+            {"description", "deterministic seed for document, bandit, Bayesian, and privacy runs"}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},
@@ -4101,6 +4148,36 @@ const nlohmann::json& run_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"description", "M-17 retained Gibbs draws"}}},
+          {"epsilon",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"description", "M-20 total differential-privacy epsilon"}}},
+          {"delta",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description", "M-20 total differential-privacy delta"}}},
+          {"noise",
+           {{"type", "string"},
+            {"enum", {"gaussian", "laplace"}},
+            {"description", "M-20 DP histogram mechanism"}}},
+          {"clip_min",
+           {{"type", "number"},
+            {"description", "M-20 public lower feature bound"}}},
+          {"clip_max",
+           {{"type", "number"},
+            {"description", "M-20 public upper feature bound"}}},
+          {"synthetic_rows",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 synthetic row count (default: source rows)"}}},
+          {"num_trees",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 DP GBDT tree count"}}},
+          {"max_depth",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 DP GBDT maximum depth"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "

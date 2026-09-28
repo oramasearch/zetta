@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-19 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-20 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -46,7 +46,10 @@ methodology, an explicit primary solution, registered keywords, or a clear
 supervised-prediction request, in that order. It calls only the selected
 entry's `build_shape`. Registered entries that are not runnable return
 `not_supported` with their name, id, and issue. An unmatched non-predictive
-intent is refused instead of receiving a placeholder graph.
+intent is refused instead of receiving a placeholder graph. When a catalogue
+solution composes several methodologies, its intent keywords select the
+matching entry; `S-10` therefore selects M-20 for privacy or synthetic-data
+intent and retains M-1 for its tabular prediction intent.
 
 `run` uses `methodology_for_graph()`. A graph whose model step belongs to an
 unimplemented methodology is refused with the same issue-bearing message. An
@@ -267,6 +270,15 @@ predicate recognizes `label_efficiency`, `active_learning`, and
 The callback resolves either the run request's `dataset_path` or the pipeline's
 own connect-step `source` and `table`, then starts the asynchronous runner in
 [`label-efficiency.md`](label-efficiency.md). The API handler remains generic.
+## M-20 privacy-preserving implementation
+
+`src/core/ml/synthetic_private_methodology.cpp` owns the `synthetic_private`
+model kind and builds M-20's connect, bounds/encoding, model, and publish
+pipeline. Its run callback resolves the graph's own landed table, drives the
+owned-partition job, and writes an evaluated synthetic table, DP model, privacy
+report, and lineage. The methodology's formal mechanism, empirical publication
+gate, inputs, metrics, and run examples are documented in
+[synthetic_private.md](synthetic_private.md).
 
 ## Adding a methodology
 

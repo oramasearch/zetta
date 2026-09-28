@@ -28,6 +28,7 @@ Methodology make_m16_methodology();
 Methodology make_m17_methodology();
 Methodology make_m18_methodology();
 Methodology make_m19_methodology();
+Methodology make_m20_methodology();
 
 namespace {
 
@@ -99,14 +100,7 @@ const std::vector<Methodology>& methodologies() {
         make_m17_methodology(),
         make_m18_methodology(),
         make_m19_methodology(),
-        planned("M-20", "Privacy-preserving learning & synthetic data",
-                "The data supply chain",
-                {"privacy_preserving", "federated", "synthetic_data"}, {},
-                {"federated", "differential privacy", "synthetic data"},
-                {input("group", true, "data boundary or participant"),
-                 input("feature", true, "protected training data")},
-                {"private model", "synthetic dataset", "guarantee report"},
-                {"privacy budget", "TSTR", "attack success"}, 1059),
+        make_m20_methodology(),
         planned("M-21", "Online / streaming learning", "Time & vigilance",
                 {"online_learning", "streaming"}, {},
                 {"online learning", "streaming", "real time learning"},

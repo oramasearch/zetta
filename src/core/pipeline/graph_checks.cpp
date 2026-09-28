@@ -521,6 +521,66 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
                        "every model step names a methodology the engine can execute"};
 }
 
+CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const ml::Methodology* methodology = ml::find_methodology(
+            node->attributes.value("model_kind", std::string{}));
+        if (methodology == nullptr || methodology->id != "M-20") {
+            continue;
+        }
+        const auto fail = [&](std::string reason) {
+            return CheckResult{name(), CheckStatus::Fail,
+                               node_label(*node) + ": " + std::move(reason)};
+        };
+        const auto number = [&](const char* key) -> std::optional<double> {
+            const auto value = node->attributes.find(key);
+            if (value == node->attributes.end() || !value->is_number()) {
+                return std::nullopt;
+            }
+            return value->get<double>();
+        };
+        const std::optional<double> epsilon = number("epsilon");
+        const std::optional<double> delta = number("delta");
+        const std::optional<double> maximum_epsilon = number("maximum_epsilon");
+        const std::optional<double> maximum_delta = number("maximum_delta");
+        const std::optional<double> clip_min = number("clip_min");
+        const std::optional<double> clip_max = number("clip_max");
+        if (!epsilon || !delta || !maximum_epsilon || !maximum_delta) {
+            return fail("epsilon, delta, maximum_epsilon, and maximum_delta must all be stated");
+        }
+        if (*epsilon <= 0.0 || *delta < 0.0 || *maximum_epsilon <= 0.0 ||
+            *maximum_delta < 0.0 || *delta >= 1.0 || *maximum_delta >= 1.0) {
+            return fail("privacy-budget values are outside their valid ranges");
+        }
+        if (*epsilon > *maximum_epsilon || *delta > *maximum_delta) {
+            return fail("requested epsilon/delta exceeds the enforced privacy budget");
+        }
+        if (!clip_min || !clip_max || *clip_min >= *clip_max) {
+            return fail("public clip_min and clip_max bounds are required for DP sensitivity");
+        }
+        const auto noise = node->attributes.find("noise");
+        if (noise == node->attributes.end() || !noise->is_string() ||
+            (noise->get<std::string>() != "gaussian" &&
+             noise->get<std::string>() != "laplace")) {
+            return fail("noise must state the gaussian or laplace mechanism");
+        }
+        if (noise->get<std::string>() == "gaussian" && *delta <= 0.0) {
+            return fail("the gaussian mechanism requires delta greater than zero");
+        }
+        const auto evaluation = node->attributes.find("privacy_evaluation");
+        if (evaluation == node->attributes.end() || !evaluation->is_boolean() ||
+            !evaluation->get<bool>()) {
+            return fail("privacy_evaluation must be true before synthetic output publication");
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every synthetic_private step states and enforces its privacy budget"};
+}
+
 CheckResult EnsembleOutOfFoldCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     for (const auto& node : graph.nodes()) {

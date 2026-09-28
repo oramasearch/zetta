@@ -583,6 +583,9 @@ add_library(zetta-core STATIC
   src/core/ml/label_efficiency.cpp
   src/core/ml/label_efficiency_methodology.cpp
   src/core/ml/label_efficiency_runner.cpp
+  src/core/ml/synthetic_private.cpp
+  src/core/ml/synthetic_private_methodology.cpp
+  src/core/ml/synthetic_private_job.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp

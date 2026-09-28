@@ -38,6 +38,8 @@ The reusable annotation and methodology-specific checks are:
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
 | `LabelEfficiencyGoldIsolationCheck` | `label_efficiency_gold_isolation` | an M-19 graph that treats weak labels as gold or does not reserve a disjoint gold split |
 
+| `PrivacyBudgetCheck` | `privacy_budget` | an M-20 model with a missing or invalid epsilon/delta maximum, unknown noise mechanism, invalid public clipping bounds, or disabled privacy evaluation |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -229,6 +231,21 @@ A `split_conformal*` shape must additionally set
 `calibration_disjoint: true`. This graph check is backed by the runtime split
 validator, which rejects overlapping row indexes even if a hand-authored graph
 claims they are disjoint.
+### `privacy_budget` — an enforceable M-20 release
+
+This check engages only on a model step with
+`model_kind: "synthetic_private"`. It requires numeric `epsilon`, `delta`,
+`maximum_epsilon`, and `maximum_delta`; requested values must be within the
+stated maxima. Delta values must lie below 1, epsilon values must be positive,
+and the Gaussian mechanism requires a positive delta.
+
+The step must also name `noise` as `gaussian` or `laplace`, state numeric public
+`clip_min` and `clip_max` bounds with `clip_min < clip_max`, and set
+`privacy_evaluation: true`. This graph check makes the declared plan safe to
+submit. The M-20 runner repeats budget and bound validation against the actual
+run parameters and refuses publication if DCR or membership evaluation fails.
+The full mechanism and report are in
+[synthetic_private.md](../ml/synthetic_private.md).
 
 ## Example
 

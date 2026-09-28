@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 18;
+        const bool runnable = index <= 19;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
@@ -101,6 +101,8 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_TRUE(methodologies.front().runnable);
     EXPECT_FALSE(methodologies.front().partial);
     EXPECT_EQ(methodologies.front().id, "M-1");
+    EXPECT_TRUE(methodologies[19].runnable);
+    EXPECT_EQ(methodologies[19].model_kinds.front(), "synthetic_private");
     EXPECT_TRUE(methodologies[16].runnable);
     EXPECT_TRUE(methodologies[15].runnable);
     EXPECT_EQ(methodologies[15].id, "M-16");
@@ -228,6 +230,7 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("synthetic_private")->id, "M-20");
     EXPECT_EQ(zetta::ml::find_methodology("label-efficient-training")->id,
               "M-19");
     EXPECT_EQ(zetta::ml::find_methodology("stacking")->id, "M-18");
