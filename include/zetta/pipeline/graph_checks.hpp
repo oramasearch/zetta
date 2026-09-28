@@ -25,6 +25,14 @@
 // them.
 namespace zetta::pipeline {
 
+// M-4's executable shape and mandatory correctness contract, including a
+// temporal split, strictly past features and a seasonal-naive baseline.
+class ForecastGraphCheck final : public Check {
+  public:
+    std::string name() const override;
+    CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
 // Schema/type check (#309): every field a step `requires` from its inputs must be
 // provided — with a matching type — by the `schema` (source profile) of one of
 // the step's transitive data-flow ancestors. A required field that no upstream
@@ -95,4 +103,4 @@ public:
 // drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& graph_step_annotations_schema();
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

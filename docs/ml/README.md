@@ -6,12 +6,13 @@ Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
 rather than a reference runtime. Forecasting uses temporal backtests and prediction intervals
-without probability calibration; its native table runner is available, with registry integration
-deferred to Phase B after #1061. Read here for model-training, explanation, or scoring work.
+without probability calibration; M-4 is runnable through the methodology registry
+on its pipeline's table, with chronological report read-back. Read here for
+model-training, explanation, or scoring work.
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic and squared error): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
-- [forecast.md](forecast.md) — native multi-series forecasting: temporal backtests, seasonal-naive FVA, residual-quantile intervals, and a distributed table runner (`forecast`, #1043).
+- [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).
 - [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: what `in_sample` vs `held_out` mean, the sharding-invariant split, and why both ride one collective (`holdout_fraction`, #953).
 - [calibration.md](calibration.md) — probability calibration: Platt + isotonic fit on a held-out split, attached to the `GbdtModel` (Brier/ECE improve, AUC preserved) (`Calibrator`, #391).
 - [gbdt-score.md](gbdt-score.md) — batch scoring / rank-at-risk: calibrated risk per entity, ranked into an at-risk list, SPMD with a device `sort_by_key` rank (`score_gbdt`, #392).
@@ -32,7 +33,7 @@ carry `*`. Regenerate it with
 | M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
 | M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group | entity map, match evidence | pair precision, pair recall, blocking recall | not runnable | [#1041](https://github.com/oramasearch/zetta/issues/1041) |
 | M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature* | segment assignments, segment profiles | silhouette, stability, cluster size | not runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
-| M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecasts, prediction intervals | MAE, RMSE, WAPE, forecast value added | not runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
+| M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecast table with prediction intervals, forecast model | MAE, MASE, sMAPE, seasonal-naive MAE, forecast value added, interval coverage | runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
 | M-5 | Survival / time-to-event | The tabular decision core | survival, time_to_event | S-8 | entity*, time*, label* | risk curves, expected time to event | concordance, time-dependent AUC, IPCW Brier | not runnable | [#1044](https://github.com/oramasearch/zetta/issues/1044) |
 | M-6 | Causal inference & uplift | Action & decision | causal, uplift | — | entity*, treatment*, label* | treatment effects, targeting policy | uplift, Qini, policy value | not runnable | [#1045](https://github.com/oramasearch/zetta/issues/1045) |
 | M-7 | Anomaly detection | Time & vigilance | anomaly, anomaly_detection, outlier | S-7 | time, feature* | anomaly scores, alerts | precision, recall, false alerts | not runnable | [#1046](https://github.com/oramasearch/zetta/issues/1046) |

@@ -176,6 +176,7 @@ bool write_root_outputs(Node &node, const ForecastRunParams &params,
       {"prediction_interval", params.forecast.interval_level},
       {"calibration", false},
       {"baseline_comparison", output.result.metrics.comparison},
+      {"dataset", params.dataset_facts},
   };
   model_value.metrics = model_metrics(output.result.metrics);
   const std::shared_ptr<Model> model =
@@ -287,9 +288,12 @@ run_forecast_job(compute::JobCoordinator &coordinator, compute::ComputeJob &job,
       if (output.result.forecast.empty()) {
         output.error = "forecast runner: gathered forecast rows were invalid";
         outputs_written = 0.0;
-      } else if (node != nullptr &&
-                 !write_root_outputs(*node, params, source_name, output)) {
-        outputs_written = 0.0;
+      } else if (node != nullptr) {
+        node->run_on_owner([&] {
+          if (!write_root_outputs(*node, params, source_name, output)) {
+            outputs_written = 0.0;
+          }
+        });
       }
     }
     const auto agreed =
@@ -298,6 +302,28 @@ run_forecast_job(compute::JobCoordinator &coordinator, compute::ComputeJob &job,
       if (output.error.empty())
         output.error = "forecast runner: root could not write forecast outputs";
       return compute::JobCoordinator::Outcome{false, output.error};
+    }
+    // The initiating member need not be root. Share the artifact id so its
+    // durable Run refers to the same replicated model and output table.
+    std::vector<double> model_id_bytes(output.model_id.begin(),
+                                       output.model_id.end());
+    const auto artifact =
+        round.broadcast(tag + ":model-id", model_id_bytes, timeout);
+    if (!artifact) {
+      output.error = "forecast runner: broadcasting output references failed";
+      return compute::JobCoordinator::Outcome{false, output.error};
+    }
+    if (!round.is_root() && !artifact->empty()) {
+      output.model_id.assign(artifact->begin(), artifact->end());
+      output.forecast_table =
+          params.output_database + "." + params.output_table;
+      output.outputs = {{"dataset", "forecast", output.forecast_table},
+                        {"model", params.model_name, output.model_id}};
+      output.lineage.sources = {"dataset:" + source_name};
+      output.lineage.steps = {"forecast:temporal-backtest", "forecast:train",
+                              "forecast:write"};
+      output.lineage.freshness = util::now_iso8601();
+      output.lineage.confidence = params.forecast.interval_level;
     }
     return compute::JobCoordinator::Outcome{
         true, "forecast rows=" + std::to_string(output.result.forecast.size()) +
@@ -354,33 +380,60 @@ ForecastRunResult run_forecast_table(Node &node, compute::ComputeDevice &device,
       .field = target_column,
       .dtype = compute::DataType::Float64,
   });
-  ddf::LocalShardResult shard =
-      ddf::load_local_partitions(node, dataset.table_id, schema, device);
-  output.rows_read = shard.rows_read;
-  output.partitions_read = shard.partitions_read;
-  output.bytes_read = shard.bytes_read;
-  if (!shard.ok()) {
-    output.error = shard.status.message;
-    return output;
-  }
+  ddf::LocalShardResult shard;
+  node.run_on_owner([&] {
+    shard = ddf::load_local_partitions(node, dataset.table_id, schema, device);
+  });
   std::string conversion_error;
-  const std::vector<ForecastSeries> local_series = series_from_frame(
-      shard.frame, series_column, time_column, target_column, conversion_error);
-  if (!conversion_error.empty()) {
-    output.error = "forecast runner: " + conversion_error;
+  std::vector<ForecastSeries> local_series;
+  if (shard.ok()) {
+    local_series = series_from_frame(shard.frame, series_column, time_column,
+                                     target_column, conversion_error);
+  }
+  const std::string preflight = "forecast:load:" + params.run_id + ":" +
+                                params.output_database + ":" +
+                                params.output_table;
+  const auto valid = coordinator->collectives().allreduce(
+      preflight + ":valid",
+      {shard.ok() && conversion_error.empty() ? 1.0 : 0.0},
+      cluster::CollectiveOp::Minimum, timeout);
+  if (!valid || valid->size() != 1 || valid->front() != 1.0) {
+    output.error = "forecast runner: a member could not load its history: " +
+                   (shard.ok() ? conversion_error : shard.status.message);
     return output;
   }
-  const std::shared_ptr<compute::ComputeJob> job = node.create_job(
-      compute::JobKind::Train, params.project_id, {}, params.run_id);
+  const auto counts = coordinator->collectives().allreduce(
+      preflight + ":counts",
+      {static_cast<double>(shard.rows_read),
+       static_cast<double>(shard.partitions_read),
+       static_cast<double>(shard.bytes_read)},
+      cluster::CollectiveOp::Sum, timeout);
+  if (!counts || counts->size() != 3 ||
+      (dataset.rows != 0 &&
+       counts->front() != static_cast<double>(dataset.rows))) {
+    output.error = "forecast runner: owned rows do not cover the resolved "
+                   "table exactly once";
+    return output;
+  }
+  std::shared_ptr<compute::ComputeJob> job;
+  node.run_on_owner([&] {
+    job = node.create_job(compute::JobKind::Train, params.project_id, {},
+                          params.run_id);
+  });
   if (!job) {
     output.error = "forecast runner: could not create train job";
     return output;
   }
-  output = run_forecast_job(*coordinator, *job, local_series, params, &node,
-                            dataset.database + "." + dataset.table, timeout);
-  output.rows_read = shard.rows_read;
-  output.partitions_read = shard.partitions_read;
-  output.bytes_read = shard.bytes_read;
+  ForecastRunParams resolved_params = params;
+  resolved_params.dataset_facts["rows_read"] = counts->at(0);
+  resolved_params.dataset_facts["partitions_read"] = counts->at(1);
+  resolved_params.dataset_facts["bytes_read"] = counts->at(2);
+  output =
+      run_forecast_job(*coordinator, *job, local_series, resolved_params, &node,
+                       dataset.database + "." + dataset.table, timeout);
+  output.rows_read = static_cast<std::uint64_t>(counts->at(0));
+  output.partitions_read = static_cast<std::size_t>(counts->at(1));
+  output.bytes_read = static_cast<std::uint64_t>(counts->at(2));
   return output;
 }
 

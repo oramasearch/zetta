@@ -10,6 +10,7 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -245,6 +246,138 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneyForecastReadsItsPipelinesTableAndReportsOutputs) {
+    const fs::path file = dir.path() / "weekly_demand.jsonl";
+    {
+        std::ofstream output(file);
+        for (int series = 1; series <= 2; ++series) {
+            for (int day = 0; day < 168; ++day) {
+                const double demand =
+                    series * 100.0 + day * 0.4 +
+                    12.0 * std::sin(day * 6.283185307179586 / 7.0);
+                output << nlohmann::json{{"series", series},
+                                         {"day", day},
+                                         {"demand", demand},
+                                         {"future_note", "excluded"}}
+                              .dump()
+                       << '\n';
+            }
+        }
+    }
+    const nlohmann::json hints = {{"source", "demand"},
+                                  {"table", "history"},
+                                  {"time_column", "day"},
+                                  {"target_column", "demand"},
+                                  {"series_column", "series"},
+                                  {"num_trees", 12},
+                                  {"max_depth", 3},
+                                  {"seed", 41}};
+    journey::Journey forecast{"forecast-table-to-report", {}};
+    forecast.steps = {
+        {"land the observation table",
+         "add_dataset",
+         {{"path", file.string()},
+          {"database", "demand"},
+          {"table_name", "history"},
+          {"partition_count", 2}},
+         {.checks = {journey::equals("/rows", 336)}}},
+        {"create the forecast project",
+         "create_project",
+         {{"name", "demand-plan"}}},
+        {"capture the question",
+         "capture_intent",
+         {{"project", "demand-plan"}, {"text", "Forecast weekly demand"}},
+         {},
+         {{"input", "/input_id"}}},
+        {"discover runnable M-4",
+         "list_methodologies",
+         nlohmann::json::object(),
+         {.checks = {journey::any_element(
+              "/methodologies", {{"/id", "M-4"}, {"/runnable", true}})}}},
+        {"compile the forecast methodology",
+         "compile_intent",
+         {{"project", "demand-plan"},
+          {"input_id", "$input"},
+          {"methodology", "M-4"},
+          {"hints", hints},
+          {"name", "demand forecast"}},
+         {.checks = {journey::equals("/methodology", "M-4"),
+                     journey::equals("/runnable", true)}},
+         {{"graph", "/name"}}},
+        {"compile the primary solution too",
+         "compile_intent",
+         {{"project", "demand-plan"},
+          {"input_id", "$input"},
+          {"solution", "S-5"},
+          {"hints", hints},
+          {"name", "solution forecast"}},
+         {.checks = {journey::equals("/methodology", "M-4"),
+                     journey::equals("/runnable", true)}}},
+        {"run without a dataset override",
+         "run",
+         {{"project", "demand-plan"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/engine", "forecast"),
+                     journey::equals("/dataset/source", "demand.history")}},
+         {{"run", "/run_id"}}},
+        {"wait for forecast outputs",
+         "get_run",
+         {{"run_id", "$run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::contains_element("/lineage/sources",
+                                               "dataset:demand.history"),
+                     journey::any_element("/outputs", {{"/kind", "dataset"}}),
+                     journey::any_element("/outputs", {{"/kind", "model"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read the measured report",
+         "get_run_report",
+         {{"run_id", "$run"}, {"limit", 30}},
+         {.checks = {journey::equals("/model/kind", "forecast"),
+                     journey::exists("/model/metrics/backtest_mae"),
+                     journey::exists("/model/metrics/backtest_mase"),
+                     journey::exists("/model/metrics/backtest_smape"),
+                     journey::exists("/model/metrics/forecast_value_added"),
+                     journey::exists("/model/metrics/fold_0_mae"),
+                     journey::exists("/model/metrics/seasonal_naive_mae"),
+                     journey::equals("/dataset/rows_read", 336),
+                     journey::equals("/dataset/rows_excluded", 0),
+                     journey::any_element("/dataset/not_used",
+                                          {{"/column", "future_note"}}),
+                     journey::size_equals("/forecast", 14),
+                     journey::exists("/forecast/0/lower"),
+                     journey::exists("/forecast/0/upper"),
+                     journey::not_empty("/baseline_comparison"),
+                     journey::size_equals("/outputs", 3)}}}};
+    const auto result = journey::run_journey(forecast, caller(), pump());
+    EXPECT_TRUE(result.ok) << result.summary();
+}
+
+TEST_F(Uc1Journey, JourneyForecastRefusesWrongTableAndRandomHoldout) {
+    ASSERT_TRUE(call("create_project", {{"name", "forecast-refusals"}}).ok);
+    const auto captured =
+        call("capture_intent",
+             {{"project", "forecast-refusals"}, {"text", "Forecast demand"}});
+    ASSERT_TRUE(captured.ok);
+    const auto compiled =
+        call("compile_intent",
+             {{"project", "forecast-refusals"},
+              {"input_id", captured.value.at("input_id")},
+              {"methodology", "M-4"},
+              {"hints", {{"source", "missing"}, {"table", "history"}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    const nlohmann::json input = {{"project", "forecast-refusals"},
+                                  {"graph", compiled.value.at("name")}};
+    const auto missing = call("run", input);
+    EXPECT_FALSE(missing.ok);
+    EXPECT_NE(missing.error.message.find("missing.history"), std::string::npos);
+    auto random = input;
+    random["holdout_fraction"] = 0.2;
+    const auto refused = call("run", random);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_NE(refused.error.message.find("temporal"), std::string::npos);
+    EXPECT_TRUE(node.runs().empty());
 }
 
 // =====================================================================

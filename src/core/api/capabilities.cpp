@@ -500,14 +500,15 @@ const nlohmann::json& get_run_report_schema() {
          {{"run_id",
            {{"type", "string"},
             {"minLength", 1},
-            {"description",
-             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
+            {"description", "the run's uuid (system.runs.run_id, or the "
+                            "`report` output's ref)"}}},
           {"limit",
            {{"type", "integer"},
             {"minimum", 1},
             {"description",
-             "how many at-risk entities to return, highest risk first (default 20). "
-             "The whole population is ranked; this caps what comes back"}}}}}};
+             "maximum rows returned (default 20): at-risk entities by risk, "
+             "or forecast rows by series then timestamp. Limit applies after "
+             "ordering"}}}}}};
     return schema;
 }
 
@@ -516,24 +517,41 @@ const nlohmann::json& get_run_report_output_schema() {
         {"type", "object"},
         {"required", {"run", "model"}},
         {"properties",
-         {{"run", {{"type", "object"},
-                   {"description", "run id, graph, status, and when it finished"}}},
+         {{"run",
+           {{"type", "object"},
+            {"description", "run id, graph, status, and when it finished"}}},
           {"dataset",
            {{"type", "object"},
             {"description",
-             "what the model was built from: accounts, events, churn_rate, "
-             "majority_class_accuracy (the accuracy a constant answer scores), and "
-             "the feature columns. Absent when the model records no dataset facts"}}},
+             "what the model read: classification dataset facts, or forecast "
+             "source, selected/excluded columns and rows/partitions/bytes "
+             "read"}}},
           {"model",
            {{"type", "object"},
             {"description",
-             "id, name, and the metrics. `held_out_*` is present only when the run "
-             "asked for a holdout; when it is absent the only figures available are "
-             "in-sample and they flatter (#953)"}}},
+             "id, name, and model-specific metrics. Classification "
+             "leads with held_out_* when present. Forecast models "
+             "return kind and metrics containing rolling-origin "
+             "MAE, MASE, sMAPE, seasonal-naive MAE, FVA and coverage"}}},
           {"drivers",
            {{"type", "array"},
-            {"description", "feature -> weight, strongest first. A weight is what "
-                            "the model leaned on, not a cause"}}},
+            {"description",
+             "feature -> weight, strongest first. A weight is what "
+             "the model leaned on, not a cause"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"description",
+             "forecast output table, model and report references"}}},
+          {"forecast",
+           {{"type", "array"},
+            {"description",
+             "forecast-table rows with series, timestamp, "
+             "point_forecast, lower and upper; ordered by series "
+             "then timestamp before applying limit"}}},
+          {"baseline_comparison",
+           {{"type", "string"},
+            {"description", "whether the forecast beat seasonal-naive in "
+                            "rolling-origin backtests"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
@@ -542,13 +560,17 @@ const nlohmann::json& get_run_report_output_schema() {
           {"caveats",
            {{"type", "array"},
             {"description",
-             "figures that are PRESENT but must not be read as results — a holdout "
-             "too small to mean anything, a perfect score. `missing` says what the "
-             "run cannot tell you; this says what it can and you should not believe"}}},
+             "figures that are PRESENT but must not be read as "
+             "results — a holdout "
+             "too small to mean anything, a perfect score. "
+             "`missing` says what the "
+             "run cannot tell you; this says what it can and you "
+             "should not believe"}}},
           {"missing",
            {{"type", "array"},
             {"description",
-             "fields a report would want that this run cannot supply, each saying "
+             "fields a report would want that this run cannot supply, each "
+             "saying "
              "why. Stated rather than omitted so a writer does not quietly "
              "substitute its own number"}}}}}};
     return schema;
@@ -597,6 +619,85 @@ std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
 }
 
+nlohmann::json chronological_forecast_rows(const zetta::data::Table &table,
+                                           std::size_t limit) {
+    std::vector<nlohmann::json> rows;
+    const auto &store = table.store();
+    rows.reserve(store.size());
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    // Replicated storage order is not temporal order. Sort the full result
+    // before truncating so every member returns the same earliest forecasts.
+    std::ranges::sort(rows, [](const auto &left, const auto &right) {
+        const double left_series = row_number(left, "series", 0.0);
+        const double right_series = row_number(right, "series", 0.0);
+        if (left_series != right_series) {
+            return left_series < right_series;
+        }
+        return row_number(left, "timestamp", 0.0) <
+               row_number(right, "timestamp", 0.0);
+    });
+    if (rows.size() > limit) {
+        rows.resize(limit);
+    }
+    return rows;
+}
+
+nlohmann::json forecast_report(Node &node, const zetta::pipeline::Run &run,
+                               const zetta::ml::Model &model,
+                               std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model.id()},
+                       {"name", model.name()},
+                       {"kind", model.kind()},
+                       {"metrics", model.metrics()}};
+    const nlohmann::json &facts = model.feature_schema();
+    for (const char *key : {"dataset", "baseline_comparison"}) {
+        if (const auto found = facts.find(key); found != facts.end()) {
+            report[key] = *found;
+        }
+    }
+    report["outputs"] = nlohmann::json::array();
+    report["forecast"] = nlohmann::json::array();
+    for (const auto &output : run.outputs()) {
+        report["outputs"].push_back({{"kind", output.kind},
+                                     {"name", output.name},
+                                     {"ref", output.ref}});
+        if (output.kind != "dataset") {
+            continue;
+        }
+        const auto dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const auto database = node.find_database(output.ref.substr(0, dot));
+        const auto table =
+            database ? database->find_table(output.ref.substr(dot + 1))
+                     : nullptr;
+        if (!table) {
+            report["missing"] = {
+                {{"field", "forecast"},
+                 {"why",
+                  "forecast output table is not yet visible on this member"}}};
+            continue;
+        }
+        report["forecast"] = chronological_forecast_rows(*table, limit);
+    }
+    report["caveats"] = {
+        {{"field", "interval_coverage"},
+         {"why", "empirical coverage on rolling-origin residuals; not a "
+                 "guarantee for future observations"}}};
+    return report;
+}
+
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
@@ -628,6 +729,10 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                 "numbers to report");
     }
 
+    if (model->kind() == "forecast") {
+        return ApiResult::success(
+            forecast_report(context.node, *run, *model, limit));
+    }
     const nlohmann::json& metrics = model->metrics();
     const auto number = [&metrics](const char* key) -> std::optional<double> {
         const auto found = metrics.find(key);
@@ -5609,40 +5714,49 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     static const std::vector<zetta::agent::AgentToolSpec> kAgentTools = {
         {"list_projects", "list the Projects on this node"},
         {"get_project", "read one Project: {\"name\": \"<project>\"}"},
-        {"list_datasets", "list the datasets (tables) available, with row and column counts"},
+        {"list_datasets",
+         "list the datasets (tables) available, with row and column counts"},
         {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
         {"list_models", "list the trained models and their measures"},
-        {"get_model",
-         "read one model: its measures, its feature columns, and its ranked churn "
-         "drivers: {\"model\": \"<id or name>\"}"},
+        {"get_model", "read one model: its measures, its feature columns, and "
+                      "its ranked churn "
+                      "drivers: {\"model\": \"<id or name>\"}"},
         {"score",
-         "run a trained model and get accounts ranked by risk plus what drives it — "
+         "run a trained model and get accounts ranked by risk plus what drives "
+         "it — "
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
+         "\"<database.table>\", \"top_k\": 10}, or over an account that is not "
+         "in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
-        {"propose_improvement",
-         "propose a change to a model and state its predicted effect, or say why the effect "
-         "cannot be predicted: {\"model_id\": \"<uuid>\", \"change\": \"add_holdout\"}"},
-        {"model_health",
-         "check whether a deployed model can still be trusted - the held-out figure, the "
-         "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
+        {"propose_improvement", "propose a change to a model and state its "
+                                "predicted effect, or say why the effect "
+                                "cannot be predicted: {\"model_id\": "
+                                "\"<uuid>\", \"change\": \"add_holdout\"}"},
+        {"model_health", "check whether a deployed model can still be trusted "
+                         "- the held-out figure, the "
+                         "overfitting gap, whether scores are calibrated: "
+                         "{\"model_id\": \"<uuid>\"}"},
         {"get_run_report",
-         "read what a finished run found — model quality (held-out first), the "
-         "drivers, and the ranked at-risk list with the evidence behind each row: "
+         "read what a finished run found — classification quality and at-risk "
+         "evidence, or forecast backtests, baseline comparison and ordered "
+         "forecasts: "
          "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
         {"explain",
          "explain WHY one account scored as it did — every feature's signed "
-         "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
+         "contribution, strongest first: {\"model\": \"<id>\", "
+         "\"dataset_path\": "
+         "\"<database.table>\", \"entity\": 8336}, or for an account not in "
+         "the "
          "data: {\"model\": \"<id>\", \"row\": {...}}"},
         {"deployment_profile",
-         "ask this node how to deploy it — ports, storage, peering, security, and what "
+         "ask this node how to deploy it — ports, storage, peering, security, "
+         "and what "
          "it does NOT need: {\"target\": \"helm\"} returns chart values"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
-        // "which version are you" is asked of the model as often as of the binary,
-        // and the agent is the only surface a person asks it on.
+        // "which version are you" is asked of the model as often as of the
+        // binary, and the agent is the only surface a person asks it on.
         {"versions",
          "report the software version and WHICH agent version is answering, "
          "including its checkpoint"},
@@ -6305,21 +6419,19 @@ void register_core_capabilities(Registry& registry) {
         handle_get_run});
 
     registry.add(Capability{
-        "get_run_report",
-        "Get a run's report facts",
-        "Read the facts a finished run produced — how good the model is (held-out "
-        "first, in-sample beside it), what drives the outcome, and the ranked "
-        "at-risk list with its evidence. Assembled at query time from the run's "
-        "model and its at-risk table, so it cannot drift from them. Anything a "
-        "report would want and this run cannot supply is listed in `missing` with "
-        "the reason, rather than left blank. No side effects. (#958)",
-        get_run_report_schema(),
-        get_run_report_output_schema(),
-        CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        "get_run_report", "Get a run's report facts",
+        "Read a finished run's measured facts from its model and output "
+        "tables: "
+        "classification quality (held-out first), drivers and ranked at-risk "
+        "evidence; or forecast backtests, seasonal-naive comparison, "
+        "read/excluded "
+        "data and forecasts ordered by series then timestamp. Unavailable "
+        "artifacts are listed in `missing` with a reason. No side effects. "
+        "(#958, #1043)",
+        get_run_report_schema(), get_run_report_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
-        /*requires_consent=*/false,
-        handle_get_run_report});
+        /*requires_consent=*/false, handle_get_run_report});
 
     registry.add(Capability{
         "propose_improvement",

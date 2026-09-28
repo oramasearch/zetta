@@ -4,7 +4,8 @@
 **Epic:** [#984](https://github.com/oramasearch/zetta/issues/984) ·
 **Code:** [`include/zetta/ml/forecast.hpp`](../../include/zetta/ml/forecast.hpp),
 [`include/zetta/ml/forecast_runner.hpp`](../../include/zetta/ml/forecast_runner.hpp) ·
-**Tests:** `tests/ml/test_forecast.cpp`, `tests/ml/test_forecast_runner.cpp`
+**Tests:** `tests/ml/test_forecast.cpp`, `tests/ml/test_forecast_runner.cpp`,
+`tests/ml/test_forecast_methodology.cpp`, `tests/api/test_action_journeys.cpp`
 
 Forecasting is a native C++26 methodology with model kind `forecast`. It trains a
 global squared-error GBDT over lagged histories, evaluates it at rolling temporal
@@ -105,23 +106,90 @@ and collective tags, so the same data, params, and seed produce the same result.
 
 ## Boundaries and later work
 
-Phase A provides the native trainer and resolved-table runner. It does not yet
-make forecasting runnable through the methodology registry or public API.
+Phase B makes M-4 runnable through the methodology registry (#1061). Model
+attributes are validated by `forecast_step_schema()`; peer-launch payloads by
+`forecast_launch_schema()` followed by the existing graph parser and the same
+forecast correctness check. Numeric partials use `CollectiveMessage`, and
+weights use `GbdtModel` with the `squared_error` objective. Generated schemas are
+served through the existing spec index.
 
-No new wire or JSON boundary is introduced. Numeric partials use the existing
-schema-validated `CollectiveMessage`; model weights use the existing `GbdtModel`
-boundary, expanded to admit its already-supported `squared_error` objective.
+The runner consumes owned partition bodies, not a full-table download. Each
+series must belong to one member, and the total owned row count must equal the
+catalog count exactly once. Replicated input partitions with multiple readers
+and histories split across members are refused; repartition the input with one
+complete history per owner before running. Missing bodies and incomplete
+catalogs are errors. String series keys, arbitrary external features, automatic
+repartitioning and directory-backed inputs are not supported.
 
-Phase B adds the thin methodology-table adapter after #1061 lands. Intent compiler,
-capability handlers, registry entries, correctness checks over pipeline graphs,
-run-report rendering, and control-surface schema changes are deliberately not part
-of this phase.
+Output materialization is deliberately single-node on the deterministic
+collective root; training and metric partials are distributed. Node-tree reads
+and artifact writes use the owner-thread gate. The background action uses the
+shared coroutine runtime, and the existing coordinated-launch listener starts
+peers. Model references are broadcast back to all participants.
+
+## Running it
+
+Land a numeric history table through `add_dataset` or a connector. Then call
+`create_project`, `capture_intent`, and `compile_intent` with `methodology: "M-4"`
+(or primary solution `S-5` / `S-6`). For example, the compile input is:
+
+```json
+{
+  "project": "demand-plan",
+  "input_id": "<captured input id>",
+  "methodology": "M-4",
+  "hints": {
+    "source": "demand",
+    "table": "history",
+    "time_column": "day",
+    "target_column": "demand",
+    "series_column": "store_id",
+    "horizon": 7,
+    "seasonal_period": 7,
+    "lags": [1, 7, 28],
+    "maximum_horizon_fraction": 0.25,
+    "interval_level": 0.8,
+    "seed": 41
+  }
+}
+```
+
+Omit `series_column` for a single series. The source defaults are
+`datasets.history`, `timestamp`, and `value`; name your actual columns when
+different. Optional knobs are `rolling_window`, `backtest_folds`, `num_trees`,
+`max_depth`, and `learning_rate`; their schema and defaults are code-owned.
+Unknown hints are rejected by the gate rather than silently ignored.
+
+Compilation returns `methodology: "M-4"` and `runnable: true`. Call `run` with
+only the project and returned graph name. It reads the connect step's table;
+there is no demo fallback or structural execution. Dataset overrides, a random
+`holdout_fraction`, and `coordinate: false` are refused. Column roles are
+resolved explicitly against the catalog into `ResolvedDataset`; the classifier's
+binary-label/entity inference is intentionally not applied to forecast targets.
+
+Poll `get_run` with the returned `run_id` until `succeeded` or `failed`. A
+successful run writes `forecasts.forecast_<run id>`, one `forecast` model, and
+their lineage. `get_run_report` returns:
+
+- `model.metrics`: mean and `fold_<n>_*` MAE, MASE, sMAPE, seasonal-naive MAE,
+  FVA and interval coverage;
+- `baseline_comparison`: explicitly says whether seasonal-naive was beaten;
+- `dataset`: source, selected columns, actual rows/partitions/bytes read,
+  `rows_excluded: 0`, and all other columns with exclusion reasons;
+- `outputs`: table, model and report references;
+- `forecast`: output-table rows ordered by series and then timestamp, with
+  `limit` applied after sorting. This order is stable across replicated members.
+
+Unused columns are not model features. Invalid histories are refused in their
+entirety, never silently dropped. Empirical backtest interval coverage is not a
+guarantee about future observations. A peer can briefly report an output as not
+yet visible while replicated artifacts arrive.
 
 ## Verify
 
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 6 --target zetta-tests
-./build/tests/zetta-tests --gtest_filter='*Forecast*:*Backtest*:*Lag*:*Temporal*'
+./build/tests/zetta-tests --gtest_filter='*Forecast*:*Backtest*:*Lag*:*Temporal*:*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*'
 ./build/tests/zetta-tests
 ```

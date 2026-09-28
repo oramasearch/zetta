@@ -19,6 +19,14 @@ so every gate run applies them. They are **opt-in per step**: a step that carrie
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
 
+`ForecastGraphCheck` (`forecast_correctness`, #1043) is also registered in the
+default gate. It applies only to forecast model kinds, validates the complete
+M-4 graph and model-attribute schema, and refuses random validation, future
+features, probability calibration, invalid horizon limits, or omission of the
+seasonal-naive baseline. Runtime checks additionally validate each series' real
+history length and ownership. The full contract and refusal tests are documented
+in [forecast.md](../ml/forecast.md).
+
 ## How a check reads a step
 
 A graph node's `attributes` bag (`zetta::ir::Node::attributes`,

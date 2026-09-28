@@ -78,9 +78,10 @@ What's inside, by domain (each links to that domain's docs):
   correctness oracle** (no Python/XGBoost anywhere).
   The native [forecast runner](docs/ml/forecast.md) adds temporal backtests,
   seasonal-naive comparisons, and forecast tables with prediction intervals;
-  its methodology-registry adapter is deferred to Phase B after #1061.
+  M-4 runs on the pipeline's own table through the methodology registry and
+  reports metrics, read/excluded data, and output tables through `get_run_report`.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
+  approaches: M-1 and M-4 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;

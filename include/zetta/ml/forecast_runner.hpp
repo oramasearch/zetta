@@ -11,8 +11,8 @@
 #include "zetta/ml/forecast.hpp"
 #include "zetta/pipeline/run.hpp"
 
-// The table-backed native forecast runner (#1043). This is the phase-A entry
-// point the methodology registry can adapt directly: resolve a dataset, pass
+// The table-backed native forecast runner (#1043). The M-4 registry adapter
+// calls this entry point directly: resolve a dataset, pass
 // its time/target/optional-series columns, and receive a registered `forecast`
 // model, a forecast table, typed run outputs, and lineage.
 //
@@ -35,6 +35,9 @@ struct ForecastRunParams {
   std::string model_name = "forecast";
   std::string project_id;
   std::string run_id;
+  // Catalog facts filled by the registry adapter; actual read counters are
+  // filled by the table runner before the model is registered.
+  nlohmann::json dataset_facts = nlohmann::json::object();
 };
 
 struct ForecastRunResult {

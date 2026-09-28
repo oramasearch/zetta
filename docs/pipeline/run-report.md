@@ -118,6 +118,20 @@ tool list, and the agent's read-tool allowlist.
 
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Other methodologies can emit a `report` output when they record the facts behind it.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.
+
+## Forecast reports (M-4)
+
+The native [forecast runner](../ml/forecast.md) also emits a report reference.
+For `kind: forecast`, this capability returns `model.metrics` (per-fold and mean
+MAE, MASE, sMAPE, seasonal-naive MAE, FVA and interval coverage), the explicit
+`baseline_comparison`, `dataset` read/exclusion facts, and `outputs` references.
+It does not substitute classification metrics or request probability calibration.
+
+`forecast` rows come from the output table and are sorted by numeric series key,
+then timestamp, **before** `limit` is applied. Replicated table storage order is
+not chronological, so limiting in storage order would return different periods
+on different members. The multi-member forecast launch test checks identical
+timestamps and predictions against the single-member oracle, plus the limited
+prefix. Tables not yet replicated are identified under `missing`.

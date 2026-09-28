@@ -6449,16 +6449,16 @@
     },
     "/v1/get_run_report": {
       "get": {
-        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. No side effects. (#958) Requires api:query.",
+        "description": "Read a finished run's measured facts from its model and output tables: classification quality (held-out first), drivers and ranked at-risk evidence; or forecast backtests, seasonal-naive comparison, read/excluded data and forecasts ordered by series then timestamp. Unavailable artifacts are listed in `missing` with a reason. No side effects. (#958, #1043) Requires api:query.",
         "operationId": "get_run_report",
         "parameters": [
           {
-            "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+            "description": "maximum rows returned (default 20): at-risk entities by risk, or forecast rows by series then timestamp. Limit applies after ordering",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+              "description": "maximum rows returned (default 20): at-risk entities by risk, or forecast rows by series then timestamp. Limit applies after ordering",
               "minimum": 1,
               "type": "integer"
             }
@@ -6509,16 +6509,24 @@
                           "description": "the ranked entities with their risk and their evidence values, capped by `limit`",
                           "type": "array"
                         },
+                        "baseline_comparison": {
+                          "description": "whether the forecast beat seasonal-naive in rolling-origin backtests",
+                          "type": "string"
+                        },
                         "caveats": {
                           "description": "figures that are PRESENT but must not be read as results — a holdout too small to mean anything, a perfect score. `missing` says what the run cannot tell you; this says what it can and you should not believe",
                           "type": "array"
                         },
                         "dataset": {
-                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
+                          "description": "what the model read: classification dataset facts, or forecast source, selected/excluded columns and rows/partitions/bytes read",
                           "type": "object"
                         },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
+                          "type": "array"
+                        },
+                        "forecast": {
+                          "description": "forecast-table rows with series, timestamp, point_forecast, lower and upper; ordered by series then timestamp before applying limit",
                           "type": "array"
                         },
                         "missing": {
@@ -6526,8 +6534,12 @@
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "description": "id, name, and model-specific metrics. Classification leads with held_out_* when present. Forecast models return kind and metrics containing rolling-origin MAE, MASE, sMAPE, seasonal-naive MAE, FVA and coverage",
                           "type": "object"
+                        },
+                        "outputs": {
+                          "description": "forecast output table, model and report references",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",

@@ -49,6 +49,12 @@ relay it to a person.
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).
+- **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
+  compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
+  then run the stored pipeline and poll its Run. The report carries temporal
+  metrics, seasonal-naive comparison, read/excluded data and forecast table
+  references. A forecast never falls back to a classifier or structural run.
+  See [Running it](../../ml/forecast.md#running-it).
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.
