@@ -112,9 +112,11 @@ What's inside, by domain (each links to that domain's docs):
   tasks, permanent holdout measurement, and conversion ROI readout.
   S-3 is runnable with continuous-value regression, tenure censoring,
   value-band audience and budget policy, protected holdouts, allocation reports,
-  three named domain refusals, and net-value ROI readout. S-4 through
-  S-12 have explicitly minimal editable defaults. Snapshot cutoffs, delivery
-  destinations and ROI economics remain caller-supplied.
+  three named domain refusals, and net-value ROI readout.
+  S-4 is runnable at all four levels with regulatory contact-limit,
+  vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
+  dialer delivery; a permanent holdout; and net-recovery readout. S-5 through S-12 have explicitly minimal editable defaults. Snapshot
+  cutoffs, delivery destinations and ROI economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

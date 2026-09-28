@@ -164,6 +164,48 @@ void lifetime_value_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "net_value", "currency", 365};
 }
 
+void collections_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "priority"}, {"minimum_score", 0.7}, {"action", "dialer_queue"},
+         {"allowed_actions", {"dialer_queue", "digital_treatment", "settlement", "no_contact"}}},
+        {{"name", "standard"}, {"minimum_score", 0.4}, {"action", "digital_treatment"},
+         {"allowed_actions", {"digital_treatment", "no_contact"}}},
+        {{"name", "defer"}, {"minimum_score", 0.0}, {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"dialer_queue", {{"autonomy", "A2"}, {"sla_seconds", 86400},
+                          {"frequency_cap", frequency(1)}}},
+        {"digital_treatment", {{"autonomy", "A2"}, {"sla_seconds", 86400},
+                               {"frequency_cap", frequency(1)}}},
+        {"settlement", {{"autonomy", "A1"}, {"approval_above", 0.0},
+                        {"sla_seconds", 86400}, {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 6;
+    result.policy["frequency_cap"] = {
+        {"max_actions", 1}, {"window_seconds", 7 * 86400}};
+    result.policy["eligibility_rules"] = {
+        predicate("collections_eligible", true),
+        predicate("regulatory_contact_allowed", true),
+        predicate("within_contact_hours", true),
+        predicate("vulnerable", false)};
+    result.policy["exclusion_rules"] = {
+        predicate("collections_eligible", false),
+        predicate("regulatory_contact_allowed", false),
+        predicate("within_contact_hours", false),
+        predicate("vulnerable", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"priority", 0.1}, {"standard", 0.1}, {"defer", 0.1}};
+    result.experiment.treatment_cells = {
+        "dialer_queue", "digital_treatment"};
+    result.guardrails = {
+        {"complaints", 0.0, "maximum"},
+        {"regulatory_contact_violations", 0.0, "maximum"},
+        {"vulnerable_customer_contacts", 0.0, "maximum"},
+        {"contact_frequency", 1.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -176,6 +218,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 lead_scoring_defaults(result);
             } else if (solution_id == "S-3") {
                 lifetime_value_defaults(result);
+            } else if (solution_id == "S-4") {
+                collections_defaults(result);
             }
             return result;
         }

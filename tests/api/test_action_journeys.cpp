@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1144,6 +1145,304 @@ TEST_F(SolutionJourney,
     }
     EXPECT_GT(sleeping_dogs, 0u);
     EXPECT_GT(persuaded, 0u);
+}
+
+void land_collections_data(Node& node) {
+    const auto database = node.create_database("collections_data");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("receivables");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const double recovery_signal = static_cast<double>(index % 10);
+        const int rotating_outcome = (index * 7 + index / 10) % 10;
+        const int promise_to_pay =
+            rotating_outcome < 2 + static_cast<int>(recovery_signal / 2.0)
+                ? 1
+                : 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "fixture"},
+             {"name", "Receivable " + std::to_string(index + 1)},
+             {"promise_to_pay", promise_to_pay},
+             {"recovery_signal", recovery_signal},
+             {"balance", 100.0 + index},
+             {"promise_to_pay_at", "2026-08-01T00:00:00.000Z"},
+             {"collections_eligible", index != 7},
+             {"regulatory_contact_allowed", index != 6},
+             {"within_contact_hours", index != 8},
+             {"vulnerable", index == 5},
+             {"open_complaint", false},
+             {"recent_actions", 0},
+             {"owner", "collections-team"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future promise update"},
+         {"promise_to_pay", 1},
+         {"recovery_signal", 99.0},
+         {"balance", 999.0},
+         {"promise_to_pay_at", "2026-10-01T00:00:00.000Z"},
+         {"collections_eligible", true},
+         {"regulatory_contact_allowed", true},
+         {"within_contact_hours", true},
+         {"vulnerable", false},
+         {"open_complaint", false},
+         {"recent_actions", 0},
+         {"owner", "collections-team"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json collections_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "collections_data"},
+          {"source_table", "receivables"},
+          {"target_table", "collections_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "promise_to_pay_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "promise_to_pay"},
+          {"feature_columns", {"recovery_signal", "balance"}}}},
+        {"delivery",
+         {{"endpoint", "https://dialer.example.test/queues"},
+          {"owner", "collections-team"}}},
+        {"roi_model",
+         {{"value_per_outcome", 125.0},
+          {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey collections_journey() {
+    journey::Journey flow{"collections-prioritization", {}};
+    flow.steps = {
+        {"read S-4 executable defaults", "get_solution",
+         {{"solution", "S-4"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/design", "champion_challenger"),
+              journey::size_equals("/solution/action_patterns", 3)}}},
+        {"create the collections project", "create_project",
+         {{"name", "collections prioritization"}}},
+        {"create the composed collections solution", "create_solution",
+         {{"project", "collections prioritization"},
+          {"solution", "S-4"},
+          {"level", 1},
+          {"sources",
+           {{"source", "collections_data"},
+            {"table", "receivables"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "promise_to_pay"},
+              {"feature_columns", {"recovery_signal", "balance"}}}}}},
+          {"foundation", collections_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 3),
+              journey::size_equals("/missing_components", 0)}},
+         {{"collections_graph", "/graph"},
+          {"collections_policy", "/policy_id"},
+          {"collections_experiment", "/experiment_id"},
+          {"collections_readout", "/readout_id"}}},
+        {"read the collections policy", "get_policy",
+         {{"policy_id", "$collections_policy"}},
+         {.checks = {
+              journey::equals("/versions/0/config/contact_cap", 6),
+              journey::equals(
+                  "/versions/0/config/frequency_cap/window_seconds", 604800),
+              journey::equals(
+                  "/versions/0/config/tiers/0/action", "dialer_queue"),
+              journey::equals(
+                  "/versions/0/config/tiers/1/action", "digital_treatment")}}},
+        {"run collections prioritization", "run_solution",
+         {{"project", "collections prioritization"},
+          {"graph", "$collections_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {
+              journey::equals("/engine", "solution"),
+              journey::equals("/preview", false)}},
+         {{"collections_run", "/run_id"}}},
+        {"read the completed collections Run", "get_run",
+         {{"run_id", "$collections_run"}},
+         {.checks = {
+              journey::equals("/status", "succeeded"),
+              journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected collections assignments", "get_experiment",
+         {{"experiment", "$collections_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read collections ledger actions", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_collections_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"collections-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double recovery =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record net recovery", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_recovery"},
+              {"value", recovery},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured net-recovery effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-recovery effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       CollectionsPrioritizationProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_collections_data(node);
+    const auto report =
+        journey::run_journey(collections_journey(), caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("collections prioritization");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-4 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Prioritize collections treatments");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"), "receivable");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "recovery_score");
+    bool found_collections_output = false;
+    for (const auto& run : node.runs()) {
+        for (const auto& output : run->outputs()) {
+            if (output.ref.starts_with(
+                    "collections_results.recovery_priority_")) {
+                found_collections_output = true;
+            }
+        }
+    }
+    EXPECT_TRUE(found_collections_output);
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    const std::set<std::string> blocked = {"6", "7", "8", "9"};
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        if (blocked.contains(decision.entity_id)) {
+            EXPECT_FALSE(decision.actionable) << decision.entity_id;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    std::set<std::string> delivered_actions;
+    for (const auto& request : delivery.requests) {
+        const std::string action =
+            request.at("payload").at("action").get<std::string>();
+        delivered_actions.insert(action);
+        EXPECT_TRUE(action == "dialer_queue" ||
+                    action == "digital_treatment");
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_EQ(delivered_actions,
+              (std::set<std::string>{"dialer_queue",
+                                     "digital_treatment"}));
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto measured = journey::run_journey(
+        planted_collections_outcomes(ledger.value.at("entries"), binding),
+        caller(),
+        pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
 void append_speech_u16(std::string &bytes, std::uint16_t value) {

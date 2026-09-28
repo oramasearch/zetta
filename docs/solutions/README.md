@@ -13,6 +13,9 @@ and policy decisions to actions and measured outcomes.
 - [S-3.md](S-3.md) — runnable customer lifetime value module: continuous-value
   prediction, value-band audience and budget policy, holdouts, actions, and
   domain refusals (#1112).
+- [S-4.md](S-4.md) — runnable collections prioritization: regulatory and
+  vulnerable-customer checks, treatment tiers, action delivery, holdout, and
+  net-recovery readout (#1113).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -160,9 +163,24 @@ S-2 is the complete lead-routing default:
 S-2 tasks carry the selected queue, owner, territory, capacity evidence, SLA,
 and decision cell through the shared action outbox and connector path.
 
+S-4 is the complete collections default:
+
+| Setting | Executable default |
+|---|---|
+| Priority | score ≥ 0.7; dialer queue, A2, one-day SLA |
+| Standard | score ≥ 0.4; digital treatment, A2, one-day SLA |
+| Defer | score ≥ 0; deliberate no-contact recommendation, A0 |
+| Settlement | optional priority-tier action; A1 approval required; zero starter spending budget |
+| Contact limits | six lifetime contacts and one action per seven-day window |
+| Eligibility | `collections_eligible`, `regulatory_contact_allowed`, and `within_contact_hours` must be true |
+| Protection | `vulnerable` must be false; missing evidence blocks delivery |
+| Experiment | 10% holdout; remaining assignments split across dialer and digital cells |
+| Guardrails | zero complaints, regulatory violations, and vulnerable-customer contacts; maximum contact frequency 1; minimum execution rate 0.95 |
+| Measurement | champion/challenger; named `net_recovery` outcome per receivable over 30 days |
+
 ### Minimal defaults
 
-**S-4 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-5 through S-12 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -172,7 +190,6 @@ require an owner-approved policy change before spending.
 
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
-| S-4 | collections queue / A2 | champion_challenger / net_recovery | complaints: 0 |
 | S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
 | S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
@@ -190,7 +207,7 @@ module-specific estimators exist.
 ## Composition and execution
 
 See [executable solution pipelines](executable-pipelines.md) for the input
-contract, example, read-backs, failure behavior, and the S-1, S-2, and S-3 journeys.
+contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, and S-4 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -203,6 +220,9 @@ evidence. Levels 3 and 4 require M-6.
 For S-3, it refuses incomplete short-tenure censoring, an unstated or mismatched
 value horizon, and entity accounting that can count one customer more than
 once; level 2 also requires M-5.
+For S-4, it enforces regulatory contact limits, vulnerable-customer protection,
+and point-in-time promise-to-pay labels. All completed modules run these checks before
+the graph is persisted and again before execution.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

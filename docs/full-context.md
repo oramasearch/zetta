@@ -84,6 +84,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   permanent value-band holdouts, allocation reports, and net-value outcome
   evidence feed the ROI readout. See [solutions/S-3.md](solutions/S-3.md).
 
+- **S-4 Collections Prioritization (#1113)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 foundations and M-6 uplift selection. The composed correctness
+  gate refuses missing regulatory contact limits, unsafe vulnerable-customer
+  handling, and promise-to-pay labels that are not frozen at prediction time.
+  Governed digital and dialer delivery preserves a permanent holdout and feeds
+  the net-recovery readout. See [solutions/S-4.md](solutions/S-4.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

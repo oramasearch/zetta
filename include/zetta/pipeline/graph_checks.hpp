@@ -322,6 +322,9 @@ class S2CapacityRoutingCheck final : public Check {
 public:
     std::string name() const override { return "s2_capacity_routing"; }
     bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-3's customer-value correctness adaptations (#1112). The module refuses
 // immature value labels, an unstated prediction horizon, and entity accounting
 // that can count one customer more than once.
@@ -355,6 +358,30 @@ public:
     bool evaluates_composed_graph() const noexcept override {
         return true;
     }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-4 collections correctness adaptations (#1113). Regulatory eligibility
+// and frequency limits, vulnerable-customer protection, and point-in-time
+// promise-to-pay labels are deployment refusals on the composed Pipeline.
+class S4RegulatoryContactCheck final : public Check {
+public:
+    std::string name() const override { return "s4_regulatory_contact"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4VulnerableCustomerCheck final : public Check {
+public:
+    std::string name() const override { return "s4_vulnerable_customer"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4PromiseToPayPointInTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s4_promise_to_pay_point_in_time"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

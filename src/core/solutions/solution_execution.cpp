@@ -177,7 +177,7 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                 }
                 const std::string solution_id =
                     state->binding.value("solution", std::string{});
-                if ((solution_id == "S-1" || solution_id == "S-3") &&
+                if ((solution_id == "S-1" || solution_id == "S-3" || solution_id == "S-4") &&
                     state->binding.value("level", 1) >= 3 &&
                     stage.methodology->id == "M-6") {
                     for (const zetta::pipeline::RunOutput& output :

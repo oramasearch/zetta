@@ -156,6 +156,80 @@ TEST(DecisionPolicy, RetentionTemplateEnforcesActionAuthorityAndRecordedMonthlyC
     }
 }
 
+TEST(DecisionPolicy, CollectionsTemplateEnforcesTreatmentsAndProtectionEvidence) {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    DecisionPolicyStore store{replication};
+    std::string error;
+    const auto defaults = zetta::solutions::solution_templates("S-4");
+    const auto policy = store.create("S-4", defaults.policy, "owner", &error);
+    ASSERT_TRUE(policy) << error;
+    Json receivable = {
+        {"entity_id", "priority"},
+        {"score", 0.9},
+        {"collections_eligible", true},
+        {"regulatory_contact_allowed", true},
+        {"within_contact_hours", true},
+        {"vulnerable", false}};
+    const auto priority = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(priority) << error;
+    EXPECT_EQ(priority->action, "dialer_queue");
+    EXPECT_TRUE(priority->actionable);
+
+    receivable["entity_id"] = "standard";
+    receivable["score"] = 0.5;
+    const auto standard = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(standard) << error;
+    EXPECT_EQ(standard->action, "digital_treatment");
+    EXPECT_TRUE(standard->actionable);
+    const auto repeated = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(repeated) << error;
+    EXPECT_FALSE(repeated->actionable);
+    EXPECT_EQ(repeated->reasons.front(), "frequency cap reached");
+
+    receivable["entity_id"] = "defer";
+    receivable["score"] = 0.2;
+    const auto defer = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(defer) << error;
+    EXPECT_EQ(defer->action, "no_contact");
+    EXPECT_FALSE(defer->actionable);
+
+    for (const std::string field : {
+             "collections_eligible",
+             "regulatory_contact_allowed",
+             "within_contact_hours"}) {
+        receivable["entity_id"] = field;
+        receivable["score"] = 0.9;
+        receivable[field] = false;
+        const auto blocked = store.decide(
+            policy->id, receivable, "owner", &error);
+        ASSERT_TRUE(blocked) << error;
+        EXPECT_FALSE(blocked->actionable);
+        receivable.erase(field);
+        const auto absent = store.decide(
+            policy->id, receivable, "owner", &error);
+        ASSERT_TRUE(absent) << error;
+        EXPECT_FALSE(absent->actionable);
+        receivable[field] = true;
+    }
+
+    receivable["entity_id"] = "vulnerable";
+    receivable["vulnerable"] = true;
+    const auto vulnerable = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(vulnerable) << error;
+    EXPECT_FALSE(vulnerable->actionable);
+    receivable.erase("vulnerable");
+    receivable["entity_id"] = "missing-vulnerability";
+    const auto missing = store.decide(
+        policy->id, receivable, "owner", &error);
+    ASSERT_TRUE(missing) << error;
+    EXPECT_FALSE(missing->actionable);
+}
+
 TEST(DecisionPolicy, A1WaitsForApprovalAndRecordsPolicyVersion) {
     zetta::test::TempDir directory;
     ReplicationManager replication{zetta::util::new_uuid()};

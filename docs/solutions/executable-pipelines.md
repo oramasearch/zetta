@@ -57,8 +57,11 @@ a substitute classifier. S-1 and S-2 use M-1's `account` / `risk` score table.
 S-2 binds conversion propensity to its conversion-band decision cell. S-3 uses
 M-1's `Write lifetime value predictions` output with `entity` /
 `predicted_value`; its squared-error model and result table drive policy
-directly. Inputs and score scales for remaining minimal modules stay their
-catalogue module's responsibility.
+directly.
+S-4 narrows that default to M-1's `Prioritize collections treatments` output
+in `collections_results`, using `receivable` and `recovery_score` columns.
+Inputs and score scales for remaining minimal modules remain their catalogue module's
+responsibility; their templates are deliberately minimal.
 
 ## Run and read back
 
@@ -141,3 +144,10 @@ real M-1 value table is the decision source, checks audience delivery and A1
 budget approvals, proves holdouts never reach the connector, records a planted
 75-unit net-value effect, and requires `get_roi_readout` to recover it inside
 the 95% confidence interval.
+
+`SolutionJourney.CollectionsPrioritizationProtectsHoldoutAndRecoversPlantedEffect`
+builds S-4 over a partitioned receivables table, excludes a future promise
+update, refuses contact for vulnerable and regulator-ineligible rows, delivers
+both digital treatments and dialer tasks through the action outbox, records a
+planted 0.15 net-recovery effect, and verifies that the readout recovers it
+inside the confidence interval.

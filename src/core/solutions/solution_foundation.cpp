@@ -278,7 +278,6 @@ void bind_s2_correctness(ir::ExecutionGraph& graph,
     manifest->attributes["s2_correctness"] = std::move(profile);
 }
 
-
 void bind_s3_correctness(ir::ExecutionGraph& graph,
                          const Json& settings,
                          const Json& sources) {
@@ -320,6 +319,59 @@ void bind_s3_correctness(ir::ExecutionGraph& graph,
            common.value("duplicate_entity_policy", "refuse")}}}};
 }
 
+void bind_s4_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources,
+                         const ml::Solution& solution) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-4") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    const Json& policy = solution.templates.policy;
+    Json profile = {
+        {"prediction_time", snapshot.as_of},
+        {"policy", policy},
+        {"regulatory_contact",
+         {{"eligibility_field", "collections_eligible"},
+          {"contact_allowed_field", "regulatory_contact_allowed"},
+          {"contact_hours_field", "within_contact_hours"},
+          {"contact_cap", policy.at("contact_cap")},
+          {"frequency_cap", policy.at("frequency_cap")}}},
+        {"vulnerable_customer",
+         {{"field", "vulnerable"},
+          {"excluded_when_true", true}}},
+        {"promise_to_pay_labels",
+         {{"semantics", "promise_to_pay"},
+          {"label_column",
+           settings.at("dataset").value("label_column", std::string{})},
+          {"observation_time_column", snapshot.time_column},
+          {"snapshot_as_of", snapshot.as_of},
+          {"point_in_time",
+           common.value("promise_to_pay_point_in_time", true)},
+          {"future_updates_excluded",
+           common.value("future_promise_updates_excluded", true)}}}};
+    manifest->attributes["s4_correctness"] = std::move(profile);
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) != "uplift") {
+            continue;
+        }
+        model->attributes["randomized_cycles"] =
+            common.value("randomized_cycles", 1);
+        model->attributes["sleeping_dogs_action"] = "no_contact";
+        model->attributes["positive_uplift_only"] = true;
+    }
+}
 
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
@@ -397,6 +449,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s1_correctness"] = {{"type", "object"}};
     schema["properties"]["s2_correctness"] = {{"type", "object"}};
     schema["properties"]["s3_correctness"] = {{"type", "object"}};
+    schema["properties"]["s4_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -437,6 +490,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s2_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s3_correctness(composed.graph, settings, input.at("sources"));
+    bind_s4_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"), *solution);
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -478,6 +533,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
+        if (solution->id == "S-4") {
+            binding["decision_source"]["entity_column"] = "receivable";
+            binding["decision_source"]["score_column"] = "recovery_score";
+            binding["decision_source"]["output_name"] =
+                "Prioritize collections treatments";
+        }
     }
     if (solution->id == "S-1") {
         binding["s1_correctness"] = composed.graph.find_node("solution_manifest")
@@ -492,6 +553,9 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         binding["s3_correctness"] =
             composed.graph.find_node("solution_manifest")
                 ->attributes.at("s3_correctness");
+    } else if (solution->id == "S-4") {
+        binding["s4_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("s4_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -621,7 +685,7 @@ std::optional<std::map<std::string, Json>> uplift_rows(
     std::map<std::string, Json> targeting;
     const std::string solution_id =
         binding.value("solution", std::string{});
-    if ((solution_id != "S-1" && solution_id != "S-3") ||
+    if ((solution_id != "S-1" && solution_id != "S-3" && solution_id != "S-4") ||
         binding.value("level", 1) < 3) {
         return targeting;
     }
@@ -876,6 +940,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     double discount_fairness_gap = 0.0;
     double cohort_calibration_error = 0.0;
     double predicted_value_total = 0.0;
+    double regulatory_contact_violations = 0.0;
+    double vulnerable_customer_contacts = 0.0;
     std::size_t actionable = 0;
     std::size_t delivered = 0;
     std::size_t capacity_violations = 0;
@@ -958,6 +1024,16 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
         if (decision->actionable) {
             ++delivered;
+            const bool regulatory_allowed =
+                entity.value("collections_eligible", false) &&
+                entity.value("regulatory_contact_allowed", false) &&
+                entity.value("within_contact_hours", false);
+            if (!regulatory_allowed) {
+                regulatory_contact_violations += 1.0;
+            }
+            if (entity.value("vulnerable", true)) {
+                vulnerable_customer_contacts += 1.0;
+            }
         }
         ++driver_counts[driver];
         decision_log.push_back({{"entity_id", decision->entity_id},
@@ -1031,6 +1107,17 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 policy_budget == 0.0 ? 0.0 : cost / policy_budget);
             monitor->observe_guardrail("cohort_calibration_error",
                                        cohort_calibration_error);
+        } else if (binding.value("solution", std::string{}) == "S-4") {
+            monitor->observe_guardrail(
+                "regulatory_contact_violations",
+                regulatory_contact_violations);
+            monitor->observe_guardrail(
+                "vulnerable_customer_contacts",
+                vulnerable_customer_contacts);
+            monitor->observe_guardrail(
+                "contact_frequency", maximum_contacts);
+            monitor->observe_guardrail("complaints", complaints / entities.size());
+            monitor->observe_guardrail("action_execution_rate", execution_rate);
         } else {
             monitor->observe_guardrail("complaints",
                                        complaints / entities.size());

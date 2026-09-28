@@ -71,7 +71,8 @@ Solution band_a(
     solution.issue = issue(solution.id == "S-1" ? 1110
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
-                                                   : 1102);
+                           : solution.id == "S-4" ? 1113
+                                                    : 1102);
     return solution;
 }
 
@@ -272,17 +273,24 @@ const std::vector<Solution>& solutions() {
             "Match treatment and queue order to recoverability, cost, and customer protections.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-6", "attachable", 3}},
-            {"M-2", "M-1", "M-3", "M-6"}, {"policy engine", "dialer queues"},
-            {"L1"},
-            {{"digital treatments and queueing", "A2"}, {"settlements", "A1"},
+            {"M-2", "M-1", "M-3", "M-6"},
+            {"policy-engine treatment selection", "digital treatment delivery",
+             "dialer queue tasks"},
+            {"L1 digital treatments", "L1 dialer queue tasks"},
+            {{"digital treatments and dialer queueing", "A2"}, {"settlements", "A1"},
              {"thresholds inside approved bands", "A3"}},
             {{"entity", true, "account, customer, or household"},
-             {"label", true, "payment and recovery outcome"},
-             {"time", true, "delinquency and contact history cutoff"},
-             {"treatment", false, "contact channel and offer"}},
-            "Recovery tiers with contact-time rules, frequency caps, hardship eligibility, settlement approvals, and suppression.",
+             {"label", true, "point-in-time promise-to-pay and net recovery outcome"},
+             {"time", true, "promise, delinquency, and contact-history cutoff"},
+             {"feature", true, "point-in-time balance, aging, payment, and contact signals"},
+             {"eligibility", true, "regulatory contact eligibility and permitted contact hours"},
+             {"vulnerability", true, "explicit vulnerable-customer protection evidence"},
+             {"contact", true, "prior contact counts and timestamps"},
+             {"treatment", false, "contact channel, digital treatment, and offer"},
+             {"owner", false, "collections team or queue owner"}},
+            "Recovery tiers with contact-time rules, frequency caps, vulnerability protection, settlement approvals, and suppression.",
             "Champion/challenger treatment cells measured on net recovery after cost.",
-            {"contact limits", "complaints", "hardship protections", "fairness", "net recovery"},
+            {"contact limits", "complaints", "vulnerable-customer contacts", "fairness", "net recovery"},
             levels("queue prioritization", "add treatment policy",
                    "add uplift selection", "add bounded digital treatment")),
         band_a(
