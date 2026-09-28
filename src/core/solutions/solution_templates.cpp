@@ -65,8 +65,9 @@ void retention_defaults(SolutionTemplates& result) {
     result.minimal = false;
     result.policy["tiers"] = {
         {{"name", "high"}, {"minimum_score", 0.7}, {"action", "csm_task"},
-         {"allowed_actions", {"csm_task", "discount"}}},
-        {{"name", "medium"}, {"minimum_score", 0.4}, {"action", "retention_journey"}},
+         {"allowed_actions", {"csm_task", "discount", "no_contact"}}},
+        {{"name", "medium"}, {"minimum_score", 0.4}, {"action", "retention_journey"},
+         {"allowed_actions", {"retention_journey", "no_contact"}}},
         {{"name", "low"}, {"minimum_score", 0.0}, {"action", "no_contact"}}};
     result.policy["actions"] = {
         {"csm_task", {{"autonomy", "A2"}, {"sla_seconds", 86400},
@@ -84,9 +85,11 @@ void retention_defaults(SolutionTemplates& result) {
         predicate("in_collections", true), predicate("open_complaint", true),
         predicate("vulnerable", true)};
     result.experiment.holdouts = {{"high", 0.1}, {"medium", 0.1}, {"low", 0.1}};
+    result.experiment.treatment_cells = {"csm_task", "retention_journey"};
     result.guardrails = {{"complaints", 0.01, "maximum"},
                          {"discount_budget", 1000.0, "maximum"},
-                         {"contact_fatigue", 1.0, "maximum"}};
+                         {"contact_fatigue", 1.0, "maximum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
 }
 
 } // namespace

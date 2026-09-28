@@ -33,6 +33,7 @@ The reusable annotation and methodology-specific checks are:
 | `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
+| `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -47,6 +48,33 @@ All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
+
+### S-1 composed solution checks
+
+The S-1 checks evaluate the full composed graph once, before the ordinary gate
+checks evaluate each methodology stage. They engage only when the solution
+manifest names `S-1` and carries its bound foundation. This preserves each
+methodology's native parser while allowing cross-stage assertions.
+
+`s1_point_in_time` uses the snapshot time parser for every methodology Connect
+source and refuses a live source, a missing cutoff, a different time
+representation, or a cutoff after T. `s1_label_window` enforces the blackout
+gap. `s1_temporal_validation` requires an out-of-time split, at least two rolling
+windows, and an explicit stability result. `s1_group_split` requires a named,
+disjoint customer group.
+
+`s1_censoring` requires fully observed propensity labels and, from level 2, the
+censoring-aware M-5 stage. `s1_calibration` requires a disjoint Platt or isotonic
+calibration set whenever sampling is used. `s1_entity_resolution` requires M-2,
+one actionable unit, and duplicate refusal. `s1_leakage_review` applies the
+configured blocklist and refuses reported AUC above its default 0.95 threshold.
+`s1_level_composition` requires M-5 at level 2, M-6 with at least one randomized
+cycle and positive-only/no-contact targeting at level 3, and M-8 at level 4.
+
+The profile is created from the snapshot, dataset roles, and optional
+`sources.correctness` settings during `create_solution`. The same bound graph is
+checked again by `run_solution`. See [S-1](../solutions/S-1.md) for the operator
+contract and refusal list.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

@@ -112,6 +112,27 @@ std::vector<std::string> heaviest_features(const std::vector<std::string>& names
     return columns;
 }
 
+std::vector<std::pair<std::string, double>> reason_codes(
+    const ml::EntityExplanation& explanation,
+    const std::vector<std::string>& feature_names,
+    std::size_t count) {
+    std::vector<std::pair<std::string, double>> ranked;
+    const std::size_t available =
+        std::min(explanation.values.size(), feature_names.size());
+    ranked.reserve(available);
+    for (std::size_t index = 0; index < available; ++index) {
+        ranked.emplace_back(feature_names[index], explanation.values[index]);
+    }
+    std::stable_sort(
+        ranked.begin(), ranked.end(), [](const auto& left, const auto& right) {
+            return std::abs(left.second) > std::abs(right.second);
+        });
+    if (ranked.size() > count) {
+        ranked.resize(count);
+    }
+    return ranked;
+}
+
 // One entity's value for one feature. Read from the GLOBAL feature table, never
 // the sliced one: a node holds scores for every entity but features for only its
 // own shard, so the sliced table would leave most rows' evidence blank on a
@@ -579,6 +600,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         if (const auto it = by_entity.find(score.entity); it != by_entity.end()) {
             action.dominant_driver = it->second->dominant_feature;
             action.dominant_value = it->second->dominant_value;
+            action.reason_codes =
+                reason_codes(*it->second, state.feature_names, 3);
         }
         state.playbook.push_back(std::move(action));
     }
@@ -624,6 +647,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             }
             nlohmann::json row = nlohmann::json::object();
             for (auto& [key, value] : cells) row[key] = std::move(value);
+            row["reason_codes"] = nlohmann::json::array();
+            for (const auto& [reason, effect] : action.reason_codes) {
+                row["reason_codes"].push_back(
+                    {{"reason", reason}, {"effect", effect}});
+            }
             table->add_row(std::move(row));
         }
         at_risk_table = kChurnResultsDatabase + std::string(".") + name;

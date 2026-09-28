@@ -13,6 +13,80 @@
 
 namespace {
 
+zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-1");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] = "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s1_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"feature_window_end", "2024-01-01T00:00:00Z"},
+        {"label_window_start", "2024-01-02T00:00:00Z"},
+        {"blackout_gap_seconds", 86400.0},
+        {"validation",
+         {{"split", "out_of_time"},
+          {"rolling_windows", 3},
+          {"stable_across_windows", true},
+          {"group_column", "customer_id"},
+          {"group_disjoint", true}}},
+        {"labels", {{"fully_observed", true}}},
+        {"sampling",
+         {{"used", false},
+          {"calibration", "platt"},
+          {"calibration_disjoint", true}}},
+        {"entity_resolution",
+         {{"methodology", "M-2"},
+          {"actionable_unit", "customer_id"},
+          {"duplicate_policy", "refuse"}}},
+        {"leaky_feature_blocklist", {"churned", "churn_date"}},
+        {"feature_names", {"usage", "tenure"}},
+        {"too_good_auc_threshold", 0.95}};
+    for (const auto& model :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["randomized_cycles"] = 1;
+            model->attributes["sleeping_dogs_action"] = "no_contact";
+            model->attributes["positive_uplift_only"] = true;
+        }
+    }
+    return composed.graph;
+}
+
+const zetta::pipeline::CheckResult* check_result(
+    const zetta::pipeline::ValidationReport& report,
+    const std::string& name) {
+    for (const auto& check : report.checks) {
+        if (check.name == name) {
+            return &check;
+        }
+    }
+    return nullptr;
+}
+
+void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
@@ -99,6 +173,31 @@ TEST(SolutionRegistry, ComposesEverySelectedMethodologyThroughItsCallback) {
     }
 }
 
+TEST(SolutionRegistry, ChurnEntryCarriesTheCompleteReferenceContract) {
+    const zetta::ml::Solution* churn = zetta::ml::find_solution("S-1");
+    ASSERT_NE(churn, nullptr);
+    EXPECT_TRUE(churn->runnable);
+    EXPECT_EQ(churn->issue,
+              "https://github.com/oramasearch/zetta/issues/1110");
+    EXPECT_EQ(churn->action_patterns.size(), 3u);
+    EXPECT_EQ(churn->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(churn->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"csm_task", "retention_journey"}));
+    ASSERT_EQ(churn->templates.guardrails.size(), 4u);
+    EXPECT_EQ(churn->templates.guardrails.back().metric,
+              "action_execution_rate");
+    EXPECT_EQ(churn->templates.guardrails.back().direction, "minimum");
+
+    const nlohmann::json value = zetta::ml::solution_json(*churn);
+    EXPECT_FALSE(value.contains("capability_levels"));
+    ASSERT_TRUE(value.contains("levels"));
+    ASSERT_EQ(value.at("levels").size(), 4u);
+    EXPECT_EQ(value.at("levels").at(0),
+              (nlohmann::json{{"level", 1},
+                              {"name", "CL-1"},
+                              {"description", "propensity, reasons, segments, holdout and report"}}));
+}
+
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
     const zetta::ml::Solution* sketch = zetta::ml::find_solution("B-1");
     ASSERT_NE(sketch, nullptr);
@@ -130,6 +229,84 @@ TEST(SolutionRegistry, ComposedGateChecksEachStageAndRejectsHiddenDataDependenci
     composed.graph.add_edge("solution_stage_2_train_churn_model", model->id,
                             zetta::ir::EdgeKind::DataFlow);
     EXPECT_FALSE(gate.run(composed.graph).passed());
+}
+
+TEST(SolutionRegistry, S1CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s1_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto point_in_time = bound_s1_graph();
+    for (const auto& source :
+         point_in_time.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (source->attributes.contains("solution_stage")) {
+            source->attributes["source_kind"] = "live";
+            break;
+        }
+    }
+    expect_s1_failure(point_in_time, "s1_point_in_time");
+
+    auto label_window = bound_s1_graph();
+    label_window.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["label_window_start"] =
+            "2024-01-01T12:00:00Z";
+    expect_s1_failure(label_window, "s1_label_window");
+
+    auto temporal = bound_s1_graph();
+    temporal.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["validation"]["split"] = "random";
+    expect_s1_failure(temporal, "s1_temporal_validation");
+
+    auto group = bound_s1_graph();
+    group.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["validation"]["group_disjoint"] = false;
+    expect_s1_failure(group, "s1_group_split");
+
+    auto censoring = bound_s1_graph();
+    censoring.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["labels"]["fully_observed"] = false;
+    expect_s1_failure(censoring, "s1_censoring");
+
+    auto calibration = bound_s1_graph();
+    auto& sampling = calibration.find_node("solution_manifest")
+                         ->attributes["s1_correctness"]["sampling"];
+    sampling["used"] = true;
+    sampling["calibration"] = "none";
+    expect_s1_failure(calibration, "s1_calibration");
+
+    auto entities = bound_s1_graph();
+    entities.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["entity_resolution"]
+                   ["duplicate_policy"] = "allow";
+    expect_s1_failure(entities, "s1_entity_resolution");
+
+    auto blocked = bound_s1_graph();
+    blocked.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["leaky_feature_blocklist"]
+        .push_back("usage");
+    expect_s1_failure(blocked, "s1_leakage_review");
+
+    auto suspicious = bound_s1_graph();
+    suspicious.find_node("solution_manifest")
+        ->attributes["s1_correctness"]["reported_auc"] = 0.951;
+    expect_s1_failure(suspicious, "s1_leakage_review");
+}
+
+TEST(SolutionRegistry, S1EveryLevelBuildsAndLevelThreeProtectsSleepingDogs) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto report =
+            zetta::pipeline::default_gate().run(bound_s1_graph(level));
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+    }
+
+    auto graph = bound_s1_graph(3);
+    for (const auto& model :
+         graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["randomized_cycles"] = 0;
+        }
+    }
+    expect_s1_failure(graph, "s1_level_composition");
 }
 
 } // namespace

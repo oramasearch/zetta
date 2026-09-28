@@ -4,6 +4,9 @@ Runtime foundations shared by deployed solutions: experimental measurement,
 action policy, monitoring, audit, and durable evidence that connects model scores
 and policy decisions to actions and measured outcomes.
 
+- [S-1.md](S-1.md) — runnable churn and retention module: data roles,
+  levels, policy and holdout defaults, action payloads, run sequence, and every
+  domain refusal (#1110).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -59,6 +62,9 @@ surfaces. They are also eligible for an agent's opt-in, read-only capability
 list. `pipelines:manage` grants the two solution write operations. The permission
 vocabulary test checks both `create_solution` and `run_solution` explicitly,
 alongside the owner-authorizes-every-registry-operation invariant.
+The public field is `levels`: each element is
+`{level: 1..4, name, description}`. Control surfaces post that integer as
+`create_solution.level`.
 
 ## Portfolio-number mapping
 
@@ -97,7 +103,7 @@ S-1 is the complete retention default:
 | Exclusions | named entity predicates `in_collections`, `open_complaint`, `vulnerable`; each must explicitly be false, so missing evidence blocks |
 | Budget / stop | 1,000 currency units per policy version; kill switch off |
 | Experiment | independent 10% holdout probability in each high/medium/low tier, 90% treatment |
-| Guardrails | maximum complaint fraction 0.01; discount budget 1,000; maximum monthly contact count 1 |
+| Guardrails | maximum complaint fraction 0.01; discount budget 1,000; maximum monthly contact count 1; minimum action-execution rate 0.95 |
 | Measurement | holdout; named `retained` outcome per customer over 30 days |
 
 These numerical defaults are editable starter settings, not calibrated risk
@@ -150,6 +156,8 @@ contract, example, read-backs, failure behavior, and the S-1 journey.
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
 with control edges. A missing selected shape or runner is refused explicitly.
+For S-1, the composed gate also enforces the eight domain checks and the selected
+level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

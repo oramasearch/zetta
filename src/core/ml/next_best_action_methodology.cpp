@@ -163,11 +163,21 @@ bool validate_structure(const ir::ExecutionGraph &graph,
 
 bool validate_source(const Json &source, std::string &database,
                      std::string &table, std::string &error) {
-  if (!source.is_object() || source.size() != 2 || !source.contains("source") ||
+  const std::set<std::string> allowed = {
+      "solution_snapshot_as_of", "snapshot_as_of", "source", "source_kind",
+      "table"};
+  if (!source.is_object() || !source.contains("source") ||
       !source.contains("table") || !source["source"].is_string() ||
       !source["table"].is_string()) {
     error = "next-best-action connect must name source and table strings";
     return false;
+  }
+  for (const auto &[key, value] : source.items()) {
+    (void)value;
+    if (!allowed.contains(key)) {
+      error = "next-best-action connect contains an unsupported attribute";
+      return false;
+    }
   }
   database = source["source"].get<std::string>();
   table = source["table"].get<std::string>();

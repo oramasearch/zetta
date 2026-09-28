@@ -2,8 +2,11 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <set>
 #include <map>
+#include <optional>
 #include <utility>
 #include <nlohmann/json-schema.hpp>
 
@@ -13,8 +16,10 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/ml/solution.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/query/ast.hpp"
 #include "zetta/query/distributed_select.hpp"
 #include "zetta/solutions/action_integration.hpp"
@@ -43,7 +48,24 @@ std::uint64_t experiment_seed(const std::string& scope) {
 }
 
 std::string entity_key(const Json& entity) {
-    return entity.is_string() ? entity.get<std::string>() : entity.dump();
+    if (entity.is_string()) {
+        return entity.get<std::string>();
+    }
+    if (entity.is_number_integer()) {
+        return std::to_string(entity.get<std::int64_t>());
+    }
+    if (entity.is_number_unsigned()) {
+        return std::to_string(entity.get<std::uint64_t>());
+    }
+    if (entity.is_number_float()) {
+        const double number = entity.get<double>();
+        if (std::isfinite(number) && std::floor(number) == number &&
+            number >= static_cast<double>(std::numeric_limits<std::int64_t>::min()) &&
+            number <= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+            return std::to_string(static_cast<std::int64_t>(number));
+        }
+    }
+    return entity.dump();
 }
 
 std::shared_ptr<data::Table> table_at(Node& node, const std::string& path) {
@@ -98,6 +120,7 @@ Json create_bindings(Node& node, const pipeline::Project& project,
         return {};
     }
     Json binding = settings;
+    binding["solution"] = solution.id;
     binding["scope"] = scope;
     binding["policy_id"] = policy->id;
     binding["experiment_id"] = created->id;
@@ -107,6 +130,11 @@ Json create_bindings(Node& node, const pipeline::Project& project,
 }
 
 void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    const bool s1 = manifest &&
+                    manifest->attributes.value("solution", std::string{}) ==
+                        "S-1";
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
@@ -117,7 +145,81 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
         step->attributes["source_kind"] = "snapshot";
         if (snapshot.as_of.is_string()) {
             step->attributes["snapshot_as_of"] = snapshot.as_of;
+        } else if (s1) {
+            step->attributes["solution_snapshot_as_of"] = snapshot.as_of;
         }
+    }
+}
+
+void bind_s1_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-1") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    const double blackout_gap =
+        common.value("blackout_gap_seconds", 7.0 * 86400.0);
+    const std::optional<TimePoint> cutoff = parse_time_point(snapshot.as_of);
+    const double feature_window_end = cutoff ? cutoff->value : 0.0;
+    const Json default_blocklist = {
+        "churned", "churn_date", "cancellation_reason",
+        "retention_outcome", "post_churn_status"};
+    Json profile = {
+        {"prediction_time", snapshot.as_of},
+        {"feature_window_end", feature_window_end},
+        {"label_window_start", feature_window_end + blackout_gap},
+        {"blackout_gap_seconds", blackout_gap},
+        {"validation",
+         {{"split", common.value("split", "out_of_time")},
+          {"rolling_windows", common.value("rolling_windows", 3)},
+          {"stable_across_windows",
+           common.value("stable_across_windows", true)},
+          {"group_column",
+           settings.at("dataset").value("entity_column", std::string{})},
+          {"group_disjoint", common.value("group_disjoint", true)}}},
+        {"labels",
+         {{"fully_observed", common.value("fully_observed_labels", true)}}},
+        {"sampling",
+         {{"used", common.value("sampling_used", false)},
+          {"calibration", common.value("calibration", "platt")},
+          {"calibration_disjoint",
+           common.value("calibration_disjoint", true)}}},
+        {"entity_resolution",
+         {{"methodology", "M-2"},
+          {"actionable_unit",
+           settings.at("dataset").value("entity_column", std::string{})},
+          {"duplicate_policy",
+           common.value("duplicate_policy", "refuse")}}},
+        {"leaky_feature_blocklist",
+         common.value("leaky_feature_blocklist", default_blocklist)},
+        {"feature_names",
+         settings.at("dataset").value("feature_columns", Json::array())},
+        {"too_good_auc_threshold",
+         common.value("too_good_auc_threshold", 0.95)}};
+    if (common.contains("reported_auc")) {
+        profile["reported_auc"] = common.at("reported_auc");
+    }
+    manifest->attributes["s1_correctness"] = std::move(profile);
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) != "uplift") {
+            continue;
+        }
+        model->attributes["randomized_cycles"] =
+            common.value("randomized_cycles", 1);
+        model->attributes["sleeping_dogs_action"] = "no_contact";
+        model->attributes["positive_uplift_only"] = true;
     }
 }
 
@@ -184,13 +286,17 @@ std::string validate_solution_binding(const Json& binding) {
         }
     };
     Json schema = solution_foundation_schema();
-    for (const std::string key : {"scope", "policy_id", "experiment_id", "monitor_id"}) {
+    for (const std::string key : {"scope", "policy_id", "experiment_id", "monitor_id",
+                                  "solution"}) {
         schema["required"].push_back(key);
         schema["properties"][key] = {{"type", "string"}, {"minLength", 1}};
     }
     schema["required"].push_back("measurement");
     schema["required"].push_back("decision_source");
     schema["properties"]["measurement"] = solution_measurement_schema();
+    schema["properties"]["level"] = {
+        {"type", "integer"}, {"minimum", 1}, {"maximum", 4}};
+    schema["properties"]["s1_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -225,6 +331,22 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     if (!database || !database->find_table(snapshot->source_table)) {
         return ApiResult::failure("not_found", "snapshot source table does not exist");
     }
+    bind_sources(composed.graph, *snapshot);
+    bind_s1_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"));
+    composed.graph.find_node("solution_manifest")->attributes["foundation"] =
+        settings;
+    const pipeline::ValidationReport correctness =
+        pipeline::default_gate().run(composed.graph);
+    if (!correctness.passed()) {
+        for (const pipeline::CheckResult& check : correctness.checks) {
+            if (check.status == pipeline::CheckStatus::Fail) {
+                return ApiResult::failure(
+                    "invalid_input", "solution correctness gate: " +
+                                         check.name + ": " + check.reason);
+            }
+        }
+    }
     const auto primary = std::ranges::find_if(solution->composition, [](const auto& entry) {
         return entry.role == "primary";
     });
@@ -243,11 +365,18 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     if (!error.empty()) {
         return ApiResult::failure("engine_error", error);
     }
+    binding["level"] = level;
     if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
     }
-    bind_sources(composed.graph, *snapshot);
+    if (solution->id == "S-1") {
+        binding["s1_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("s1_correctness");
+        if (level >= 3) {
+            binding["measurement"]["design"] = "uplift_cells";
+        }
+    }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
         if (component == "policy") {
@@ -370,6 +499,44 @@ std::optional<std::vector<Json>> score_rows(Node& node, const Json& binding,
     return std::nullopt;
 }
 
+std::optional<std::map<std::string, Json>> uplift_rows(
+    Node& node, const Json& binding,
+    const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
+    std::map<std::string, Json> targeting;
+    if (binding.value("solution", std::string{}) != "S-1" ||
+        binding.value("level", 1) < 3) {
+        return targeting;
+    }
+    for (const pipeline::RunOutput& output : outputs) {
+        if (output.kind != "dataset" || output.name != "treatment effects") {
+            continue;
+        }
+        const std::shared_ptr<data::Table> table = table_at(node, output.ref);
+        if (!table) {
+            continue;
+        }
+        const std::optional<std::vector<Json>> rows =
+            read_rows(node, *table, error);
+        if (!rows) {
+            return std::nullopt;
+        }
+        for (const Json& row : *rows) {
+            if (!row.contains("entity") ||
+                !row.contains("estimated_uplift") ||
+                !row.at("estimated_uplift").is_number() ||
+                !row.contains("recommended") ||
+                !row.at("recommended").is_boolean()) {
+                error = "S-1 level 3 treatment effects have an invalid row";
+                return std::nullopt;
+            }
+            targeting[entity_key(row.at("entity"))] = row;
+        }
+        return targeting;
+    }
+    error = "S-1 level 3 produced no treatment-effects table";
+    return std::nullopt;
+}
+
 bool record_no_contact(Node& node, const DecisionRecord& decision,
                        const Json& binding, const std::string& run_id,
                        const std::string& actor) {
@@ -392,6 +559,7 @@ bool record_no_contact(Node& node, const DecisionRecord& decision,
 }
 
 bool deliver_decision(Node& node, const DecisionRecord& decision,
+                      const Json& entity,
                       const Json& config, const Json& binding,
                       const std::string& run_id, const std::string& actor,
                       std::string& error) {
@@ -406,13 +574,17 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
     const Json action = config.at("actions").at(decision.action);
     ActionTaskSpec spec;
     spec.decision_id = decision.id;
-    spec.owner = destination.at("owner");
+    spec.owner = entity.value("owner", destination.at("owner").get<std::string>());
     spec.sla_due_at = util::iso8601_seconds_ago(-action.value("sla_seconds", 86400LL));
     spec.connector.kind = *action_connector_kind_from(destination.value("kind", "webhook"));
     spec.connector.endpoint = destination.at("endpoint");
     spec.payload = {{"solution", binding.at("scope")}, {"tier", decision.tier},
                     {"action", decision.action}, {"decision_id", decision.id},
                     {"cost", decision.cost}, {"currency", binding.at("roi_model").at("currency")}};
+    spec.payload["reason_codes"] =
+        entity.value("reason_codes", Json::array());
+    spec.payload["decision_cell"] =
+        entity.value("decision_cell", Json::object());
     spec.idempotency_key = decision.id;
     spec.model_version = run_id;
     spec.agent_version = "solution-foundation-v1";
@@ -448,6 +620,33 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     if (!scored) {
         return ApiResult::failure("engine_error", read_error);
     }
+    const auto targeting = uplift_rows(node, binding, scores, read_error);
+    if (!targeting) {
+        return ApiResult::failure("engine_error", read_error);
+    }
+    if (binding.value("solution", std::string{}) == "S-1") {
+        const double threshold =
+            binding.at("s1_correctness").value("too_good_auc_threshold", 0.95);
+        for (const pipeline::RunOutput& output : scores) {
+            if (output.kind != "model") {
+                continue;
+            }
+            const std::shared_ptr<ml::Model> model = node.find_model(output.ref);
+            if (!model) {
+                continue;
+            }
+            const Json metrics = model->metrics();
+            const double auc = metrics.contains("held_out_auc")
+                                   ? metrics.at("held_out_auc").get<double>()
+                                   : metrics.value("auc", 0.0);
+            if (auc > threshold) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "S-1 AUC exceeds the too-good threshold; review target "
+                    "and post-outcome leakage before actions");
+            }
+        }
+    }
     const Json& snapshot_spec = binding.at("snapshot");
     const std::string snapshot_path = snapshot_spec.at("database").get<std::string>() + "." +
                                       snapshot_spec.at("target_table").get<std::string>();
@@ -479,9 +678,48 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
         Json entity = evidence.at(key);
         entity["score"] = row.at(score_column);
+        for (const std::string field : {"dominant_driver", "driver_effect",
+                                        "reason_codes"}) {
+            if (row.contains(field)) {
+                entity[field] = row.at(field);
+            }
+        }
+        if (!targeting->empty()) {
+            const auto treatment = targeting->find(key);
+            if (treatment == targeting->end()) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "S-1 level 3 treatment output must join exactly once to "
+                    "decision entity " + key);
+            }
+            entity["estimated_uplift"] =
+                treatment->second.at("estimated_uplift");
+            entity["uplift_recommended"] =
+                treatment->second.at("recommended");
+            if (!treatment->second.at("recommended").get<bool>() ||
+                treatment->second.at("estimated_uplift").get<double>() <= 0.0) {
+                entity["action"] = "no_contact";
+            }
+        }
         entity["experiment"] = binding.at("experiment_id");
         entities.push_back(std::move(entity));
     }
+    std::vector<double> customer_values;
+    for (const Json& entity : entities) {
+        for (const std::string field : {"customer_value", "mrr", "value"}) {
+            if (entity.contains(field) && entity.at(field).is_number()) {
+                customer_values.push_back(entity.at(field).get<double>());
+                break;
+            }
+        }
+    }
+    std::sort(customer_values.begin(), customer_values.end());
+    const double low_value = customer_values.empty()
+                                 ? 0.0
+                                 : customer_values[customer_values.size() / 3];
+    const double high_value = customer_values.empty()
+                                  ? 0.0
+                                  : customer_values[(customer_values.size() * 2) / 3];
     auto database = node.find_database("solution_results");
     if (!database) {
         database = node.create_database("solution_results");
@@ -499,6 +737,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     }
     double complaints = 0.0;
     double maximum_contacts = 0.0;
+    std::size_t actionable = 0;
+    std::size_t delivered = 0;
+    std::map<std::string, std::size_t> driver_counts;
+    Json decision_log = Json::array();
     std::string model_version = "run:" + run_id;
     for (const auto& output : scores) {
         if (output.kind == "model") {
@@ -512,11 +754,58 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         if (!decision) {
             return ApiResult::failure("engine_error", error);
         }
-        decisions->add_row(to_json(*decision));
-        if (!deliver_decision(node, *decision, policy->current()->config,
+        std::string value_tier = entity.value("value_tier", std::string{});
+        if (value_tier.empty()) {
+            std::optional<double> customer_value;
+            for (const std::string field : {"customer_value", "mrr", "value"}) {
+                if (entity.contains(field) && entity.at(field).is_number()) {
+                    customer_value = entity.at(field).get<double>();
+                    break;
+                }
+            }
+            if (!customer_value) {
+                value_tier = "unclassified";
+            } else if (*customer_value >= high_value) {
+                value_tier = "high";
+            } else if (*customer_value >= low_value) {
+                value_tier = "medium";
+            } else {
+                value_tier = "low";
+            }
+        }
+        const std::string driver =
+            entity.value("dominant_driver", "unclassified");
+        entity["decision_cell"] = {{"risk", decision->tier},
+                                   {"value", value_tier},
+                                   {"driver", driver}};
+        Json decision_row = to_json(*decision);
+        decision_row["decision_cell"] = entity.at("decision_cell");
+        decision_row["reason_codes"] =
+            entity.value("reason_codes", Json::array());
+        if (entity.contains("estimated_uplift")) {
+            decision_row["estimated_uplift"] =
+                entity.at("estimated_uplift");
+            decision_row["uplift_recommended"] =
+                entity.at("uplift_recommended");
+        }
+        decisions->add_row(std::move(decision_row));
+        if (decision->actionable) {
+            ++actionable;
+        }
+        if (!deliver_decision(node, *decision, entity,
+                              policy->current()->config,
                               binding, model_version, actor, error)) {
             return ApiResult::failure("engine_error", error);
         }
+        if (decision->actionable) {
+            ++delivered;
+        }
+        ++driver_counts[driver];
+        decision_log.push_back({{"entity_id", decision->entity_id},
+                                {"action", decision->action.empty()
+                                               ? "no_contact"
+                                               : decision->action},
+                                {"cell", entity.at("decision_cell")}});
         complaints += entity.value("open_complaint", Json(false)) == Json(true) ? 1.0 : 0.0;
         maximum_contacts = std::max(maximum_contacts,
             entity.value("recent_actions", 0.0) + (decision->actionable ? 1.0 : 0.0));
@@ -542,9 +831,51 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         monitor->observe_guardrail("complaints", complaints / entities.size());
         monitor->observe_guardrail("discount_budget", cost);
         monitor->observe_guardrail("contact_fatigue", maximum_contacts);
+        monitor->observe_guardrail(
+            "action_execution_rate",
+            actionable == 0
+                ? 1.0
+                : static_cast<double>(delivered) /
+                      static_cast<double>(actionable));
+    }
+    std::string publication_id;
+    if (binding.value("solution", std::string{}) == "S-1" &&
+        binding.at("delivery").value("kind", "webhook") == "webhook") {
+        Json drivers = Json::array();
+        for (const auto& [driver, count] : driver_counts) {
+            drivers.push_back({{"driver", driver}, {"accounts", count}});
+        }
+        ReportPublicationSpec report;
+        report.run_id = run_id;
+        report.title = "Churn and retention driver report";
+        report.driver_report = {{"drivers", std::move(drivers)}};
+        report.decision_log = std::move(decision_log);
+        report.connector.kind = ActionConnectorKind::Webhook;
+        report.connector.endpoint = binding.at("delivery").at("endpoint");
+        report.connector.token = binding.value("delivery_token", "");
+        report.idempotency_key = run_id + "/driver-report";
+        report.model_version = model_version;
+        report.policy_version =
+            std::to_string(policy->current()->version);
+        report.agent_version = "solution-foundation-v1";
+        report.cell = binding.at("scope").get<std::string>() + "/report";
+        report.currency = binding.at("roi_model").at("currency");
+        std::string error;
+        ActionRuntime runtime(node);
+        const auto publication =
+            runtime.publish_report(std::move(report), actor, &error);
+        if (!publication ||
+            publication->status != ActionTaskStatus::Delivered) {
+            return ApiResult::failure(
+                "engine_error", error.empty()
+                                    ? "driver report delivery was not acknowledged"
+                                    : error);
+        }
+        publication_id = publication->publication_id;
     }
     return ApiResult::success({{"decisions", "solution_results." + table_name},
-                               {"rows", entities.size()}});
+                               {"rows", entities.size()},
+                               {"driver_report", publication_id}});
 }
 
 } // namespace zetta::solutions

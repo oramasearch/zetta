@@ -63,6 +63,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **S-1 Churn & Retention (#1110)** — runnable at levels 1–4 with composed
+  M-2/M-1/M-3 foundations, M-5 survival timing, M-6 positive-only uplift
+  targeting, and M-8 treatment arbitration. The bound gate enforces eight
+  domain rules; governed actions carry reason codes and decision cells, preserve
+  tier holdouts and no-contact decisions, publish a driver report, and feed the
+  retention ROI readout. See [solutions/S-1.md](solutions/S-1.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

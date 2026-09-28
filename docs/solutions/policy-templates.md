@@ -10,6 +10,8 @@ S-1 defines high/medium/low score floors of 0.7/0.4/0.0, a high-tier CSM task
 with an 86,400-second SLA, a medium-tier retention journey, and low-tier
 no-contact. A requested high-tier discount is allowed only through the tier's
 explicit alternative-action list: cost above 50 switches its authority to A1.
+High and medium tiers also allow an explicit `no_contact` alternative so level
+3 can preserve sleeping-dog decisions without changing the entity's risk tier.
 The budget is 1,000 currency units per version. Every entity must explicitly
 pass the named in-collections, open-complaint and vulnerable exclusions. The
 kill switch is off by default.
@@ -28,7 +30,9 @@ entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
 These numbers are editable configuration, not calibration claims or customer
 economics. Experiment defaults provide 10% holdout probability per declared
-tier; guardrails and outcome/design definitions are typed alongside the policy.
+tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
+cover complaints, discount budget, contact fatigue, and action-execution rate.
+Guardrails and outcome/design definitions are typed alongside the policy.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly

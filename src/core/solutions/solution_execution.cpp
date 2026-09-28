@@ -175,6 +175,17 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                 if (stage.methodology->id == state->binding.at("decision_source").at("methodology").get<std::string>()) {
                     scored_outputs = snapshot.outputs;
                 }
+                if (state->binding.value("solution", std::string{}) == "S-1" &&
+                    state->binding.value("level", 1) >= 3 &&
+                    stage.methodology->id == "M-6") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
                 outputs.insert(outputs.end(), snapshot.outputs.begin(),
                                snapshot.outputs.end());
                 break;
