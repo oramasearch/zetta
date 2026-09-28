@@ -247,6 +247,114 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
 }
 
+TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
+    const fs::path file = fs::path(dir.path()) / "label_examples.jsonl";
+    {
+        std::ofstream out(file);
+        for (int row = 0; row < 240; ++row) {
+            const double signal =
+                -1.0 + 2.0 * static_cast<double>(row) / 239.0;
+            const int label = signal >= 0.17 ? 1 : 0;
+            const int strong_vote = row % 10 == 0 ? 1 - label : label;
+            const int medium_vote = row % 5 == 0 ? 1 - label : label;
+            out << nlohmann::json{{"entity", row},
+                                  {"signal", signal},
+                                  {"strong_vote", strong_vote},
+                                  {"medium_vote", medium_vote},
+                                  {"label", label}}
+                       .dump()
+                << "\n";
+        }
+    }
+
+    const nlohmann::json functions = nlohmann::json::array(
+        {{{"name", "strong"},
+          {"column", "strong_vote"},
+          {"operator", "greater_equal"},
+          {"value", 0.5},
+          {"label", 1},
+          {"otherwise_label", 0}},
+         {{"name", "medium"},
+          {"column", "medium_vote"},
+          {"operator", "greater_equal"},
+          {"value", 0.5},
+          {"label", 1},
+          {"otherwise_label", 0}}});
+
+    journey::Journey label_efficiency{
+        "label-efficiency-registry-run",
+        {
+            {"land the examples table",
+             "add_dataset",
+             {{"path", file.string()},
+              {"database", "datasets"},
+              {"table_name", "label_examples"},
+              {"partition_count", 2}},
+             {.checks = {journey::equals("/rows", 240)}}},
+            {"create the project",
+             "create_project",
+             {{"name", "label factory"}},
+             {.checks = {journey::equals("/name", "label factory")}}},
+            {"capture the goal",
+             "capture_intent",
+             {{"project", "label factory"},
+              {"text", "Use active learning and weak supervision to label rows"}},
+             {}},
+            {"compile the M-19 pipeline",
+             "compile_intent",
+             {{"project", "label factory"},
+              {"methodology", "M-19"},
+              {"name", "label factory pipeline"},
+              {"hints",
+               {{"dataset_path", "datasets.label_examples"},
+                {"queue_size", 6},
+                {"initial_labels", 3},
+                {"gold_fraction", 0.25},
+                {"seed", 1058},
+                {"uncertainty", "entropy"},
+                {"diversity_weight", 0.15},
+                {"logistic_iterations", 8},
+                {"logistic_learning_rate", 0.3},
+                {"label_model_iterations", 20},
+                {"labelling_functions", functions}}}},
+             {.checks = {journey::equals("/methodology", "M-19"),
+                         journey::equals("/runnable", true)}}},
+            {"run the compiled pipeline against its connect-step table",
+             "run",
+             {{"project", "label factory"},
+              {"graph", "label factory pipeline"}},
+             {.checks = {journey::equals("/engine", "label_efficiency")}},
+             {{"run_id", "/run_id"}}},
+            {"wait for the label factory",
+             "get_run",
+             {{"run_id", "$run_id"}},
+             {.checks = {journey::equals("/status", "succeeded"),
+                         journey::size_equals("/outputs", 4)}},
+             {},
+             journey::Poll{"/status", {"succeeded", "failed"}}},
+            {"read metrics and output tables",
+             "get_run_report",
+             {{"run_id", "$run_id"}},
+             {.checks = {
+                  journey::equals("/run/status", "succeeded"),
+                  journey::size_equals("/output_tables", 2),
+                  journey::equals("/correctness/weak_labels_are_gold", false),
+                  journey::equals("/correctness/gold_split", "disjoint"),
+                  journey::predicate(
+                      "the report includes active and label-model accuracy",
+                      [](const nlohmann::json& metrics) {
+                          return metrics.contains("active_accuracy_at_budget") &&
+                                 metrics.contains("random_accuracy_at_budget") &&
+                                 metrics.contains("label_model_gold_accuracy");
+                      },
+                      "/model/metrics")}}},
+        }};
+
+    const journey::JourneyReport report = journey::run_journey(
+        label_efficiency, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

@@ -282,6 +282,48 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
                        "every time-ordered model is validated over time and uncalibrated"};
 }
 
+CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "label_efficiency" &&
+            model_kind != "active_learning" &&
+            model_kind != "weak_supervision") {
+            continue;
+        }
+        const auto weak_as_gold =
+            node->attributes.find("weak_labels_are_gold");
+        if (weak_as_gold == node->attributes.end() ||
+            !weak_as_gold->is_boolean() || weak_as_gold->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": weak labels must never be treated as gold; set "
+                    "`weak_labels_are_gold` to false"};
+        }
+        const auto split = node->attributes.find("gold_split");
+        if (split == node->attributes.end() || !split->is_string() ||
+            split->get<std::string>() != "disjoint") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": the gold evaluation set must be disjoint; set "
+                    "`gold_split` to `disjoint`"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "label-efficiency gold rows are declared disjoint from weak labels"};
+}
+
 const std::vector<std::string>& MethodologyCheck::implemented() {
     static const std::vector<std::string> kImplemented = [] {
         std::vector<std::string> result;

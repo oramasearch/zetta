@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m19_methodology();
 
 namespace {
 
@@ -196,13 +197,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", true, "evaluation outcome")},
                 {"ensemble model", "blended predictions"},
                 {"delta over best model", "stability"}, 1057),
-        planned("M-19", "Label efficiency", "The data supply chain",
-                {"label_efficiency", "active_learning", "weak_supervision"}, {},
-                {"active learning", "weak supervision", "label efficiency"},
-                {input("feature", true, "unlabelled examples"),
-                 input("label", false, "gold labels")},
-                {"labels", "review queue", "label provenance"},
-                {"agreement", "cost per label", "downstream lift"}, 1058),
+        make_m19_methodology(),
         planned("M-20", "Privacy-preserving learning & synthetic data",
                 "The data supply chain",
                 {"privacy_preserving", "federated", "synthetic_data"}, {},

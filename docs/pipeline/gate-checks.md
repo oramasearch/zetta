@@ -7,17 +7,26 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+These checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `LabelEfficiencyGoldIsolationCheck` | `label_efficiency_gold_isolation` | an M-19 graph that treats weak labels as gold or does not reserve a disjoint gold split |
 
 Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
+
+### `label_efficiency_gold_isolation` — weak labels are not gold
+
+This check engages on `label_efficiency`, `active_learning`, and
+`weak_supervision` model steps. It requires `weak_labels_are_gold: false` and
+`gold_split: "disjoint"`. Missing, malformed, or contradictory values fail the
+gate before a run starts. The runtime uses the same rule when materializing the
+label queue and weak-label table; both exclude every reserved gold row.
 
 ## How a check reads a step
 

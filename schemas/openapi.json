@@ -6529,6 +6529,10 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "output_tables": {
+                          "description": "M-19 label queue and weak-label tables materialized by the run",
+                          "type": "array"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
@@ -10423,6 +10427,108 @@
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
+                  },
+                  "label_efficiency": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "diversity_weight": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "gold_fraction": {
+                        "exclusiveMaximum": 1,
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "initial_labels": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "label_model_iterations": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "labelling_functions": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "label": {
+                              "enum": [
+                                0,
+                                1
+                              ],
+                              "type": "integer"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "less",
+                                "less_equal",
+                                "greater",
+                                "greater_equal",
+                                "equal"
+                              ],
+                              "type": "string"
+                            },
+                            "otherwise_label": {
+                              "enum": [
+                                0,
+                                1,
+                                null
+                              ],
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "column",
+                            "value",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "logistic_iterations": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "logistic_learning_rate": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "queue_size": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "uncertainty": {
+                        "enum": [
+                          "margin",
+                          "entropy"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
                   },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",

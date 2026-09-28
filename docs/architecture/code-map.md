@@ -123,7 +123,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
-    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck + LabelEfficiencyGoldIsolationCheck — graph correctness checks (#309/#1058)
     run.hpp                 zetta::pipeline::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
     deployment_target.hpp   zetta::pipeline::DeploymentTarget — a placement (ENT-6; R1 local)
     deployment.hpp          zetta::pipeline::Deployment — a graph placed onto a target

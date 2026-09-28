@@ -557,6 +557,7 @@ add_library(zetta-core STATIC
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/label_efficiency.cpp
+  src/core/ml/label_efficiency_methodology.cpp
   src/core/ml/label_efficiency_runner.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp

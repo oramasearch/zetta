@@ -276,11 +276,57 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesWeakLabelsAsGold) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "label_efficiency"},
+             {"weak_labels_are_gold", true},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("never be treated as gold"),
+              std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesOverlappingGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "weak_supervision"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "overlapping"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("must be disjoint"), std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, AcceptsDisjointGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "active_learning"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -372,6 +418,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end())
+        << "M-19 label efficiency ships today";
     for (const char* unshipped :
          {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
@@ -596,6 +646,9 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end());
     for (const char* unshipped :
          {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())

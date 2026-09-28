@@ -11,7 +11,9 @@ The public implementation is split into:
   `src/core/ml/label_efficiency.cpp`: the distributed trainer;
 - `include/zetta/ml/label_efficiency_runner.hpp` and
   `src/core/ml/label_efficiency_runner.cpp`: the resolved-table runner and
-  output writer.
+  output writer; and
+- `src/core/ml/label_efficiency_methodology.cpp`: the M-19 shape, ownership,
+  and registry run callback.
 
 ## Inputs
 
@@ -93,14 +95,15 @@ gold rows, and both output table references.
 
 ## Correctness rules
 
-Two rules are enforced by the trainer and output writer:
+Two rules are enforced by the graph gate, trainer, and output writer:
 
 1. weak labels are never treated as gold; and
 2. the gold set is disjoint from the label queue and weak-label table.
 
-The seeded membership rule is shared with the output tests, which assert that no
-emitted row belongs to gold. The registered model records `gold_split:
-"disjoint"` and `weak_labels_are_gold: false` with its feature metadata.
+An M-19 model step must carry `weak_labels_are_gold: false` and
+`gold_split: "disjoint"`. `LabelEfficiencyGoldIsolationCheck` refuses a graph
+that omits or contradicts either declaration. The seeded membership rule is
+shared with the output tests, which assert that no emitted row belongs to gold.
 
 ## Distribution and current boundary
 
@@ -117,10 +120,34 @@ Refusal prevents a local shard from being reported as the global result.
 
 ## Running it
 
-Resolve a connector-landed table with `zetta::data::resolve_dataset`, populate
-`LabelEfficiencyRunOptions::params`, then call
-`run_label_efficiency_on_dataset`. The asynchronous wrapper is available for an
-interactive owner that needs to poll the resulting `Run` while work continues.
+Compile an intent with `methodology: "M-19"` and a table hint. Parameters and
+labelling functions can be stored on the graph through `hints`:
+
+```json
+{
+  "project": "triage",
+  "methodology": "M-19",
+  "hints": {
+    "dataset_path": "datasets.tickets",
+    "queue_size": 50,
+    "uncertainty": "entropy",
+    "labelling_functions": [
+      {
+        "name": "urgent_score",
+        "column": "urgency",
+        "operator": "greater_equal",
+        "value": 0.8,
+        "label": 1
+      }
+    ]
+  }
+}
+```
+
+Call `run` with the stored project and graph. With no `dataset_path` in the run
+request, M-19 reads the connect step's `source` and `table`. Poll `get_run`, then
+read `get_run_report` after the run succeeds. A `label_efficiency` object on the
+run request may override the graph's training parameters.
 
 ## Weights and licences
 
@@ -134,6 +161,7 @@ network downloads.
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 6 --target zetta-tests
 ./build/tests/zetta-tests --gtest_filter='*Active*:*Weak*:*LabelModel*'
+./build/tests/zetta-tests --gtest_filter='*Methodology*:*ActionJourneys*:*Uc1Journey*:*GraphCheck*'
 ./build/tests/zetta-tests
 ```
 
