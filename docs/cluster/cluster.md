@@ -19,6 +19,15 @@ advertises the one it actually bound — so a second local node grabs `7778`. Po
 a node at others with `--peer HOST:PORT` (repeatable; all peers are equal — a
 seed is just somewhere to start).
 
+When a strict bind is refused, startup stops the cluster and node, then joins the
+process-wide outbound HTTP worker before the node's state is destroyed (#1078).
+The process exits normally with status 1; it does not defer that worker to static
+destruction and abort after printing `zetta: node stopped`. The standalone CTest
+`zetta-refused-start-exit` holds a real loopback port, launches the production
+binary, and asserts both the exit status and the absence of cleanup exceptions.
+This changes no cluster wire message or JSON format, and no refused-start
+behavior is deferred.
+
 All inter-node traffic runs **mutual TLS**, and joining needs the cluster's
 **join token** (the first node generates it; the printed join command carries
 it) — see [security.md](security.md).

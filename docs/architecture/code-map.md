@@ -595,6 +595,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
   temp_dir.hpp              per-test isolated data_dir helper
+  cluster/test_refused_start_exit.cpp  process test: an occupied --listen port exits 1 without an abort (#1078)
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
