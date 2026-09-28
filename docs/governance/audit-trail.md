@@ -120,7 +120,9 @@ removing a full-document rewrite from each changed tick.
 On the 100,000-event regression fixture, 40 ticks with one new local event each
 took 15,639 ms before the incremental path and 4 ms after it. The timed region
 excludes fixture creation, startup reconciliation, shutdown persistence, and
-temporary-directory cleanup.
+temporary-directory cleanup. Both measurements include the audit ID index
+prerequisite from #1073; the baseline retains the old snapshot, full reconcile,
+and per-tick persistence paths, isolating the changes in #1079.
 
 On disk, audit events project to a **single shared `audit/` folder** — one file
 per event — rather than a folder per event, the natural shape for a high-volume
