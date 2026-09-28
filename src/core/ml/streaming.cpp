@@ -953,6 +953,10 @@ StreamingRunResult run_streaming(
                               std::to_string(labels) + " label(s)"});
         });
     };
+    // Registry dispatch runs once on the submitting member after QueryService
+    // materializes the resolved table. Keep that bounded replay local; owned
+    // partitions use run_streaming_train_job, whose JobRound allreduces the
+    // same gradients and metrics across SPMD participants.
     result.training = train_streaming(events, dataset.contract.feature_columns,
                                       params, {}, {}, callbacks);
     broker->drain_dispatch();

@@ -63,6 +63,11 @@ and gather metric partials. Every member therefore reaches identical weights
 without moving source rows. `persist_every` controls how many released labels
 trigger a weights write; the final model is always persisted.
 
+`run_streaming_train_job` is the owned-partition SPMD entry. The registry's
+bounded table replay runs once on the submitting member after the cluster query
+materializes the resolved table; score publication and artifact writes remain
+single-owner operations.
+
 The optional Hoeffding-tree variant is not implemented. Online logistic
 regression is the runnable M-21 algorithm.
 
