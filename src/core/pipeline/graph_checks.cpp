@@ -466,4 +466,48 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
                 " ML step(s) are point-in-time correct and target-leakage free");
 }
 
+CheckResult RankCorrectnessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node->attributes.is_object()) continue;
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "rank" && *kind != "ranking" &&
+                      *kind != "learning_to_rank")) {
+            continue;
+        }
+        ++checked;
+        const std::optional<std::string> group =
+            string_field(node->attributes, "group_column");
+        if (!group || group->empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": learning-to-rank requires a non-empty group_column"};
+        }
+        const std::optional<std::string> split =
+            string_field(node->attributes, "split_strategy");
+        if (!split || *split != "group") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split_strategy must be \"group\" so one group never "
+                        "appears in both training and validation"};
+        }
+        const std::optional<std::string> availability =
+            string_field(node->attributes, "feature_availability");
+        if (!availability || *availability != "ranking_time") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": feature_availability must be \"ranking_time\"; later "
+                        "information would leak into the queue"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            checked == 0
+                ? "no learning-to-rank model to validate"
+                : std::to_string(checked) +
+                      " rank model(s) require groups, whole-group splits, and "
+                      "ranking-time features"};
+}
+
 } // namespace zetta::pipeline

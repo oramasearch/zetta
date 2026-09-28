@@ -3,8 +3,10 @@
 **Issue:** [#958](https://github.com/oramasearch/zetta/issues/958)
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
-**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp` ·
-**Tests:** `tests/usecases/churn/test_churn_solution.cpp`
+**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp`,
+`src/core/ml/rank_runner.cpp` ·
+**Tests:** `tests/usecases/churn/test_churn_solution.cpp`,
+`tests/api/test_action_journeys.cpp`
 
 A run's outputs say what it *produced* — a dataset, a model, an index. A run's
 **report** says what it *found*: how good the model is, what drives the outcome, and
@@ -32,7 +34,7 @@ state, and `get_run_report` puts them together at query time:
 |---|---|
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
-| the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| the ranked rows | the run's result table in `churn_results` or `rank_results` |
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
@@ -116,8 +118,16 @@ No new JSON format and no new storage. `run.schema.json`'s output `kind` enum ga
 `"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
 tool list, and the agent's read-tool allowlist.
 
+## Learning-to-rank reports
+
+For a model whose kind is `rank`, `get_run_report` reports `ndcg_at_k`,
+`yield_at_k`, the cutoff, and train/held-out row and group counts. Its result
+table is returned as `ranked_queue` rows with group, entity, score, rank, and
+relevance. Classification-only AUC fields and at-risk wording are not applied
+to these runs.
+
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Additional model families can emit a `report` output by recording their own
+  measured facts and result table.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

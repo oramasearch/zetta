@@ -7,14 +7,15 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
@@ -154,3 +155,12 @@ checks to land on the same seam.
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
 type), and the related artifacts: ENT-5, FEAT-3 (`#134` / `#301`), RULE-1.
+
+## Learning-to-rank correctness
+
+The `rank_correctness` check applies to model kinds `rank`, `ranking`, and
+`learning_to_rank`. It requires a group column, a whole-group validation split,
+and features declared available at ranking time. A missing group, a row-level
+split, or an after-outcome feature contract blocks deploy and run. The
+distributed trainer separately verifies that a group is not spread across
+participants.

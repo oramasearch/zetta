@@ -81,14 +81,41 @@ Runtime validation additionally requires aligned columns, non-negative finite
 labels, integer group/entity values, at least one feature, both training and
 validation groups, and one-participant ownership per group.
 
+## Running it
+
+Compile M-9 explicitly or through solution S-12. Dataset hints become the
+connect and model configuration:
+
+```json
+{
+  "project": "lead-priority",
+  "methodology": "M-9",
+  "hints": {
+    "source": "sales",
+    "table": "leads",
+    "entity": "lead_id",
+    "group": "rep_id",
+    "label": "relevance",
+    "features": ["intent", "fit", "value"],
+    "cutoff": 5
+  }
+}
+```
+
+Run the compiled graph without `dataset_path` to read its own connect step, or
+provide an explicit table path to override it. Poll `get_run`, then call
+`get_run_report` with the returned run id.
+
 ## Verification
 
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 6 --target zetta-tests
 ./build/tests/zetta-tests --gtest_filter='*Rank*:*Lambda*:*NDCG*'
+./build/tests/zetta-tests --gtest_filter='*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*'
 ./build/tests/zetta-tests
 ```
 
 The focused suite proves whole-group splits, deterministic learning,
-improvement over a pointwise GBDT baseline, and distributed equivalence.
+improvement over a pointwise GBDT baseline, distributed equivalence, graph
+refusals, and the registry-driven API journey.

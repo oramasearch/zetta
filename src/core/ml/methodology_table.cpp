@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m9_methodology();
 
 namespace {
 
@@ -117,14 +118,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "interaction or reward")},
                 {"ranked actions", "recommendations"},
                 {"NDCG", "recall at k", "policy value"}, 1047),
-        planned("M-9", "Learning-to-rank", "Action & decision",
-                {"ranking", "learning_to_rank", "rank"}, {"S-12"},
-                {"rank", "prioritise", "prioritize", "queue"},
-                {input("entity", true, "items to order"),
-                 input("group", false, "query or queue identifier"),
-                 input("label", true, "relevance or outcome")},
-                {"ranked list", "priority scores"},
-                {"NDCG", "precision at k", "queue yield"}, 1048),
+        make_m9_methodology(),
         planned("M-10", "NLP / embeddings / RAG / fine-tuning",
                 "Language, documents & perception",
                 {"nlp", "embedding", "embeddings", "rag", "fine_tuning",

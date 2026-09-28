@@ -506,8 +506,8 @@ const nlohmann::json& get_run_report_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"description",
-             "how many at-risk entities to return, highest risk first (default 20). "
-             "The whole population is ranked; this caps what comes back"}}}}}};
+             "how many ranked entities to return (default 20). The whole "
+             "population is ranked; this caps what comes back"}}}}}};
     return schema;
 }
 
@@ -539,6 +539,11 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"ranked_queue",
+           {{"type", "array"},
+            {"description",
+             "learning-to-rank rows: group, entity, score, rank, and observed "
+             "relevance, capped by `limit`"}}},
           {"caveats",
            {{"type", "array"},
             {"description",
@@ -554,10 +559,11 @@ const nlohmann::json& get_run_report_output_schema() {
     return schema;
 }
 
-// The at-risk table this run wrote, by the run's own `dataset` outputs. Named
-// `churn_results.at_risk_*`, which is what run_act materializes.
-std::shared_ptr<zetta::data::Table> run_at_risk_table(
+// The result table this run wrote, by the run's own `dataset` outputs. Prefer
+// the known churn and ranking result databases over the input-table fallback.
+std::shared_ptr<zetta::data::Table> run_result_table(
     Node& node, const zetta::pipeline::Run& run) {
+    std::shared_ptr<zetta::data::Table> fallback;
     for (const zetta::pipeline::RunOutput& output : run.outputs()) {
         const std::size_t dot = output.ref.find('.');
         if (output.kind != "dataset" || dot == std::string::npos) continue;
@@ -565,10 +571,14 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
             node.find_database(output.ref.substr(0, dot));
         if (!database) continue;
         if (auto table = database->find_table(output.ref.substr(dot + 1))) {
-            return table;
+            if (output.ref.starts_with("churn_results.") ||
+                output.ref.starts_with("rank_results.")) {
+                return table;
+            }
+            fallback = std::move(table);
         }
     }
-    return nullptr;
+    return fallback;
 }
 
 // A number from an at-risk row, or `fallback` when the column is absent or not a
@@ -636,7 +646,16 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     };
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
-    if (const auto held = number("held_out_auc")) {
+    const bool ranking = model->kind() == "rank";
+    if (ranking) {
+        if (const auto value = number("ndcg_at_k")) model_facts["ndcg_at_k"] = *value;
+        if (const auto value = number("yield_at_k")) model_facts["yield_at_k"] = *value;
+        if (const auto value = number("cutoff")) model_facts["cutoff"] = *value;
+        if (const auto value = number("held_out_groups")) model_facts["held_out_groups"] = *value;
+        if (const auto value = number("held_out_rows")) model_facts["held_out_rows"] = *value;
+        if (const auto value = number("train_groups")) model_facts["train_groups"] = *value;
+        if (const auto value = number("train_rows")) model_facts["train_rows"] = *value;
+    } else if (const auto held = number("held_out_auc")) {
         model_facts["held_out_auc"] = *held;
         if (const auto value = number("held_out_log_loss")) model_facts["held_out_log_loss"] = *value;
         if (const auto value = number("held_out_accuracy")) model_facts["held_out_accuracy"] = *value;
@@ -651,13 +670,15 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                      "rows the model had not seen. Every figure below is in-sample "
                      "and flatters. Re-run with holdout_fraction to get one"}});
     }
-    if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
-    else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
-    if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
-    else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
-    if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
-    else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
-    if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    if (!ranking) {
+        if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
+        else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
+        if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
+        else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
+        if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
+        else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
+        if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    }
     report["model"] = std::move(model_facts);
 
     nlohmann::json dataset = nlohmann::json::object();
@@ -674,6 +695,13 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         features.push_back(driver.feature);
     }
     if (!features.empty()) dataset["features"] = std::move(features);
+    if (ranking) {
+        const nlohmann::json& schema = model->feature_schema();
+        const auto excluded = schema.find("excluded_from_features");
+        if (excluded != schema.end() && excluded->is_array()) {
+            dataset["excluded"] = *excluded;
+        }
+    }
     // What the run actually read and what it could not use, from the run itself: its
     // lineage sources and its "dataset: " log notes (a table-backed run, #947).
     const zetta::pipeline::RunLineage& lineage = run->lineage();
@@ -696,10 +724,10 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     }
     if (!drivers.empty()) report["drivers"] = std::move(drivers);
 
-    // The ranked list, read back from the table the run materialized — so the
-    // report and anything querying `churn_results` cannot disagree.
+    // The ranked list, read back from the table the run materialized so the
+    // report and direct table queries cannot disagree.
     if (const std::shared_ptr<zetta::data::Table> table =
-            run_at_risk_table(context.node, *run)) {
+            run_result_table(context.node, *run)) {
         std::vector<nlohmann::json> rows;
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t index = 0; index < store.size(); ++index) {
@@ -710,8 +738,19 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                       return row_number(left, "rank", 0.0) <
                              row_number(right, "rank", 0.0);
                   });
+        nlohmann::json ranked_queue = nlohmann::json::array();
         nlohmann::json at_risk = nlohmann::json::array();
         for (const nlohmann::json& row : rows) {
+            if (ranking) {
+                if (ranked_queue.size() >= limit) break;
+                ranked_queue.push_back(
+                    {{"group", row.value("group", std::int64_t{0})},
+                     {"entity", row.value("entity", std::int64_t{0})},
+                     {"score", row_number(row, "score", 0.0)},
+                     {"rank", static_cast<std::int64_t>(row_number(row, "rank", 0.0))},
+                     {"relevance", row_number(row, "relevance", 0.0)}});
+                continue;
+            }
             if (at_risk.size() >= limit) break;
             // `value<T>` deduces T from the DEFAULT, so a bare `0` picks `int`
             // and silently narrows the entity key to 32 bits (#1000). Entity
@@ -737,10 +776,19 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             if (!evidence.empty()) entry["evidence"] = std::move(evidence);
             at_risk.push_back(std::move(entry));
         }
-        report["at_risk"] = std::move(at_risk);
+        if (ranking) {
+            report["ranked_queue"] = std::move(ranked_queue);
+        } else {
+            report["at_risk"] = std::move(at_risk);
+        }
     } else {
-        missing.push_back({{"field", "at_risk"},
-                           {"why", "this run materialized no at-risk table"}});
+        if (ranking) {
+            missing.push_back({{"field", "ranked_queue"},
+                               {"why", "this run materialized no ranked-queue table"}});
+        } else {
+            missing.push_back({{"field", "at_risk"},
+                               {"why", "this run materialized no at-risk table"}});
+        }
     }
 
     // Figures that are PRESENT but must not be read as results (#948 step 8's rule,
@@ -752,18 +800,20 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     // trivially separable — but a perfect score presented without objection is a
     // number that invites a false conclusion, which is worse than a missing one.
     nlohmann::json caveats = nlohmann::json::array();
-    if (const std::optional<double> rows = number("held_out_rows")) {
-        // Below this, a ranking metric is noise: one row changing side moves AUC by
-        // a visible amount, so the figure says more about the split than the model.
-        constexpr double kMeaningfulHoldout = 30.0;
-        if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
-            caveats.push_back(
-                {{"field", "held_out_auc"},
-                 {"why", "measured on only " + fixed_rows(*rows) +
-                             " held-out rows. Below about 30 a ranking metric is "
-                             "noise — one row changing side moves it visibly — so "
-                             "this figure describes the split more than the model. "
-                             "Do not quote it as a result"}});
+    if (!ranking) {
+        if (const std::optional<double> rows = number("held_out_rows")) {
+            // Below this, a ranking metric is noise: one row changing side moves AUC by
+            // a visible amount, so the figure says more about the split than the model.
+            constexpr double kMeaningfulHoldout = 30.0;
+            if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
+                caveats.push_back(
+                    {{"field", "held_out_auc"},
+                     {"why", "measured on only " + fixed_rows(*rows) +
+                                 " held-out rows. Below about 30 a ranking metric is "
+                                 "noise — one row changing side moves it visibly — so "
+                                 "this figure describes the split more than the model. "
+                                 "Do not quote it as a result"}});
+            }
         }
     }
     if (const std::optional<double> auc = number("held_out_auc")) {

@@ -6453,12 +6453,12 @@
         "operationId": "get_run_report",
         "parameters": [
           {
-            "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+            "description": "how many ranked entities to return (default 20). The whole population is ranked; this caps what comes back",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+              "description": "how many ranked entities to return (default 20). The whole population is ranked; this caps what comes back",
               "minimum": 1,
               "type": "integer"
             }
@@ -6528,6 +6528,10 @@
                         "model": {
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
+                        },
+                        "ranked_queue": {
+                          "description": "learning-to-rank rows: group, entity, score, rank, and observed relevance, capped by `limit`",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",

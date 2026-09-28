@@ -16,6 +16,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [rank.md](rank.md) — M-9 native LambdaMART: whole-group validation, distributed histogram training, ranked-queue tables, NDCG@k, and yield at budget (#1048).
 
 ## Methodology portfolio
 
@@ -34,7 +35,7 @@ carry `*`. Regenerate it with
 | M-6 | Causal inference & uplift | Action & decision | causal, uplift | — | entity*, treatment*, label* | treatment effects, targeting policy | uplift, Qini, policy value | not runnable | [#1045](https://github.com/oramasearch/zetta/issues/1045) |
 | M-7 | Anomaly detection | Time & vigilance | anomaly, anomaly_detection, outlier | S-7 | time, feature* | anomaly scores, alerts | precision, recall, false alerts | not runnable | [#1046](https://github.com/oramasearch/zetta/issues/1046) |
 | M-8 | Recommendation / next-best-action | Action & decision | recommendation, recommender, next_best_action | S-11 | entity*, treatment*, label | ranked actions, recommendations | NDCG, recall at k, policy value | not runnable | [#1047](https://github.com/oramasearch/zetta/issues/1047) |
-| M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | S-12 | entity*, group, label* | ranked list, priority scores | NDCG, precision at k, queue yield | not runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
+| M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | S-12 | entity*, group*, label*, time, feature* | ranked-queue table, priority scores, model | NDCG@k, yield at budget | runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |
 | M-11 | Document intelligence | Language, documents & perception | document_intelligence, ocr, document | — | text*, label | structured fields, evidence links | field accuracy, F1, straight-through rate | not runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |
 | M-12 | Graph ML | Identity & structure | graph_ml, graph | — | entity*, group*, time | node scores, links, graph embeddings | average precision, AUC, lift | not runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |

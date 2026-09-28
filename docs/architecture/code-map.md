@@ -425,6 +425,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     rank.cpp                zetta::ml — LambdaMART derivatives, deterministic whole-group split, NDCG@k/yield metrics, and grouped scoring (#1048)
     rank_train_job.cpp      zetta::ml — distributed group-ownership check, all-reduced LambdaMART training, metrics, ranking, and rank Model registration (#1048)
     rank_runner.cpp         zetta::ml — resolved-table near-data load, durable Run, ranked-queue table, outputs, and lineage (#1048)
+    rank_methodology.cpp    zetta::ml — M-9 build_shape/owns/run registry adapter (#1048)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), binary/squared/LambdaMART objective support, and GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390, #1048)

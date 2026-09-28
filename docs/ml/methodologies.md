@@ -6,9 +6,9 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
-because retrieval and indexes ship, but it does not yet provide a methodology
-runner. The other entries link to their implementation issues.
+callbacks for runnable implementations. M-1 and M-9 are runnable. M-10 is
+marked partial because retrieval and indexes ship, but it does not yet provide
+a methodology runner. The other entries link to their implementation issues.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -66,6 +66,17 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-9 learning-to-rank
+
+`src/core/ml/rank_methodology.cpp` owns `rank`, `ranking`, and
+`learning_to_rank` graphs. Its shape connects one candidate table, selects
+ranking-time features, trains native LambdaMART, and materializes a grouped
+ranked queue. Its run callback resolves either the graph's own `source`/`table`
+or an explicit `dataset_path`, then calls the shared resolved-dataset runner.
+
+The objective, distributed job, output table, metrics, correctness refusals,
+and API example are documented in [rank.md](rank.md).
 
 ## Adding a methodology
 
