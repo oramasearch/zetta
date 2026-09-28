@@ -6529,8 +6529,19 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "output_tables": {
+                          "description": "tables materialized by the run",
+                          "items": {
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
+                          "type": "object"
+                        },
+                        "uncertainty": {
+                          "description": "M-17 nominal and empirical coverage, interval width, hold-out row count, and the exchangeability assumption",
                           "type": "object"
                         }
                       },
@@ -10370,6 +10381,11 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "burn_in": {
+                    "description": "M-17 Gibbs draws discarded before measurement",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10414,6 +10430,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "group_column": {
+                    "description": "M-17 hierarchical group column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "holdout_fraction": {
                     "description": "hold this fraction of rows OUT of training and measure the model on them separately (e.g. 0.3). Without it the run's only metrics are in-sample — scored on the rows it trained on — and flatter",
                     "maximum": 1,
@@ -10425,14 +10446,30 @@
                     "type": "string"
                   },
                   "model_name": {
-                    "description": "the registered model's name (default churn_model)",
+                    "description": "the registered model's name",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "nominal_coverage": {
+                    "description": "M-17 requested interval coverage",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "posterior_draws": {
+                    "description": "M-17 retained Gibbs draws",
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "project": {
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "seed": {
+                    "description": "M-17 deterministic split and sampling seed",
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
@@ -10497,6 +10534,10 @@
                         },
                         "note": {
                           "description": "structural runs: that nothing was trained, and whether a given dataset was read",
+                          "type": "string"
+                        },
+                        "output_table": {
+                          "description": "M-17 posterior estimate table",
                           "type": "string"
                         },
                         "poll": {

@@ -49,6 +49,10 @@ relay it to a person.
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).
+  M-17 is runnable: an agent can bind a landed table's entity, label, and group
+  roles in compile hints, run without repeating `dataset_path`, then read
+  empirical coverage, interval width, assumptions, and output tables through
+  `get_run_report`.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

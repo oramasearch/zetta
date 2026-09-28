@@ -247,6 +247,82 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
 }
 
+TEST_F(ActionJourneys, JourneyBayesianMethodologyCompilesRunsAndReports) {
+    std::string content = "id,store,value\n";
+    for (int index = 1; index <= 120; ++index) {
+        const std::string store =
+            index % 3 == 0 ? "north" : (index % 3 == 1 ? "south" : "west");
+        const double center =
+            store == "north" ? 8.0 : (store == "south" ? 12.0 : 18.0);
+        content += std::to_string(index) + "," + store + "," +
+                   std::to_string(center + static_cast<double>(index % 7) / 10.0) +
+                   "\n";
+    }
+    const ApiResult uploaded =
+        call("upload_dataset", {{"table_name", "store_demand"},
+                                {"format", "csv"},
+                                {"content", content}});
+    ASSERT_TRUE(uploaded.ok) << uploaded.error.message;
+    ASSERT_EQ(uploaded.value.at("database"), "datasets");
+    ASSERT_EQ(uploaded.value.at("table"), "store_demand");
+
+    ASSERT_TRUE(call("create_project", {{"name", "uncertain demand"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "uncertain demand"},
+         {"text", "Estimate demand by store with honest uncertainty"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "uncertain demand"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-17"},
+         {"name", "store posterior"},
+         {"hints",
+          {{"database", "datasets"},
+           {"table", "store_demand"},
+           {"entity_column", "id"},
+           {"label_column", "value"},
+           {"group_column", "store"},
+           {"nominal_coverage", 0.9}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-17");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult started =
+        call("run", {{"project", "uncertain demand"},
+                     {"graph", "store posterior"},
+                     {"holdout_fraction", 0.25},
+                     {"seed", 1056},
+                     {"burn_in", 100},
+                     {"posterior_draws", 250}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    EXPECT_EQ(started.value.at("engine"), "bayesian");
+    EXPECT_EQ(started.value.at("status"), "succeeded");
+    EXPECT_TRUE(started.value.contains("output_table"));
+
+    const ApiResult run =
+        call("get_run", {{"run_id", started.value.at("run_id")}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+
+    const ApiResult report =
+        call("get_run_report", {{"run_id", started.value.at("run_id")}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    ASSERT_TRUE(report.value.contains("uncertainty"));
+    const nlohmann::json& uncertainty = report.value.at("uncertainty");
+    EXPECT_DOUBLE_EQ(uncertainty.at("nominal_coverage").get<double>(), 0.9);
+    EXPECT_GE(uncertainty.at("empirical_coverage").get<double>(), 0.0);
+    EXPECT_LE(uncertainty.at("empirical_coverage").get<double>(), 1.0);
+    EXPECT_GT(uncertainty.at("mean_interval_width").get<double>(), 0.0);
+    EXPECT_NE(uncertainty.at("assumption").get<std::string>().find(
+                  "exchangeable"),
+              std::string::npos);
+    ASSERT_EQ(report.value.at("output_tables").size(), 1u);
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "datasets.store_demand");
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

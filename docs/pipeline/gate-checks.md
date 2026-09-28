@@ -1,20 +1,21 @@
 # Graph correctness checks (schema/type · data-leakage · point-in-time)
 
-The first **concrete** correctness checks that plug into the
+The **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
@@ -82,6 +83,23 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `uncertainty_validation` — honest uncertainty for M-17
+
+Engages on a model step whose `model_kind` is `bayesian`, `probabilistic`, or
+`uncertainty`. It requires:
+
+- `coverage_checked: true`, because nominal coverage is a request rather than
+  evidence;
+- numeric `nominal_coverage` strictly between zero and one;
+- a non-empty `exchangeability_assumption`; and
+- an `uncertainty_kind` of `hierarchical`, `split_conformal_regression`, or
+  `split_conformal_classification`.
+
+A `split_conformal*` shape must additionally set
+`calibration_disjoint: true`. This graph check is backed by the runtime split
+validator, which rejects overlapping row indexes even if a hand-authored graph
+claims they are disjoint.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -145,11 +163,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks implement the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
 result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+checks to land on the same interface.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report

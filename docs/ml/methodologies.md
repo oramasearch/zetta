@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-17 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -66,6 +66,22 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-17 Bayesian uncertainty
+
+`src/core/ml/bayesian_methodology.cpp` owns M-17's registry adapter:
+
+- `build_shape` creates a grouped-observation pipeline that reads the connect
+  step's own `source` and `table`, reserves a content-hash holdout, fits the
+  Gibbs partial-pooling model, and writes a posterior table;
+- `owns` recognizes `bayesian`, `probabilistic`, and `uncertainty`; and
+- `run` resolves the graph's table through `ResolvedDataset`, invokes the native
+  runner, and returns the completed Run and output table.
+
+The pipeline carries `coverage_checked`, `nominal_coverage`, and an explicit
+exchangeability statement. `UncertaintyValidationCheck` refuses a Bayesian
+shape that omits those facts; split-conformal shapes must also declare that
+calibration rows are disjoint from fitting rows.
 
 ## Adding a methodology
 

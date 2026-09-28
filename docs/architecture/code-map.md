@@ -422,6 +422,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     bayesian.cpp            split-conformal quantiles/prediction sets, deterministic hierarchical Gibbs sampler, sufficient-statistic allreduce, and posterior table/model/run writer (#1056)
+    bayesian_methodology.cpp  M-17 pipeline shape, graph ownership, connect-table resolution, registry metadata, and run callback (#1056)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp

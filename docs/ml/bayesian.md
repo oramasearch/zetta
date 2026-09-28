@@ -99,9 +99,41 @@ members.
 
 ## Boundaries
 
-This slice adds no JSON schema. Model weights use the existing verified weights
-body, metrics use the existing numeric Model map, table rows use the existing
-Table storage boundary, and distributed statistics use `CollectiveMessage`.
+The core engine adds no new stored-data schema. Model weights use the existing
+verified weights body, metrics use the existing numeric Model map, table rows
+use the existing Table storage boundary, and distributed statistics use
+`CollectiveMessage`. The registry adapter extends the generated OpenAPI schema
+with M-17 run controls and report fields.
 
 Registry compilation and the control-surface run adapter are documented in the
 methodology registry page.
+
+## Running it
+
+Land a table with integer entity ids, a numeric observation, and a group column.
+Compile M-17 with hints that bind those roles:
+
+```json
+{
+  "project": "demand uncertainty",
+  "methodology": "M-17",
+  "hints": {
+    "database": "datasets",
+    "table": "store_demand",
+    "entity_column": "id",
+    "label_column": "demand",
+    "group_column": "store",
+    "nominal_coverage": 0.9
+  }
+}
+```
+
+The resulting pipeline reads `datasets.store_demand` directly. Call `run` with
+the project and graph; `dataset_path` is optional because the connect step owns
+the source. Optional M-17 controls are `group_column`, `nominal_coverage`,
+`holdout_fraction`, `seed`, `burn_in`, and `posterior_draws`.
+
+The run completes with a `bayesian` Model and a
+`bayesian_results.posterior_<run>` table. `get_run_report` returns the source,
+excluded-row count, output-table ref, empirical versus nominal coverage, mean
+interval width, hold-out row count, and the exchangeability assumption.

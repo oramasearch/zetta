@@ -33,6 +33,8 @@ state, and `get_run_report` puts them together at query time:
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| M-17 uncertainty metrics | the Bayesian Model's numeric `metrics` |
+| M-17 source and output tables | the Run's lineage and dataset outputs |
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
@@ -105,6 +107,16 @@ Reports is **one item under Data library** on both, matching the design
 (`oramasearch/orama-design@4621d87`); the import is recorded in
 [`docs/product/experience/design-sync.md`](../product/experience/design-sync.md).
 
+## Bayesian uncertainty reports
+
+An M-17 report returns an `uncertainty` object instead of churn ranking fields.
+It carries nominal and empirical hold-out coverage, mean interval width,
+hold-out row count, and the exchangeability assumption. `dataset` names the
+table actually read, its excluded-row count, and any columns not used.
+`output_tables` names the materialized per-group posterior table. Every numeric
+value comes from the replicated Bayesian Model record; the assumption and table
+refs come from the Run.
+
 **The report's discipline is part of the surface, not the prose.** A screen that shows
 the figures without it undoes the work that produced them, so both renderers lead with
 the held-out figure and say what it was measured on, never print accuracy without the
@@ -118,6 +130,5 @@ tool list, and the agent's read-tool allowlist.
 
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Additional methodology-specific report views as more registry entries become runnable.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

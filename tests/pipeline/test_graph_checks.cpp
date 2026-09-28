@@ -276,11 +276,12 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "uncertainty_validation");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -372,11 +373,93 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bayesian"),
+              implemented.end())
+        << "M-17 Bayesian uncertainty ships today";
     for (const char* unshipped :
          {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
+}
+
+// --- UncertaintyValidationCheck (#1056, M-17) -------------------------------
+
+namespace {
+
+zetta::ir::ExecutionGraph uncertainty_graph(nlohmann::json attributes) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      std::move(attributes));
+    graph.add_edge(connect->id, model->id);
+    return graph;
+}
+
+} // namespace
+
+TEST(UncertaintyValidationCheck, MeasuredCoverageAndAssumptionPass) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(UncertaintyValidationCheck, UnmeasuredCoverageFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("coverage_checked"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, MissingExchangeabilityStatementFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exchangeability"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, OverlappingConformalCalibrationFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "split_conformal_regression"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"},
+         {"calibration_disjoint", false}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("disjoint"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, UnknownUncertaintyShapeFailsForAnAlias) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "probabilistic"},
+         {"uncertainty_kind", "unmeasured_guess"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("uncertainty_kind"), std::string::npos);
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------

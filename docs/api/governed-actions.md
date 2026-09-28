@@ -22,7 +22,7 @@ the GUI calls**, so RULE-1/RULE-3 cannot be bypassed by construction:
 | `approve_plan` | `Project::approve_graph` | review-before-build (#885): flips a proposed plan → approved; audits `graph_approved`; `gate`/`deploy` require it |
 | `gate` | `pipeline::default_gate().run` | returns the whole `ValidationReport` (checks + verdict + block_deploy); evaluation only, `mutates=false`; refuses a `proposed` plan with `not_approved` |
 | `deploy` | `Node::deploy_graph` | the engine self-gates (RULE-1) + self-audits both outcomes; the handler pre-runs the gate only to surface the failing check's reason verbatim |
-| `run` | `usecases::churn::run_churn_solution_on_node` (#637) via `AsyncChurnRun` · `Node::run_graph` | see below |
+| `run` | the selected methodology's registry callback · `Node::run_graph` for structural graphs | see below |
 | `add_dataset` | `data::add_dataset_file` | placement over the live `cluster_members()`; audits `dataset_added` |
 | `testsuite_run` | `testkit::run_test_case` via `testkit::AsyncCaseRun` | see below |
 
@@ -61,7 +61,10 @@ polled through the read surface: `get_run` / `system.runs` for status + logs,
   instead). The run's outputs carry the deliverables: the `model` output, the
   `index` output (the score/rank at-risk handle), and the `drivers:<job>`
   dataset ref. A non-churn graph runs **structurally** (DefaultStepExecutor)
-  within the call and returns its run id + terminal status directly.
+  within the call and returns its run id + terminal status directly. M-17 reads
+  the connect step's own table, fits its grouped posterior, writes the output
+  table and Run synchronously, and returns the succeeded Run id; it does not
+  enter the structural path.
 - **`testsuite_run`** — `testkit::AsyncCaseRun`
   (`include/zetta/testkit/async_case_run.hpp`) creates the Run on the owner
   thread (project label `testkit`, graph label = the case id) so the id is

@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m17_methodology();
 
 namespace {
 
@@ -179,16 +180,7 @@ const std::vector<Methodology>& methodologies() {
                  input("group", true, "constraints and resources")},
                 {"plan", "allocation", "constraint trace"},
                 {"objective value", "constraint violations"}, 1055),
-        planned(
-            "M-17",
-            "Bayesian / probabilistic modeling & uncertainty quantification",
-            "The tabular decision core",
-            {"bayesian", "probabilistic", "uncertainty"}, {},
-            {"bayesian", "uncertainty", "credible interval", "probabilistic"},
-            {input("feature", true, "observations"),
-             input("group", false, "hierarchical group")},
-            {"posterior", "prediction intervals"},
-            {"coverage", "CRPS", "calibration"}, 1056),
+        make_m17_methodology(),
         planned("M-18", "Ensembling & stacking", "The tabular decision core",
                 {"ensemble", "ensembling", "stacking"}, {},
                 {"ensemble", "stack", "blend models"},

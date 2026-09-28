@@ -530,6 +530,15 @@ const nlohmann::json& get_run_report_output_schema() {
              "id, name, and the metrics. `held_out_*` is present only when the run "
              "asked for a holdout; when it is absent the only figures available are "
              "in-sample and they flatter (#953)"}}},
+          {"uncertainty",
+           {{"type", "object"},
+            {"description",
+             "M-17 nominal and empirical coverage, interval width, hold-out row "
+             "count, and the exchangeability assumption"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description", "tables materialized by the run"}}},
           {"drivers",
            {{"type", "array"},
             {"description", "feature -> weight, strongest first. A weight is what "
@@ -634,6 +643,67 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "bayesian") {
+        nlohmann::json model_facts = {
+            {"id", model->id()}, {"name", model->name()}, {"kind", model->kind()}};
+        for (const auto& [name, value] : metrics.items()) {
+            if (value.is_number()) {
+                model_facts[name] = value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            dataset["not_used"] = std::move(notes);
+        }
+        if (const std::optional<double> excluded = number("excluded_rows")) {
+            dataset["excluded_rows"] = *excluded;
+        }
+        report["dataset"] = std::move(dataset);
+
+        nlohmann::json uncertainty = {
+            {"assumption",
+             "coverage interpretation assumes exchangeable observations within "
+             "the declared groups"}};
+        if (const std::optional<double> nominal = number("nominal_coverage")) {
+            uncertainty["nominal_coverage"] = *nominal;
+        }
+        if (const std::optional<double> empirical =
+                number("empirical_coverage")) {
+            uncertainty["empirical_coverage"] = *empirical;
+        }
+        if (const std::optional<double> width =
+                number("mean_interval_width")) {
+            uncertainty["mean_interval_width"] = *width;
+        }
+        if (const std::optional<double> rows = number("held_out_rows")) {
+            uncertainty["held_out_rows"] = *rows;
+        }
+        report["uncertainty"] = std::move(uncertainty);
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                output_tables.push_back(
+                    {{"name", output.name}, {"ref", output.ref}});
+            }
+        }
+        report["output_tables"] = std::move(output_tables);
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2894,7 +2964,7 @@ const nlohmann::json& run_schema() {
           {"model_name",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the registered model's name (default churn_model)"}}},
+            {"description", "the registered model's name"}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},
@@ -2907,6 +2977,27 @@ const nlohmann::json& run_schema() {
              "hold this fraction of rows OUT of training and measure the model "
              "on them separately (e.g. 0.3). Without it the run's only metrics "
              "are in-sample — scored on the rows it trained on — and flatter"}}},
+          {"group_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-17 hierarchical group column"}}},
+          {"nominal_coverage",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"exclusiveMaximum", 1},
+            {"description", "M-17 requested interval coverage"}}},
+          {"seed",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-17 deterministic split and sampling seed"}}},
+          {"burn_in",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-17 Gibbs draws discarded before measurement"}}},
+          {"posterior_draws",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-17 retained Gibbs draws"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
@@ -2953,7 +3044,10 @@ const nlohmann::json& run_output_schema() {
             {"items", {{"type", "string"}}},
             {"description", "what was inferred rather than given — read these "
                             "before trusting the "
-                            "model"}}}}}};
+                            "model"}}},
+          {"output_table",
+           {{"type", "string"},
+            {"description", "M-17 posterior estimate table"}}}}}};
     return schema;
 }
 

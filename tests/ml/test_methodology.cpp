@@ -84,12 +84,13 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
+        const bool runnable = index == 0 || index == 16;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, index == 0);
+        EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), index == 0);
+                  runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].run), runnable);
         if (index > 0) {
             EXPECT_EQ(methodologies[index].issue,
                       "https://github.com/oramasearch/zetta/issues/" +
@@ -101,6 +102,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+    EXPECT_TRUE(methodologies[16].runnable);
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
@@ -108,6 +110,7 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
+    EXPECT_EQ(zetta::ml::find_methodology("bayesian")->id, "M-17");
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
@@ -126,6 +129,17 @@ TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
     ASSERT_NE(methodology, nullptr);
     EXPECT_EQ(methodology->id, "M-3");
     EXPECT_FALSE(methodology->runnable);
+
+    zetta::ir::ExecutionGraph bayesian;
+    bayesian.add_node(zetta::ir::StepKind::Connect, "source", {}, "bayes-source");
+    bayesian.add_node(zetta::ir::StepKind::Model, "posterior",
+                      nlohmann::json{{"model_kind", "bayesian"}},
+                      "posterior");
+    bayesian.add_edge("bayes-source", "posterior");
+    methodology = zetta::ml::methodology_for_graph(bayesian);
+    ASSERT_NE(methodology, nullptr);
+    EXPECT_EQ(methodology->id, "M-17");
+    EXPECT_TRUE(methodology->runnable);
 
     zetta::ir::ExecutionGraph unknown;
     unknown.add_node(zetta::ir::StepKind::Model, "unknown model",

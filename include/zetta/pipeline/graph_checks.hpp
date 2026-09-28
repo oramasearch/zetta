@@ -72,6 +72,12 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+class UncertaintyValidationCheck final : public Check {
+public:
+    std::string name() const override { return "uncertainty_validation"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }
