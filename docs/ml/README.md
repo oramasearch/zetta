@@ -1,11 +1,13 @@
 # ML docs
 
 The native ML engine — the "learns from your data" differentiator, re-implemented from scratch as
-distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) seams (no
-Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
+distributed C++ over [DDF](../ddf/ddf.md) and [compute](../compute/compute-device.md) contracts
+(no Python / XGBoost / foreign runtime, ADR-17).
+The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
-rather than a reference runtime. Read here for any model-training, explanation, or scoring work.
+rather than a reference runtime. M-18 adds native out-of-fold stacking over refit base models.
+Read here for any model-training, explanation, or scoring work.
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
@@ -27,7 +29,7 @@ carry `*`. Regenerate it with
 <!-- methodology-table:start -->
 | ID | Methodology | Family | Model kinds | Solutions | Inputs | Outputs | Metrics | Status | Issue |
 |---|---|---|---|---|---|---|---|---|---|
-| M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
+| M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
 | M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group | entity map, match evidence | pair precision, pair recall, blocking recall | not runnable | [#1041](https://github.com/oramasearch/zetta/issues/1041) |
 | M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature* | segment assignments, segment profiles | silhouette, stability, cluster size | not runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
 | M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecasts, prediction intervals | MAE, RMSE, WAPE, forecast value added | not runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
@@ -44,7 +46,7 @@ carry `*`. Regenerate it with
 | M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | feature*, group* | plan, allocation, constraint trace | objective value, constraint violations | not runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
 | M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | feature*, group | posterior, prediction intervals | coverage, CRPS, calibration | not runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
-| M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |
+| M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | S-10 | entity*, feature*, label*, time | ensemble model, blended scores, meta-model weights | held-out ROC-AUC, log loss, lift over best single model | runnable | — |
 | M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | — | feature*, label | labels, review queue, label provenance | agreement, cost per label, downstream lift | not runnable | [#1058](https://github.com/oramasearch/zetta/issues/1058) |
 | M-20 | Privacy-preserving learning & synthetic data | The data supply chain | privacy_preserving, federated, synthetic_data | — | group*, feature* | private model, synthetic dataset, guarantee report | privacy budget, TSTR, attack success | not runnable | [#1059](https://github.com/oramasearch/zetta/issues/1059) |
 | M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | — | time*, feature*, label | online model, streaming scores | prequential loss, drift, latency | not runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |

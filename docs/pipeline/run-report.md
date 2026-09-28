@@ -33,6 +33,8 @@ state, and `get_run_report` puts them together at query time:
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| M-18 lift and base weights | the ensemble Model's metrics and drivers |
+| queryable result tables | the Run's dataset outputs |
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
@@ -116,8 +118,14 @@ No new JSON format and no new storage. `run.schema.json`'s output `kind` enum ga
 `"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
 tool list, and the agent's read-tool allowlist.
 
+M-18 reports add `best_single_held_out_auc`,
+`held_out_auc_lift_over_best_single`, `meta_model_weights`, and `output_tables`.
+Its blended-score table uses the same `rank` / `account` / `risk` columns, so the
+ranked rows remain available through the common report shape. The dataset section
+names the pipeline table from lineage and lists columns excluded during contract
+resolution.
+
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Other engines can emit a `report` output once they record the facts behind it.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

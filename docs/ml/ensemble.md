@@ -77,8 +77,38 @@ third-party weight licences or download-based tests for M-18.
 
 At the native layer, construct an `EnsembleTrainingData` or invoke
 `run_ensemble_train_job` concurrently on every cluster member with the same
-round tag. Registry compilation and persisted run outputs are documented in the
-methodology section once the M-18 adapter is selected.
+round tag.
+
+On the control surface, compile `methodology: "M-18"`, `model_kind:
+"ensemble"`, or solution `S-10`. Give compile hints for the pipeline's own table
+and column roles:
+
+```json
+{
+  "project": "fraud review",
+  "methodology": "M-18",
+  "hints": {
+    "dataset_path": "datasets.transactions",
+    "entity_column": "transaction_id",
+    "label_column": "confirmed_fraud",
+    "feature_columns": ["amount_zscore", "velocity", "merchant_risk"],
+    "folds": 5
+  }
+}
+```
+
+The compiled graph loads that table, validates its numeric roles, trains the
+out-of-fold stack, then writes `ensemble_results.blended_scores_*` and
+`ensemble_results.meta_weights_*`. Its Run output points to both tables and the
+registered `ensemble` Model. `get_run_report` returns the held-out lift over the
+best base, the base weights, the table lineage, excluded columns, and the output
+table names. The same registry entry is exposed by REST, MCP, and the agent's
+existing `compile_intent`, `run`, and `get_run_report` tools.
+
+The registry adapter currently refuses a table launch when the live compute
+roster has more than one member because table co-launch is not yet available.
+The native `run_ensemble_train_job` is distributed and tested across owned
+partitions; callers that co-launch it on every member use the full SPMD path.
 
 ## Verification
 

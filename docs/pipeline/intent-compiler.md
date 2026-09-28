@@ -10,6 +10,7 @@ include/zetta/pipeline/intent_compiler.hpp   compile options and result
 src/core/pipeline/intent_compiler.cpp         deterministic resolution
 include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
+src/core/ml/ensemble_methodology.cpp          M-18 shape callback
 ```
 
 ## Resolution order
@@ -71,6 +72,21 @@ The model node carries `model_kind: "gbdt"` as the dispatch identity and keeps
 the existing `algo: "gradient_boosting"` configuration. All attributes remain
 editable starting-point hints for review.
 
+## M-18 ensemble shape
+
+M-18 builds its own four-stage pipeline from the compile hints:
+
+```
+load_ensemble_table -> prepare_ensemble_inputs -> train_ensemble -> write_ensemble_outputs
+       connect                 clean                  model                serve
+```
+
+The connect step keeps the supplied `source` and `table`. The model step records
+the entity, label, feature, and optional time columns plus `out_of_fold`, fold
+strategy, and full-training base refit attributes. The graph therefore carries
+the facts the M-18 gate check and runner enforce. Explicit M-18 selection,
+registered ensemble keywords, and solution S-10 all select this shape.
+
 ## Stored intent bridge
 
 `Project::compile_intent_to_graph` reads an immutable captured intent, calls the
@@ -85,7 +101,7 @@ introduces no new stored graph format.
 
 ## Extending the compiler
 
-A later methodology supplies `build_shape` on its registry entry. The compiler
+A methodology supplies `build_shape` on its registry entry. The compiler
 does not need another methodology-specific branch. See
 [methodologies.md](../ml/methodologies.md) for the full callback contract and
 extension checklist.

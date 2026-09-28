@@ -6,9 +6,9 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-18 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
-runner. The other entries link to their implementation issues.
+runner. The remaining entries link to their implementation issues.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -66,6 +66,21 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-18 ensembling and stacking
+
+`src/core/ml/ensemble_methodology.cpp` owns the M-18 callbacks:
+
+- `build_shape` creates a table connect, numeric-role validation, out-of-fold
+  ensemble model step, and blended-score/meta-weight output step;
+- `owns` recognizes only the registered ensemble model kinds; and
+- `run` resolves the connect step's `source` and `table`, applies the model
+  step's column roles, calls the native runner, and returns the durable Run.
+
+The runner in `src/core/ml/ensemble_runner.cpp` registers an `ensemble` Model and
+writes queryable blended-score and meta-weight tables with lineage. S-10 resolves
+to M-18. See [ensemble.md](ensemble.md) for its split guarantees and current
+multi-member adapter boundary.
 
 ## Adding a methodology
 

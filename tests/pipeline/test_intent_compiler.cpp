@@ -95,6 +95,37 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, EnsembleMethodologyBuildsItsOwnTableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-18";
+    options.hints = {{"dataset_path", "datasets.training_rows"},
+                     {"entity_column", "account_id"},
+                     {"label_column", "converted"},
+                     {"feature_columns", {"signal_a", "signal_b"}}};
+    const auto compiled = compile_intent("Stack complementary models", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-18");
+    EXPECT_EQ(compiled->shape, IntentShape::Generic);
+    EXPECT_EQ(compiled->graph.node_count(), 4u);
+    EXPECT_TRUE(compiled->graph.has_node("load_ensemble_table"));
+    EXPECT_TRUE(compiled->graph.has_node("train_ensemble"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    const auto model = compiled->graph.find_node("train_ensemble");
+    ASSERT_TRUE(model);
+    EXPECT_EQ(model->attributes.at("model_kind"), "ensemble");
+    EXPECT_EQ(model->attributes.at("stacking_predictions"), "out_of_fold");
+    EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+}
+
+TEST(IntentCompilerTest, FraudSolutionUsesEnsembleMethodology) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    const auto compiled = compile_intent("Prioritize transaction review", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-18");
+    EXPECT_TRUE(compiled->graph.has_node("train_ensemble"));
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
     std::string error;
     EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));

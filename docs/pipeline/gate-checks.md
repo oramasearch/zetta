@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -7,17 +7,27 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+The baseline gate includes these model-graph checks:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
+
+### `ensemble_out_of_fold` — honest stacking
+
+This check engages only for `ensemble`, `ensembling`, and `stacking` model
+kinds. It requires `stacking_predictions: "out_of_fold"`, `folds >= 2`, and
+`base_refit: "all_training"`. When `time_column` is non-empty it also requires
+`fold_strategy: "time_ordered"`. Each refusal names the required attribute, so
+an edited M-18 graph cannot silently turn its meta-model training into an
+in-sample fit or validate earlier observations from later data.
 
 ## How a check reads a step
 

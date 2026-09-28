@@ -534,6 +534,14 @@ const nlohmann::json& get_run_report_output_schema() {
            {{"type", "array"},
             {"description", "feature -> weight, strongest first. A weight is what "
                             "the model leaned on, not a cause"}}},
+          {"meta_model_weights",
+           {{"type", "array"},
+            {"description",
+             "M-18 base-model weights in the regularized logistic stacker"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "queryable tables materialized by the run"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
@@ -658,6 +666,20 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
     else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
     if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    else if (const auto value = number("train_rows")) model_facts["train_rows"] = *value;
+    if (const auto value = number("oof_auc")) model_facts["oof_auc"] = *value;
+    if (const auto value = number("oof_log_loss")) model_facts["oof_log_loss"] = *value;
+    if (const auto value = number("oof_accuracy")) model_facts["oof_accuracy"] = *value;
+    if (const auto value = number("oof_rows")) model_facts["oof_rows"] = *value;
+    if (const auto value = number("best_single_held_out_auc")) {
+        model_facts["best_single_held_out_auc"] = *value;
+    }
+    if (const auto value = number("held_out_auc_lift_over_best_single")) {
+        model_facts["held_out_auc_lift_over_best_single"] = *value;
+    }
+    if (const auto value = number("meta_model_intercept")) {
+        model_facts["meta_model_intercept"] = *value;
+    }
     report["model"] = std::move(model_facts);
 
     nlohmann::json dataset = nlohmann::json::object();
@@ -672,6 +694,11 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     for (const zetta::ml::ModelDriver& driver : model->drivers()) {
         drivers.push_back({{"feature", driver.feature}, {"weight", driver.importance}});
         features.push_back(driver.feature);
+    }
+    if (model->kind() == "ensemble" &&
+        model->feature_schema().contains("features") &&
+        model->feature_schema().at("features").is_array()) {
+        features = model->feature_schema().at("features");
     }
     if (!features.empty()) dataset["features"] = std::move(features);
     // What the run actually read and what it could not use, from the run itself: its
@@ -694,7 +721,22 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                            {"why", "this run's model records no dataset facts; it "
                                    "predates them being written (#958)"}});
     }
-    if (!drivers.empty()) report["drivers"] = std::move(drivers);
+    if (!drivers.empty()) {
+        if (model->kind() == "ensemble") {
+            report["meta_model_weights"] = drivers;
+        }
+        report["drivers"] = std::move(drivers);
+    }
+
+    nlohmann::json output_tables = nlohmann::json::array();
+    for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+        if (output.kind == "dataset" && output.ref.contains('.')) {
+            output_tables.push_back(output.ref);
+        }
+    }
+    if (!output_tables.empty()) {
+        report["output_tables"] = std::move(output_tables);
+    }
 
     // The ranked list, read back from the table the run materialized — so the
     // report and anything querying `churn_results` cannot disagree.

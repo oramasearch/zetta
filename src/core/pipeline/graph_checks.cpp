@@ -336,6 +336,64 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
                        "every model step names a methodology the engine can execute"};
 }
 
+CheckResult EnsembleOutOfFoldCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "ensemble" && *kind != "ensembling" &&
+                      *kind != "stacking")) {
+            continue;
+        }
+        const std::optional<std::string> predictions =
+            string_field(node->attributes, "stacking_predictions");
+        if (!predictions || *predictions != "out_of_fold") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble stacking_predictions must be `out_of_fold`; "
+                    "the meta-model may never fit in-sample base scores"};
+        }
+        const auto folds = node->attributes.find("folds");
+        if (folds == node->attributes.end() ||
+            !folds->is_number_integer() || folds->get<long long>() < 2) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble folds must be an integer of at least 2"};
+        }
+        const std::optional<std::string> refit =
+            string_field(node->attributes, "base_refit");
+        if (!refit || *refit != "all_training") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble base_refit must be `all_training` after the "
+                    "stacker is fit"};
+        }
+        const std::optional<std::string> time =
+            string_field(node->attributes, "time_column");
+        if (time && !time->empty()) {
+            const std::optional<std::string> strategy =
+                string_field(node->attributes, "fold_strategy");
+            if (!strategy || *strategy != "time_ordered") {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": an ensemble with a time column must use "
+                        "`time_ordered` folds so validation never precedes training"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every ensemble fits only out-of-fold scores and respects time order"};
+}
+
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     const auto fail = [this](std::string reason) {
         return CheckResult{name(), CheckStatus::Fail, std::move(reason)};

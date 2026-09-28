@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m18_methodology();
 
 namespace {
 
@@ -189,13 +190,7 @@ const std::vector<Methodology>& methodologies() {
              input("group", false, "hierarchical group")},
             {"posterior", "prediction intervals"},
             {"coverage", "CRPS", "calibration"}, 1056),
-        planned("M-18", "Ensembling & stacking", "The tabular decision core",
-                {"ensemble", "ensembling", "stacking"}, {},
-                {"ensemble", "stack", "blend models"},
-                {input("feature", true, "base-model predictions"),
-                 input("label", true, "evaluation outcome")},
-                {"ensemble model", "blended predictions"},
-                {"delta over best model", "stability"}, 1057),
+        make_m18_methodology(),
         planned("M-19", "Label efficiency", "The data supply chain",
                 {"label_efficiency", "active_learning", "weak_supervision"}, {},
                 {"active learning", "weak supervision", "label efficiency"},
