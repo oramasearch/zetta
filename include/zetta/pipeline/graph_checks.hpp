@@ -416,6 +416,33 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-11's domain adaptations (#1120). Every request-time decision must retain
+// its actual exploration probability, apply consent and cross-channel contact
+// limits before delivery, and keep predictive propensity separate from causal
+// uplift claims.
+class S11LoggedPropensityCheck final : public Check {
+public:
+    std::string name() const override { return "s11_logged_propensity"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S11ContactConsentCheck final : public Check {
+public:
+    std::string name() const override { return "s11_contact_consent"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S11PropensityInterpretationCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s11_propensity_interpretation";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

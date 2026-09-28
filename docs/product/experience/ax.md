@@ -100,7 +100,10 @@ relay it to a person.
   and a measured net-value readout. S-4 adds regulatory contact limits,
   vulnerable-customer protection, digital/dialer delivery, and net-recovery
   measurement. S-12 adds claim routing, human-only denial, document confidence,
-  fairness review, and referral measurement. S-5 through S-11 are marked minimal.
+  fairness review, and referral measurement. S-11 has complete
+  cross-channel arbitration defaults, logged exploration, consent/contact
+  refusals, request-time action payloads, and uplift-cell ROI. S-5 through
+  S-10 are marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
@@ -118,6 +121,10 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+  `create_solution` composes M-8 with M-15 and the shared foundation;
+  `run_solution` arbitrates exploit/explore cells, records actual selection
+  probabilities, enforces consent and cross-channel contact limits, delivers
+  the decision response, and updates the S-11 readout and guardrails.
 - **Versioned decision policy** (#1104): `create_policy`, `get_policy`, and
   `update_policy` manage immutable policy versions; `decide` applies hard
   thresholds, tiers, budgets, caps, eligibility/exclusions, autonomy, and the

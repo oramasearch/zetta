@@ -593,6 +593,36 @@ const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s11_correctness_profile(const ir::ExecutionGraph& graph,
+                                    bool& applies, int& level,
+                                    std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-11") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-11 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s11_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-11 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -616,6 +646,19 @@ CheckResult s2_failure(std::string name, std::string reason) {
 }
 
 CheckResult s2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s11_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-11 Pipeline to validate"};
+}
+
+CheckResult s11_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s11_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
@@ -1761,6 +1804,145 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+CheckResult S11LoggedPropensityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const std::string propensity_column =
+        profile->value("logging_propensity_column", std::string{});
+    if (propensity_column.empty() ||
+        profile->value("bandit_propensity_output", std::string{}) !=
+            "decision propensities" ||
+        !has_methodology(graph, "M-8") ||
+        !has_methodology(graph, "M-15")) {
+        return s11_failure(
+            name(), "S-11 requires M-8 and M-15 with an actual logged "
+                    "selection-probability column and decision output");
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (recommendation == nullptr ||
+        recommendation->attributes.value("logging_propensity_column",
+                                         std::string{}) !=
+            propensity_column ||
+        recommendation->attributes.value("offline_evaluation",
+                                         std::string{}) !=
+            "logging_propensities_required") {
+        return s11_failure(
+            name(), "S-11 recommendation training and off-policy evaluation "
+                    "must read the declared logged propensity");
+    }
+    const bool logs_propensities = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("methodology", std::string{}) ==
+                       "M-15" &&
+                   node->attributes.value("output", std::string{}) ==
+                       "decision_log";
+        });
+    if (!logs_propensities) {
+        return s11_failure(
+            name(), "S-11 bandit stage must write the decision propensity log");
+    }
+    return s11_success(
+        name(), "S-11 records actual bandit selection probabilities");
+}
+
+CheckResult S11ContactConsentCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const json* constraints = object_field(*profile, "constraints");
+    if (constraints == nullptr ||
+        !constraints->value("require_consent", false) ||
+        constraints->value("consent_column", std::string{}).empty() ||
+        constraints->value("eligibility_column", std::string{}).empty() ||
+        constraints->value("contacts_column", std::string{}).empty() ||
+        constraints->value("contact_cap_column", std::string{}).empty() ||
+        constraints->value("cross_channel", false) != true) {
+        return s11_failure(
+            name(), "S-11 must name consent, eligibility, contact-count, and "
+                    "cross-channel cap evidence");
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (recommendation == nullptr ||
+        recommendation->attributes.value("eligibility_column",
+                                         std::string{}) !=
+            constraints->at("eligibility_column").get<std::string>() ||
+        recommendation->attributes.value("contacts_column", std::string{}) !=
+            constraints->at("contacts_column").get<std::string>() ||
+        recommendation->attributes.value("contact_cap_column",
+                                         std::string{}) !=
+            constraints->at("contact_cap_column").get<std::string>()) {
+        return s11_failure(
+            name(), "S-11 M-8 columns must match the declared hard constraints");
+    }
+    const bool bounded_selection = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("methodology", std::string{}) ==
+                       "M-8" &&
+                   node->attributes.value("hard_constraints", false) &&
+                   node->attributes.value("apply_eligibility", false) &&
+                   node->attributes.value("apply_contact_caps", false);
+        });
+    if (!bounded_selection) {
+        return s11_failure(
+            name(), "S-11 must apply eligibility and contact caps before action selection");
+    }
+    return s11_success(
+        name(), "S-11 consent and cross-channel contact limits are mandatory");
+}
+
+CheckResult S11PropensityInterpretationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (profile->value("propensity_interpretation", std::string{}) !=
+            "predictive_not_causal" ||
+        profile->value("causal_claim_from_propensity", true) ||
+        recommendation == nullptr ||
+        recommendation->attributes.value("propensity_interpretation",
+                                         std::string{}) !=
+            "predictive_not_causal" ||
+        !has_methodology(graph, "M-6")) {
+        return s11_failure(
+            name(), "S-11 predictive propensity may rank actions but only "
+                    "randomized M-6 uplift evidence supports causal claims");
+    }
+    return s11_success(
+        name(), "S-11 separates predictive ranking from causal uplift evidence");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

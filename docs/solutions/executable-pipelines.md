@@ -65,6 +65,15 @@ with `claim_id` and `referral_score` columns in `claims_results`.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
+S-11 is the other bound primary-output case. It automatically selects the M-8
+recommendation table's `entity` and `policy_score`. Its snapshot may retain
+multiple candidate rows per customer by using a unique candidate key while
+`M-8.entity_column` names the shared customer. M-15 accepts an explicit
+`decision_column` so its chosen arm and actual probability join to that same
+customer. The S-11 foundation groups M-8 candidates, applies the experiment's
+exploit or explore choice, resolves the chosen action's channel, and refuses an
+arm that is absent, ineligible, or capped.
+
 ## Run and read back
 
 Call `run_solution` with project and graph. An optional write-only
@@ -98,6 +107,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    actionable audience syncs with predicted value and horizon, retain budget
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
+   S-11 rows carry the policy tier, channel, exploit/explore mode, selected
+   action, predictive propensity, and actual selection probability. Its five
+   guardrails are observed from the same execution.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -160,3 +172,11 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.NextBestActionArbitratesChannelsAndRecoversPlantedEffect`
+builds and runs S-11 over two candidate channels per synthetic customer. It
+executes all five methodology callbacks, verifies exploit and explore
+deliveries and channel selection, reads positive M-15 propensity logs, proves
+holdout/consent/contact-cap suppression, records centered net-value outcomes
+with a 0.18 effect, and checks that the estimate and 95% confidence interval
+recover the planted effect.

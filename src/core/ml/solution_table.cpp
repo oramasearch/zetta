@@ -72,6 +72,7 @@ Solution band_a(
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
+                           : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
                                                      : 1102);
     return solution;
@@ -408,16 +409,26 @@ const std::vector<Solution>& solutions() {
             {{"M-8", "primary", 1}, {"M-1", "foundation", 1},
              {"M-6", "foundation", 1}, {"M-2", "foundation", 1},
              {"M-15", "foundation", 1}},
-            {"M-2", "M-1", "M-6", "M-8", "M-15"}, {"decision API across channels"}, {"L4"},
-            {{"arbitration inside policy", "A2"}, {"action catalog and high-stakes offers", "A1"},
+            {"M-2", "M-1", "M-6", "M-8", "M-15"},
+            {"request-time decision API across channels",
+             "approval task for high-stakes actions"},
+            {"L4 request-time decisions", "L1 approval tasks"},
+            {{"arbitration inside policy", "A2"},
+             {"action catalog and high-stakes offers", "A1"},
              {"exploration inside bounds", "A3"}},
             {{"entity", true, "one customer identity across channels"},
              {"treatment", true, "eligible actions and no-action arm"},
              {"label", true, "per-decision and long-horizon outcomes"},
-             {"time", true, "decision chronology and propensity log"}},
+             {"time", true, "decision chronology and outcome maturity"},
+             {"feature", true, "decision-time context available in every channel"},
+             {"consent", true, "channel consent and suppression evidence"},
+             {"contact", true, "cross-channel contact counts and caps"},
+             {"propensity", true, "actual logged action-selection probability"},
+             {"channel", true, "channel and delivery destination"}},
             "Eligibility, consent, cross-channel caps, budgets, margin floors, business overrides, and exploration floor.",
-            "Global holdout plus per-arm propensity logging, off-policy evaluation, and long-horizon value.",
-            {"complaints", "unsubscribe", "margin", "offer fairness", "exploration floor"},
+            "Global holdout plus uplift cells, per-arm propensity logging, off-policy evaluation, and long-horizon value.",
+            {"consent violations", "contact-cap violations", "missing propensity logs",
+             "margin floor", "action-execution rate"},
             levels("single-channel batch lists", "real-time single channel",
                    "omnichannel arbitration", "add long-horizon objectives")),
         band_a(
@@ -688,7 +699,12 @@ ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
             node->attributes.value("solution_stage", 0) != stage) {
             continue;
         }
-        result.add_node(node->kind, node->name, node->attributes, node->id);
+        nlohmann::json attributes = node->attributes;
+        attributes.erase("methodology");
+        attributes.erase("preview");
+        attributes.erase("solution_stage");
+        result.add_node(node->kind, node->name, std::move(attributes),
+                        node->id);
     }
     for (const ir::Edge& edge : graph.edges()) {
         if (result.has_node(edge.from) && result.has_node(edge.to)) {

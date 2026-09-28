@@ -122,7 +122,10 @@ What's inside, by domain (each links to that domain's docs):
   dialer delivery; a permanent holdout; and net-recovery readout.
   S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
   SIU paths, A0-only denial, document-confidence and fairness refusals, action
-  tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
+  tasks, holdout, and ROI readout. S-11 is
+  runnable at all four levels with M-8 action rankings, M-15 logged exploration,
+  consent/contact enforcement, request-time channel delivery, uplift cells, and
+  a net-value ROI readout. S-5 through S-10 have explicitly minimal
   editable defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's

@@ -258,6 +258,42 @@ void claims_triage_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "referral_confirmed", "claim", 45};
 }
 
+void next_best_action_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "recommended"}, {"minimum_score", 0.0},
+         {"action", "decision_api_response"},
+         {"allowed_actions", {"decision_api_response", "high_stakes_review",
+                              "no_action"}}},
+        {{"name", "no_positive_value"}, {"minimum_score", -1000000000.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"decision_api_response",
+         {{"autonomy", "A2"}, {"sla_seconds", 1},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"high_stakes_review",
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("consent", true),
+        predicate("within_contact_cap", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true), predicate("do_not_contact", true),
+        predicate("consent", false)};
+    result.policy["budget"] = {{"limit", 1000.0}};
+    result.experiment.holdouts = {{"recommended", 0.1},
+                                  {"no_positive_value", 0.1}};
+    result.experiment.treatment_cells = {"exploit", "explore"};
+    result.guardrails = {{"consent_violation_rate", 0.0, "maximum"},
+                         {"contact_cap_violation_rate", 0.0, "maximum"},
+                         {"missing_propensity_rate", 0.0, "maximum"},
+                         {"margin_floor_violation_rate", 0.0, "maximum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -272,6 +308,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 lifetime_value_defaults(result);
             } else if (solution_id == "S-4") {
                 collections_defaults(result);
+            } else if (solution_id == "S-11") {
+                next_best_action_defaults(result);
             } else if (solution_id == "S-12") {
                 claims_triage_defaults(result);
             }

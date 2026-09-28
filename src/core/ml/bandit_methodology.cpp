@@ -62,9 +62,10 @@ ir::ExecutionGraph build_bandit_shape(const ShapeRequest &request) {
   nlohmann::json model_attributes = {
       {"model_kind", "bandit"},
       {"algorithm", algorithm},
-      {"decision_column", "decision_id"},
-      {"arm_column", "arm"},
-      {"reward_column", "reward"},
+      {"decision_column",
+       request.hints.value("decision_column", "decision_id")},
+      {"arm_column", request.hints.value("arm_column", "arm")},
+      {"reward_column", request.hints.value("reward_column", "reward")},
       {"exploration_floor", floor},
       {"default_arm_cap", default_cap},
       {"arm_caps", caps},

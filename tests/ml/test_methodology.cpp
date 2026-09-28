@@ -265,6 +265,9 @@ TEST(MethodologyRegistry, M15BuildsAndOwnsItsBanditPipeline) {
     zetta::ml::ShapeRequest request;
     request.hints = {{"source", "experiments"},
                      {"table", "decisions"},
+                     {"decision_column", "customer"},
+                     {"arm_column", "action"},
+                     {"reward_column", "value"},
                      {"arms", {"control", "best"}},
                      {"exploration_floor", 0.1},
                      {"default_arm_cap", 0.9}};
@@ -280,6 +283,9 @@ TEST(MethodologyRegistry, M15BuildsAndOwnsItsBanditPipeline) {
     const auto models = graph.nodes_of_kind(zetta::ir::StepKind::Model);
     ASSERT_EQ(models.size(), 1u);
     EXPECT_EQ(models.front()->attributes.at("model_kind"), "bandit");
+    EXPECT_EQ(models.front()->attributes.at("decision_column"), "customer");
+    EXPECT_EQ(models.front()->attributes.at("arm_column"), "action");
+    EXPECT_EQ(models.front()->attributes.at("reward_column"), "value");
     EXPECT_EQ(models.front()->attributes.at("arms").size(), 2u);
 }
 

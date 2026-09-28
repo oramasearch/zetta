@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-and S-12. S-5 through S-11 retain minimal defaults. This is the scope of
+S-11, and S-12. S-5 through S-10 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 
@@ -28,6 +28,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
   data, claim paths, A0-only denial, fairness and document checks, holdout, and
   execution (#1121).
+- [S-11.md](S-11.md) — runnable next-best-action module: cross-channel
+  arbitration, constrained exploration, logged propensities, consent/contact
+  limits, and planted-effect proof (#1120).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -200,9 +203,28 @@ fairness-review evidence are mandatory. Catastrophe and manual-only flags block
 delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
 10% tier holdout measures `referral_confirmed` over 45 days.
 
+S-11 is the complete next-best-action default:
+
+| Setting | Executable default |
+|---|---|
+| Recommended | policy score ≥ 0; request-time decision response, A2, one-second SLA |
+| No positive value | explicit no-action recommendation, A0 |
+| Approval | optional high-stakes review, A1, one-hour SLA |
+| Contact limits | four lifetime contacts and one action per seven-day window |
+| Eligibility | `eligible`, `consent`, and `within_contact_cap` must explicitly pass |
+| Exclusions | `excluded`, `do_not_contact`, or denied consent suppress delivery |
+| Budget / stop | 1,000 currency units per policy version; kill switch off |
+| Experiment | permanent 10% holdout; remaining entities split equally between `exploit` and M-15 `explore` |
+| Guardrails | zero consent, cap, missing-propensity, and margin-floor violations; minimum execution rate 0.95 |
+| Measurement | uplift cells; named `net_value` outcome per decision over 30 days |
+
+S-11 action payloads carry the selected action and channel, exploit/explore
+mode, actual selection probability, predictive propensity, and the explicit
+non-causal interpretation through the shared action integration path.
+
 ### Minimal defaults
 
-**S-5 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-5 through S-10 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -218,7 +240,6 @@ require an owner-approved policy change before spending.
 | S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
-| S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
 
 Minimal guardrails are registered but remain unobserved until their metric
 producer supplies evidence; absence of an observation is not a healthy reading.
@@ -229,7 +250,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-and S-12 journeys.
+S-11, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -247,6 +268,9 @@ and point-in-time promise-to-pay labels. All completed modules run these checks 
 the graph is persisted and again before execution.
 For S-12, it refuses automated denial, missing fairness review, weak document
 thresholds, missing claim-score bindings, and incomplete level composition.
+For S-11, it refuses missing propensity logs, unenforced consent or
+cross-channel contact caps, and any causal claim derived from predictive
+response propensity. M-8 and M-15 outputs feed its request-time arbitration.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

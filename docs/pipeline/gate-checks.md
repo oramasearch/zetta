@@ -38,6 +38,7 @@ The reusable annotation and methodology-specific checks are:
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 | `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
+| `S11*Check` family | `s11_logged_propensity`, `s11_contact_consent`, `s11_propensity_interpretation` | an S-11 graph without durable selection probabilities, consent and cross-channel cap enforcement, or a strict separation between predictive ranking and causal uplift evidence |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -129,6 +130,25 @@ low-confidence review routing, and exactly the methodology stages registered
 for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
+
+### S-11 composed solution checks
+
+The S-11 checks engage only for a bound S-11 manifest and evaluate the full
+M-2/M-1/M-6/M-8/M-15 graph. `s11_logged_propensity` requires the declared
+historical logging-propensity column, M-8 off-policy evaluation, and M-15's
+durable decision-propensity output. Runtime also refuses missing or
+non-positive selection probabilities.
+
+`s11_contact_consent` requires named consent, eligibility, contact-count, and
+contact-cap columns, a cross-channel constraint, and M-8 hard eligibility and
+cap filters before policy execution. `s11_propensity_interpretation` requires
+the `predictive_not_causal` contract, refuses causal claims from response
+propensity, and requires M-6 uplift evidence.
+
+`create_solution` builds this profile from M-8 hints and optional
+`sources.correctness` overrides. `run_solution` checks the stored profile
+again. See [S-11](../solutions/S-11.md) for the complete data, action,
+measurement, and refusal contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

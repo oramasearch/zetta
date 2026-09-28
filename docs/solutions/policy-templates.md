@@ -53,7 +53,17 @@ customer. It caps lifetime contacts at six and rolling contacts at one per
 seven days. Its champion/challenger design protects a 10% holdout and splits
 treatment between dialer and digital cells.
 
-S-5 through S-11 intentionally provide minimal starter policies derived from
+S-11 defines recommended/no-positive-value floors of 0.0 and negative one
+billion. The recommended tier returns an A2 decision response; an optional
+high-stakes review is A1 and no action is A0. Eligibility, consent, and a
+remaining cross-channel contact allowance must pass. Exclusion,
+do-not-contact, or denied consent suppresses delivery. The lifetime cap is four,
+the rolling seven-day cap is one, and the budget is 1,000 currency units. Its
+experiment keeps 10% as permanent holdout and divides the rest equally between
+M-8 exploit and M-15 explore cells. The explore cell records M-15's actual
+selection probability; exploit records one.
+
+S-5 through S-10 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -62,7 +72,9 @@ economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
-violations, routing coverage, and action execution.
+violations, routing coverage, and action execution. S-11 observes consent,
+contact-cap, propensity-log, margin-floor, and action-execution guardrails and
+measures `net_value` through uplift cells.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40
