@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "zetta/pubsub/pubsub.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta::pubsub {
 
@@ -42,6 +43,8 @@ struct Subscription::State {
     std::map<std::uint64_t, InFlight> in_flight;  // by sequence
     std::unordered_set<std::string> acked_ids;    // exactly-once
     std::deque<std::string> acked_order;
+    std::unordered_set<std::uint64_t> delivered_sequences;
+    std::map<std::uint64_t, Event> requested_redeliveries;
     std::uint64_t missed = 0;       // pending gap notice
     std::uint64_t missed_total = 0;
     bool connected = true;
@@ -92,6 +95,7 @@ public:
 
     // Close every subscription (drop, shutdown) and wake every waiter.
     void close_all(const std::string& reason);
+    TopicMutation retire();
     // The facade is going away: stop calling back into it.
     void detach();
 
@@ -102,6 +106,13 @@ public:
     std::uint64_t held_events() const;
     std::uint64_t next_sequence() const { return next_sequence_.load(); }
     TopicStats stats() const;
+    nlohmann::json inspect() const;
+    nlohmann::json browse(std::optional<std::uint64_t> from, std::size_t limit, bool backward);
+    TopicMutation update_settings(const nlohmann::json& patch);
+    TopicMutation update_event(std::uint64_t sequence, std::string payload,
+                               std::uint64_t expected_revision, const Address& actor, bool redeliver);
+    TopicMutation delete_events(const std::vector<std::uint64_t>& sequences,
+                                std::optional<std::uint64_t> before);
 
     // Retention sweep, lag policy, spill logging. Returns expired subscriber
     // addresses (for the log).
@@ -110,6 +121,10 @@ public:
     // Held events with sequence >= from, oldest first, at most `max`; waits up to
     // `wait` when there are none.
     std::vector<Event> read_from(std::uint64_t from_sequence, std::size_t max, std::chrono::milliseconds wait);
+    // Register before a no-wait read; append or close signals every registered
+    // one-shot event. Weak ownership lets a timed-out route retire without a
+    // cross-thread unregister call (#1076).
+    void register_waiter(const std::shared_ptr<runtime::async_event>& waiter);
 
     // Every held event per level (the shutdown flush; spilled rings are read back).
     std::vector<std::vector<Event>> snapshot();
@@ -126,6 +141,8 @@ private:
     std::uint64_t& position_for(Subscription::State& state, std::size_t level);         // mutex_ held
     std::uint64_t min_position(std::size_t level) const;                                // mutex_ held
     void release_consumed();                                                             // mutex_ held
+    void forget_event(std::uint64_t sequence);                                            // mutex_ held
+    TopicMutation trim_retention();                                                      // mutex_ held
     bool over_limit(std::uint64_t incoming) const;
     OverflowPolicy overflow_policy() const;
     bool spill_one();
@@ -133,6 +150,7 @@ private:
     bool disconnect_slowest();                                                           // mutex_ held
     void note_spill(std::uint64_t freed);
     void close_state(Subscription::State& state, std::string reason);                    // mutex_ held
+    std::vector<std::shared_ptr<runtime::async_event>> take_waiters();                   // mutex_ held
     PubSub* owner() const { return owner_.load(); }
     void log(LogLevel level, const std::string& message) const;
 
@@ -150,6 +168,7 @@ private:
     std::condition_variable published_;
     std::condition_variable released_;
     std::uint64_t publish_generation_ = 0;
+    std::vector<std::weak_ptr<runtime::async_event>> waiters_;
     std::size_t held_publishers_ = 0;
     bool closing_ = false;
 

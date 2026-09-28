@@ -1,5 +1,6 @@
 #include "zetta/ml/methodology.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <optional>
@@ -10,6 +11,7 @@
 
 #include "zetta/api/background.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/streaming.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -158,6 +160,55 @@ std::optional<std::string> pipeline_dataset_path(
     return std::nullopt;
 }
 
+data::FeaturePlan streaming_feature_plan(RunRequest& request, data::ResolvedDataset& dataset,
+                                         const data::DatasetContract& selected,
+                                         const StreamingParams& params) {
+    const bool selected_clock =
+        std::ranges::contains(selected.feature_columns, dataset.contract.time_column) ||
+        std::ranges::contains(selected.feature_columns, params.label_time_column);
+    std::erase_if(dataset.contract.feature_columns, [&](const auto& column) {
+        return column == dataset.contract.time_column || column == params.label_time_column;
+    });
+    const std::string window = "native per-entity event-time window of " +
+        std::to_string(params.window_duration) + " event-time units, including the current event; lateness " +
+        std::to_string(params.allowed_lateness) + " event-time units";
+    data::FeaturePlanOptions feature_options;
+    feature_options.native_entries.push_back({
+        {dataset.contract.entity_column, dataset.contract.time_column}, {"window_count"},
+        window + "; count accepted events",
+        "window activity is available before the current label update"});
+    for (const auto& source : dataset.contract.feature_columns) {
+        feature_options.native_entries.push_back({
+            {dataset.contract.entity_column, dataset.contract.time_column, source},
+            {"window_sum_" + source}, window + "; sum numeric event values",
+            "online logistic SGD scores the event before consuming its available label"});
+    }
+    auto plan = plan_run_features(request, "M-21", dataset, feature_options);
+    if (!feature_plan_error(plan).empty()) {
+        return plan;
+    }
+    if (selected_clock) {
+        plan.error = dataset.contract.time_column + " and " + params.label_time_column +
+            " are window/scheduling metadata, not prediction features";
+        return plan;
+    }
+    if (dataset.contract.feature_columns.empty()) {
+        plan.status = "transform_required";
+        plan.transform_required = data::RequiredTransform{
+            "create_eligible_features", "Streaming needs numeric event values, not only timestamps.",
+            {}, "Add numeric event values in a clean step and rerun the plan."};
+        return plan;
+    }
+    plan.excluded.push_back({dataset.contract.time_column,
+        "event time bounds windows and watermarks; never a raw timestamp predictor"});
+    for (auto& excluded : plan.excluded) {
+        if (excluded.source_column == params.label_time_column) {
+            excluded.reason = "label availability schedules updates; never a prediction feature";
+        }
+    }
+    return plan;
+}
+
 class AsyncStreamingRun {
 public:
     static std::shared_ptr<AsyncStreamingRun> start(
@@ -268,11 +319,12 @@ api::ApiResult run_m21(RunRequest& request) {
         return api::ApiResult::failure(
             "invalid_input", "M-21 requires an explicit event-time column");
     }
-    const data::ResolvedDataset dataset = data::resolve_dataset(
+    data::ResolvedDataset dataset = data::resolve_dataset(
         context.node, parsed, contract,
         data::default_dataset_sampler(context.node, context.cluster));
     if (!dataset.ok()) {
-        return api::ApiResult::failure("engine_error", dataset.error);
+        dataset.contract = contract;
+        return run_dataset_failure(request, "M-21", dataset);
     }
 
     nlohmann::json parameter_json{
@@ -304,12 +356,17 @@ api::ApiResult run_m21(RunRequest& request) {
         return api::ApiResult::failure("invalid_input", reason);
     }
 
+    const auto feature_plan = streaming_feature_plan(request, dataset, contract, *params);
+    if (const auto plan_error = feature_plan_error(feature_plan); !plan_error.empty()) {
+        return api::ApiResult::failure("invalid_input", plan_error);
+    }
     std::shared_ptr<pipeline::Run> run = context.node.create_run(
         request.project->id(), request.graph->id());
     if (!run) {
         return api::ApiResult::failure("engine_error",
                                        "could not create the M-21 run record");
     }
+    record_run_features(context.node, run->id(), feature_plan);
     run->set_status(pipeline::RunStatus::Running);
     run->add_log({util::now_iso8601(), "info",
                   "streaming: subscribed to " + params->input_topic});
@@ -343,7 +400,7 @@ Methodology make_m21_methodology() {
     methodology.name = "Online / streaming learning";
     methodology.family = "Time & vigilance";
     methodology.model_kinds = {"online_learning", "streaming"};
-    methodology.solutions = {"S-10", "S-11"};
+    methodology.solutions = {};
     methodology.keywords = {"online learning", "streaming",
                             "real time learning"};
     methodology.inputs = {

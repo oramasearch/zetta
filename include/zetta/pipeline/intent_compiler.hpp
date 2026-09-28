@@ -33,6 +33,7 @@ struct CompiledIntent {
     ir::ExecutionGraph graph;
     IntentShape shape;
     std::string methodology;
+    std::string name;
 };
 
 struct IntentCompileOptions {

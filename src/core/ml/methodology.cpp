@@ -11,6 +11,7 @@
 
 #include "zetta/api/background.hpp"
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -124,6 +125,28 @@ api::ApiResult run_m1(RunRequest& request) {
     zetta::usecases::churn::ChurnTableInput table;
     nlohmann::json dataset_notes = nlohmann::json::array();
     nlohmann::json dataset_contract;
+    data::FeaturePlan feature_plan;
+    // A landed table named by the pipeline is the default data source.
+    if (!request.input.contains("dataset_path")) {
+        for (const auto& source : request.graph->graph().nodes_of_kind(ir::StepKind::Connect)) {
+            const std::string database = source->attributes.value("source", std::string{});
+            const std::string name = source->attributes.value("table", std::string{});
+            if (database.empty() || name.empty()) {
+                continue;
+            }
+            if (database != "warehouse" || name != "customers") {
+                request.input["dataset_path"] = database + "." + name;
+                break;
+            }
+            for (const auto& candidate : context.node.datasets()) {
+                if (candidate.database == database && candidate.name == name) {
+                    request.input["dataset_path"] = database + "." + name;
+                    break;
+                }
+            }
+            break;
+        }
+    }
     if (const auto dataset_path = request.input.find("dataset_path");
         dataset_path != request.input.end()) {
         const zetta::data::DatasetPath path =
@@ -140,19 +163,28 @@ api::ApiResult run_m1(RunRequest& request) {
                 }
                 overrides = *parsed;
             }
-            const zetta::data::ResolvedDataset resolved =
+            zetta::data::ResolvedDataset resolved =
                 zetta::data::resolve_dataset(
                     context.node, path, overrides,
                     zetta::data::default_dataset_sampler(context.node,
                                                          context.cluster));
             if (!resolved.ok()) {
-                return api::ApiResult::failure("engine_error", resolved.error);
+                return run_dataset_failure(request, "M-1", resolved);
+            }
+            feature_plan = plan_run_features(request, "M-1", resolved);
+            if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+                return api::ApiResult::failure("invalid_input", error);
             }
             table.table_id = resolved.table_id;
             table.contract = resolved.contract;
             table.dataset_name = dataset_path->get<std::string>();
             table.notes = resolved.notes;
-            dataset_notes = resolved.notes;
+            // #1040: say that the table came from the pipeline's own connect step.
+            if (const auto note = request.input.find("pipeline_note");
+                note != request.input.end() && note->is_string()) {
+                table.notes.insert(table.notes.begin(), note->get<std::string>());
+            }
+            dataset_notes = table.notes;
             dataset_contract = to_json(resolved.contract);
         } else {
             auto loaded =
@@ -163,9 +195,48 @@ api::ApiResult run_m1(RunRequest& request) {
             dataset = std::move(loaded.dataset);
         }
     } else {
-        // #1040: resolve the pipeline's connect-step table here when that work
-        // lands; until then, preserve the built-in demo default.
+        // No dataset and no connect-step table (handle_run fills the path when
+        // the pipeline names one, #1040): the built-in demo dataset.
         dataset = zetta::usecases::churn::demo_churn_dataset();
+    }
+
+    if (table.empty()) {
+        const auto shards = zetta::usecases::churn::encode_churn_dataset(dataset);
+        const auto spec = zetta::usecases::churn::churn_featurize_spec(shards.as_of);
+        data::SampledDataset sampled;
+        sampled.database = "churn";
+        sampled.table = "accounts";
+        sampled.rows = shards.accounts.size();
+        sampled.sample = shards.accounts;
+        sampled.columns = {"entity", "churned", "mrr", "seats", "tenure_days"};
+        data::FeaturePlanOptions planning;
+        planning.methodology = "M-1";
+        planning.label_column = spec.label_column;
+        planning.entity_column = spec.entity_column;
+        for (const auto& feature : spec.account_features) {
+            planning.native_entries.push_back({{feature}, {feature}, "numeric carry-through",
+                "static account attribute used by the native churn featurizer"});
+        }
+        feature_plan = data::plan_features(data::analyze_sampled_dataset(sampled), planning);
+        if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+            return api::ApiResult::failure("invalid_input", error);
+        }
+        for (const auto& feature : spec.event_features) {
+            std::vector<std::string> sources = {"events." + spec.time_column,
+                                                "events." + spec.entity_column};
+            if (!feature.value_column.empty()) {
+                sources.push_back("events." + feature.value_column);
+            }
+            if (feature.has_type_filter()) {
+                sources.push_back("events." + feature.type_column);
+            }
+            const std::string window = feature.window_start
+                ? std::to_string(*feature.window_start) : "all history";
+            feature_plan.entries.push_back({std::move(sources),
+                {feature.name}, std::string(zetta::ddf::to_string(feature.agg)) +
+                    " over [" + window + ", " + std::to_string(spec.as_of) + "]",
+                "the native churn specification defines the event filter and aggregate"});
+        }
     }
 
     zetta::usecases::churn::ChurnSolutionOptions options;
@@ -232,6 +303,9 @@ api::ApiResult run_m1(RunRequest& request) {
     }
 
     nlohmann::json output;
+    if (!feature_plan.dataset.empty()) {
+        record_run_features(context.node, run_id, feature_plan);
+    }
     output["run_id"] = run_id;
     output["engine"] = "churn";
     output["status"] = "running";
@@ -256,7 +330,7 @@ Methodology make_m1_methodology() {
                                "classifier", "classification",
                                "regression", "score",
                                "tabular"};
-    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10"};
+    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10", "S-12"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",

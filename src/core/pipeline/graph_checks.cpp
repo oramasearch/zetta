@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -13,6 +14,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/solutions/snapshot.hpp"
 
 namespace zetta::pipeline {
 
@@ -29,7 +31,7 @@ const nlohmann::json& graph_step_annotations_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "title": "zetta.GraphStepAnnotations",
-  "description": "The correctness annotations the gate reads from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles, point-in-time and target-leakage metadata, and streaming event/label ordering policy. Only the named fields are constrained; a node may carry any other attributes.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements, plus streaming event/label ordering. Only the named fields are constrained; a node may carry any other attributes.",
   "type": "object",
   "properties": {
     "schema": {
@@ -47,10 +49,83 @@ const nlohmann::json& graph_step_annotations_schema() {
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
     },
+    "source_kind": {
+      "description": "Whether a terminal feature source is an immutable point-in-time snapshot or a live table. Feature lineage accepts only snapshot.",
+      "type": "string",
+      "enum": ["snapshot", "live"]
+    },
+    "snapshot_as_of": {
+      "description": "The inclusive cutoff used to materialize a terminal snapshot source.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "feature_window_end": {
+      "description": "The final instant any feature window may observe; it must not be after prediction as_of.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "label_window_start": {
+      "description": "The first instant from which labels may be observed.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "blackout_gap_seconds": {
+      "description": "Minimum interval between feature_window_end and label_window_start.",
+      "type": "number",
+      "minimum": 0
+    },
     "label": {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
       "type": "string",
       "minLength": 1
+    },
+    "duration_column": { "type": "string", "minLength": 1 },
+    "event_indicator": { "type": "string", "minLength": 1 },
+    "censoring_handled": { "type": "boolean" },
+    "stop_after_event": { "type": "boolean" },
+    "point_in_time_features": { "type": "boolean" },
+    "temporal_validation": { "type": "boolean" },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "overlap_lower": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
+    "overlap_upper": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
+    "consent_required": {
+      "description": "Speech transcription must require explicit source consent.",
+      "type": "boolean"
+    },
+    "consent_column": {
+      "description": "The boolean source field that records speech-processing consent.",
+      "type": "string",
+      "minLength": 1
+    },
+    "redact_pii": {
+      "description": "Speech transcript text is privacy-filtered before durable storage.",
+      "type": "boolean"
+    },
+    "audio_local_only": {
+      "description": "Audio samples remain on their owner node.",
+      "type": "boolean"
     },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
@@ -77,9 +152,38 @@ const nlohmann::json& graph_step_annotations_schema() {
           "leaks_target": {
             "description": "Explicit marker that the feature encodes the target — target leakage.",
             "type": "boolean"
+          },
+          "post_treatment": {
+            "description": "The feature is observed after treatment and cannot be an uplift predictor.",
+            "type": "boolean"
           }
         }
       }
+    },
+    "source_disjoint": {
+      "description": "Vision models must split whole source groups between train and test.",
+      "type": "boolean"
+    },
+    "source_column": {
+      "description": "The camera, site, document, or other source-group column used for a vision holdout.",
+      "type": "string",
+      "minLength": 1
+    },
+    "citations_required": {
+      "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "refuse_without_retrieval": {
+      "description": "Requires the language path to refuse when no relevant chunk was retrieved.",
+      "type": "boolean"
+    },
+    "governance_check": {
+      "description": "Requires runtime authorization before language training reads text.",
+      "type": "boolean"
+    },
+    "caller_read_required": {
+      "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
     },
     "event_time_ordered": {
       "description": "Streaming work is released in event-time order behind its watermark.",
@@ -248,6 +352,187 @@ std::string join_types(const std::vector<std::string>& types) {
     return out;
 }
 
+bool true_field(const json& object, std::string_view name) {
+    if (!object.is_object()) return false;
+    const auto found = object.find(name);
+    return found != object.end() && found->is_boolean() && found->get<bool>();
+}
+
+bool language_model(const ir::Node& node) {
+    if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+        return false;
+    }
+    const auto field = node.attributes.find("model_kind");
+    if (field == node.attributes.end() || !field->is_string()) return false;
+    const std::string kind = normalize_type(field->get<std::string>());
+    return kind == "language" || kind == "nlp" || kind == "embedding" ||
+           kind == "embeddings" || kind == "rag" ||
+           kind == "fine_tuning" || kind == "retrieval";
+}
+
+bool upstream_requires_caller_read(const ir::ExecutionGraph& graph,
+                                   const ir::NodeId& start) {
+    std::unordered_set<ir::NodeId> visited;
+    std::vector<ir::NodeId> frontier;
+    frontier.push_back(start);
+    while (!frontier.empty()) {
+        const ir::NodeId id = frontier.back();
+        frontier.pop_back();
+        if (!visited.insert(id).second) continue;
+        for (const ir::Edge& edge : graph.edges_into(id)) {
+            if (edge.kind != ir::EdgeKind::DataFlow) continue;
+            const std::shared_ptr<ir::Node> source = graph.find_node(edge.from);
+            if (source && source->kind == ir::StepKind::Connect &&
+                true_field(source->attributes, "caller_read_required")) {
+                return true;
+            }
+            frontier.push_back(edge.from);
+        }
+    }
+    return false;
+}
+
+bool speech_step(const ir::Node& node) {
+    if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+        return false;
+    }
+    const auto kind = node.attributes.find("model_kind");
+    if (kind == node.attributes.end() || !kind->is_string()) {
+        return false;
+    }
+    const std::string value = normalize_type(kind->get<std::string>());
+    return value == "speech" || value == "audio";
+}
+
+CheckResult require_speech_flag(const ir::ExecutionGraph& graph,
+                                std::string name, const char* flag,
+                                std::string failure, std::string success) {
+    for (const auto& node : graph.nodes()) {
+        if (!node || !speech_step(*node)) {
+            continue;
+        }
+        const auto value = node->attributes.find(flag);
+        if (value == node->attributes.end() || !value->is_boolean() ||
+            !value->get<bool>()) {
+            return {std::move(name), CheckStatus::Fail,
+                    node_label(*node) + ": " + std::move(failure)};
+        }
+    }
+    return {std::move(name), CheckStatus::Pass, std::move(success)};
+}
+
+struct SnapshotBoundary {
+    solutions::TimePoint prediction;
+    std::string prediction_text;
+};
+
+std::optional<std::string> snapshot_window_error(
+    const ir::Node& model, SnapshotBoundary& boundary) {
+    const std::optional<std::string> prediction =
+        string_field(model.attributes, "as_of");
+    const std::optional<std::string> feature_end =
+        string_field(model.attributes, "feature_window_end");
+    const std::optional<std::string> label_start =
+        string_field(model.attributes, "label_window_start");
+    const auto blackout = model.attributes.find("blackout_gap_seconds");
+    if (!prediction || !feature_end || !label_start ||
+        blackout == model.attributes.end() || !blackout->is_number()) {
+        return node_label(model) +
+               ": feature lineage requires as_of, feature_window_end, "
+               "label_window_start, and blackout_gap_seconds";
+    }
+
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> feature_end_time =
+        solutions::parse_time_point(*feature_end);
+    const std::optional<solutions::TimePoint> label_start_time =
+        solutions::parse_time_point(*label_start);
+    if (!prediction_time || !feature_end_time || !label_start_time) {
+        return node_label(model) +
+               ": feature and label windows must use valid ISO-8601 times";
+    }
+    if (feature_end_time->value > prediction_time->value) {
+        return node_label(model) + ": feature_window_end " + *feature_end +
+               " is after prediction as_of " + *prediction;
+    }
+    const double gap = blackout->get<double>();
+    if (label_start_time->value < feature_end_time->value + gap) {
+        return node_label(model) + ": label_window_start " + *label_start +
+               " violates the configured blackout gap of " +
+               std::to_string(gap) + " seconds";
+    }
+
+    boundary = SnapshotBoundary{*prediction_time, *prediction};
+    return std::nullopt;
+}
+
+std::vector<std::shared_ptr<ir::Node>> terminal_data_sources(
+    const ir::ExecutionGraph& graph, const ir::NodeId& start) {
+    std::unordered_set<ir::NodeId> visited;
+    std::vector<ir::NodeId> frontier{start};
+    std::vector<std::shared_ptr<ir::Node>> terminals;
+    while (!frontier.empty()) {
+        const ir::NodeId current = frontier.back();
+        frontier.pop_back();
+        if (!visited.insert(current).second) {
+            continue;
+        }
+        bool has_predecessor = false;
+        for (const ir::Edge& edge : graph.edges_into(current)) {
+            if (edge.kind != ir::EdgeKind::DataFlow) {
+                continue;
+            }
+            has_predecessor = true;
+            frontier.push_back(edge.from);
+        }
+        if (!has_predecessor && current != start) {
+            terminals.push_back(graph.find_node(current));
+        }
+    }
+    return terminals;
+}
+
+std::optional<std::string> snapshot_source_error(
+    const ir::ExecutionGraph& graph, const ir::Node& model,
+    const SnapshotBoundary& boundary) {
+    const std::vector<std::shared_ptr<ir::Node>> terminals =
+        terminal_data_sources(graph, model.id);
+    if (terminals.empty()) {
+        return node_label(model) +
+               ": feature lineage has no terminal snapshot source";
+    }
+    for (const std::shared_ptr<ir::Node>& source : terminals) {
+        if (!source || source->kind != ir::StepKind::Connect ||
+            !source->attributes.is_object()) {
+            return node_label(model) +
+                   ": feature lineage terminates at a non-source step";
+        }
+        const std::optional<std::string> source_kind =
+            string_field(source->attributes, "source_kind");
+        const std::optional<std::string> snapshot_as_of =
+            string_field(source->attributes, "snapshot_as_of");
+        if (!source_kind || *source_kind != "snapshot" || !snapshot_as_of) {
+            return node_label(*source) +
+                   ": live-table feature lineage is refused; materialize and "
+                   "reference a snapshot source";
+        }
+        const std::optional<solutions::TimePoint> snapshot_time =
+            solutions::parse_time_point(*snapshot_as_of);
+        if (!snapshot_time ||
+            snapshot_time->kind != boundary.prediction.kind) {
+            return node_label(*source) +
+                   ": snapshot_as_of must use the model's time representation";
+        }
+        if (snapshot_time->value > boundary.prediction.value) {
+            return node_label(*source) + ": snapshot_as_of " +
+                   *snapshot_as_of + " is after prediction as_of " +
+                   boundary.prediction_text;
+        }
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
@@ -303,6 +588,48 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
     }
     return CheckResult{name(), CheckStatus::Pass,
                        "every time-ordered model is validated over time and uncalibrated"};
+}
+
+CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "label_efficiency" &&
+            model_kind != "active_learning" &&
+            model_kind != "weak_supervision") {
+            continue;
+        }
+        const auto weak_as_gold =
+            node->attributes.find("weak_labels_are_gold");
+        if (weak_as_gold == node->attributes.end() ||
+            !weak_as_gold->is_boolean() || weak_as_gold->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": weak labels must never be treated as gold; set "
+                    "`weak_labels_are_gold` to false"};
+        }
+        const auto split = node->attributes.find("gold_split");
+        if (split == node->attributes.end() || !split->is_string() ||
+            split->get<std::string>() != "disjoint") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": the gold evaluation set must be disjoint; set "
+                    "`gold_split` to `disjoint`"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "label-efficiency gold rows are declared disjoint from weak labels"};
 }
 
 const std::vector<std::string>& MethodologyCheck::implemented() {
@@ -405,6 +732,368 @@ CheckResult StreamingCorrectnessCheck::evaluate(
     return CheckResult{
         name(), CheckStatus::Pass,
         "streaming models order event time, delay labels, and evaluate test-then-train"};
+}
+
+CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const ml::Methodology* methodology = ml::find_methodology(
+            node->attributes.value("model_kind", std::string{}));
+        if (methodology == nullptr || methodology->id != "M-20") {
+            continue;
+        }
+        const auto fail = [&](std::string reason) {
+            return CheckResult{name(), CheckStatus::Fail,
+                               node_label(*node) + ": " + std::move(reason)};
+        };
+        const auto number = [&](const char* key) -> std::optional<double> {
+            const auto value = node->attributes.find(key);
+            if (value == node->attributes.end() || !value->is_number()) {
+                return std::nullopt;
+            }
+            return value->get<double>();
+        };
+        const std::optional<double> epsilon = number("epsilon");
+        const std::optional<double> delta = number("delta");
+        const std::optional<double> maximum_epsilon = number("maximum_epsilon");
+        const std::optional<double> maximum_delta = number("maximum_delta");
+        const std::optional<double> clip_min = number("clip_min");
+        const std::optional<double> clip_max = number("clip_max");
+        if (!epsilon || !delta || !maximum_epsilon || !maximum_delta) {
+            return fail("epsilon, delta, maximum_epsilon, and maximum_delta must all be stated");
+        }
+        if (*epsilon <= 0.0 || *delta < 0.0 || *maximum_epsilon <= 0.0 ||
+            *maximum_delta < 0.0 || *delta >= 1.0 || *maximum_delta >= 1.0) {
+            return fail("privacy-budget values are outside their valid ranges");
+        }
+        if (*epsilon > *maximum_epsilon || *delta > *maximum_delta) {
+            return fail("requested epsilon/delta exceeds the enforced privacy budget");
+        }
+        if (!clip_min || !clip_max || *clip_min >= *clip_max) {
+            return fail("public clip_min and clip_max bounds are required for DP sensitivity");
+        }
+        const auto noise = node->attributes.find("noise");
+        if (noise == node->attributes.end() || !noise->is_string() ||
+            (noise->get<std::string>() != "gaussian" &&
+             noise->get<std::string>() != "laplace")) {
+            return fail("noise must state the gaussian or laplace mechanism");
+        }
+        if (noise->get<std::string>() == "gaussian" && *delta <= 0.0) {
+            return fail("the gaussian mechanism requires delta greater than zero");
+        }
+        const auto evaluation = node->attributes.find("privacy_evaluation");
+        if (evaluation == node->attributes.end() || !evaluation->is_boolean() ||
+            !evaluation->get<bool>()) {
+            return fail("privacy_evaluation must be true before synthetic output publication");
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every synthetic_private step states and enforces its privacy budget"};
+}
+
+CheckResult EnsembleOutOfFoldCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "ensemble" && *kind != "ensembling" &&
+                      *kind != "stacking")) {
+            continue;
+        }
+        const std::optional<std::string> predictions =
+            string_field(node->attributes, "stacking_predictions");
+        if (!predictions || *predictions != "out_of_fold") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble stacking_predictions must be `out_of_fold`; "
+                    "the meta-model may never fit in-sample base scores"};
+        }
+        const auto folds = node->attributes.find("folds");
+        if (folds == node->attributes.end() ||
+            !folds->is_number_integer() || folds->get<long long>() < 2) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble folds must be an integer of at least 2"};
+        }
+        const std::optional<std::string> refit =
+            string_field(node->attributes, "base_refit");
+        if (!refit || *refit != "all_training") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble base_refit must be `all_training` after the "
+                    "stacker is fit"};
+        }
+        const std::optional<std::string> time =
+            string_field(node->attributes, "time_column");
+        if (time && !time->empty()) {
+            const std::optional<std::string> strategy =
+                string_field(node->attributes, "fold_strategy");
+            if (!strategy || *strategy != "time_ordered") {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": an ensemble with a time column must use "
+                        "`time_ordered` folds so validation never precedes training"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every ensemble fits only out-of-fold scores and respects time order"};
+}
+
+
+CheckResult UncertaintyValidationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        const std::string normalized_model_kind =
+            normalize_type(model_kind->get<std::string>());
+        if (normalized_model_kind != "bayesian" &&
+            normalized_model_kind != "probabilistic" &&
+            normalized_model_kind != "uncertainty") {
+            continue;
+        }
+        const auto coverage = node->attributes.find("coverage_checked");
+        if (coverage == node->attributes.end() || !coverage->is_boolean() ||
+            !coverage->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must set coverage_checked=true; "
+                    "nominal coverage is not evidence of observed coverage"};
+        }
+        const auto assumption =
+            node->attributes.find("exchangeability_assumption");
+        if (assumption == node->attributes.end() ||
+            !assumption->is_string() || assumption->get<std::string>().empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must state its "
+                    "exchangeability_assumption"};
+        }
+        const auto nominal = node->attributes.find("nominal_coverage");
+        if (nominal == node->attributes.end() || !nominal->is_number() ||
+            nominal->get<double>() <= 0.0 || nominal->get<double>() >= 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": nominal_coverage must be a number between 0 and 1"};
+        }
+        const auto uncertainty_kind =
+            node->attributes.find("uncertainty_kind");
+        if (uncertainty_kind == node->attributes.end() ||
+            !uncertainty_kind->is_string()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical or split_conformal"};
+        }
+        const std::string normalized_uncertainty_kind =
+            normalize_type(uncertainty_kind->get<std::string>());
+        const bool is_conformal =
+            normalized_uncertainty_kind == "split_conformal_regression" ||
+            normalized_uncertainty_kind == "split_conformal_classification";
+        if (normalized_uncertainty_kind != "hierarchical" && !is_conformal) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical, "
+                    "split_conformal_regression, or "
+                    "split_conformal_classification"};
+        }
+        if (is_conformal) {
+            const auto disjoint =
+                node->attributes.find("calibration_disjoint");
+            if (disjoint == node->attributes.end() ||
+                !disjoint->is_boolean() || !disjoint->get<bool>()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split conformal calibration rows must be declared "
+                        "disjoint from fitting rows"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "Bayesian model steps measure coverage and state exchangeability"};
+}
+
+
+CheckResult EntityResolutionGraphCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "entity_resolution" &&
+            model_kind != "entity-resolution") {
+            continue;
+        }
+
+        const auto blocking = node->attributes.find("blocking_keys");
+        if (blocking == node->attributes.end() || !blocking->is_array() ||
+            blocking->empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must declare non-empty blocking_keys"};
+        }
+        const auto match = node->attributes.find("match_threshold");
+        const auto review = node->attributes.find("review_threshold");
+        if (match == node->attributes.end() || !match->is_number() ||
+            review == node->attributes.end() || !review->is_number()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must state numeric match_threshold and "
+                    "review_threshold"};
+        }
+        const double match_value = match->get<double>();
+        const double review_value = review->get<double>();
+        if (review_value < 0.0 || match_value > 1.0 ||
+            review_value >= match_value) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": thresholds must satisfy 0 <= review < match <= 1"};
+        }
+        const auto policy = node->attributes.find("conflict_policy");
+        if (policy == node->attributes.end() || !policy->is_string() ||
+            policy->get<std::string>() !=
+                "reject_verified_identifier_conflicts") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must reject verified identifier "
+                    "conflicts"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every entity-resolution model states safe blocking, thresholds, and "
+        "conflict handling"};
+}
+
+CheckResult SurvivalCensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "survival" && model_kind != "time_to_event") {
+            continue;
+        }
+        if (const auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto requires_true = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_boolean() &&
+                   found->get<bool>();
+        };
+        const auto requires_string = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_string() &&
+                   !found->get_ref<const std::string&>().empty();
+        };
+        if (!requires_string("duration_column") ||
+            !requires_string("event_indicator") ||
+            !requires_true("censoring_handled") ||
+            !requires_true("stop_after_event") ||
+            !requires_true("point_in_time_features")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": survival requires duration_column, event_indicator, "
+                        "censoring_handled=true, stop_after_event=true, and "
+                        "point_in_time_features=true"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "survival steps preserve censoring and point-in-time boundaries"};
+}
+
+CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "optimization" && model_kind != "operations_research") {
+            continue;
+        }
+        const auto requires_true = [&](std::string_view attribute,
+                                       std::string reason) {
+            const auto found = node->attributes.find(attribute);
+            if (found == node->attributes.end() || !found->is_boolean() ||
+                !found->get<bool>()) {
+                return CheckResult{name(), CheckStatus::Fail,
+                                   node_label(*node) + ": " + reason};
+            }
+            return CheckResult{name(), CheckStatus::Pass, {}};
+        };
+        CheckResult result = requires_true(
+            "scenario_input",
+            "optimization requires scenario or quantile inputs; a point "
+            "forecast cannot represent plan risk");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "verify_constraints",
+            "optimization must independently verify every bound and "
+            "constraint before returning a plan");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "report_solver_status",
+            "optimization must report solver status and the MIP optimality gap");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "optimization plans require scenarios, independent "
+                       "verification, and status"};
 }
 
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
@@ -535,6 +1224,517 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult SnapshotLineageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
+    };
+    const auto pass = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Pass, std::move(reason)};
+    };
+
+    for (const auto& node : graph.nodes()) {
+        if (auto error = validate_annotations(node->attributes)) {
+            return fail(node_label(*node) +
+                        ": malformed correctness annotations — " + *error);
+        }
+    }
+
+    std::size_t checked = 0;
+    for (const std::shared_ptr<ir::Node>& model : graph.nodes()) {
+        if (!model || model->kind != ir::StepKind::Model ||
+            !model->attributes.is_object()) {
+            continue;
+        }
+        const auto features = model->attributes.find("features");
+        if (features == model->attributes.end() || !features->is_array() ||
+            features->empty()) {
+            continue;
+        }
+        ++checked;
+        SnapshotBoundary boundary;
+        if (const auto error = snapshot_window_error(*model, boundary)) {
+            return fail(*error);
+        }
+        if (const auto error = snapshot_source_error(graph, *model, boundary)) {
+            return fail(*error);
+        }
+    }
+
+    if (checked == 0) {
+        return pass("no model step declares features that require snapshot lineage");
+    }
+    return pass(std::to_string(checked) +
+                " feature-bearing model step(s) terminate in valid snapshots");
+}
+
+CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", std::string{});
+        if (kind != "uplift" && kind != "causal") {
+            continue;
+        }
+        ++checked;
+        if (const auto error = validate_annotations(attributes)) {
+            return fail(node_label(*node) +
+                        ": malformed correctness annotations — " + *error);
+        }
+        const std::optional<std::string> treatment =
+            string_field(attributes, "treatment");
+        const std::optional<std::string> outcome =
+            string_field(attributes, "outcome");
+        if (!treatment || !outcome) {
+            return fail(node_label(*node) +
+                        ": uplift requires explicit treatment and outcome columns");
+        }
+        if (*treatment == *outcome) {
+            return fail(node_label(*node) +
+                        ": treatment and outcome must be different columns");
+        }
+        const double lower = attributes.value("overlap_lower", 0.05);
+        const double upper = attributes.value("overlap_upper", 0.95);
+        if (lower < 0.05 || upper > 0.95 || lower >= upper) {
+            return fail(node_label(*node) +
+                        ": overlap bounds must stay within [0.05,0.95] and be ordered");
+        }
+
+        const std::optional<std::string> treatment_time =
+            string_field(attributes, "treatment_time");
+        const auto features = attributes.find("features");
+        if (features == attributes.end() || !features->is_array()) {
+            continue;
+        }
+        for (const json& feature : *features) {
+            const std::string feature_name = feature.value("name", std::string{});
+            const std::string normalized_feature = normalize_type(feature_name);
+            if (feature.value("post_treatment", false)) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is observed after treatment");
+            }
+            const std::string normalized_outcome = normalize_type(*outcome);
+            const bool outcome_like =
+                normalized_feature == normalized_outcome ||
+                normalized_feature.starts_with(normalized_outcome + "_") ||
+                normalized_feature.ends_with("_" + normalized_outcome);
+            if (outcome_like) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is named like outcome \"" + *outcome + "\"");
+            }
+            if (feature_name == *treatment) {
+                return fail(node_label(*node) + ": treatment column \"" +
+                            *treatment + "\" cannot be a feature");
+            }
+            const std::optional<std::string> data_as_of =
+                string_field(feature, "data_as_of");
+            if (treatment_time && data_as_of &&
+                comparable_instant(*data_as_of) >
+                    comparable_instant(*treatment_time)) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is timestamped after treatment");
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        checked == 0
+            ? "no causal uplift step to check"
+            : "causal uplift roles, overlap, and feature timing are valid"};
+}
+
+CheckResult RankCorrectnessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node->attributes.is_object()) continue;
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "rank" && *kind != "ranking" &&
+                      *kind != "learning_to_rank")) {
+            continue;
+        }
+        ++checked;
+        const std::optional<std::string> group =
+            string_field(node->attributes, "group_column");
+        if (!group || group->empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": learning-to-rank requires a non-empty group_column"};
+        }
+        const std::optional<std::string> split =
+            string_field(node->attributes, "split_strategy");
+        if (!split || *split != "group") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split_strategy must be \"group\" so one group never "
+                        "appears in both training and validation"};
+        }
+        const std::optional<std::string> availability =
+            string_field(node->attributes, "feature_availability");
+        if (!availability || *availability != "ranking_time") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": feature_availability must be \"ranking_time\"; later "
+                        "information would leak into the queue"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            checked == 0
+                ? "no learning-to-rank model to validate"
+                : std::to_string(checked) +
+                      " rank model(s) require groups, whole-group splits, and "
+                      "ranking-time features"};
+}
+
+CheckResult LanguageGroundingCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "citations_required")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires citations on every answer sentence"};
+        }
+        if (!true_field(node->attributes, "refuse_without_retrieval")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must refuse when retrieval is empty or irrelevant"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires grounded citations and refusal"};
+}
+
+CheckResult LanguageTrainingAccessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "governance_check")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must authorize every training column before reading text"};
+        }
+        if (!upstream_requires_caller_read(graph, node->id)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires an upstream source with caller-read enforcement"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires caller-authorized training text"};
+}
+
+CheckResult DocumentReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string() ||
+            kind->get<std::string>() != "document_extraction") {
+            continue;
+        }
+        const auto confidence =
+            node->attributes.find("confidence_required");
+        if (confidence == node->attributes.end() ||
+            !confidence->is_boolean() || !confidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must assign a confidence to every field"};
+        }
+        const auto evidence = node->attributes.find("retain_evidence");
+        if (evidence == node->attributes.end() || !evidence->is_boolean() ||
+            !evidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must retain each field's source page and box"};
+        }
+        const auto routing =
+            node->attributes.find("route_low_confidence_to_review");
+        if (routing == node->attributes.end() || !routing->is_boolean() ||
+            !routing->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": fields below the review threshold must be routed to review"};
+        }
+        const auto threshold = node->attributes.find("review_threshold");
+        if (threshold == node->attributes.end() || !threshold->is_number() ||
+            !std::isfinite(threshold->get<double>()) ||
+            threshold->get<double>() < 0.0 ||
+            threshold->get<double>() > 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": review_threshold must be a number between 0 and 1"};
+        }
+        bool has_review_step = false;
+        for (const auto& candidate : graph.successors(node->id)) {
+            if (candidate->kind != ir::StepKind::Act ||
+                !candidate->attributes.is_object()) {
+                continue;
+            }
+            const auto route = candidate->attributes.find("route");
+            if (route != candidate->attributes.end() && route->is_string() &&
+                route->get<std::string>() == "review_queue") {
+                has_review_step = true;
+                break;
+            }
+        }
+        if (!has_review_step) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction needs an Act step that writes the review_queue"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "document fields keep confidence and evidence, with uncertain values routed to review"};
+}
+
+CheckResult GraphEdgeTimeCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& model : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model || !model->attributes.is_object()) continue;
+        const std::string kind =
+            model->attributes.value("model_kind", std::string{});
+        if (kind != "graph" && kind != "graph_ml") continue;
+
+        const auto time = model->attributes.find("time_column");
+        const auto cutoff = model->attributes.find("prediction_time");
+        if (time == model->attributes.end() || !time->is_string() ||
+            time->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name its edge time_column"};
+        }
+        if (cutoff == model->attributes.end() || !cutoff->is_number() ||
+            !std::isfinite(cutoff->get<double>())) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name a finite prediction_time cutoff"};
+        }
+
+        for (const auto& clean : graph.nodes_of_kind(ir::StepKind::Clean)) {
+            if (!clean || !clean->attributes.is_object()) continue;
+            const std::vector<ir::Edge> outgoing = graph.edges_from(clean->id);
+            const bool feeds_model =
+                std::any_of(outgoing.begin(), outgoing.end(),
+                            [&](const ir::Edge& edge) {
+                                return edge.to == model->id &&
+                                       edge.kind == ir::EdgeKind::DataFlow;
+                            });
+            if (!feeds_model) continue;
+            const auto filter_time =
+                clean->attributes.find("filter_time_column");
+            const auto filter_cutoff = clean->attributes.find("prediction_time");
+            if (filter_time == clean->attributes.end() ||
+                !filter_time->is_string() ||
+                filter_time->get<std::string>() != time->get<std::string>()) {
+                continue;
+            }
+            if (filter_cutoff == clean->attributes.end() ||
+                !filter_cutoff->is_number() ||
+                filter_cutoff->get<double>() != cutoff->get<double>()) {
+                continue;
+            }
+            if (!clean->attributes.value("exclude_after_prediction_time", false)) {
+                return {name(), CheckStatus::Fail,
+                        "graph edge-time filter is disabled"};
+            }
+            return {name(), CheckStatus::Pass,
+                    "graph edges are filtered at the prediction cutoff"};
+        }
+        return {name(), CheckStatus::Fail,
+                "graph model requires an edge-time filter with the same "
+                "column and prediction cutoff"};
+    }
+    return {name(), CheckStatus::Pass, "no graph model step to check"};
+}
+
+CheckResult VisionSourceSplitCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        std::string kind = model_kind->get<std::string>();
+        std::transform(kind.begin(), kind.end(), kind.begin(),
+                       [](unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        if (kind != "vision" && kind != "computer_vision") {
+            continue;
+        }
+        const auto disjoint = node->attributes.find("source_disjoint");
+        if (disjoint == node->attributes.end() || !disjoint->is_boolean() ||
+            !disjoint->get<bool>()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": vision evaluation must set source_disjoint=true; "
+                        "splitting frames can put one source in both train and "
+                        "test"};
+        }
+        const auto source = node->attributes.find("source_column");
+        if (source == node->attributes.end() || !source->is_string() ||
+            source->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": source_column must name the camera, site, document, "
+                        "or other group held out as a unit"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every vision model holds out complete source groups"};
+}
+
+CheckResult SpeechConsentCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!node || !speech_step(*node)) {
+            continue;
+        }
+        const auto required = node->attributes.find("consent_required");
+        const auto column = node->attributes.find("consent_column");
+        if (required == node->attributes.end() || !required->is_boolean() ||
+            !required->get<bool>() || column == node->attributes.end() ||
+            !column->is_string() || column->empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": speech requires explicit consent and a consent_column"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every speech model requires an explicit consent field"};
+}
+
+CheckResult SpeechPiiRedactionCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    return require_speech_flag(
+        graph, name(), "redact_pii",
+        "speech transcript PII redaction must be enabled",
+        "every speech model redacts transcript PII before storage");
+}
+
+CheckResult SpeechLocalAudioCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    return require_speech_flag(
+        graph, name(), "audio_local_only",
+        "speech audio must remain on its owner node",
+        "every speech model keeps audio on its owner node");
+}
+
+CheckResult BanditPolicyCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](const ir::Node& node, std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail,
+                           node_label(node) + ": " + std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", "");
+        if (kind != "bandit" && kind != "bandits" &&
+            kind != "sequential_decisioning") {
+            continue;
+        }
+        ++checked;
+        const auto floor_value = attributes.find("exploration_floor");
+        if (floor_value == attributes.end() || !floor_value->is_number()) {
+            return fail(*node, "exploration_floor must be declared");
+        }
+        const double floor = floor_value->get<double>();
+        if (!std::isfinite(floor) || !(floor > 0.0) || floor > 1.0) {
+            return fail(*node,
+                        "exploration_floor must be finite and in (0, 1]");
+        }
+        const auto default_cap_value = attributes.find("default_arm_cap");
+        if (default_cap_value == attributes.end() ||
+            !default_cap_value->is_number()) {
+            return fail(*node, "default_arm_cap must be declared");
+        }
+        const double default_cap = default_cap_value->get<double>();
+        if (!std::isfinite(default_cap) || default_cap < floor ||
+            default_cap > 1.0) {
+            return fail(*node,
+                        "default_arm_cap must be finite and no lower than "
+                        "exploration_floor");
+        }
+
+        const json caps = attributes.value("arm_caps", json::object());
+        if (!caps.is_object()) {
+            return fail(*node, "arm_caps must be an object");
+        }
+        for (const auto& [arm, value] : caps.items()) {
+            if (!value.is_number()) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be numeric");
+            }
+            const double cap = value.get<double>();
+            if (!std::isfinite(cap) || cap < floor || cap > 1.0) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be in [exploration_floor, 1]");
+            }
+        }
+
+        const auto arms_value = attributes.find("arms");
+        if (arms_value == attributes.end()) {
+            continue;
+        }
+        if (!arms_value->is_array() || arms_value->size() < 2) {
+            return fail(*node, "arms must declare at least two values");
+        }
+        if (floor * static_cast<double>(arms_value->size()) > 1.0) {
+            return fail(*node,
+                        "exploration floors exceed the available probability");
+        }
+        double total_cap = 0.0;
+        for (const json& arm_value : *arms_value) {
+            if (!arm_value.is_string()) {
+                return fail(*node, "every declared arm must be a string");
+            }
+            const std::string arm = arm_value.get<std::string>();
+            const auto cap = caps.find(arm);
+            total_cap += cap == caps.end() ? default_cap : cap->get<double>();
+        }
+        if (total_cap < 1.0) {
+            return fail(*node,
+                        "arm caps cannot carry total probability 1");
+        }
+    }
+    if (checked == 0) {
+        return CheckResult{name(), CheckStatus::Pass,
+                           "no bandit policy requires allocation checks"};
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every bandit policy has feasible floors and caps"};
 }
 
 } // namespace zetta::pipeline

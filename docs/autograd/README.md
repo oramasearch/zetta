@@ -47,7 +47,8 @@ across heterogeneous devices.
 
 - **`tensor.hpp`** — `Node`, `Tensor`, `backward()`, and the transformer op set:
   `matmul` · `sum` · `add` · `mul` · `scale` · `add_bias` · `gelu` · `silu` ·
-  `row_softmax` · `rms_norm` · `transpose` · `embedding` · `cross_entropy` ·
+  `row_softmax` · `rms_norm` · `layer_norm` · `transpose` · `embedding` · `patch_embedding` ·
+  `cross_entropy` ·
   `row_slice` · `policy_gradient_loss` · `rope` · `col_slice` · `concat_cols`
   (the last two split/reassemble attention heads). Every op is gradient-checked.
 - **`transformer.hpp`** — `causal_self_attention`, `grouped_query_attention`

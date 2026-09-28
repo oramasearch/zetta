@@ -122,6 +122,12 @@ Tensor row_softmax(const Tensor& a);
 // depends on all of them).
 Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps = 1e-5F);
 
+// LayerNorm: center and normalize each row of `a` [rows, cols], then apply
+// `weight` and `bias` [cols]. This is the normalization used by BERT-family
+// encoders. Its backward includes the row mean and variance dependencies.
+Tensor layer_norm(const Tensor& a, const Tensor& weight, const Tensor& bias,
+                  float eps = 1e-12F);
+
 // Transpose a 2-D tensor: [m, n] -> [n, m]. Needed for K^T in attention. Backward:
 // dA = dOut^T.
 Tensor transpose(const Tensor& a);
@@ -130,6 +136,13 @@ Tensor transpose(const Tensor& a);
 // producing [ids.size(), dim]. The ids are plain indices (not differentiable);
 // backward scatter-adds each row's gradient back into the selected table rows.
 Tensor embedding(const Tensor& table, const std::vector<int>& ids);
+
+// Split an image [height, width, channels] into non-overlapping square patches
+// and project each flattened patch with `weight` [hidden, patch_values] plus
+// `bias` [hidden], producing [patches, hidden]. Backward accumulates gradients
+// into the image, projection, and bias.
+Tensor patch_embedding(const Tensor& image, const Tensor& weight,
+                       const Tensor& bias, int patch_size);
 
 // Mean cross-entropy of `logits` [rows, vocab] against integer `targets` [rows] —
 // the language-model loss. Numerically stable (log-sum-exp), returns a scalar.

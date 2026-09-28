@@ -10,6 +10,9 @@ include/zetta/pipeline/intent_compiler.hpp   compile options and result
 src/core/pipeline/intent_compiler.cpp         deterministic resolution
 include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
+src/core/ml/survival_methodology.cpp          M-5 shape callback
+src/core/ml/methodology_optimization.cpp      M-16 shape and run callbacks
+src/core/ml/ensemble_methodology.cpp          M-18 shape callback
 ```
 
 ## Resolution order
@@ -19,7 +22,15 @@ The compiler uses the first applicable signal:
 1. the optional `methodology` id or model kind;
 2. the optional `solution`, resolved to its primary methodology;
 3. a registered methodology keyword in the intent; or
-4. M-1 only when the intent clearly asks for supervised prediction.
+4. M-1 when the intent clearly asks for supervised prediction.
+
+M-2 is selected explicitly by id/model kind or by its identity-resolution
+keywords; it is not used as a generic fallback.
+
+M-5 is selected explicitly by `methodology: M-5` or by its registered
+time-to-event keywords. S-8 selects M-7 (anomaly detection), its primary
+catalogue method; survival is a supporting component. It returns a dedicated cohort →
+validation → discrete-hazard model → survival/calibration output graph.
 
 An empty intent is `invalid_input`. An unknown methodology or solution is also
 `invalid_input`. If the resolved methodology is registered but not runnable,
@@ -54,11 +65,17 @@ if (compiled) {
 ```
 
 The API capability accepts the same optional `methodology`, `solution`, and
-`hints` fields. Its answer includes the methodology id it compiled.
+`hints` fields. Its answer includes the methodology id it compiled. Unless a
+caller supplies a name, M-1 keeps `churn skeleton`; every other resolved method
+uses `<methodology name> pipeline`. For example, M-3 returns
+`Segmentation / clustering pipeline`, not `generic skeleton` (#1082).
+`CompiledIntent::name` supplies this default independently of the legacy
+`IntentShape` classification. Unresolved intents still fail rather than
+producing a generic pipeline.
 
 ## M-1 reference shape
 
-M-1 is the first runnable registry entry. It builds the existing churn graph:
+M-1 is the tabular runnable registry entry. It builds the existing churn graph:
 
 ```
 load_customers ─┐
@@ -70,6 +87,40 @@ load_activity ──┘
 The model node carries `model_kind: "gbdt"` as the dispatch identity and keeps
 the existing `algo: "gradient_boosting"` configuration. All attributes remain
 editable starting-point hints for review.
+
+M-2 is also runnable. Its entity-resolution shape connects the selected records
+table, normalizes and blocks candidate pairs, scores them with
+`model_kind: "entity_resolution"`, clusters conflict-safe matches, and writes
+the resolved-entity and match-pair tables. See
+[entity resolution](../ml/entity_resolution.md).
+
+## M-16 optimization shape
+
+M-16 compiles its own table-to-plan pipeline:
+
+```
+load_optimization_table → validate_optimization_model → solve_optimization_plan → publish_optimization_plan
+       connect                    clean                       model                         act
+```
+
+The model step carries `model_kind: "optimization"` plus the scenario-input,
+independent-verification, and status-reporting contract flags required by the
+correctness gate. The connect step's `source` and `table` are the default run
+dataset; callers can override them with `dataset_path`.
+## M-18 ensemble shape
+
+M-18 builds its own four-stage pipeline from the compile hints:
+
+```
+load_ensemble_table -> prepare_ensemble_inputs -> train_ensemble -> write_ensemble_outputs
+       connect                 clean                  model                serve
+```
+
+The connect step keeps the supplied `source` and `table`. The model step records
+the entity, label, feature, and optional time columns plus `out_of_fold`, fold
+strategy, and full-training base refit attributes. The graph therefore carries
+the facts the M-18 gate check and runner enforce. Explicit M-18 selection,
+and registered ensemble keywords select this shape. S-10 stays with M-1.
 
 ## Stored intent bridge
 
@@ -85,7 +136,7 @@ introduces no new stored graph format.
 
 ## Extending the compiler
 
-A later methodology supplies `build_shape` on its registry entry. The compiler
+A methodology supplies `build_shape` on its registry entry. The compiler
 does not need another methodology-specific branch. See
 [methodologies.md](../ml/methodologies.md) for the full callback contract and
 extension checklist.

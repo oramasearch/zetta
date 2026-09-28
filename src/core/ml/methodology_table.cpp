@@ -6,10 +6,29 @@
 #include <utility>
 
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
 
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m2_methodology();
+Methodology make_m3_methodology();
+Methodology make_m5_methodology();
+Methodology make_m6_methodology();
+Methodology make_m8_methodology();
+Methodology make_m9_methodology();
+Methodology make_m10_methodology();
+Methodology make_m11_methodology();
+Methodology make_graph_methodology();
+Methodology make_m13_methodology();
+Methodology make_m14_methodology();
+Methodology make_m15_methodology();
+Methodology make_m16_methodology();
+Methodology make_m17_methodology();
+Methodology make_m18_methodology();
+Methodology make_m19_methodology();
+Methodology make_m20_methodology();
 Methodology make_m21_methodology();
 
 namespace {
@@ -64,154 +83,25 @@ bool contains_value(const std::vector<std::string>& values,
 const std::vector<Methodology>& methodologies() {
     static const std::vector<Methodology> table = {
         make_m1_methodology(),
-        planned("M-2", "Entity resolution", "Identity & structure",
-                {"entity_resolution", "entity-resolution"}, {},
-                {"resolve identity", "deduplicate", "match records"},
-                {input("entity", true, "records to resolve"),
-                 input("group", false, "source system or entity type")},
-                {"entity map", "match evidence"},
-                {"pair precision", "pair recall", "blocking recall"}, 1041),
-        planned("M-3", "Segmentation / clustering", "Identity & structure",
-                {"segmentation", "clustering", "cluster"}, {"S-9"},
-                {"segment", "cluster", "group", "persona", "cohort"},
-                {input("entity", true, "entities to segment"),
-                 input("feature", true, "attributes used for grouping")},
-                {"segment assignments", "segment profiles"},
-                {"silhouette", "stability", "cluster size"}, 1042),
-        planned(
-            "M-4", "Time-series forecasting", "Time & vigilance",
-            {"forecast", "forecasting", "time_series"}, {"S-5", "S-6"},
-            {"forecast", "demand", "predict next week", "predict next month"},
-            {input("time", true, "ordered observation time"),
-             input("label", true, "value to forecast"),
-             input("group", false, "series identifier")},
-            {"forecasts", "prediction intervals"},
-            {"MAE", "RMSE", "WAPE", "forecast value added"}, 1043),
-        planned("M-5", "Survival / time-to-event", "The tabular decision core",
-                {"survival", "time_to_event"}, {"S-8"},
-                {"time to", "when will", "survival", "remaining useful life"},
-                {input("entity", true, "entity whose event time is modeled"),
-                 input("time", true, "duration or event time"),
-                 input("label", true, "event and censor indicator")},
-                {"risk curves", "expected time to event"},
-                {"concordance", "time-dependent AUC", "IPCW Brier"}, 1044),
-        planned("M-6", "Causal inference & uplift", "Action & decision",
-                {"causal", "uplift"}, {},
-                {"uplift", "treatment", "who to target", "incremental effect"},
-                {input("entity", true, "unit receiving treatment"),
-                 input("treatment", true, "treatment assignment"),
-                 input("label", true, "observed outcome")},
-                {"treatment effects", "targeting policy"},
-                {"uplift", "Qini", "policy value"}, 1045),
-        planned("M-7", "Anomaly detection", "Time & vigilance",
-                {"anomaly", "anomaly_detection", "outlier"}, {"S-7"},
-                {"anomaly", "outlier", "unusual", "spike"},
-                {input("time", false, "observation time"),
-                 input("feature", true, "signals to monitor")},
-                {"anomaly scores", "alerts"},
-                {"precision", "recall", "false alerts"}, 1046),
-        planned("M-8", "Recommendation / next-best-action", "Action & decision",
-                {"recommendation", "recommender", "next_best_action"}, {"S-11"},
-                {"recommend", "next best action", "next-best-action"},
-                {input("entity", true, "recipient of the action"),
-                 input("treatment", true, "candidate actions or items"),
-                 input("label", false, "interaction or reward")},
-                {"ranked actions", "recommendations"},
-                {"NDCG", "recall at k", "policy value"}, 1047),
-        planned("M-9", "Learning-to-rank", "Action & decision",
-                {"ranking", "learning_to_rank", "rank"}, {"S-12"},
-                {"rank", "prioritise", "prioritize", "queue"},
-                {input("entity", true, "items to order"),
-                 input("group", false, "query or queue identifier"),
-                 input("label", true, "relevance or outcome")},
-                {"ranked list", "priority scores"},
-                {"NDCG", "precision at k", "queue yield"}, 1048),
-        planned("M-10", "NLP / embeddings / RAG / fine-tuning",
-                "Language, documents & perception",
-                {"nlp", "embedding", "embeddings", "rag", "fine_tuning",
-                 "retrieval"},
-                {}, {"text", "semantic search", "retrieve", "rag", "language"},
-                {input("text", true, "documents or utterances"),
-                 input("label", false, "task labels or golden answers")},
-                {"embeddings", "search results", "generated text"},
-                {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
-        planned("M-11", "Document intelligence",
-                "Language, documents & perception",
-                {"document_intelligence", "ocr", "document"}, {},
-                {"extract document", "ocr", "invoice", "form"},
-                {input("text", true, "document image or text"),
-                 input("label", false, "field annotations")},
-                {"structured fields", "evidence links"},
-                {"field accuracy", "F1", "straight-through rate"}, 1050),
-        planned("M-12", "Graph ML", "Identity & structure",
-                {"graph_ml", "graph"}, {},
-                {"graph", "network", "link prediction"},
-                {input("entity", true, "graph nodes"),
-                 input("group", true, "relationships or edges"),
-                 input("time", false, "edge observation time")},
-                {"node scores", "links", "graph embeddings"},
-                {"average precision", "AUC", "lift"}, 1051),
-        planned("M-13", "Computer vision", "Language, documents & perception",
-                {"computer_vision", "vision"}, {},
-                {"image", "vision", "detect defect", "segment image"},
-                {input("image", true, "images or video frames"),
-                 input("label", false, "class, box, or mask annotations")},
-                {"classifications", "detections", "masks"},
-                {"mAP", "IoU", "escape rate"}, 1052),
-        planned("M-14", "Speech & audio analytics",
-                "Language, documents & perception", {"speech", "audio"}, {},
-                {"speech", "audio", "transcribe", "diarize"},
-                {input("audio", true, "audio recordings"),
-                 input("label", false, "transcripts or task labels")},
-                {"transcripts", "speaker segments", "audio scores"},
-                {"word error rate", "F1"}, 1053),
-        planned("M-15", "Bandits & sequential decisioning", "Action & decision",
-                {"bandit", "bandits", "sequential_decisioning"}, {},
-                {"bandit", "explore", "sequential decision"},
-                {input("entity", true, "decision context"),
-                 input("treatment", true, "available actions"),
-                 input("label", true, "observed reward")},
-                {"action policy", "propensities"},
-                {"cumulative reward", "regret", "policy value"}, 1054),
-        planned("M-16", "Optimization / operations research",
-                "Action & decision", {"optimization", "operations_research"},
-                {}, {"optimize", "schedule", "allocate", "constraints"},
-                {input("feature", true, "objective inputs"),
-                 input("group", true, "constraints and resources")},
-                {"plan", "allocation", "constraint trace"},
-                {"objective value", "constraint violations"}, 1055),
-        planned(
-            "M-17",
-            "Bayesian / probabilistic modeling & uncertainty quantification",
-            "The tabular decision core",
-            {"bayesian", "probabilistic", "uncertainty"}, {},
-            {"bayesian", "uncertainty", "credible interval", "probabilistic"},
-            {input("feature", true, "observations"),
-             input("group", false, "hierarchical group")},
-            {"posterior", "prediction intervals"},
-            {"coverage", "CRPS", "calibration"}, 1056),
-        planned("M-18", "Ensembling & stacking", "The tabular decision core",
-                {"ensemble", "ensembling", "stacking"}, {},
-                {"ensemble", "stack", "blend models"},
-                {input("feature", true, "base-model predictions"),
-                 input("label", true, "evaluation outcome")},
-                {"ensemble model", "blended predictions"},
-                {"delta over best model", "stability"}, 1057),
-        planned("M-19", "Label efficiency", "The data supply chain",
-                {"label_efficiency", "active_learning", "weak_supervision"}, {},
-                {"active learning", "weak supervision", "label efficiency"},
-                {input("feature", true, "unlabelled examples"),
-                 input("label", false, "gold labels")},
-                {"labels", "review queue", "label provenance"},
-                {"agreement", "cost per label", "downstream lift"}, 1058),
-        planned("M-20", "Privacy-preserving learning & synthetic data",
-                "The data supply chain",
-                {"privacy_preserving", "federated", "synthetic_data"}, {},
-                {"federated", "differential privacy", "synthetic data"},
-                {input("group", true, "data boundary or participant"),
-                 input("feature", true, "protected training data")},
-                {"private model", "synthetic dataset", "guarantee report"},
-                {"privacy budget", "TSTR", "attack success"}, 1059),
+        make_m2_methodology(),
+        make_m3_methodology(),
+        make_m4_methodology(),
+        make_m5_methodology(),
+        make_m6_methodology(),
+        make_anomaly_methodology(),
+        make_m8_methodology(),
+        make_m9_methodology(),
+        make_m10_methodology(),
+        make_m11_methodology(),
+        make_graph_methodology(),
+        make_m13_methodology(),
+        make_m14_methodology(),
+        make_m15_methodology(),
+        make_m16_methodology(),
+        make_m17_methodology(),
+        make_m18_methodology(),
+        make_m19_methodology(),
+        make_m20_methodology(),
         make_m21_methodology(),
     };
     return table;
@@ -226,16 +116,16 @@ find_methodology(std::string_view id_or_model_kind_or_solution) {
             return &methodology;
         }
     }
+    // A solution may admit multiple methodologies. Prefer one the engine can
+    // execute, then retain the portfolio-order fallback for planned entries.
     for (const Methodology& methodology : methodologies()) {
-        if (!methodology.solutions.empty() &&
-            lower(methodology.solutions.front()) == wanted) {
+        if (methodology.runnable &&
+            contains_value(methodology.solutions, wanted)) {
             return &methodology;
         }
     }
     for (const Methodology& methodology : methodologies()) {
-        if (contains_value(methodology.solutions, wanted)) {
-            return &methodology;
-        }
+        if (contains_value(methodology.solutions, wanted)) return &methodology;
     }
     return nullptr;
 }

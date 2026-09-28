@@ -35,6 +35,60 @@ TEST(PubSubRingBuffer, FillsInOrderAndRefusesWhenFull) {
     EXPECT_FALSE(ring.read(9));
 }
 
+TEST(PubSubTopicRingStack, SparseSpillEditsAndDeletesSurviveReadBackAndRespill) {
+    zetta::test::TempDir directory;
+    TopicRingStack stack({.ring_capacity = 3});
+    for (int index = 1; index <= 4; ++index) stack.append(make_event(std::to_string(index)));
+    ASSERT_GT(stack.spill_oldest(directory.path()), 0u);
+    auto changed = make_event("edited");
+    changed.revision = 2;
+    ASSERT_TRUE(stack.replace(2, changed));
+    ASSERT_TRUE(stack.replace(1, std::nullopt));
+    ASSERT_GT(stack.spill_oldest(directory.path()), 0u);
+    EXPECT_FALSE(stack.read(1));
+    ASSERT_TRUE(stack.read(2));
+    EXPECT_EQ(stack.read(2)->payload.bytes(), "edited");
+    EXPECT_EQ(stack.read(2)->revision, 2u);
+    EXPECT_EQ(stack.read(3)->payload.bytes(), "3");
+    stack.release_before(3);
+    const auto snapshot = stack.snapshot_all();
+    ASSERT_EQ(snapshot.size(), 2u);
+    EXPECT_EQ(snapshot[0].payload.bytes(), "3");
+    EXPECT_EQ(snapshot[1].payload.bytes(), "4");
+}
+
+TEST(PubSubQueueStore, InspectionAndMutationDoNotConsumeTheFront) {
+    QueueStore store;
+    store.append(make_event("one"));
+    store.append(make_event("two"));
+    store.append(make_event("three"));
+    EXPECT_EQ(store.entries().size(), 3u);
+    EXPECT_EQ(store.first_position(), 1u);
+    ASSERT_TRUE(store.replace(2, make_event("edited")));
+    ASSERT_TRUE(store.replace(1, std::nullopt));
+    EXPECT_EQ(store.first_position(), 2u);
+    EXPECT_EQ(store.read(2)->payload.bytes(), "edited");
+    EXPECT_EQ(store.next_position(), 4u);
+}
+
+TEST(PubSubTopicRingStack, BoundedReadsSkipUnrelatedSpilledPayloads) {
+    zetta::test::TempDir directory;
+    TopicRingStack stack({.ring_capacity = 2});
+    for (std::uint64_t sequence = 1; sequence <= 6; ++sequence) {
+        auto event = make_event("payload");
+        event.sequence = sequence;
+        stack.append(event);
+    }
+    ASSERT_GT(stack.spill_oldest(directory.path()), 0u);
+    ASSERT_GT(stack.spill_oldest(directory.path()), 0u);
+    EXPECT_EQ(stack.sequence_positions().size(), 6u);
+    EXPECT_EQ(stack.spilled_ring_count(), 2u);
+    const auto page = stack.entries(6, 1, true);
+    ASSERT_EQ(page.size(), 1u);
+    EXPECT_EQ(page[0].second.sequence, 6u);
+    EXPECT_EQ(stack.spilled_ring_count(), 2u);
+}
+
 TEST(PubSubTopicRingStack, PushesARingWhenTheNewestIsFull) {
     TopicRingStack stack({.ring_capacity = 3});
     for (int index = 0; index < 7; ++index) stack.append(make_event(std::to_string(index)));

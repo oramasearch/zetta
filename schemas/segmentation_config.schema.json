@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "dependencies": {
+    "as_of": [
+      "time_column"
+    ],
+    "time_column": [
+      "as_of"
+    ]
+  },
+  "properties": {
+    "as_of": {
+      "type": "number"
+    },
+    "categorical_columns": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "center_shift_tolerance": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "encoding": {
+      "const": "bounded_one_hot"
+    },
+    "entity_column": {
+      "type": "string"
+    },
+    "excluded_columns": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "feature_columns": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "label_column": {
+      "type": "string"
+    },
+    "max_iterations": {
+      "maximum": 10000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "maximum_category_levels": {
+      "maximum": 256,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "maximum_k": {
+      "maximum": 64,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "minimum_k": {
+      "maximum": 64,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "minimum_segment_share": {
+      "maximum": 0.5,
+      "minimum": 0.02,
+      "type": "number"
+    },
+    "rare_category_share": {
+      "exclusiveMaximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "restarts": {
+      "maximum": 32,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "scaling": {
+      "const": "global_auto"
+    },
+    "seed": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "selection": {
+      "const": "silhouette_then_davies_bouldin"
+    },
+    "silhouette_sample_size": {
+      "maximum": 8192,
+      "minimum": 3,
+      "type": "integer"
+    },
+    "time_column": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "scaling",
+    "encoding",
+    "selection"
+  ],
+  "title": "zetta.SegmentationConfig",
+  "type": "object"
+}

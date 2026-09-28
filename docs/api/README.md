@@ -11,9 +11,11 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   audit-on-authorize, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping, the consent challenge.
+  the error mapping, the consent challenge, and awaitable REST reads (#1076).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
+- [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,
+  non-consuming browse, POST read aliases and bounded REST/MCP long polls (#1136).
 - [governed-actions.md](governed-actions.md) — action parity (#617): the
   product loop's mutating tools, the kind:job handle semantics
   (BackgroundActions, run-id-at-submit), gate parity, boundaries.
@@ -37,8 +39,8 @@ MCP/HTTP work.
   client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
   it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
 - [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
-  (#1033): create_topic / drop_topic / list_topics / publish_event / receive_events,
-  reaching only topics created `exposed` (engine-internal by default).
+  (#1033, #1076): create_topic / drop_topic / list_topics / publish_event / receive_events,
+  exposed topics and long polls that suspend without holding threads.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
@@ -136,22 +138,44 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
+| `get_experiment` | read | api:query | one experiment's sizes, allocation balance, exemption erosion, and uplift-training assignment rows |
+| `get_monitor` | read | api:query | one solution's input/score drift, calibration, cohort performance, guardrails, active breaches, and retrain request by solution name or monitor uuid |
+| `get_roi_readout` | read | api:query | one solution's versioned correctness certificate, aggregate treated-minus-holdout incrementality with confidence intervals, customer-supplied ROI, guardrails, agent operations, and redacted audit extract |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
 | `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
+| `get_policy` | read | api:query | one decision policy's current config and immutable version history |
+| `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
+| `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
 | `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
 | `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
+| `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
+| `list_solutions` | read | api:query | all 12 catalogue solutions and eight sketches, with composition, product contract, capability levels, missing components, and runnable status |
+| `get_solution` | read | api:query | one complete solution or sketch entry by id |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
+| `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
+| `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
+| `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `create_policy` | action | orchestration:create_policy | create version 1 of a replicated decision policy |
+| `update_policy` | action | orchestration:update_policy | append a replacement version or apply bounded numeric tuning |
+| `decide` | action | orchestration:decide | apply a policy to one scored entity or a scored table and persist versioned decisions |
+| `approve_decision` | action | orchestration:approve_decision | approve a pending A1 decision without changing its policy version |
+| `create_experiment` | action | orchestration:create_experiment | create a replicated seeded holdout, treatment, exploration, and below-the-line allocation definition |
+| `assign` | action | orchestration:assign | assign an entity before a proposed action, suppress protected model-driven actions, and log explicit exemptions |
+| `publish_report` | action | orchestration:publish_report | publish a driver report and decision log to a forum webhook with retry, idempotency, acknowledgement, and ledger evidence |
+| `enqueue_action_task` | action | orchestration:enqueue_action_task | write an owner- and SLA-bound task to the replicated outbox after holdout and policy checks |
+| `deliver_action_task` | action | orchestration:deliver_action_task | deliver an outbox task through webhook, Salesforce, or HubSpot with bounded retries and dead-letter handling |
+| `execute_closed_loop` | action | orchestration:execute_closed_loop | enqueue and deliver one task while rechecking holdout and the current policy kill-switch before HTTP |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
@@ -160,12 +184,15 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |
+| `create_solution` | action | orchestration:create_solution | compose a selected level and create its versioned policy, experiment, monitor and ROI definition from typed defaults and explicit snapshot/delivery/economics inputs |
 | `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
-| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch M-1 tabular or M-21 streaming runners; refuse unknown or unavailable model kinds; graphs without a model remain structural |
+| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner, including M-5 survival, M-12 graph ML and M-21 streaming over their connect-step tables; M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
+| `run_solution` | job | orchestration:run_solution | run snapshot and methodology stages, enforce policy/holdout protection, deliver actions and record ledger/monitor state; return a durable Run and decision-table output |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
+| `snapshot` | action | orchestration:snapshot | materialize the latest row per entity at or before an inclusive cutoff into a replicated table keyed by `(entity_id, as_of)` (#1103) |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008, [add-dataset.md](../data/add-dataset.md)) |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |
 | `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
