@@ -215,6 +215,71 @@ TEST(DecisionPolicy, EnforcesEligibilityThresholdTiersAndBudget) {
     EXPECT_EQ(budget_block->reasons.front(), "budget exhausted");
 }
 
+TEST(DecisionPolicy, HoldoutSuppressesActionAndRecordsTheCell) {
+    zetta::test::TempDir directory;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(node.start());
+
+    zetta::solutions::ExperimentValue experiment_value;
+    experiment_value.name = "retention-holdout";
+    experiment_value.seed = 1128;
+    experiment_value.allocations = {
+        {"control", zetta::solutions::ExperimentTier::Holdout, 0.5},
+        {"treatment", zetta::solutions::ExperimentTier::Treatment, 0.5}};
+    std::string error;
+    const auto experiment =
+        node.experiment_manager().create(std::move(experiment_value), &error);
+    ASSERT_TRUE(experiment) << error;
+
+    std::string holdout_entity;
+    for (int index = 0; index < 100 && holdout_entity.empty(); ++index) {
+        const std::string candidate = "customer-" + std::to_string(index);
+        const auto assignment = node.experiment_manager().assign(
+            experiment->id,
+            candidate,
+            false,
+            {},
+            {},
+            &error);
+        ASSERT_TRUE(assignment) << error;
+        if (assignment->value.tier == zetta::solutions::ExperimentTier::Holdout) {
+            holdout_entity = candidate;
+        }
+    }
+    ASSERT_FALSE(holdout_entity.empty());
+
+    DecisionPolicyStore store{replication, &node};
+    const auto policy = store.create(
+        "experiment-aware-retention",
+        policy_config("A3"),
+        "owner",
+        &error);
+    ASSERT_TRUE(policy) << error;
+    Json scored_entity = entity(holdout_entity);
+    scored_entity["experiment"] = experiment->id;
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    zetta::api::ApiContext context{node};
+    const auto decided = registry.call(
+        "decide",
+        {{"policy_id", policy->id}, {"entity", std::move(scored_entity)}},
+        context);
+    ASSERT_TRUE(decided.ok) << decided.error.message;
+    EXPECT_EQ(decided.value.at("experiment"), experiment->id);
+    EXPECT_EQ(decided.value.at("cell"), "control");
+    EXPECT_EQ(decided.value.at("status"), "blocked");
+    EXPECT_FALSE(decided.value.at("actionable").get<bool>());
+    EXPECT_EQ(decided.value.at("action"), "");
+
+    const auto stored = store.get_decision(
+        decided.value.at("id").get<std::string>());
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(stored->cell, "control");
+    EXPECT_TRUE(stored->action.empty());
+    node.stop();
+}
+
 TEST(DecisionPolicy, UpdatesCreateVersionsAndAgentTuningStaysWithinBounds) {
     ReplicationManager replication{zetta::util::new_uuid()};
     DecisionPolicyStore store{replication};

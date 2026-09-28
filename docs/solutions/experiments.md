@@ -41,6 +41,12 @@ returns the only action a caller may execute. For a model-driven proposal in a
 `allowed=false`. Human-originated actions are not blocked by an experimental
 control assignment.
 
+The decision-policy engine uses this boundary directly. An entity passed to
+`DecisionPolicyStore::decide` may name its `experiment`; the selected policy
+action is then checked by this manager before the decision is stored. The row
+records the experiment id and allocation cell, and a protected assignment stores
+an empty action with `status=blocked` and `actionable=false`.
+
 An unavoidable override is explicit and sticky. It requires a non-empty reason,
 records the actor, remains attached to the entity assignment, and permits the
 proposed action. A later call cannot silently remove it. The report exposes both

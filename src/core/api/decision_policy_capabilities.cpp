@@ -28,7 +28,10 @@ std::optional<DecisionPolicyStore> store_of(ApiContext& context) {
     if (context.node.replication() == nullptr) {
         return std::nullopt;
     }
-    return DecisionPolicyStore(*context.node.replication(), &context.node);
+    return DecisionPolicyStore(
+        *context.node.replication(),
+        &context.node,
+        &context.node.experiment_manager());
 }
 
 const nlohmann::json& policy_id_schema() {
@@ -85,6 +88,7 @@ const nlohmann::json& decide_schema() {
           {"cost", {{"type", "number"}, {"minimum", 0}}},
           {"contacts", {{"type", "integer"}, {"minimum", 0}}},
           {"recent_actions", {{"type", "integer"}, {"minimum", 0}}},
+          {"experiment", {{"type", "string"}, {"minLength", 1}}},
           {"action", {{"type", "string"}}}}}};
     static const nlohmann::json schema = {
         {"type", "object"},

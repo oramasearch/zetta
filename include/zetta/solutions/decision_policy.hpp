@@ -23,6 +23,8 @@ class AuditSink;
 
 namespace zetta::solutions {
 
+class ExperimentManager;
+
 // Versioned decision policy and durable decision records (#1104).
 // See docs/solutions/decision-policy.md.
 enum class AutonomyClass {
@@ -61,6 +63,8 @@ struct DecisionRecord {
     double score = 0.0;
     double cost = 0.0;
     std::string tier;
+    std::string experiment;
+    std::string cell;
     std::string action;
     std::string autonomy;
     std::string status;
@@ -91,7 +95,8 @@ class DecisionPolicyStore {
 public:
     DecisionPolicyStore(
         zetta::cluster::ReplicationManager& replication,
-        zetta::governance::AuditSink* audit = nullptr);
+        zetta::governance::AuditSink* audit = nullptr,
+        ExperimentManager* experiment_manager = nullptr);
 
     std::optional<DecisionPolicy> create(
         std::string name,
@@ -122,6 +127,7 @@ public:
 private:
     zetta::cluster::ReplicationManager& replication_;
     zetta::governance::AuditSink* audit_;
+    ExperimentManager* experiment_manager_;
 };
 
 struct BatchDecisionOptions {

@@ -17,7 +17,7 @@ catalog document persists across node restart and reconciles across peers:
 
 ```text
 decision_policy:<uuid>  -> policy name + immutable ordered versions
-decision:<uuid>         -> result + policy id + exact policy version + evidence
+decision:<uuid>         -> result + policy id + exact policy version + experiment cell + evidence
 ```
 
 `create_policy` writes version 1. `update_policy` appends a version and never
@@ -52,6 +52,14 @@ A config contains:
 The evaluator applies the kill-switch, exclusions, eligibility, contact cap,
 frequency cap, budget, threshold, and tier in that order. A blocked decision is
 still a durable record, including its evidence and policy version.
+
+When an entity supplies an `experiment` reference, the same `decide` call passes
+the selected policy action through `ExperimentManager::decide` before persisting
+the result. The decision row records the experiment id and allocation `cell`.
+A model-driven action assigned to a `holdout` or `below_line` cell is cleared,
+marked non-actionable, and stored as blocked. Treatment and exploration cells
+retain the policy result. A missing experiment manager or unknown experiment is
+a request error rather than an unprotected decision.
 
 Rule operators are `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`, `not_in`, and
 `exists`. Rule fields may use dotted paths into the submitted entity object.
@@ -90,9 +98,10 @@ One registry entry renders each capability over MCP and REST:
 | `approve_decision` | action | The approved A1 record. |
 
 Request-time `decide` accepts an `entity` with `entity_id`, `score`, optional
-`cost`, `contacts`, `recent_actions`, and arbitrary rule evidence. Batch mode
-accepts a database/table plus column mappings and writes full decision rows to a
-new table, including `policy_id` and `policy_version` on every row.
+`cost`, `contacts`, `recent_actions`, `experiment`, and arbitrary rule evidence.
+Batch mode accepts a database/table plus column mappings and writes full decision
+rows to a new table, including `policy_id`, `policy_version`, `experiment`, and
+`cell` on every row.
 
 All handlers run on the node owner loop. The evaluator itself has no foreign
 runtime or hosted call. The request-time regression measures persisted-decision

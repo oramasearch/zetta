@@ -1144,6 +1144,9 @@
                           ],
                           "type": "string"
                         },
+                        "cell": {
+                          "type": "string"
+                        },
                         "cost": {
                           "minimum": 0,
                           "type": "number"
@@ -1157,6 +1160,9 @@
                         },
                         "evidence": {
                           "type": "object"
+                        },
+                        "experiment": {
+                          "type": "string"
                         },
                         "id": {
                           "minLength": 1,
@@ -1201,6 +1207,8 @@
                         "score",
                         "cost",
                         "tier",
+                        "experiment",
+                        "cell",
                         "action",
                         "autonomy",
                         "status",
@@ -4681,6 +4689,10 @@
                           }
                         ]
                       },
+                      "experiment": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
                       "recent_actions": {
                         "minimum": 0,
                         "type": "integer"
@@ -4783,6 +4795,9 @@
                               ],
                               "type": "string"
                             },
+                            "cell": {
+                              "type": "string"
+                            },
                             "cost": {
                               "minimum": 0,
                               "type": "number"
@@ -4796,6 +4811,9 @@
                             },
                             "evidence": {
                               "type": "object"
+                            },
+                            "experiment": {
+                              "type": "string"
                             },
                             "id": {
                               "minLength": 1,
@@ -4840,6 +4858,8 @@
                             "score",
                             "cost",
                             "tier",
+                            "experiment",
+                            "cell",
                             "action",
                             "autonomy",
                             "status",

@@ -13,6 +13,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
+#include "zetta/solutions/experiment.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -457,6 +458,8 @@ Json to_json(const DecisionRecord& decision) {
             {"score", decision.score},
             {"cost", decision.cost},
             {"tier", decision.tier},
+            {"experiment", decision.experiment},
+            {"cell", decision.cell},
             {"action", decision.action},
             {"autonomy", decision.autonomy},
             {"status", decision.status},
@@ -549,8 +552,8 @@ const Json& decision_record_schema() {
         {"additionalProperties", false},
         {"required",
          {"id", "policy_id", "policy_version", "entity_id", "score", "cost", "tier",
-          "action", "autonomy", "status", "actionable", "reasons", "evidence", "created",
-          "approved_at", "approved_by"}},
+          "experiment", "cell", "action", "autonomy", "status", "actionable", "reasons",
+          "evidence", "created", "approved_at", "approved_by"}},
         {"properties",
          {{"id", {{"type", "string"}, {"minLength", 1}}},
           {"policy_id", {{"type", "string"}, {"minLength", 1}}},
@@ -559,6 +562,8 @@ const Json& decision_record_schema() {
           {"score", {{"type", "number"}}},
           {"cost", {{"type", "number"}, {"minimum", 0}}},
           {"tier", {{"type", "string"}}},
+          {"experiment", {{"type", "string"}}},
+          {"cell", {{"type", "string"}}},
           {"action", {{"type", "string"}}},
           {"autonomy", {{"type", "string"}, {"enum", {"A0", "A1", "A2", "A3"}}}},
           {"status", {{"type", "string"}, {"enum", {"blocked", "manual", "pending_approval", "allowed", "approved"}}}},
@@ -625,6 +630,8 @@ std::optional<DecisionRecord> parse_decision_record(const Json& value, std::stri
     decision.score = value.at("score").get<double>();
     decision.cost = value.at("cost").get<double>();
     decision.tier = value.at("tier").get<std::string>();
+    decision.experiment = value.at("experiment").get<std::string>();
+    decision.cell = value.at("cell").get<std::string>();
     decision.action = value.at("action").get<std::string>();
     decision.autonomy = value.at("autonomy").get<std::string>();
     decision.status = value.at("status").get<std::string>();
@@ -639,9 +646,11 @@ std::optional<DecisionRecord> parse_decision_record(const Json& value, std::stri
 
 DecisionPolicyStore::DecisionPolicyStore(
     zetta::cluster::ReplicationManager& replication,
-    zetta::governance::AuditSink* audit_sink)
+    zetta::governance::AuditSink* audit_sink,
+    ExperimentManager* experiment_manager)
     : replication_(replication),
-      audit_(audit_sink) {}
+      audit_(audit_sink),
+      experiment_manager_(experiment_manager) {}
 
 std::optional<DecisionPolicy> DecisionPolicyStore::create(
     std::string name,
@@ -761,6 +770,43 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         spend = committed_spend(snapshot, policy_id, policy->current()->version);
     }
     DecisionRecord decision = evaluate(*policy, entity, spend);
+    if (entity.contains("experiment")) {
+        if (experiment_manager_ == nullptr) {
+            if (error != nullptr) {
+                *error = "/entity/experiment: no experiment manager is available";
+            }
+            return std::nullopt;
+        }
+        if (!entity.at("experiment").is_string() ||
+            entity.at("experiment").get_ref<const std::string&>().empty()) {
+            if (error != nullptr) {
+                *error = "/entity/experiment: must be a non-empty string";
+            }
+            return std::nullopt;
+        }
+        const auto experiment_decision = experiment_manager_->decide(
+            entity.at("experiment").get_ref<const std::string&>(),
+            decision.entity_id,
+            decision.action,
+            true,
+            false,
+            {},
+            {},
+            error);
+        if (!experiment_decision) {
+            return std::nullopt;
+        }
+        decision.experiment = experiment_decision->assignment.value.experiment;
+        decision.cell = experiment_decision->assignment.value.allocation;
+        if (!experiment_decision->allowed) {
+            decision.action.clear();
+            decision.actionable = false;
+            decision.status = "blocked";
+            decision.reasons.push_back(
+                "experiment cell '" + decision.cell +
+                "' protects model-driven action");
+        }
+    }
     replication_.set(zetta::catalog::decision_key(decision.id), to_json(decision));
     return decision;
 }
