@@ -4,12 +4,14 @@
 #include <cstdio>
 #include <exception>
 #include <latch>
+#include <mutex>
 #include <thread>
 
+#include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/ex/run_async.hpp>
 #include <boost/capy/ex/thread_pool.hpp>
 
-// The data-parallel slice of the runtime seam (parallel_for / parallel_chunks).
+// The data-parallel slice of the runtime interface (parallel_for / parallel_chunks).
 //
 // This is the one place — alongside the rest of runtime.hpp — that names the
 // Capy backend for fan-out work, so callers (zetta::compute::CpuDevice today)
@@ -17,6 +19,73 @@
 // and joined before returning, so parallel_for is a synchronous primitive: the
 // calling thread blocks until every chunk has run.
 namespace zetta::runtime {
+
+// The backend event's intrusive waiter list is single-executor state. Pub/sub
+// publishers, cancellation and HTTP waiters can run on different threads, so
+// every access to that list is serialized here. The mutex never spans a wait.
+struct async_event::State {
+    std::mutex mutex;
+    boost::capy::async_event event;
+
+    struct Waiter {
+        State& state;
+        std::optional<boost::capy::async_event::wait_awaiter> waiter;
+
+        explicit Waiter(State& event_state)
+            : state(event_state), waiter(std::in_place, &state.event) {}
+
+        Waiter(Waiter&&) = default;
+
+        ~Waiter() {
+            std::lock_guard lock(state.mutex);
+            waiter.reset();
+        }
+
+        bool await_ready() const noexcept {
+            return false;
+        }
+
+        std::coroutine_handle<> await_suspend(
+            std::coroutine_handle<> continuation,
+            const boost::capy::io_env* environment) noexcept {
+            std::lock_guard lock(state.mutex);
+            // Checking the signal and registering are one critical section:
+            // a publish between await_ready and await_suspend cannot be lost.
+            if (waiter->await_ready()) return continuation;
+            return waiter->await_suspend(continuation, environment);
+        }
+
+        io_result<> await_resume() noexcept {
+            std::lock_guard lock(state.mutex);
+            return waiter->await_resume();
+        }
+    };
+
+    static io_task<> wait(std::shared_ptr<State> state) {
+        co_return co_await Waiter(*state);
+    }
+};
+
+async_event::async_event() : state_(std::make_shared<State>()) {}
+
+io_task<> async_event::wait() {
+    return State::wait(state_);
+}
+
+void async_event::set() {
+    std::lock_guard lock(state_->mutex);
+    state_->event.set();
+}
+
+void async_event::clear() {
+    std::lock_guard lock(state_->mutex);
+    state_->event.clear();
+}
+
+bool async_event::is_set() const {
+    std::lock_guard lock(state_->mutex);
+    return state_->event.is_set();
+}
 
 namespace {
 
@@ -26,13 +95,6 @@ namespace {
 // creation/teardown on every parallel_for.
 boost::capy::thread_pool& shared_pool() {
     static boost::capy::thread_pool pool(0);  // 0 => hardware_concurrency
-    return pool;
-}
-
-// The pool for work that blocks waiting (spawn_blocking, #1063): long polls park
-// here, never on the compute pool above.
-boost::capy::thread_pool& blocking_pool() {
-    static boost::capy::thread_pool pool(kBlockingThreads);
     return pool;
 }
 
@@ -52,7 +114,7 @@ constexpr std::size_t kMinItemsPerChunk = 4096;
 // blocks on the latch before returning.
 //
 // Bodies must not throw: zetta-core compiles with -fexperimental-library and
-// "must never unwind across a seam" (the same rule that makes compute operators
+// "must never unwind across a public boundary" (the same rule that makes compute operators
 // return ComputeStatus instead of throwing). A throwing body is a contract
 // violation, so it is turned into a loud, immediate abort here rather than left
 // to unwind into the coroutine backend with backend-defined consequences.
@@ -80,15 +142,6 @@ void spawn(task<> coroutine, std::function<void()> on_complete) {
     // thread-safe. run_async owns the coroutine frame + the completion until the
     // task completes, so spawn can return immediately.
     auto executor = shared_pool().get_executor();
-    boost::capy::run_async(
-        executor,
-        [callback = std::move(on_complete)](auto&&...) noexcept {
-            if (callback) callback();
-        })(std::move(coroutine));
-}
-
-void spawn_blocking(task<> coroutine, std::function<void()> on_complete) {
-    auto executor = blocking_pool().get_executor();
     boost::capy::run_async(
         executor,
         [callback = std::move(on_complete)](auto&&...) noexcept {

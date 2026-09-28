@@ -28,6 +28,7 @@
 #include "zetta/pubsub/log.hpp"
 #include "zetta/pubsub/resources.hpp"
 #include "zetta/pubsub/store.hpp"
+#include "zetta/runtime.hpp"
 
 // zetta's in-memory pub/sub (epic #1024; leaves #1027–#1032). The design and
 // every decision it rests on: docs/plans/pubsub/. What is built:
@@ -303,11 +304,14 @@ public:
     // Read a topic's held events with sequence >= `from_sequence`, oldest first,
     // at most `max`, waiting up to `wait` when there are none yet. Stateless (no
     // subscription): the long-poll read behind the `receive_events` capability.
-    // Governed by pubsub:subscribe. nullopt with `reason` when refused or missing.
+    // An optional waiter is registered before the read and signaled by publish or
+    // close. Governed by pubsub:subscribe. nullopt with `reason` when refused or
+    // missing.
     std::optional<std::vector<Event>> read_events(const Identity& identity, const Address& topic,
                                                   std::uint64_t from_sequence, std::size_t max,
                                                   std::chrono::milliseconds wait,
-                                                  std::string* reason = nullptr);
+                                                  std::string* reason = nullptr,
+                                                  std::shared_ptr<runtime::async_event> waiter = {});
 
     // Drains by address kind (D35).
     void register_drain(const std::string& kind, std::shared_ptr<InboxDrain> drain);

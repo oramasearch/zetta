@@ -24,6 +24,7 @@ Capability {
   mutates         // fires the activity hook; tells GUIs to refresh
   requires_consent     // cloud-touching: returns a consent challenge
   handler         // std::function<ApiResult(const json&, ApiContext&)>
+  awaitable_read  // optional REST event wait between at most two registry calls
 }
 ```
 
@@ -67,8 +68,8 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
 - Everything routes through the bridge, including reads that could arguably
   go direct — uniformity beats cleverness here; the thread-safety table lives
   in one place.
-- **The one exception: an `offloadable` capability** (`chat`, `receive_events`'
-  long poll) runs its *handler* on a pool worker so it never pins the loop. The
+- **The one exception: an `offloadable` capability** (`chat`) runs its *handler*
+  on a pool worker so it never pins the loop. The
   call's authorization + audit gate still runs on the owner thread, through
   `Node::run_on_owner`: the gate reads the access keys and appends to the audit
   trail, which the tick reconciles and re-sorts. Running the gate on the worker
@@ -76,6 +77,12 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   touch only thread-safe state (the replication store, `PubSub`), and
   `Registry::add` refuses an offloadable entry that mutates or requires consent,
   because the activity hook and the consent ledger run after the gate.
+- **Awaitable reads do not offload.** `receive_events` registers a topic event
+  inside its first owner-loop call, returns an immediate read, and lets the REST
+  coroutine suspend on that event under `runtime::timeout`. Publish or close
+  wakes it; the route makes one final owner-loop call. A long poll therefore
+  holds no thread and makes at most two authorized, audited registry calls
+  (#1076).
 - **Owner hops wake the loop.** Work a pool worker queues with
   `Node::run_on_owner` (that gate, the pub/sub authorizer, background actions)
   wakes the idle loop through `Node::set_owner_wakeup` (the API server's
@@ -123,8 +130,8 @@ reaps the child before joining clients so a regression cannot strand the suite.
   capability check **and** the audit record in one motion. Convention: reads
   require `api:query`; each action requires `orchestration:<name>`
   (`orchestration:create_project`). Handlers that reach the gate/deploy/run
-  seams inherit those seams' own enforcement too (RULE-1 cannot be bypassed
-  by construction, because handlers call the same engine entry points the GUI
+  entry points inherit their enforcement too (RULE-1 cannot be bypassed by
+  construction, because handlers call the same engine entry points the GUI
   calls).
 - **Consent (shipped, #621 — [consent.md](consent.md)):** a `requires_consent`
   capability NEVER executes on first call — it returns a structured consent

@@ -289,12 +289,15 @@ ApiResult handle_receive_events(const nlohmann::json& input, ApiContext& context
     if (auto missing = require_exposed(*pubsub, *topic)) return *missing;
     const auto from = input.value("from_sequence", std::uint64_t{1});
     const auto max = std::min<std::size_t>(input.value("max", std::size_t{100}), kMaxReceive);
-    auto wait = std::chrono::milliseconds(std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
-    // A long poll never blocks the owner loop: a surface that runs this on the
-    // owner thread (MCP tools/call) gets an immediate answer, as with wait_ms 0
-    // (#1063). REST runs it on the blocking pool, where it waits.
-    if (context.node.on_owner_thread()) wait = std::chrono::milliseconds(0);
-    auto events = pubsub->read_events(identity_of(context), *topic, from, max, wait, &reason);
+    const auto wait = std::chrono::milliseconds(
+        std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
+    const auto waiter = wait.count() > 0 ? context.wait_event : nullptr;
+    // REST registers the one-shot event before this no-wait read, then suspends
+    // outside the registry when the result is empty. MCP and in-process callers
+    // provide no event and get the same immediate read (#1076).
+    auto events = pubsub->read_events(
+        identity_of(context), *topic, from, max, std::chrono::milliseconds(0),
+        &reason, waiter);
     if (!events) return ApiResult::failure("unauthorized", reason, "/topic");
     nlohmann::json rows = nlohmann::json::array();
     std::uint64_t next = from;
@@ -379,10 +382,15 @@ void register_pubsub_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_receive_events};
-    // A long poll must not hold the owner loop: it runs on a pool worker, and
-    // the authorizer marshals its rights check onto the owner thread.
-    receive.offloadable = true;
-    receive.blocks = true;
+    receive.awaitable_read = AwaitableRead{
+        [](const nlohmann::json& input) {
+            return std::chrono::milliseconds(
+                std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
+        },
+        [](const ApiResult& result) {
+            return result.ok && result.value.contains("events") &&
+                   result.value.at("events").empty();
+        }};
     registry.add(std::move(receive));
 }
 

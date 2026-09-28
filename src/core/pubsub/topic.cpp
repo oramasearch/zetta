@@ -225,6 +225,7 @@ bool Topic::disconnect_slowest() {
 
 Topic::AppendOutcome Topic::append(Event event) {
     AppendOutcome outcome;
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
     std::lock_guard append_lock(append_mutex_);
     {
         std::lock_guard lock(mutex_);
@@ -311,8 +312,10 @@ Topic::AppendOutcome Topic::append(Event event) {
         ++publish_generation_;
         idle_since_.reset();
         if (subscriptions_.empty()) idle_since_ = SteadyClock::now();
+        waiters = take_waiters();
     }
     published_.notify_all();
+    for (const auto& waiter : waiters) waiter->set();
     outcome.sequence = sequence;
     return outcome;
 }
@@ -545,6 +548,7 @@ std::uint64_t Topic::missed(const Subscription::State& state) const {
 }
 
 void Topic::close_all(const std::string& reason) {
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
     {
         std::lock_guard lock(mutex_);
         closing_ = true;
@@ -552,10 +556,12 @@ void Topic::close_all(const std::string& reason) {
             state->closed = true;
             state->close_reason = reason;
         }
+        waiters = take_waiters();
     }
     published_.notify_all();
     released_.notify_all();
     for (auto& level : levels_) level->wake_all();
+    for (const auto& waiter : waiters) waiter->set();
 }
 
 void Topic::detach() {
@@ -713,6 +719,30 @@ std::vector<Event> Topic::read_from(std::uint64_t from_sequence, std::size_t max
         published_.wait_for(lock, wait, [&] { return publish_generation_ != generation || closing_; });
     }
     return collect();
+}
+
+void Topic::register_waiter(
+    const std::shared_ptr<runtime::async_event>& waiter) {
+    bool closed = false;
+    {
+        std::lock_guard lock(mutex_);
+        std::erase_if(waiters_, [](const auto& registered) {
+            return registered.expired();
+        });
+        closed = closing_;
+        if (!closed) waiters_.push_back(waiter);
+    }
+    if (closed) waiter->set();
+}
+
+std::vector<std::shared_ptr<runtime::async_event>> Topic::take_waiters() {
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
+    waiters.reserve(waiters_.size());
+    for (const auto& registered : waiters_) {
+        if (auto waiter = registered.lock()) waiters.push_back(std::move(waiter));
+    }
+    waiters_.clear();
+    return waiters;
 }
 
 std::vector<std::vector<Event>> Topic::snapshot() {

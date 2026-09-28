@@ -30,11 +30,11 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    // Connections served at once: each worker coroutine serves one connection at
-    // a time, and a long poll (receive_events) holds its connection for the whole
-    // wait. At 32, 32 bus long polls left every other request queued for up to
-    // 10 s (#1063). Workers are coroutines, not threads, so this is cheap.
-    int worker_coroutines = 256;
+    // Connections served at once. A receive_events long poll suspends its worker
+    // coroutine without holding a thread, so this count is inexpensive capacity
+    // for concurrent HTTP connections. It leaves headroom above the 500-waiter
+    // acceptance load (#1076).
+    int worker_coroutines = 1024;
     // The built Studio web app (the design repo's React bundle). When set, the
     // node serves it statically at /app with an SPA fallback to index.html —
     // the app's only data path is the /v1 surface. Empty = /app is 404.
