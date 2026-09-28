@@ -59,6 +59,9 @@ their unsupported status and issue links.
 - The forecast branch's equivalent registry commit does not create duplicate
   entries. Documentation rows match the combined registry. Generated schemas
   are regenerated from code, not combined by hand.
+- The combined run schema declares the shared document/bandit `seed` only
+  once, with its existing non-negative integer contract. Optimization retains
+  its separate nested solver seed and all LP/MIP controls.
 
 M-10 and M-11 add independent LayerNorm and patch-embedding autograd operations;
 both implementations and their gradient checks are retained. Report schemas keep
@@ -82,7 +85,7 @@ Use a fresh native Release build after combining headers and CMake lists:
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 6 --target zetta-tests zetta
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='*Schema*'
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='OpenApi.*'
-./build/tests/zetta-tests --gtest_filter='*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*:*Gate*:IntentCompiler*:*Segment*:*Forecast*:*Anomal*:*Entity*:*Surviv*:*Uplift*:*Causal*:*NextBest*:*Rank*:*Lambda*:*Language*:*Document*:*Graph*:*Vision*'
+./build/tests/zetta-tests --gtest_filter='*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*:*Gate*:IntentCompiler*:*Segment*:*Forecast*:*Anomal*:*Entity*:*Surviv*:*Uplift*:*Causal*:*NextBest*:*Rank*:*Lambda*:*Language*:*Document*:*Graph*:*Vision*:*Speech*:*Audio*:*Bandit*:*Thompson*:*LinUCB*:*Solver*:*Optim*'
 ./build/tests/zetta-tests
 ```
 
@@ -96,3 +99,8 @@ a fresh local database. Full-suite-only unrelated failures must pass alone;
 record both outputs and host load in the issue comment. Linux proof is deferred
 when the off-host helper is unavailable. Image builds are deferred on this host;
 no container-based proof is used.
+
+Round-three schema regeneration passed all 46 schema and 3 OpenAPI tests.
+The artifacts now include speech privacy annotations/transcripts, bandit policy
+and decision-table references, and optimization controls/plan/constraint facts.
+The registry documentation and compiler/API naming regression checks also pass.

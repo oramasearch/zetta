@@ -6529,6 +6529,10 @@
                           "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Anomaly detection records source, rows read/excluded, roles and unused columns. Forecasting records selected/excluded columns and rows/partitions/bytes read. Absent when the model records no dataset facts",
                           "type": "object"
                         },
+                        "decisions_table": {
+                          "description": "bandit propensity-log table reference",
+                          "type": "string"
+                        },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
@@ -6549,6 +6553,10 @@
                           "description": "methodology id for typed reports",
                           "type": "string"
                         },
+                        "metrics": {
+                          "description": "bandit reward, regret, exploration, and row metrics",
+                          "type": "object"
+                        },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
@@ -6568,6 +6576,10 @@
                         "policy": {
                           "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
                           "type": "object"
+                        },
+                        "policy_table": {
+                          "description": "bandit allocation-policy table reference",
+                          "type": "string"
                         },
                         "predictions": {
                           "description": "vision prediction rows, capped by `limit`",
@@ -6591,6 +6603,10 @@
                         },
                         "segments": {
                           "description": "segment sizes, shares, original-unit centers and descriptive labels",
+                          "type": "array"
+                        },
+                        "transcripts": {
+                          "description": "redacted speech segments with recording, time bounds, text, and confidence",
                           "type": "array"
                         }
                       },
@@ -10430,10 +10446,43 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "algorithm": {
+                    "description": "M-15 policy algorithm",
+                    "enum": [
+                      "thompson",
+                      "linucb",
+                      "linear_thompson"
+                    ],
+                    "type": "string"
+                  },
                   "answer_tokens": {
                     "description": "M-10 only: native-Qwen completion token limit",
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "arm_caps": {
+                    "additionalProperties": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 1,
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "arm_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "arms": {
+                    "description": "M-15 arm names; inferred from the table when omitted",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "baseline_arm": {
+                    "type": "string"
                   },
                   "bootstrap_samples": {
                     "minimum": 0,
@@ -10443,6 +10492,17 @@
                     "description": "M-10 only: non-negative regularization for the linear classifier head",
                     "minimum": 0,
                     "type": "number"
+                  },
+                  "confidence": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "context_columns": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
@@ -10483,6 +10543,15 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "decision_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "default_arm_cap": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
                   "document_column": {
                     "description": "M-11: source column containing text, PDF, or PGM bytes",
                     "minLength": 1,
@@ -10502,6 +10571,11 @@
                     "description": "M-10 only: local directory containing the pinned MiniLM config, vocab.txt, and model.safetensors (tests never download it)",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "exploration_floor": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
                   },
                   "feature_time_column": {
                     "description": "survival feature cutoff column (default feature_time)",
@@ -10559,9 +10633,43 @@
                     "type": "number"
                   },
                   "model_name": {
-                    "description": "the registered model's name (default churn_model)",
+                    "description": "the registered model or solver-result name",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "optimization": {
+                    "additionalProperties": false,
+                    "description": "M-16 native LP/MIP solver controls",
+                    "properties": {
+                      "feasibility_tolerance": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "integrality_tolerance": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "iteration_limit": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "maximize": {
+                        "type": "boolean"
+                      },
+                      "node_limit": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "time_limit_ms": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
                   },
                   "outcome_column": {
                     "description": "M-6 binary observed outcome column",
@@ -10594,8 +10702,16 @@
                     "minimum": 0,
                     "type": "number"
                   },
+                  "reward_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ridge": {
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
                   "seed": {
-                    "description": "M-11: deterministic tiny TrOCR seed",
+                    "description": "deterministic seed for document and bandit runs",
                     "minimum": 0,
                     "type": "integer"
                   },
@@ -10663,6 +10779,10 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "constraint_table": {
+                          "description": "M-16 independent constraint verification table",
+                          "type": "string"
+                        },
                         "dataset": {
                           "description": "table datasets only: the resolved column contract the run trained under",
                           "type": "object"
@@ -10686,8 +10806,15 @@
                           "description": "structural runs only, on failure",
                           "type": "string"
                         },
+                        "model_id": {
+                          "type": "string"
+                        },
                         "note": {
                           "description": "structural runs: that nothing was trained, and whether a given dataset was read",
+                          "type": "string"
+                        },
+                        "plan_table": {
+                          "description": "M-16 decision table; absent without a feasible plan",
                           "type": "string"
                         },
                         "poll": {
@@ -10696,6 +10823,10 @@
                         },
                         "run_id": {
                           "description": "the durable engine handle — poll get_run / system.runs",
+                          "type": "string"
+                        },
+                        "solver_status": {
+                          "description": "M-16 solver termination status",
                           "type": "string"
                         },
                         "status": {

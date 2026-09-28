@@ -8,6 +8,10 @@
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
       "type": "string"
     },
+    "audio_local_only": {
+      "description": "Audio samples remain on their owner node.",
+      "type": "boolean"
+    },
     "caller_read_required": {
       "description": "Marks a source whose selected columns all require caller read access.",
       "type": "boolean"
@@ -17,6 +21,15 @@
     },
     "citations_required": {
       "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "consent_column": {
+      "description": "The boolean source field that records speech-processing consent.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "consent_required": {
+      "description": "Speech transcription must require explicit source consent.",
       "type": "boolean"
     },
     "duration_column": {
@@ -83,6 +96,10 @@
       "type": "number"
     },
     "point_in_time_features": {
+      "type": "boolean"
+    },
+    "redact_pii": {
+      "description": "Speech transcript text is privacy-filtered before durable storage.",
       "type": "boolean"
     },
     "refuse_without_retrieval": {
