@@ -302,3 +302,17 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)
+
+# Process-level regression for #1078. This owns a real loopback listener and
+# launches the production binary, so it can distinguish exit(1) from SIGABRT.
+add_executable(zetta-refused-start-test
+  cluster/test_refused_start_exit.cpp
+)
+target_compile_features(zetta-refused-start-test PRIVATE cxx_std_26)
+target_compile_definitions(zetta-refused-start-test PRIVATE
+  ZETTA_BINARY_PATH="$<TARGET_FILE:zetta>")
+add_dependencies(zetta-refused-start-test zetta)
+add_test(NAME zetta-refused-start-exit COMMAND zetta-refused-start-test)
+set_tests_properties(zetta-refused-start-exit PROPERTIES
+  TIMEOUT 30
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
