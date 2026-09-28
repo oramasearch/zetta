@@ -83,6 +83,11 @@ relay it to a person.
   and a registered ViT backbone. `run` reads that graph-owned table, refuses an
   unauthorized image before its bytes are read, and `get_run_report` returns
   source-disjoint accuracy, macro-F1, the confusion matrix, and prediction table.
+- **Bayesian uncertainty runs** (#1056):
+  M-17 is runnable: an agent can bind a landed table's entity, label, and group
+  roles in compile hints, run without repeating `dataset_path`, then read
+  empirical coverage, interval width, assumptions, and output tables through
+  `get_run_report`.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

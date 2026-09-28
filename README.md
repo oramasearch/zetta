@@ -90,12 +90,13 @@ What's inside, by domain (each links to that domain's docs):
   Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
   and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 through M-16 run today; the others name their implementation
-  issues. Intent compilation and run dispatch use
+  approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
   Every runnable methodology checks the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech preprocessing, bandit context, and optimization inputs.
+  M-21 adds event-time streaming learning and prequential reports.
+  M-20 adds evaluated Gaussian-copula tables and DP GBDT models.
   M-13 runs
   native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
   governed large-object reads.

@@ -8,7 +8,7 @@ the **correctness gate** (RULE-1: no deploy without a passing gate) before it is
 project/input/run entities, a compiler or language frontend, the gate, or deploy/execution;
 governance of who may run what is [../governance/](../governance/access-control.md).
 
-- [run-report.md](run-report.md) — what a run FOUND: facts assembled from the Model and result tables for M-1 risk, M-4 forecasts and M-7 anomalies (`get_run_report`, #958, #1043, #1046).
+- [run-report.md](run-report.md) — each methodology's run facts, assembled from Model metrics, lineage and output tables, including streaming prequential metrics.
 - [run-report-prompt.md](run-report-prompt.md) — the run report artifact and the prompt that writes it: the engine computes every number, the narrator may only arrange them (#948 step 4).
 - [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.
@@ -20,7 +20,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [datasets-shim.md](datasets-shim.md) — the sim-Python `load_dataset` shim: decode Parquet with the native reader into a (partitioned) table, IO behind the `DatasetResolver` interface (#521).
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type: per-check results, verdict, block-deploy.
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::pipeline::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
-- [gate-checks.md](gate-checks.md) — schema/type, data-leakage / point-in-time, M-4 temporal and baseline checks, and M-7 shape, label, budget, scaling and causal-window checks (#309, #1043, #1046).
+- [gate-checks.md](gate-checks.md) — shared schema/type and leakage checks, plus every runnable methodology's correctness profile, including uncertainty, gold isolation and privacy budgets and streaming event/label order.
 - [deployments.md](deployments.md) — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
 - [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4 / TC-3).
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::pipeline::SolutionCatalog`) + the headed Deploy panel: pick a blueprint, gate, deploy (FEAT-4 / SCR-5).

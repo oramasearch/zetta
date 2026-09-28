@@ -9,6 +9,7 @@
 #include "zetta/agent/end_state.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/pipeline/validation.hpp"
 
 using zetta::pipeline::CheckResult;
@@ -20,6 +21,7 @@ using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::GraphEdgeTimeCheck;
 using zetta::pipeline::LanguageGroundingCheck;
 using zetta::pipeline::LanguageTrainingAccessCheck;
+using zetta::pipeline::EnsembleOutOfFoldCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::SpeechConsentCheck;
@@ -653,7 +655,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 23u);
+    ASSERT_EQ(gate.check_count(), 28u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -676,7 +678,12 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
     EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
     EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
-    EXPECT_EQ(gate.checks()[22]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[22]->name(), "uncertainty_validation");
+    EXPECT_EQ(gate.checks()[23]->name(), "ensemble_out_of_fold");
+    EXPECT_EQ(gate.checks()[24]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[25]->name(), "privacy_budget");
+    EXPECT_EQ(gate.checks()[26]->name(), "streaming_correctness");
+    EXPECT_EQ(gate.checks()[27]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -829,6 +836,93 @@ TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
     EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
 }
 
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesWeakLabelsAsGold) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "label_efficiency"},
+             {"weak_labels_are_gold", true},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("never be treated as gold"),
+              std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesOverlappingGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "weak_supervision"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "overlapping"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("must be disjoint"), std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, AcceptsDisjointGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "active_learning"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesAMissingBudget) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+                   {{"model_kind", "synthetic_private"}}, "model");
+    const CheckResult result =
+        zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("epsilon"), std::string::npos);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesABudgetAboveItsMaximum) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 9.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", true}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesPublishingWithoutPrivacyEvaluation) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 4.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", false}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
     const ValidationReport report = zetta::pipeline::default_gate().run(clean_graph());
     EXPECT_TRUE(report.passed()) << report.checks.size();
@@ -881,21 +975,21 @@ TEST(MethodologyCheck, AnImplementedMethodologyPasses) {
     EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
 }
 
-TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
+TEST(MethodologyCheck, AnUnknownModelKindFailsAndSaysWhatToDo) {
     zetta::ir::ExecutionGraph graph;
     const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
     const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
-                                      nlohmann::json{{"model_kind", "online_learning"}});
+                                      nlohmann::json{{"model_kind", "unregistered_model_kind"}});
     graph.add_edge(connect->id, model->id);
 
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("Online / streaming learning (M-21)"),
+    EXPECT_NE(result.reason.find("unregistered_model_kind"),
               std::string::npos)
         << "the reason must name the methodology that was refused";
-    EXPECT_NE(result.reason.find("1060"), std::string::npos)
-        << "the reason must name the methodology's implementation issue";
+    EXPECT_NE(result.reason.find("Implemented today:"), std::string::npos);
+    EXPECT_NE(result.reason.find("#984"), std::string::npos);
 }
 
 TEST(MethodologyCheck, AModelStepWithNoMethodologyIsSkippedNotFailed) {
@@ -932,11 +1026,25 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
                   implemented.end()) << shipped;
     }
-    for (const char* unshipped :
-         {"online_learning"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " is not implemented; listing it here would make the check a lie";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bayesian"),
+              implemented.end())
+        << "M-17 Bayesian uncertainty ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "ensemble"),
+              implemented.end())
+        << "M-18 out-of-fold stacking ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end())
+        << "M-19 label efficiency ships today";
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        EXPECT_TRUE(methodology.runnable) << methodology.id;
+        for (const std::string& kind : methodology.model_kinds) {
+            EXPECT_NE(std::find(implemented.begin(), implemented.end(), kind),
+                      implemented.end()) << methodology.id << ": " << kind;
+        }
     }
+    EXPECT_EQ(std::find(implemented.begin(), implemented.end(), "unregistered_model_kind"),
+              implemented.end());
 }
 
 namespace {
@@ -948,6 +1056,17 @@ zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
                  std::move(attributes), "model");
   graph.add_edge("source", "model");
   return graph;
+}
+
+// --- UncertaintyValidationCheck (#1056, M-17) -------------------------------
+
+zetta::ir::ExecutionGraph uncertainty_graph(nlohmann::json attributes) {
+    zetta::ir::ExecutionGraph graph;
+    const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
+    const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
+                                      std::move(attributes));
+    graph.add_edge(connect->id, model->id);
+    return graph;
 }
 
 } // namespace
@@ -993,6 +1112,132 @@ TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
   EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
   EXPECT_NE(result.reason.find("solver status"), std::string::npos)
       << result.reason;
+}
+
+TEST(UncertaintyValidationCheck, MeasuredCoverageAndAssumptionPass) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(UncertaintyValidationCheck, UnmeasuredCoverageFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"exchangeability_assumption", "rows are exchangeable within group"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("coverage_checked"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, MissingExchangeabilityStatementFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "hierarchical"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exchangeability"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, OverlappingConformalCalibrationFails) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "bayesian"},
+         {"uncertainty_kind", "split_conformal_regression"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"},
+         {"calibration_disjoint", false}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("disjoint"), std::string::npos);
+}
+
+TEST(UncertaintyValidationCheck, UnknownUncertaintyShapeFailsForAnAlias) {
+    const auto graph = uncertainty_graph(
+        {{"model_kind", "probabilistic"},
+         {"uncertainty_kind", "unmeasured_guess"},
+         {"nominal_coverage", 0.9},
+         {"coverage_checked", true},
+         {"exchangeability_assumption", "rows are exchangeable"}});
+    const auto result =
+        zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("uncertainty_kind"), std::string::npos);
+}
+
+// --- EnsembleOutOfFoldCheck (#1057) -----------------------------------------
+
+namespace {
+
+ExecutionGraph ensemble_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    const auto source = graph.add_node(StepKind::Connect, "source");
+    const auto model =
+        graph.add_node(StepKind::Model, "ensemble", std::move(attributes));
+    graph.add_edge(source->id, model->id);
+    return graph;
+}
+
+}  // namespace
+
+TEST(EnsembleOutOfFoldCheck, CorrectProfilePasses) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "time_ordered"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(EnsembleOutOfFoldCheck, InSampleStackingFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "in_sample"},
+         {"folds", 5},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("out_of_fold"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TooFewFoldsFail) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 1},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("at least 2"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TimeDataWithContentFoldsFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "entity_hash"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("time_ordered"), std::string::npos);
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
@@ -1054,6 +1299,59 @@ TEST(TemporalValidationCheck, AModelWithNoMethodologyIsSkipped) {
     const auto graph = model_graph(nlohmann::json::object());
     EXPECT_EQ(zetta::pipeline::TemporalValidationCheck{}.evaluate(graph).status,
               zetta::pipeline::CheckStatus::Pass);
+}
+
+TEST(StreamingGraphCheck, CorrectEventTimeAndPrequentialPolicyPasses) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass)
+        << result.reason;
+}
+
+TEST(StreamingGraphCheck, RefusesAStreamingModelWithoutEventTimeOrdering) {
+    const auto graph = model_graph(
+        {{"model_kind", "streaming"},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", true}});
+    const auto result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("event_time_ordered"), std::string::npos);
+}
+
+TEST(StreamingGraphCheck, RefusesEarlyLabelsAndTrainThenTestMetrics) {
+    const auto early_label = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "use_on_arrival"},
+         {"prequential", true}});
+    const auto early_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(early_label);
+    EXPECT_EQ(early_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(early_result.reason.find("label_time_policy"), std::string::npos);
+
+    const auto train_then_test = model_graph(
+        {{"model_kind", "streaming"},
+         {"event_time_ordered", true},
+         {"allowed_lateness", 5.0},
+         {"future_event_policy", "buffer_until_watermark"},
+         {"label_time_policy", "not_before_event_time"},
+         {"prequential", false}});
+    const auto metric_result =
+        zetta::pipeline::StreamingCorrectnessCheck{}.evaluate(train_then_test);
+    EXPECT_EQ(metric_result.status, zetta::pipeline::CheckStatus::Fail);
+    EXPECT_NE(metric_result.reason.find("prequential"), std::string::npos);
 }
 
 // The two checks together are what the corpus's neighbouring-solution negative control needs:
@@ -1217,9 +1515,16 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
                   implemented.end()) << shipped;
     }
-    for (const char* unshipped :
-         {"online_learning"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " has no run path; listing it would make the gate a lie";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end());
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        EXPECT_TRUE(methodology.runnable) << methodology.id;
+        for (const std::string& kind : methodology.model_kinds) {
+            EXPECT_NE(std::find(implemented.begin(), implemented.end(), kind),
+                      implemented.end()) << methodology.id << ": " << kind;
+        }
     }
+    EXPECT_EQ(std::find(implemented.begin(), implemented.end(), "unregistered_model_kind"),
+              implemented.end());
 }

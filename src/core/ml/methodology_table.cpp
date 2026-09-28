@@ -25,6 +25,11 @@ Methodology make_m13_methodology();
 Methodology make_m14_methodology();
 Methodology make_m15_methodology();
 Methodology make_m16_methodology();
+Methodology make_m17_methodology();
+Methodology make_m18_methodology();
+Methodology make_m19_methodology();
+Methodology make_m20_methodology();
+Methodology make_m21_methodology();
 
 namespace {
 
@@ -93,46 +98,11 @@ const std::vector<Methodology>& methodologies() {
         make_m14_methodology(),
         make_m15_methodology(),
         make_m16_methodology(),
-        planned(
-            "M-17",
-            "Bayesian / probabilistic modeling & uncertainty quantification",
-            "The tabular decision core",
-            {"bayesian", "probabilistic", "uncertainty"}, {},
-            {"bayesian", "uncertainty", "credible interval", "probabilistic"},
-            {input("feature", true, "observations"),
-             input("group", false, "hierarchical group")},
-            {"posterior", "prediction intervals"},
-            {"coverage", "CRPS", "calibration"}, 1056),
-        planned("M-18", "Ensembling & stacking", "The tabular decision core",
-                {"ensemble", "ensembling", "stacking"}, {},
-                {"ensemble", "stack", "blend models"},
-                {input("feature", true, "base-model predictions"),
-                 input("label", true, "evaluation outcome")},
-                {"ensemble model", "blended predictions"},
-                {"delta over best model", "stability"}, 1057),
-        planned("M-19", "Label efficiency", "The data supply chain",
-                {"label_efficiency", "active_learning", "weak_supervision"}, {},
-                {"active learning", "weak supervision", "label efficiency"},
-                {input("feature", true, "unlabelled examples"),
-                 input("label", false, "gold labels")},
-                {"labels", "review queue", "label provenance"},
-                {"agreement", "cost per label", "downstream lift"}, 1058),
-        planned("M-20", "Privacy-preserving learning & synthetic data",
-                "The data supply chain",
-                {"privacy_preserving", "federated", "synthetic_data"}, {},
-                {"federated", "differential privacy", "synthetic data"},
-                {input("group", true, "data boundary or participant"),
-                 input("feature", true, "protected training data")},
-                {"private model", "synthetic dataset", "guarantee report"},
-                {"privacy budget", "TSTR", "attack success"}, 1059),
-        planned("M-21", "Online / streaming learning", "Time & vigilance",
-                {"online_learning", "streaming"}, {},
-                {"online learning", "streaming", "real time learning"},
-                {input("time", true, "event time"),
-                 input("feature", true, "event features"),
-                 input("label", false, "delayed outcome")},
-                {"online model", "streaming scores"},
-                {"prequential loss", "drift", "latency"}, 1060),
+        make_m17_methodology(),
+        make_m18_methodology(),
+        make_m19_methodology(),
+        make_m20_methodology(),
+        make_m21_methodology(),
     };
     return table;
 }

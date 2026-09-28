@@ -157,6 +157,45 @@ public:
     std::string name() const override {
         return "optimization_contract";
     }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class UncertaintyValidationCheck final : public Check {
+public:
+    std::string name() const override { return "uncertainty_validation"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-18 correctness profile (#1057): the meta-model may only learn from
+// out-of-fold predictions, bases must be refit over all non-holdout training
+// rows, and time-dependent folds must validate strictly forward in time.
+class EnsembleOutOfFoldCheck final : public Check {
+public:
+    std::string name() const override {
+        return "ensemble_out_of_fold";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-20 privacy-budget check (#1059): a synthetic_private model step must state
+// epsilon/delta and enforced maxima, must stay within those maxima, must state
+// public clipping bounds for the DP histogram sensitivity, and must require the
+// privacy evaluation that controls whether a synthetic table may be published.
+class PrivacyBudgetCheck final : public Check {
+public:
+    std::string name() const override { return "privacy_budget"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Streaming correctness check (#1060): M-21 must order work behind an
+// event-time watermark, reject negative lateness, withhold labels until their
+// own event time, and measure predictions before training on those labels.
+// These annotations are required on every streaming model step; runtime code
+// independently applies the same policy to each event.
+class StreamingCorrectnessCheck final : public Check {
+public:
+    std::string name() const override { return "streaming_correctness"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
@@ -259,6 +298,15 @@ public:
     std::string name() const override {
         return "bandit_policy";
     }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-19 must reserve its deterministic gold split for evaluation. A graph that
+// permits weak labels to become gold, or does not declare a disjoint split,
+// would report label-model quality against its own inferred targets.
+class LabelEfficiencyGoldIsolationCheck final : public Check {
+public:
+    std::string name() const override { return "label_efficiency_gold_isolation"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

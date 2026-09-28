@@ -85,22 +85,20 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 15;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, runnable);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  runnable);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), runnable);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), runnable);
-        if (!runnable && index > 0) {
-            EXPECT_EQ(methodologies[index].issue,
-                      "https://github.com/oramasearch/zetta/issues/" +
-                          std::to_string(1040 + index));
-        }
+        EXPECT_TRUE(methodologies[index].runnable);
+        EXPECT_FALSE(methodologies[index].partial);
+        EXPECT_TRUE(methodologies[index].build_shape);
+        EXPECT_TRUE(methodologies[index].owns);
+        EXPECT_TRUE(methodologies[index].run);
     }
     EXPECT_TRUE(methodologies.front().runnable);
+    EXPECT_TRUE(methodologies.back().runnable);
     EXPECT_FALSE(methodologies.front().partial);
     EXPECT_EQ(methodologies.front().id, "M-1");
+    EXPECT_TRUE(methodologies[19].runnable);
+    EXPECT_EQ(methodologies[19].model_kinds.front(), "synthetic_private");
+    EXPECT_TRUE(methodologies[16].runnable);
     EXPECT_TRUE(methodologies[15].runnable);
     EXPECT_EQ(methodologies[15].id, "M-16");
     EXPECT_TRUE(methodologies[14].runnable);
@@ -111,6 +109,18 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies[10].model_kinds.front(), "document_extraction");
     EXPECT_TRUE(methodologies[12].runnable);
     EXPECT_TRUE(methodologies[12].issue.empty());
+}
+
+TEST(MethodologyRegistry, UnavailableFixtureNamesItsTrackingIssue) {
+    zetta::ml::Methodology unavailable;
+    unavailable.id = "M-test";
+    unavailable.name = "Unimplemented test model";
+    unavailable.issue = "https://example.invalid/issues/test-model";
+    EXPECT_FALSE(unavailable.runnable);
+    const std::string message =
+        zetta::ml::unsupported_methodology_message(unavailable);
+    EXPECT_NE(message.find("Unimplemented test model (M-test)"), std::string::npos);
+    EXPECT_NE(message.find(unavailable.issue), std::string::npos);
 }
 
 TEST(MethodologyRegistry, VisionBuildsItsOwnRunnableShape) {
@@ -227,6 +237,12 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("streaming")->id, "M-21");
+    EXPECT_EQ(zetta::ml::find_methodology("synthetic_private")->id, "M-20");
+    EXPECT_EQ(zetta::ml::find_methodology("label-efficient-training")->id,
+              "M-19");
+    EXPECT_EQ(zetta::ml::find_methodology("stacking")->id, "M-18");
+    EXPECT_EQ(zetta::ml::find_methodology("bayesian")->id, "M-17");
     EXPECT_EQ(zetta::ml::find_methodology("S-4")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("optimization")->id, "M-16");
     EXPECT_EQ(zetta::ml::find_methodology("uplift")->id, "M-6");
@@ -300,6 +316,29 @@ TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
     ASSERT_NE(methodology, nullptr);
     EXPECT_EQ(methodology->id, "M-3");
     EXPECT_TRUE(methodology->runnable);
+
+    zetta::ir::ExecutionGraph bayesian;
+    bayesian.add_node(zetta::ir::StepKind::Connect, "source", {}, "bayes-source");
+    bayesian.add_node(zetta::ir::StepKind::Model, "posterior",
+                      nlohmann::json{{"model_kind", "bayesian"}},
+                      "posterior");
+    bayesian.add_edge("bayes-source", "posterior");
+    methodology = zetta::ml::methodology_for_graph(bayesian);
+    ASSERT_NE(methodology, nullptr);
+    EXPECT_EQ(methodology->id, "M-17");
+    EXPECT_TRUE(methodology->runnable);
+
+    zetta::ir::ExecutionGraph ensemble;
+    ensemble.add_node(zetta::ir::StepKind::Connect, "source", {}, "ensemble-source");
+    ensemble.add_node(zetta::ir::StepKind::Model, "stack",
+                      nlohmann::json{{"model_kind", "ensemble"}},
+                      "ensemble-model");
+    ensemble.add_edge("ensemble-source", "ensemble-model");
+    const zetta::ml::Methodology* ensemble_methodology =
+        zetta::ml::methodology_for_graph(ensemble);
+    ASSERT_NE(ensemble_methodology, nullptr);
+    EXPECT_EQ(ensemble_methodology->id, "M-18");
+    EXPECT_TRUE(ensemble_methodology->runnable);
 
     zetta::ir::ExecutionGraph unknown;
     unknown.add_node(zetta::ir::StepKind::Model, "unknown model",

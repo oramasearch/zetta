@@ -48,6 +48,7 @@
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/node.hpp"
@@ -567,11 +568,6 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "graph runs: component sizes, degree distribution, PageRank top "
              "nodes, edge cutoff counts, and held-out node-task accuracy"}}},
-          {"outputs",
-           {{"type", "array"},
-            {"description",
-             "language methodology output table names and fully qualified refs; "
-             "absent for tabular reports"}}},
           {"metrics",
            {{"type", "object"},
             {"description", "bandit reward, regret, exploration, and row metrics"}}},
@@ -581,6 +577,11 @@ const nlohmann::json& get_run_report_output_schema() {
           {"decisions_table",
            {{"type", "string"},
             {"description", "bandit propensity-log table reference"}}},
+          {"uncertainty",
+           {{"type", "object"},
+            {"description",
+             "M-17 nominal and empirical coverage, interval width, hold-out row "
+             "count, and the exchangeability assumption"}}},
           {"drivers",
            {{"type", "array"},
             {"description",
@@ -589,7 +590,8 @@ const nlohmann::json& get_run_report_output_schema() {
           {"outputs",
            {{"oneOf", {{{"type", "array"}}, {{"type", "object"}}}},
             {"description",
-             "forecast/recommendation output references, or survival and interval-calibration table references"}}},
+             "forecast, recommendation, language, privacy and streaming output references; "
+             "survival uses an object of horizon and interval-calibration table references"}}},
           {"forecast",
            {{"type", "array"},
             {"description",
@@ -600,11 +602,22 @@ const nlohmann::json& get_run_report_output_schema() {
            {{"type", "string"},
             {"description", "whether the forecast beat seasonal-naive in "
                             "rolling-origin backtests"}}},
+          {"meta_model_weights",
+           {{"type", "array"},
+            {"description",
+             "M-18 base-model weights in the regularized logistic stacker"}}},
+          {"privacy",
+           {{"type", "object"},
+            {"description",
+             "M-20 fidelity, DCR, membership, TSTR, and epsilon/delta spend"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"topics",
+           {{"type", "object"},
+            {"description", "streaming input and score-output topic addresses"}}},
           {"transcripts",
            {{"type", "array"},
             {"description",
@@ -1036,6 +1049,222 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "streaming") {
+        nlohmann::json model_facts = {
+            {"id", model->id()}, {"name", model->name()}, {"kind", model->kind()}};
+        for (const auto& [key, value] : metrics.items()) {
+            if (value.is_number()) {
+                model_facts[key] = value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        nlohmann::json topics = nlohmann::json::object();
+        const nlohmann::json& feature_schema = model->feature_schema();
+        if (feature_schema.is_object()) {
+            if (const auto found = feature_schema.find("event_features");
+                found != feature_schema.end()) {
+                dataset["features"] = *found;
+            }
+            if (const auto found = feature_schema.find("entity_column");
+                found != feature_schema.end()) {
+                dataset["entity_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("time_column");
+                found != feature_schema.end()) {
+                dataset["time_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("label_column");
+                found != feature_schema.end()) {
+                dataset["label_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("input_topic");
+                found != feature_schema.end()) {
+                topics["input"] = *found;
+            }
+            if (const auto found = feature_schema.find("output_topic");
+                found != feature_schema.end()) {
+                topics["scores"] = *found;
+            }
+        }
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(18));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        report["dataset"] = std::move(dataset);
+        if (!topics.empty()) {
+            report["topics"] = std::move(topics);
+        }
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            outputs.push_back({{"kind", output.kind},
+                               {"name", output.name},
+                               {"ref", output.ref}});
+        }
+        report["outputs"] = std::move(outputs);
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "synthetic_private") {
+        report["model"] = {{"id", model->id()},
+                           {"name", model->name()},
+                           {"kind", model->kind()}};
+        nlohmann::json privacy = nlohmann::json::object();
+        for (const char* key :
+             {"marginal_distance", "correlation_distance",
+              "distance_to_closest_record", "membership_auc", "tstr_auc",
+              "epsilon_spent", "delta_spent", "privacy_mechanisms",
+              "privacy_evaluation_passed"}) {
+            if (const auto value = number(key)) {
+                privacy[key] = *value;
+            }
+        }
+        report["privacy"] = std::move(privacy);
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            outputs.push_back({{"kind", output.kind},
+                               {"name", output.name},
+                               {"ref", output.ref}});
+        }
+        report["outputs"] = std::move(outputs);
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(18));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "label_efficiency") {
+        report["model"] = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"kind", model->kind()},
+            {"metrics", metrics},
+            {"labelling_functions",
+             model->feature_schema().value("labelling_functions",
+                                           nlohmann::json::array())},
+        };
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const auto gold = number("gold_rows")) {
+            dataset["excluded_gold_rows"] = *gold;
+        }
+        nlohmann::json not_used = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                not_used.push_back(log.message.substr(9));
+            }
+        }
+        if (!not_used.empty()) {
+            dataset["not_used"] = std::move(not_used);
+        }
+        report["dataset"] = std::move(dataset);
+        nlohmann::json tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                tables.push_back(
+                    {{"name", output.name}, {"table", output.ref}});
+            }
+        }
+        report["output_tables"] = std::move(tables);
+        report["correctness"] = {
+            {"weak_labels_are_gold", false},
+            {"gold_split", "disjoint"},
+        };
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "bayesian") {
+        nlohmann::json model_facts = {
+            {"id", model->id()}, {"name", model->name()}, {"kind", model->kind()}};
+        for (const auto& [name, value] : metrics.items()) {
+            if (value.is_number()) {
+                model_facts[name] = value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            dataset["not_used"] = std::move(notes);
+        }
+        if (const std::optional<double> excluded = number("excluded_rows")) {
+            dataset["excluded_rows"] = *excluded;
+        }
+        report["dataset"] = std::move(dataset);
+
+        nlohmann::json uncertainty = {
+            {"assumption",
+             "coverage interpretation assumes exchangeable observations within "
+             "the declared groups"}};
+        if (const std::optional<double> nominal = number("nominal_coverage")) {
+            uncertainty["nominal_coverage"] = *nominal;
+        }
+        if (const std::optional<double> empirical =
+                number("empirical_coverage")) {
+            uncertainty["empirical_coverage"] = *empirical;
+        }
+        if (const std::optional<double> width =
+                number("mean_interval_width")) {
+            uncertainty["mean_interval_width"] = *width;
+        }
+        if (const std::optional<double> rows = number("held_out_rows")) {
+            uncertainty["held_out_rows"] = *rows;
+        }
+        report["uncertainty"] = std::move(uncertainty);
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                output_tables.push_back(
+                    {{"name", output.name}, {"ref", output.ref}});
+            }
+        }
+        report["output_tables"] = std::move(output_tables);
+        return ApiResult::success(std::move(report));
+    }
+
 
     if (model->kind() == "optimization") {
         nlohmann::json model_facts = {
@@ -1487,6 +1716,22 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
         if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
         else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
         if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+        else if (const auto value = number("train_rows")) {
+            model_facts["train_rows"] = *value;
+        }
+    }
+    if (const auto value = number("oof_auc")) model_facts["oof_auc"] = *value;
+    if (const auto value = number("oof_log_loss")) model_facts["oof_log_loss"] = *value;
+    if (const auto value = number("oof_accuracy")) model_facts["oof_accuracy"] = *value;
+    if (const auto value = number("oof_rows")) model_facts["oof_rows"] = *value;
+    if (const auto value = number("best_single_held_out_auc")) {
+        model_facts["best_single_held_out_auc"] = *value;
+    }
+    if (const auto value = number("held_out_auc_lift_over_best_single")) {
+        model_facts["held_out_auc_lift_over_best_single"] = *value;
+    }
+    if (const auto value = number("meta_model_intercept")) {
+        model_facts["meta_model_intercept"] = *value;
     }
     report["model"] = std::move(model_facts);
 
@@ -1508,6 +1753,11 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
     for (const zetta::ml::ModelDriver& driver : model->drivers()) {
         drivers.push_back({{"feature", driver.feature}, {"weight", driver.importance}});
         features.push_back(driver.feature);
+    }
+    if (model->kind() == "ensemble" &&
+        model->feature_schema().contains("features") &&
+        model->feature_schema().at("features").is_array()) {
+        features = model->feature_schema().at("features");
     }
     if (!features.empty()) dataset["features"] = std::move(features);
     if (ranking) {
@@ -1539,7 +1789,22 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
                            {"why", "this run's model records no dataset facts; it "
                                    "predates them being written (#958)"}});
     }
-    if (!drivers.empty()) report["drivers"] = std::move(drivers);
+    if (!drivers.empty()) {
+        if (model->kind() == "ensemble") {
+            report["meta_model_weights"] = drivers;
+        }
+        report["drivers"] = std::move(drivers);
+    }
+
+    nlohmann::json output_tables = nlohmann::json::array();
+    for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+        if (output.kind == "dataset" && output.ref.contains('.')) {
+            output_tables.push_back(output.ref);
+        }
+    }
+    if (!output_tables.empty()) {
+        report["output_tables"] = std::move(output_tables);
+    }
 
     if (is_survival) {
         nlohmann::json outputs = nlohmann::json::object();
@@ -1565,7 +1830,9 @@ ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) 
     if (is_survival) {
         // Survival runs expose their horizon tables above, not a churn ranking.
     } else if (const std::shared_ptr<zetta::data::Table> table =
-            run_result_table(context.node, *run)) {
+            model->kind() == "ensemble"
+                ? run_named_table(context.node, *run, "blended scores")
+                : run_result_table(context.node, *run)) {
         std::vector<nlohmann::json> rows;
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t index = 0; index < store.size(); ++index) {
@@ -4025,6 +4292,51 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
 
 // --- run (kind: job — THE canonical runner, #637) ---------------------------------
 
+const nlohmann::json& label_efficiency_run_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"properties",
+         {{"queue_size", {{"type", "integer"}, {"minimum", 1}}},
+          {"initial_labels", {{"type", "integer"}, {"minimum", 1}}},
+          {"gold_fraction",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"exclusiveMaximum", 1}}},
+          {"seed", {{"type", "integer"}, {"minimum", 0}}},
+          {"uncertainty",
+           {{"type", "string"}, {"enum", {"margin", "entropy"}}}},
+          {"diversity_weight",
+           {{"type", "number"}, {"minimum", 0}, {"maximum", 1}}},
+          {"logistic_iterations",
+           {{"type", "integer"}, {"minimum", 1}}},
+          {"logistic_learning_rate",
+           {{"type", "number"}, {"exclusiveMinimum", 0}}},
+          {"label_model_iterations",
+           {{"type", "integer"}, {"minimum", 1}}},
+          {"labelling_functions",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "column", "value", "label"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"name", {{"type", "string"}, {"minLength", 1}}},
+                {"column", {{"type", "string"}, {"minLength", 1}}},
+                {"operator",
+                 {{"type", "string"},
+                  {"enum",
+                   {"less", "less_equal", "greater", "greater_equal",
+                    "equal"}}}},
+                {"value", {{"type", "number"}}},
+                {"label", {{"type", "integer"}, {"enum", {0, 1}}}},
+                {"otherwise_label",
+                 {{"type", {"integer", "null"}},
+                  {"enum", {0, 1, nullptr}}}}}}}}}}}}};
+    return schema;
+}
+
 const nlohmann::json& run_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -4080,7 +4392,8 @@ const nlohmann::json& run_schema() {
           {"seed",
            {{"type", "integer"},
             {"minimum", 0},
-            {"description", "deterministic seed for document and bandit runs"}}},
+            {"description", "deterministic seed for document, bandit, Bayesian, and privacy runs"}}},
+          {"streaming", zetta::ml::streaming_params_schema()},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},
@@ -4159,11 +4472,59 @@ const nlohmann::json& run_schema() {
             {"minimum", 0},
             {"description",
              "M-10 only: non-negative regularization for the linear classifier head"}}},
+          {"group_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-17 hierarchical group column"}}},
+          {"nominal_coverage",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"exclusiveMaximum", 1},
+            {"description", "M-17 requested interval coverage"}}},
+          {"burn_in",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-17 Gibbs draws discarded before measurement"}}},
+          {"posterior_draws",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-17 retained Gibbs draws"}}},
+          {"epsilon",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"description", "M-20 total differential-privacy epsilon"}}},
+          {"delta",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description", "M-20 total differential-privacy delta"}}},
+          {"noise",
+           {{"type", "string"},
+            {"enum", {"gaussian", "laplace"}},
+            {"description", "M-20 DP histogram mechanism"}}},
+          {"clip_min",
+           {{"type", "number"},
+            {"description", "M-20 public lower feature bound"}}},
+          {"clip_max",
+           {{"type", "number"},
+            {"description", "M-20 public upper feature bound"}}},
+          {"synthetic_rows",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 synthetic row count (default: source rows)"}}},
+          {"num_trees",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 DP GBDT tree count"}}},
+          {"max_depth",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-20 DP GBDT maximum depth"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
                             "true; false is only correct on a single-member "
                             "cluster)"}}},
+          {"label_efficiency", label_efficiency_run_schema()},
           {"treatment_column",
            {{"type", "string"},
             {"minLength", 1},
@@ -4269,7 +4630,10 @@ const nlohmann::json& run_output_schema() {
           {"constraint_table",
            {{"type", "string"},
             {"description",
-             "M-16 independent constraint verification table"}}}}}};
+             "M-16 independent constraint verification table"}}},
+          {"output_table",
+           {{"type", "string"},
+            {"description", "M-17 posterior estimate table"}}}}}};
     return schema;
 }
 

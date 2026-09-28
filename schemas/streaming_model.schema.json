@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "bias": {
+      "type": "number"
+    },
+    "feature_names": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "kind": {
+      "const": "online_logistic_regression"
+    },
+    "seed": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "version": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "weights": {
+      "items": {
+        "type": "number"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "kind",
+    "feature_names",
+    "weights",
+    "bias",
+    "version",
+    "seed"
+  ],
+  "title": "zetta.OnlineLogisticModel",
+  "type": "object"
+}

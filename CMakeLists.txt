@@ -555,6 +555,10 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_provider.cpp
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
+  src/core/ml/ensemble.cpp
+  src/core/ml/ensemble_methodology.cpp
+  src/core/ml/ensemble_runner.cpp
+  src/core/ml/ensemble_train_job.cpp
   src/core/ml/methodology.cpp
   src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp
@@ -574,6 +578,15 @@ add_library(zetta-core STATIC
   src/core/ml/speech_methodology.cpp
   src/core/ml/bandit_methodology.cpp
   src/core/ml/optimization.cpp
+  src/core/ml/bayesian.cpp
+  src/core/ml/bayesian_methodology.cpp
+  src/core/ml/label_efficiency.cpp
+  src/core/ml/label_efficiency_methodology.cpp
+  src/core/ml/label_efficiency_runner.cpp
+  src/core/ml/synthetic_private.cpp
+  src/core/ml/synthetic_private_methodology.cpp
+  src/core/ml/synthetic_private_job.cpp
+  src/core/ml/streaming_methodology.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp
@@ -697,6 +710,7 @@ add_library(zetta-core STATIC
   src/core/ml/bandit.cpp
   src/core/ml/bandit_train_job.cpp
   src/core/ml/bandit_runner.cpp
+  src/core/ml/streaming.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/anomaly.cpp

@@ -12,6 +12,7 @@ include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
 src/core/ml/survival_methodology.cpp          M-5 shape callback
 src/core/ml/methodology_optimization.cpp      M-16 shape and run callbacks
+src/core/ml/ensemble_methodology.cpp          M-18 shape callback
 ```
 
 ## Resolution order
@@ -106,6 +107,20 @@ The model step carries `model_kind: "optimization"` plus the scenario-input,
 independent-verification, and status-reporting contract flags required by the
 correctness gate. The connect step's `source` and `table` are the default run
 dataset; callers can override them with `dataset_path`.
+## M-18 ensemble shape
+
+M-18 builds its own four-stage pipeline from the compile hints:
+
+```
+load_ensemble_table -> prepare_ensemble_inputs -> train_ensemble -> write_ensemble_outputs
+       connect                 clean                  model                serve
+```
+
+The connect step keeps the supplied `source` and `table`. The model step records
+the entity, label, feature, and optional time columns plus `out_of_fold`, fold
+strategy, and full-training base refit attributes. The graph therefore carries
+the facts the M-18 gate check and runner enforce. Explicit M-18 selection,
+and registered ensemble keywords select this shape. S-10 stays with M-1.
 
 ## Stored intent bridge
 
@@ -121,7 +136,7 @@ introduces no new stored graph format.
 
 ## Extending the compiler
 
-A later methodology supplies `build_shape` on its registry entry. The compiler
+A methodology supplies `build_shape` on its registry entry. The compiler
 does not need another methodology-specific branch. See
 [methodologies.md](../ml/methodologies.md) for the full callback contract and
 extension checklist.
