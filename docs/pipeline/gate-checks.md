@@ -2,7 +2,7 @@
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
@@ -20,6 +20,15 @@ none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
 
 ## How a check reads a step
+
+The default gate also registers `AnomalyGraphCheck` (`anomaly_correctness`,
+`src/core/ml/anomaly_plan.cpp`, #1046). It engages on M-7 model kinds and validates
+the complete executable shape. Missing or ambiguous alert policies, training on
+evaluation labels, role/feature overlap, non-robust scaling, future-fitting KPI
+settings, missing time roles, invalid bounds, grouping, and unsupported operations
+or data flow are hard refusals. Each refusal has a regression in
+`tests/ml/test_anomaly_methodology.cpp`; the same validator checks run overrides
+before a Run is created. See [M-7 correctness rules](../ml/anomaly.md#correctness-rules-enforced-in-code).
 
 A graph node's `attributes` bag (`zetta::ir::Node::attributes`,
 [execution-graph.md](execution-graph.md)) is free-form JSON. These checks read a
@@ -145,11 +154,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks sit on the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
 result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+checks to land on the same interface.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report

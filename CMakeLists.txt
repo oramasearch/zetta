@@ -354,7 +354,7 @@ endif()
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
-# The zetta::compute ComputeDevice seam (ADR-27 / ARC-9) and its backends live in
+# The zetta::compute ComputeDevice interface (ADR-27 / ARC-9) and its backends live in
 # their own static library, linked into zetta-core like any other adapter. This is
 # where the optional CUDA backend lands: CUDA headers + kernels stay inside this
 # target's .cu translation unit and never reach zetta-core — the same discipline
@@ -658,6 +658,8 @@ add_library(zetta-core STATIC
   src/core/ml/anomaly.cpp
   src/core/ml/anomaly_job.cpp
   src/core/ml/anomaly_table.cpp
+  src/core/ml/anomaly_plan.cpp
+  src/core/ml/anomaly_methodology.cpp
   src/core/ml/lag_features.cpp
   src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp
@@ -793,7 +795,7 @@ target_include_directories(zetta-core PUBLIC
 
 # PUBLIC: zetta::Node's interface exposes nlohmann::json (add_object) and the
 # storage headers include it, so consumers (the GUI) get it transitively.
-# Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
+# Boost::capy backs the zetta::runtime async interface (include/zetta/runtime.hpp), also PUBLIC.
 # zetta-compute houses the zetta::compute ComputeDevice backends (its public
 # headers live in include/zetta/compute and are part of zetta-core's surface);
 # PUBLIC so consumers linking zetta-core get the backend symbols + the optional

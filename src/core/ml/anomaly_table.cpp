@@ -71,10 +71,21 @@ std::optional<double> numeric_value(const nlohmann::json &row,
 
 std::optional<std::int64_t> integer_value(const nlohmann::json &row,
                                           const std::string &column) {
+  const auto found = row.find(column);
+  if (found != row.end() && found->is_number_integer()) {
+    if (found->is_number_unsigned() &&
+        found->get<std::uint64_t>() >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+      return std::nullopt;
+    }
+    return found->get<std::int64_t>();
+  }
   const std::optional<double> value = numeric_value(row, column);
   if (!value || !std::isfinite(*value) || std::trunc(*value) != *value ||
       *value < static_cast<double>(std::numeric_limits<std::int64_t>::min()) ||
-      *value > static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+      *value >=
+          -static_cast<double>(std::numeric_limits<std::int64_t>::min())) {
     return std::nullopt;
   }
   return static_cast<std::int64_t>(*value);
@@ -181,6 +192,9 @@ TableInput load_table_input(Node &node, const data::ResolvedDataset &dataset,
           "anomaly table: partition '" + partition->id() + "' has no owner";
       return input;
     }
+    if (partition->row_range().start == partition->row_range().end) {
+      continue;
+    }
     input.global_partition_ids.push_back(partition->id());
     if (owners.front() != node.node_id()) {
       continue;
@@ -199,6 +213,8 @@ TableInput load_table_input(Node &node, const data::ResolvedDataset &dataset,
     }
     input.local_partitions.push_back(std::move(local));
   }
+  std::sort(input.global_partition_ids.begin(),
+            input.global_partition_ids.end());
   return input;
 }
 
@@ -281,9 +297,11 @@ void materialize_outputs(Node &node, const data::ResolvedDataset &dataset,
                          const AnomalyParams &params, pipeline::Run *run,
                          DistributedAnomalyResult &distributed,
                          AnomalyTableResult &result,
-                         const compute::ComputeJob &job) {
+                         const compute::ComputeJob &job,
+                         const std::string &model_name) {
   ModelValue model_value;
-  model_value.name = "anomaly-" + dataset.table;
+  model_value.name =
+      model_name.empty() ? "anomaly-" + dataset.table : model_name;
   model_value.kind = "anomaly";
   model_value.project = job.project();
   model_value.run = run == nullptr ? std::string{} : run->id();
@@ -291,6 +309,15 @@ void materialize_outputs(Node &node, const data::ResolvedDataset &dataset,
       {"mode", mode_name(params.mode)},
       {"features", dataset.contract.feature_columns},
       {"time_column", dataset.contract.time_column},
+      {"dataset",
+       {{"source", dataset.database + "." + dataset.table},
+        {"rows_read", distributed.report.rows_scored},
+        {"rows_excluded", 0},
+        {"features", dataset.contract.feature_columns},
+        {"entity_column", dataset.contract.entity_column},
+        {"label_column", dataset.contract.label_column},
+        {"time_column", dataset.contract.time_column},
+        {"not_used", dataset.notes}}},
       {"drivers", ranked_driver_json(distributed.records,
                                      dataset.contract.feature_columns)}};
   model_value.metrics = {{"threshold", distributed.report.threshold},
@@ -423,7 +450,8 @@ AnomalyTableResult run_anomaly_on_table(Node &node,
                                         const data::ResolvedDataset &dataset,
                                         const AnomalyParams &params,
                                         pipeline::Run *run,
-                                        std::chrono::milliseconds timeout) {
+                                        std::chrono::milliseconds timeout,
+                                        const AnomalyTableOptions &options) {
   AnomalyTableResult result;
   if (!dataset.ok()) {
     result.error = "anomaly table: unresolved dataset: " + dataset.error;
@@ -440,6 +468,15 @@ AnomalyTableResult run_anomaly_on_table(Node &node,
     return result;
   }
   compute::JobCoordinator *coordinator = node.job_coordinator();
+  for (const std::string &feature : dataset.contract.feature_columns) {
+    if (feature == dataset.contract.label_column ||
+        feature == dataset.contract.entity_column ||
+        feature == dataset.contract.time_column) {
+      result.error = "anomaly table: feature '" + feature +
+                     "' overlaps an evaluation, entity, or time role";
+      return result;
+    }
+  }
   if (coordinator == nullptr) {
     result.error = "anomaly table: no compute plane is attached to this node";
     return result;
@@ -466,7 +503,9 @@ AnomalyTableResult run_anomaly_on_table(Node &node,
   DistributedAnomalyResult distributed = run_anomaly_job(
       *coordinator, *job, input.local_partitions, input.global_partition_ids,
       dataset.contract.feature_columns, params,
-      "ml.anomaly:" + dataset.table_id, timeout);
+      options.round_tag.empty() ? "ml.anomaly:" + dataset.table_id
+                                : options.round_tag,
+      timeout);
   result.status = distributed.status;
   result.records = distributed.records;
   result.report = distributed.report;
@@ -474,10 +513,11 @@ AnomalyTableResult run_anomaly_on_table(Node &node,
     result.error = job->detail();
     return result;
   }
-  if (distributed.is_root) {
+  if (options.write_outputs &&
+      (options.materialize_on_caller || distributed.is_root)) {
     node.run_on_owner([&] {
-      materialize_outputs(node, dataset, params, run, distributed, result,
-                          *job);
+      materialize_outputs(node, dataset, params, run, distributed, result, *job,
+                          options.model_name);
     });
   }
   return result;

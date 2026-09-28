@@ -175,7 +175,12 @@ bool decode_global_result(const std::vector<double> &wire,
     return false;
   }
   records = std::move(*decoded);
-  return records.size() == report.rows_scored;
+  if (records.size() != report.rows_scored) {
+    return false;
+  }
+  const AnomalyThresholdPolicy policy{report.contamination,
+                                      report.alert_budget};
+  return apply_anomaly_threshold(records, policy, report).ok();
 }
 
 AnomalyScoreResult

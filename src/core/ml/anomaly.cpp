@@ -545,10 +545,12 @@ std::vector<double> causal_metric_deviations(const std::vector<double> &periods,
     }
     const double center = median(history);
     const double mad = median_absolute_deviation(history, center);
-    double magnitude = 0.0;
+    std::vector<double> magnitudes;
+    magnitudes.reserve(history.size());
     for (const double value : history) {
-      magnitude = std::max(magnitude, std::abs(value));
+      magnitudes.push_back(std::abs(value));
     }
+    const double magnitude = median(std::move(magnitudes));
     const double scale =
         std::max(kMadConsistency * mad, std::max(1e-9, magnitude * 1e-9));
     deviations[index] = std::abs(residuals[index] - center) / scale;
@@ -741,6 +743,11 @@ score_kpi_anomalies(const std::vector<double> &periods,
   }
 
   std::vector<std::size_t> order(periods.size());
+  if (std::ranges::any_of(
+          periods, [](double period) { return !std::isfinite(period); })) {
+    result.status = invalid("KPI periods must be finite");
+    return result;
+  }
   std::iota(order.begin(), order.end(), 0);
   std::stable_sort(order.begin(), order.end(),
                    [&](std::size_t left, std::size_t right) {
@@ -751,6 +758,12 @@ score_kpi_anomalies(const std::vector<double> &periods,
       columns.size(), std::vector<double>(periods.size()));
   for (std::size_t position = 0; position < order.size(); ++position) {
     sorted_periods[position] = periods[order[position]];
+    if (position > 0 &&
+        sorted_periods[position] == sorted_periods[position - 1]) {
+      result.status = invalid(
+          "KPI periods must be unique; aggregate duplicate periods first");
+      return result;
+    }
     if (!std::isfinite(sorted_periods[position])) {
       result.status = invalid("KPI periods must be finite");
       return result;
@@ -854,6 +867,7 @@ apply_anomaly_threshold(std::vector<AnomalyRecord> &records,
   report.flagged = budget;
   report.alert_rate =
       static_cast<double>(budget) / static_cast<double>(records.size());
+  report.precision_at_k.reset();
   if (has_labels) {
     report.precision_at_k =
         static_cast<double>(true_positives) / static_cast<double>(budget);

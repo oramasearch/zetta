@@ -1,7 +1,7 @@
 # ML docs
 
 The native ML engine — the "learns from your data" differentiator, re-implemented from scratch as
-distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) seams (no
+distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) interfaces (no
 Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
@@ -9,7 +9,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
-- [anomaly.md](anomaly.md) — label-free tabular isolation forest + robust deviations and causal KPI residual scoring; exact governed alert budgets, queryable outputs, and distributed partition equivalence (`run_anomaly_on_table`, #1046).
+- [anomaly.md](anomaly.md) — runnable M-7/S-7: label-free distributed isolation forest + robust deviations and causal KPI residual scoring; exact alert budgets, correctness gates, table lineage, and registry run reports (#1046).
 - [held-out-metrics.md](held-out-metrics.md) — hold rows OUT of training and measure the model on them: what `in_sample` vs `held_out` mean, the sharding-invariant split, and why both ride one collective (`holdout_fraction`, #953).
 - [calibration.md](calibration.md) — probability calibration: Platt + isotonic fit on a held-out split, attached to the `GbdtModel` (Brier/ECE improve, AUC preserved) (`Calibrator`, #391).
 - [gbdt-score.md](gbdt-score.md) — batch scoring / rank-at-risk: calibrated risk per entity, ranked into an at-risk list, SPMD with a device `sort_by_key` rank (`score_gbdt`, #392).
@@ -33,7 +33,7 @@ carry `*`. Regenerate it with
 | M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecasts, prediction intervals | MAE, RMSE, WAPE, forecast value added | not runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
 | M-5 | Survival / time-to-event | The tabular decision core | survival, time_to_event | S-8 | entity*, time*, label* | risk curves, expected time to event | concordance, time-dependent AUC, IPCW Brier | not runnable | [#1044](https://github.com/oramasearch/zetta/issues/1044) |
 | M-6 | Causal inference & uplift | Action & decision | causal, uplift | — | entity*, treatment*, label* | treatment effects, targeting policy | uplift, Qini, policy value | not runnable | [#1045](https://github.com/oramasearch/zetta/issues/1045) |
-| M-7 | Anomaly detection | Time & vigilance | anomaly, anomaly_detection, outlier | S-7 | time, feature* | anomaly scores, alerts | precision, recall, false alerts | not runnable | [#1046](https://github.com/oramasearch/zetta/issues/1046) |
+| M-7 | Anomaly detection | Time & vigilance | anomaly, anomaly_detection, outlier | S-7 | feature*, entity, label, time | anomaly table, budget report, model, lineage | threshold, contamination, alert_budget, alert_rate, precision_at_k | runnable | [#1046](https://github.com/oramasearch/zetta/issues/1046) |
 | M-8 | Recommendation / next-best-action | Action & decision | recommendation, recommender, next_best_action | S-11 | entity*, treatment*, label | ranked actions, recommendations | NDCG, recall at k, policy value | not runnable | [#1047](https://github.com/oramasearch/zetta/issues/1047) |
 | M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | S-12 | entity*, group, label* | ranked list, priority scores | NDCG, precision at k, queue yield | not runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |

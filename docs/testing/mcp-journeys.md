@@ -71,11 +71,19 @@ and segmentation keywords, rejects an unmatched non-predictive intent, refuses
 a segmentation model at run time, and reads back `methodology` plus `runnable`
 from both graph and project views (#1061).
 
+The M-7 journey lands a label-free table, creates and reads back a project,
+captures intent, compiles the anomaly methodology, runs without a dataset
+override, waits for completion, and verifies report metrics, exact alert count,
+ranked findings, excluded columns, output tables, and lineage. It also compiles
+S-7 and refuses label/feature overrides before starting a Run (#1046).
+`AnomalyMethodology.OneRegistryRunLaunchesOwnedPartitionsOnBothMembers` adds a
+real two-member registry run to prove coordinated launch and primary ownership.
+
 ## Rules
 
 - Journeys run against **real engine state** (temp data_dir, loopback
   cluster) — no mocks of zetta itself; fakes only at the CommandRunner-style
-  outer seams (cloud CLIs).
+  outer boundaries (cloud CLIs).
 - Multi-node journeys follow the patient-convergence rule (poll with a
   deadline, never a fixed count).
 - Every new capability lands with at least one journey step exercising it

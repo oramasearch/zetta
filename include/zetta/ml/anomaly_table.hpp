@@ -35,13 +35,21 @@ struct AnomalyTableResult {
   }
 };
 
+struct AnomalyTableOptions {
+  std::string round_tag;
+  std::string model_name;
+  bool write_outputs = true;
+  bool materialize_on_caller = false;
+};
+
 // Run concurrently on each cluster participant for tabular mode. The primary
 // owner of each catalog partition supplies that partition's tree subsamples;
 // only the deterministic collective root materializes the replicated outputs.
 // A single-member call is the complete KPI path in phase A.
-AnomalyTableResult run_anomaly_on_table(
-    Node &node, const data::ResolvedDataset &dataset,
-    const AnomalyParams &params, pipeline::Run *run = nullptr,
-    std::chrono::milliseconds timeout = kDefaultAnomalyTimeout);
+AnomalyTableResult
+run_anomaly_on_table(Node &node, const data::ResolvedDataset &dataset,
+                     const AnomalyParams &params, pipeline::Run *run = nullptr,
+                     std::chrono::milliseconds timeout = kDefaultAnomalyTimeout,
+                     const AnomalyTableOptions &options = {});
 
 } // namespace zetta::ml

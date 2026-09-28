@@ -5,13 +5,14 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
-#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/usecases/churn/churn_solution.hpp"
-#include "zetta/pipeline/executor.hpp"
-#include "zetta/pipeline/gate.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #endif
@@ -539,6 +540,7 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
@@ -1100,7 +1102,7 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::Execut
     if (graph.empty()) return nullptr;
 
     // RULE-1: no deploy without a passing correctness gate. The gate runs at the
-    // deploy seam itself — so a *programmatic* deploy clears the same gate the GUI
+    // deploy interface itself — so a *programmatic* deploy clears the same gate the GUI
     // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
     // failure is a governed decision: record a blocked (allowed=false) deploy event
     // and place nothing.
@@ -3897,7 +3899,7 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     // ignored, not trusted), then drop / add / update the local projection to
     // match — with no re-capture. apply_value updates only the metadata; the
     // serialized weights body is NOT in the document and arrives separately over
-    // the large-object body seam (the blob store requests it when missing).
+    // the large-object body interface (the blob store requests it when missing).
     std::map<std::string, zetta::ml::ModelValue> models;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kModelPrefix);

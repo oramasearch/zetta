@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-7 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -66,6 +66,22 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-7 anomaly implementation
+
+`src/core/ml/anomaly_methodology.cpp` supplies its own four-stage pipeline:
+connect → robust features (or causal KPI residuals) → anomaly model → output tables.
+`compile_intent` accepts either `methodology: "M-7"` or `solution: "S-7"` and
+reports `runnable: true`. It does not reuse the churn shape.
+
+The asynchronous runner reads the graph's connect source/table, resolves optional
+entity/label/time roles without requiring a label, and launches the native trainer.
+Tabular runs coordinate primary-owned partitions on all participating members;
+KPI runs currently require one member. The initiator writes the model, anomaly and
+budget tables, and Run lineage. `get_run_report` exposes those tables, metrics, and
+read/excluded input facts. `AnomalyGraphCheck` and the runner share plan validation,
+including budget, label-use, robust-scaling, and causal-window refusals.
+See [anomaly.md](anomaly.md#running-it) for parameters and capability calls.
 
 ## Adding a methodology
 

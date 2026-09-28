@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,12 +12,23 @@
 #include <vector>
 
 #include "temp_dir.hpp"
+#include "zetta/api/background.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/job_coordinator.hpp"
+#include "zetta/data/add_dataset.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/ml/anomaly.hpp"
 #include "zetta/ml/anomaly_job.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace {
 
@@ -116,6 +129,146 @@ scores_by_ordinal(const std::vector<zetta::ml::AnomalyRecord> &records) {
 
 } // namespace
 
+namespace {
+
+struct AnomalyClusterMember {
+  explicit AnomalyClusterMember(std::vector<std::string> seeds)
+      : replication(id),
+        node(zetta::NodeConfig{directory.path().string(), false}, &replication),
+        blobs(directory.path(), replication),
+        cluster(id, config(std::move(seeds)), &replication, &blobs) {
+    node.start();
+    cluster.start();
+    node.attach_cluster(cluster, 2);
+  }
+  ~AnomalyClusterMember() {
+    node.stop();
+  }
+  static zetta::cluster::ClusterConfig config(std::vector<std::string> seeds) {
+    zetta::cluster::ClusterConfig value;
+    value.listen_host = "127.0.0.1";
+    value.listen_port = 47700;
+    value.port_range = 16;
+    value.seeds = std::move(seeds);
+    return value;
+  }
+  zetta::test::TempDir directory;
+  std::string id = zetta::util::new_uuid();
+  zetta::cluster::ReplicationManager replication;
+  zetta::Node node;
+  zetta::data::ReplicatedBlobStore blobs;
+  zetta::cluster::Cluster cluster;
+};
+
+} // namespace
+
+TEST(AnomalyMethodology, OneRegistryRunLaunchesOwnedPartitionsOnBothMembers) {
+  AnomalyClusterMember first({});
+  AnomalyClusterMember second({first.cluster.listen_address()});
+  const auto membership_deadline = std::chrono::steady_clock::now() + 15s;
+  while (
+      (first.cluster.peer_count() != 1 || second.cluster.peer_count() != 1) &&
+      std::chrono::steady_clock::now() < membership_deadline) {
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_EQ(first.cluster.peer_count(), 1u);
+  ASSERT_EQ(second.cluster.peer_count(), 1u);
+  std::vector<nlohmann::json> rows;
+  for (int index = 0; index < 80; ++index) {
+    rows.push_back(
+        {{"request_id", index}, {"latency", index == 65 ? 90.0 : index % 7}});
+  }
+  zetta::data::AddDatasetOptions options;
+  options.database = "operations";
+  options.table_name = "observations";
+  options.partitioned = true;
+  options.partition_count = 2;
+  options.replication_factor = 2;
+  options.members = {first.id, second.id};
+  const auto added = zetta::data::add_dataset_rows(first.node, rows, options);
+  ASSERT_TRUE(added.ok()) << added.error;
+  auto partitions = first.node.dataset_partitions();
+  ASSERT_EQ(partitions.size(), 2u);
+  partitions[0]->set_owner_nodes({first.id, second.id});
+  partitions[1]->set_owner_nodes({second.id, first.id});
+  const auto ready_deadline = std::chrono::steady_clock::now() + 20s;
+  bool ready = false;
+  while (!ready && std::chrono::steady_clock::now() < ready_deadline) {
+    first.node.tick();
+    second.node.tick();
+    const auto peer_parts = second.node.dataset_partitions();
+    ready = peer_parts.size() == 2;
+    for (const auto &partition : peer_parts) {
+      const auto database = second.node.find_database("operations");
+      ready = ready && database &&
+              database->large_objects().read(partition->blob_ref()).has_value();
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_TRUE(ready);
+  std::jthread peer_loop([&](std::stop_token stop) {
+    while (!stop.stop_requested()) {
+      second.node.tick();
+      std::this_thread::sleep_for(5ms);
+    }
+  });
+  zetta::api::Registry registry;
+  zetta::api::register_core_capabilities(registry);
+  zetta::api::BackgroundActions background;
+  zetta::api::ApiContext context{first.node, &first.cluster, {},
+                                 {},         nullptr,        &background};
+  ASSERT_TRUE(
+      registry
+          .call("create_project", {{"name", "distributed-anomaly"}}, context)
+          .ok);
+  ASSERT_TRUE(registry
+                  .call("capture_intent",
+                        {{"project", "distributed-anomaly"},
+                         {"text", "Detect latency outliers"}},
+                        context)
+                  .ok);
+  const auto compiled = registry.call("compile_intent",
+                                      {{"project", "distributed-anomaly"},
+                                       {"methodology", "M-7"},
+                                       {"name", "detector"},
+                                       {"hints",
+                                        {{"source", "operations"},
+                                         {"table", "observations"},
+                                         {"entity_column", "request_id"},
+                                         {"feature_columns", {"latency"}},
+                                         {"tree_count", 12},
+                                         {"alert_budget", 1}}}},
+                                      context);
+  ASSERT_TRUE(compiled.ok) << compiled.error.message;
+  const auto started = registry.call(
+      "run", {{"project", "distributed-anomaly"}, {"graph", "detector"}},
+      context);
+  ASSERT_TRUE(started.ok) << started.error.message;
+  const auto run =
+      first.node.find_run(started.value.at("run_id").get<std::string>());
+  ASSERT_TRUE(run);
+  const auto deadline = std::chrono::steady_clock::now() + 30s;
+  while (run->status() != zetta::pipeline::RunStatus::Succeeded &&
+         run->status() != zetta::pipeline::RunStatus::Failed &&
+         std::chrono::steady_clock::now() < deadline) {
+    first.node.tick();
+    background.prune();
+    std::this_thread::sleep_for(5ms);
+  }
+  EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded)
+      << run->metadata().dump();
+  const auto report =
+      registry.call("get_run_report", {{"run_id", run->id()}}, context);
+  ASSERT_TRUE(report.ok) << report.error.message;
+  EXPECT_EQ(report.value["model"]["metrics"]["rows_scored"], 80);
+  EXPECT_EQ(report.value["model"]["metrics"]["flagged"], 1);
+  EXPECT_EQ(report.value["anomalies"][0]["row"], 65);
+  EXPECT_EQ(report.value["anomalies"][0]["flagged"], true);
+  std::size_t peer_jobs = 0;
+  second.node.run_on_owner([&] { peer_jobs = second.node.jobs().size(); });
+  EXPECT_GT(peer_jobs, 0u);
+}
+
 TEST(IsolationForestPartitions, DistributedForestMatchesTheSingleMemberOracle) {
   const std::vector<zetta::ml::AnomalyPartition> all = partition_fixture();
   const std::vector<std::string> features = {"latency", "errors"};
@@ -168,6 +321,10 @@ TEST(IsolationForestPartitions, DistributedForestMatchesTheSingleMemberOracle) {
     EXPECT_EQ(results[index].model.trees.size(), params().tree_count);
     EXPECT_EQ(results[index].records.size(), oracle.records.size());
     EXPECT_EQ(results[index].report.flagged, 2u);
+    EXPECT_EQ(std::count_if(results[index].records.begin(),
+                            results[index].records.end(),
+                            [](const auto &record) { return record.flagged; }),
+              2);
     const std::map<std::uint64_t, double> distributed_scores =
         scores_by_ordinal(results[index].records);
     ASSERT_EQ(distributed_scores.size(), oracle_scores.size());

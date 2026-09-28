@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <vector>
 
@@ -208,4 +209,15 @@ TEST(AnomalyThreshold, RefusesAmbiguousOrMissingThresholdPolicies) {
   neither.contamination.reset();
   EXPECT_FALSE(
       zetta::ml::apply_anomaly_threshold(records, neither, report).ok());
+}
+
+TEST(SeasonalAnomaly, RefusesDuplicateAndNonFiniteObservationTimes) {
+  const auto duplicate = zetta::ml::score_kpi_anomalies(
+      {1, 1, 2}, {{4, 5, 6}}, {"metric"}, {}, kpi_params());
+  EXPECT_FALSE(duplicate.ok());
+  EXPECT_NE(duplicate.status.message.find("unique"), std::string::npos);
+  const auto nonfinite = zetta::ml::score_kpi_anomalies(
+      {1, std::numeric_limits<double>::quiet_NaN(), 2}, {{4, 5, 6}}, {"metric"},
+      {}, kpi_params());
+  EXPECT_FALSE(nonfinite.ok());
 }

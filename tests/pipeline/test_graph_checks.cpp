@@ -276,11 +276,12 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -372,10 +373,12 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
-    for (const char* unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " is not implemented; listing it here would make the check a lie";
+    for (const char *unshipped :
+         {"forecast", "uplift", "survival", "cluster"}) {
+      EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped),
+                implemented.end())
+          << unshipped
+          << " is not implemented; listing it here would make the check a lie";
     }
 }
 
@@ -596,9 +599,11 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
-    for (const char* unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
-        EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
-            << unshipped << " has no run path; listing it would make the gate a lie";
+    for (const char *unshipped :
+         {"forecast", "uplift", "survival", "cluster", "graph"}) {
+      EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped),
+                implemented.end())
+          << unshipped
+          << " has no run path; listing it would make the gate a lie";
     }
 }

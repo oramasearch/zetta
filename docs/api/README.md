@@ -147,6 +147,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
+| `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |

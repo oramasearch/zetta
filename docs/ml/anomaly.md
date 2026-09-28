@@ -6,9 +6,52 @@
 [`anomaly_job.hpp`](../../include/zetta/ml/anomaly_job.hpp),
 [`anomaly_table.hpp`](../../include/zetta/ml/anomaly_table.hpp)
 
-This phase provides the native trainer, distributed job adapter, resolved-table runner, queryable
-outputs, and correctness tests. It has no Python process, foreign ML runtime, hosted model, or new
-third-party dependency.
+M-7 is runnable through the methodology registry, `compile_intent`, and `run`. The native trainer,
+distributed job adapter, resolved-table runner, and reports have no foreign ML runtime, hosted model,
+or new third-party dependency.
+
+## Running it
+
+Land a numeric table with `upload_dataset`, `add_dataset`, or a connector, then call the existing
+REST/MCP capabilities in this order:
+
+```json
+{"tool":"create_project","input":{"name":"request-anomalies"}}
+{"tool":"capture_intent","input":{"project":"request-anomalies","text":"Find unusual latency and errors"}}
+{"tool":"compile_intent","input":{"project":"request-anomalies","methodology":"M-7","name":"detector","hints":{"source":"operations","table":"requests","entity_column":"request_id","feature_columns":["latency","errors"],"alert_budget":2}}}
+{"tool":"run","input":{"project":"request-anomalies","graph":"detector"}}
+```
+
+Each line describes a capability call (`POST /v1/<tool>` with its `input`, or MCP `tools/call`).
+`solution: "S-7"` also selects M-7. The compiled pipeline is **read observations → robust feature
+deviations → anomaly model → anomaly/report tables**. Its model step has `model_kind: "anomaly"`,
+the explicit alert policy, seed, feature roles, and robust scaling settings. `run` uses the connect
+step's `source` database and `table` when no `dataset_path` override is supplied. It never substitutes
+demo data or structural execution.
+
+The job returns a `run_id` immediately. Poll `get_run` to `succeeded` or `failed`; then call
+`get_run_report` with that id. An M-7 report contains `model.metrics`, ranked `anomalies`,
+`output_tables`, and `dataset` facts: source, rows read/excluded, feature roles, and `not_used`
+columns with reasons. A missing optional label produces an explicit missing-precision note, not
+supervised AUC or holdout advice. All rows are scored or the run fails; no malformed row is silently
+dropped, so `rows_excluded` is zero for successful runs.
+
+Omitting `feature_columns` conservatively selects numeric columns from a sample, excluding the
+declared entity, label, time, and internal row id. Full input validation still checks every row
+during training. A label is never inferred or required: name `label_column` only for evaluation.
+Explicit feature lists work directly from the catalog without sampling. Grouped series are refused;
+select one series per table. Input must have placed partitions, as the upload and connector paths do.
+
+For KPI detection, use `mode: "kpi_time_series"`, `time_column`, the metric `feature_columns`, and
+optionally `seasonal_period`, `trend_window`, `residual_window`, and `seasonal_cycles` in the hints.
+Time must be numeric and unique; aggregate duplicate periods before the run. Seasonal periods count
+observations, so regular cadence is the caller's input contract. The feature stage becomes causal
+trend/seasonality removal. KPI remains single-member until ordered distributed prefix state exists.
+
+The default correctness gate includes `AnomalyGraphCheck`: it refuses ambiguous or absent budgets,
+label leakage or training-label use, non-robust scaling, missing KPI time/causality, malformed or
+unbounded parameters, unsupported grouping, and a graph whose operations or data flow the runner
+cannot execute. Dataset overrides are checked again before creating a Run.
 
 ## Inputs and modes
 
@@ -59,10 +102,14 @@ allreduces, then combined in partition order with row-count weights. A row's fea
 `abs(value - center) / max(1.4826 * MAD, numeric_floor)`. The three largest deviations are retained
 as contributors. The row score is the larger of its isolation score and its bounded robust score.
 
-After local scoring, members gather compact score/explanation rows. The root applies the exact
+The registry adapter fans a validated graph out through the existing coordinated-launch listener;
+each member loads its primary-owned partitions. Every launch has a unique Run-derived collective
+tag. After local scoring, members gather compact score/explanation rows. The root applies the exact
 global budget, resolving score ties by stable row ordinal, and broadcasts the result. Therefore
 `flagged / rows_scored` matches the requested integer budget or the rounded contamination count,
-even when several rows have the threshold score.
+even when several rows have the threshold score. The initiating member materializes one set of
+replicated outputs, even when a different member is the collective root. Flags survive the result
+broadcast and agree with the report's flagged count.
 
 ## KPI algorithm and the no-future rule
 
@@ -76,16 +123,18 @@ Rows are sorted by time. At position `N`, each metric is decomposed with only po
 3. The residual is scored against the median and MAD of the prior `residual_window` residuals.
 
 The current observation does not fit its own baseline, and later observations are never read.
-Appending a future point therefore leaves every earlier score unchanged. Ordinary weekly peaks are
+Appending a future point therefore leaves every earlier score unchanged. The exact alert budget is
+applied to the complete run's ranking; adding observations can change that retrospective flagged
+set, but cannot change historical fitted baselines or scores. Ordinary weekly peaks are
 learned as seasonal structure; a planted spike remains in the residual and ranks first.
 
-KPI execution is single-member in phase A. A multi-member call fails with an explicit reason. A
+KPI execution remains single-member. A multi-member call fails with an explicit reason. A
 correct distributed KPI implementation needs ordered prefix state across time partitions; this
 phase does not gather the raw series to one coordinator and present that as distributed compute.
 
 ## Outputs
 
-The deterministic collective root registers a `Model` with kind `anomaly`. Its weights body holds
+The output member registers a `Model` with kind `anomaly`. Its weights body holds
 the mode, seed, feature order, robust centers/scales, isolation trees, and KPI window settings. Its
 numeric metrics include the threshold, row count, flagged count, alert rate, the selected budget,
 and `precision_at_k` when labels exist.
@@ -114,23 +163,25 @@ resolved `database.table` source and the `anomaly:train` and `anomaly:score` ste
 ## Boundaries and deferred work
 
 The collective data uses the existing numeric `CollectiveMessage`; model metadata, weights, run
-lineage, and table rows use existing validated storage boundaries. This phase adds no capability or
-OpenAPI schema.
+lineage, and table rows use existing validated storage boundaries. The existing `get_run_report`
+output schema documents M-7 facts and output tables; no new capability is introduced. Peer launches
+reuse the validated ExecutionGraph wire format.
 
-Phase B follows the methodology registry in [#1061](https://github.com/oramasearch/zetta/issues/1061):
-add the `Methodology` table entry, compiler shape, correctness checks, capability/REST/MCP exposure,
-agent allow-list entry, generated OpenAPI update, end-to-end agent journey, and lake Opportunity
-path. Those files are intentionally untouched in phase A.
+Phase B implements the `Methodology` entry, own compiler shape, correctness check, asynchronous
+registry runner, report surface, coordinated tabular launch, generated OpenAPI update, and registry
+journeys. It is stacked on registry PR #1066. Lake Opportunity integration remains outside this
+work order. Multi-member KPI prefix state and grouped series remain unsupported and are refused.
 
 ## Verification
 
 ```sh
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 6 --target zetta-tests
-./build/tests/zetta-tests --gtest_filter='*Anomal*:*Isolation*:*Seasonal*'
-./build/tests/zetta-tests
+./build/tests/zetta-tests --gtest_filter='*Anomal*:*Isolation*:*Seasonal*:*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*:CorrectnessGate.*'
+ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests
 ```
 
 The focused suite covers planted tabular outliers, label-free training, optional-label precision,
 exact alert budgets, causal seasonal scoring, future-point invariance, real multi-member forest
-equivalence, and queryable output tables with run lineage.
+equivalence, coordinated registry launches, gate refusals, and queryable output tables with run
+lineage. The full command also regenerates the control-surface schemas.

@@ -40,6 +40,7 @@
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/model.hpp"
@@ -492,66 +493,89 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
 // ---------------------------------------------------------------------------
 
 const nlohmann::json& get_run_report_schema() {
-    static const nlohmann::json schema = {
-        {"type", "object"},
-        {"required", {"run_id"}},
-        {"additionalProperties", false},
-        {"properties",
-         {{"run_id",
-           {{"type", "string"},
-            {"minLength", 1},
-            {"description",
-             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
-          {"limit",
-           {{"type", "integer"},
-            {"minimum", 1},
-            {"description",
-             "how many at-risk entities to return, highest risk first (default 20). "
-             "The whole population is ranked; this caps what comes back"}}}}}};
-    return schema;
+  static const nlohmann::json schema = {
+      {"type", "object"},
+      {"required", {"run_id"}},
+      {"additionalProperties", false},
+      {"properties",
+       {{"run_id",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description", "the run's uuid (system.runs.run_id, or the `report` "
+                          "output's ref)"}}},
+        {"limit",
+         {{"type", "integer"},
+          {"minimum", 1},
+          {"description",
+           "how many ranked at-risk entities or anomalies to return (default "
+           "20). "
+           "The whole population is ranked; this caps what comes back"}}}}}};
+  return schema;
 }
 
 const nlohmann::json& get_run_report_output_schema() {
-    static const nlohmann::json schema = {
-        {"type", "object"},
-        {"required", {"run", "model"}},
-        {"properties",
-         {{"run", {{"type", "object"},
-                   {"description", "run id, graph, status, and when it finished"}}},
-          {"dataset",
-           {{"type", "object"},
-            {"description",
-             "what the model was built from: accounts, events, churn_rate, "
-             "majority_class_accuracy (the accuracy a constant answer scores), and "
-             "the feature columns. Absent when the model records no dataset facts"}}},
-          {"model",
-           {{"type", "object"},
-            {"description",
-             "id, name, and the metrics. `held_out_*` is present only when the run "
-             "asked for a holdout; when it is absent the only figures available are "
-             "in-sample and they flatter (#953)"}}},
-          {"drivers",
-           {{"type", "array"},
-            {"description", "feature -> weight, strongest first. A weight is what "
-                            "the model leaned on, not a cause"}}},
-          {"at_risk",
-           {{"type", "array"},
-            {"description",
-             "the ranked entities with their risk and their evidence values, "
-             "capped by `limit`"}}},
-          {"caveats",
-           {{"type", "array"},
-            {"description",
-             "figures that are PRESENT but must not be read as results — a holdout "
-             "too small to mean anything, a perfect score. `missing` says what the "
-             "run cannot tell you; this says what it can and you should not believe"}}},
-          {"missing",
-           {{"type", "array"},
-            {"description",
-             "fields a report would want that this run cannot supply, each saying "
-             "why. Stated rather than omitted so a writer does not quietly "
-             "substitute its own number"}}}}}};
-    return schema;
+  static const nlohmann::json schema = {
+      {"type", "object"},
+      {"required", {"run", "model"}},
+      {"properties",
+       {{"methodology",
+         {{"type", "string"}, {"description", "methodology id when recorded"}}},
+        {"output_tables",
+         {{"type", "array"},
+          {"description", "named result table references, including anomaly "
+                          "scores and budget reports"}}},
+        {"anomalies",
+         {{"type", "array"},
+          {"description", "M-7 rows ranked by anomaly score, with flags, "
+                          "threshold, and robust contributors"}}},
+        {"run",
+         {{"type", "object"},
+          {"description", "run id, graph, status, and when it finished"}}},
+        {"dataset",
+         {{"type", "object"},
+          {"description",
+           "what the model was built from: accounts, events, churn_rate, "
+           "majority_class_accuracy (the accuracy a constant answer scores), "
+           "and "
+           "the feature columns. M-7 records source, rows_read, rows_excluded, "
+           "roles, and not_used columns. Absent when no dataset facts were "
+           "recorded"}}},
+        {"model",
+         {{"type", "object"},
+          {"description", "id, name, and the metrics. `held_out_*` is present "
+                          "only when the run "
+                          "asked for a holdout; when it is absent the only "
+                          "figures available are "
+                          "in-sample and they flatter (#953). M-7 instead "
+                          "reports kind and metrics "
+                          "including threshold, budget, alert_rate, and "
+                          "optional precision_at_k"}}},
+        {"drivers",
+         {{"type", "array"},
+          {"description",
+           "feature -> weight, strongest first. A weight is what "
+           "the model leaned on, not a cause"}}},
+        {"at_risk",
+         {{"type", "array"},
+          {"description",
+           "the ranked entities with their risk and their evidence values, "
+           "capped by `limit`"}}},
+        {"caveats",
+         {{"type", "array"},
+          {"description", "figures that are PRESENT but must not be read as "
+                          "results — a holdout "
+                          "too small to mean anything, a perfect score. "
+                          "`missing` says what the "
+                          "run cannot tell you; this says what it can and you "
+                          "should not believe"}}},
+        {"missing",
+         {{"type", "array"},
+          {"description",
+           "fields a report would want that this run cannot supply, each "
+           "saying "
+           "why. Stated rather than omitted so a writer does not quietly "
+           "substitute its own number"}}}}}};
+  return schema;
 }
 
 // The at-risk table this run wrote, by the run's own `dataset` outputs. Named
@@ -626,6 +650,11 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             "run '" + id +
                 "' has no resolvable model output, so there are no measured "
                 "numbers to report");
+    }
+
+    if (model->kind() == "anomaly") {
+      return ApiResult::success(
+          zetta::ml::anomaly_run_report(context.node, *run, *model, limit));
     }
 
     const nlohmann::json& metrics = model->metrics();
@@ -2077,7 +2106,7 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
 //
 // The mutating half of the product loop, each a thin caller of the SAME engine
 // entry point the GUI drives (RULE-1/RULE-3 cannot be bypassed by construction:
-// authorize + audit happen in Registry::call, the gate inside the engine seams).
+// authorize + audit happen in Registry::call, the gate inside the engine interfaces).
 // Long work is `kind: job`: submit, return the engine's durable Run id, poll
 // progress through the read surface (get_run / system.runs) — no request-scoped
 // blocking, no new job infrastructure. Errors carry the engine's path-qualified
@@ -2838,7 +2867,7 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     }
     // The gate report first, for the failing check's reason; the engine's own
     // deploy_graph re-runs the gate and audits BOTH outcomes (RULE-1 lives in
-    // the engine seam — this handler cannot bypass it by construction).
+    // the engine interface — this handler cannot bypass it by construction).
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     auto deployment = context.node.deploy_graph(
@@ -5609,40 +5638,49 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     static const std::vector<zetta::agent::AgentToolSpec> kAgentTools = {
         {"list_projects", "list the Projects on this node"},
         {"get_project", "read one Project: {\"name\": \"<project>\"}"},
-        {"list_datasets", "list the datasets (tables) available, with row and column counts"},
+        {"list_datasets",
+         "list the datasets (tables) available, with row and column counts"},
         {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
         {"list_models", "list the trained models and their measures"},
-        {"get_model",
-         "read one model: its measures, its feature columns, and its ranked churn "
-         "drivers: {\"model\": \"<id or name>\"}"},
+        {"get_model", "read one model: its measures, its feature columns, and "
+                      "its ranked churn "
+                      "drivers: {\"model\": \"<id or name>\"}"},
         {"score",
-         "run a trained model and get accounts ranked by risk plus what drives it — "
+         "run a trained model and get accounts ranked by risk plus what drives "
+         "it — "
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
+         "\"<database.table>\", \"top_k\": 10}, or over an account that is not "
+         "in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
-        {"propose_improvement",
-         "propose a change to a model and state its predicted effect, or say why the effect "
-         "cannot be predicted: {\"model_id\": \"<uuid>\", \"change\": \"add_holdout\"}"},
-        {"model_health",
-         "check whether a deployed model can still be trusted - the held-out figure, the "
-         "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
+        {"propose_improvement", "propose a change to a model and state its "
+                                "predicted effect, or say why the effect "
+                                "cannot be predicted: {\"model_id\": "
+                                "\"<uuid>\", \"change\": \"add_holdout\"}"},
+        {"model_health", "check whether a deployed model can still be trusted "
+                         "- the held-out figure, the "
+                         "overfitting gap, whether scores are calibrated: "
+                         "{\"model_id\": \"<uuid>\"}"},
         {"get_run_report",
          "read what a finished run found — model quality (held-out first), the "
-         "drivers, and the ranked at-risk list with the evidence behind each row: "
+         "drivers, and ranked at-risk evidence; M-7 returns anomaly metrics "
+         "and output tables: "
          "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
         {"explain",
          "explain WHY one account scored as it did — every feature's signed "
-         "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
+         "contribution, strongest first: {\"model\": \"<id>\", "
+         "\"dataset_path\": "
+         "\"<database.table>\", \"entity\": 8336}, or for an account not in "
+         "the "
          "data: {\"model\": \"<id>\", \"row\": {...}}"},
         {"deployment_profile",
-         "ask this node how to deploy it — ports, storage, peering, security, and what "
+         "ask this node how to deploy it — ports, storage, peering, security, "
+         "and what "
          "it does NOT need: {\"target\": \"helm\"} returns chart values"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
-        // "which version are you" is asked of the model as often as of the binary,
-        // and the agent is the only surface a person asks it on.
+        // "which version are you" is asked of the model as often as of the
+        // binary, and the agent is the only surface a person asks it on.
         {"versions",
          "report the software version and WHICH agent version is answering, "
          "including its checkpoint"},
@@ -6305,21 +6343,23 @@ void register_core_capabilities(Registry& registry) {
         handle_get_run});
 
     registry.add(Capability{
-        "get_run_report",
-        "Get a run's report facts",
-        "Read the facts a finished run produced — how good the model is (held-out "
+        "get_run_report", "Get a run's report facts",
+        "Read the facts a finished run produced — how good the model is "
+        "(held-out "
         "first, in-sample beside it), what drives the outcome, and the ranked "
-        "at-risk list with its evidence. Assembled at query time from the run's "
-        "model and its at-risk table, so it cannot drift from them. Anything a "
-        "report would want and this run cannot supply is listed in `missing` with "
+        "at-risk list with its evidence. M-7 returns anomaly metrics, ranked "
+        "anomalies, "
+        "output tables, and what was read or excluded. Assembled at query time "
+        "from "
+        "the run's model and result tables, so it cannot drift from them. "
+        "Anything a "
+        "report would want and this run cannot supply is listed in `missing` "
+        "with "
         "the reason, rather than left blank. No side effects. (#958)",
-        get_run_report_schema(),
-        get_run_report_output_schema(),
-        CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        get_run_report_schema(), get_run_report_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
-        /*requires_consent=*/false,
-        handle_get_run_report});
+        /*requires_consent=*/false, handle_get_run_report});
 
     registry.add(Capability{
         "propose_improvement",

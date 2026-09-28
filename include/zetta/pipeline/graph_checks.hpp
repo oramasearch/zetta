@@ -11,7 +11,7 @@
 #include "zetta/pipeline/validation.hpp"
 
 // The concrete correctness checks for #309 — the first real semantic checks that
-// plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
+// plug into the CorrectnessGate's `Check` interface (gate.hpp) without touching the
 // gate itself. They read a small, documented set of **annotations** from each
 // step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
@@ -24,6 +24,16 @@
 // these checks are opt-in per step and never penalise a graph that doesn't use
 // them.
 namespace zetta::pipeline {
+
+// M-7 (#1046): labels are evaluation-only, the budget is explicit, scales
+// are robust, and KPI baselines use only prior observations.
+class AnomalyGraphCheck final : public Check {
+public:
+  std::string name() const override {
+    return "anomaly_correctness";
+  }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
 
 // Schema/type check (#309): every field a step `requires` from its inputs must be
 // provided — with a matching type — by the `schema` (source profile) of one of
@@ -95,4 +105,4 @@ public:
 // drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& graph_step_annotations_schema();
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline
