@@ -57,45 +57,74 @@ bool m1_owns(const ir::ExecutionGraph& graph) {
     return zetta::usecases::churn::is_churn_graph(graph);
 }
 
-ir::ExecutionGraph build_m1_shape(const ShapeRequest&) {
+ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
+    const bool lead_scoring = request.solution == "S-2";
 
     graph.add_node(
-        ir::StepKind::Connect, "Load customer accounts",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "customers"},
-                       {"note", "active accounts to score for churn risk"}},
+        ir::StepKind::Connect,
+        lead_scoring ? "Load lead and opportunity records"
+                     : "Load customer accounts",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", lead_scoring ? "leads" : "customers"},
+            {"note", lead_scoring
+                         ? "open leads and opportunities to score for conversion"
+                         : "active accounts to score for churn risk"}},
         "load_customers");
     graph.add_node(
-        ir::StepKind::Connect, "Load usage & billing activity",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "events"},
-                       {"note", "engagement + payment signals per account"}},
+        ir::StepKind::Connect,
+        lead_scoring ? "Load pre-qualification engagement"
+                     : "Load usage & billing activity",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", lead_scoring ? "lead_events" : "events"},
+            {"note", lead_scoring
+                         ? "point-in-time engagement signals per lead"
+                         : "engagement + payment signals per account"}},
         "load_activity");
     graph.add_node(
-        ir::StepKind::Clean, "Build churn features",
+        ir::StepKind::Clean,
+        lead_scoring ? "Build conversion features" : "Build churn features",
         nlohmann::json{
-            {"note", "point-in-time features; keep out post-cutoff leakage"}},
+            {"note", lead_scoring
+                         ? "point-in-time features; exclude post-qualification fields"
+                         : "point-in-time features; keep out post-cutoff leakage"}},
         "build_features");
     graph.add_node(
-        ir::StepKind::Model, "Train churn-risk model",
+        ir::StepKind::Model,
+        lead_scoring ? "Train conversion-propensity model"
+                     : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", "churned"},
-                       {"note", "predict probability each account churns"}},
+                       {"target", lead_scoring ? "converted" : "churned"},
+                       {"note", lead_scoring
+                                    ? "predict probability each lead converts"
+                                    : "predict probability each account churns"}},
         "train_churn_model");
     graph.add_node(
-        ir::StepKind::Index, "Index churn scores",
+        ir::StepKind::Index,
+        lead_scoring ? "Index conversion scores" : "Index churn scores",
         nlohmann::json{{"kind", "feature"},
                        {"note", "make scores fast to look up at serve time"}},
         "index_scores");
     graph.add_node(
-        ir::StepKind::Serve, "Serve churn scores & reasons",
-        nlohmann::json{{"note", "expose per-account risk + top drivers"}},
+        ir::StepKind::Serve,
+        lead_scoring ? "Serve conversion scores and reasons"
+                     : "Serve churn scores & reasons",
+        nlohmann::json{
+            {"note", lead_scoring
+                         ? "expose per-lead conversion score and top drivers"
+                         : "expose per-account risk + top drivers"}},
         "serve_scores");
     graph.add_node(
-        ir::StepKind::Act, "Trigger retention outreach",
-        nlohmann::json{{"note", "notify retention on high-risk accounts"}},
+        ir::StepKind::Act,
+        lead_scoring ? "Route sales queue tasks"
+                     : "Trigger retention outreach",
+        nlohmann::json{
+            {"note", lead_scoring
+                         ? "route capacity-aware CRM tasks with SLAs"
+                         : "notify retention on high-risk accounts"}},
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");

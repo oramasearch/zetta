@@ -7,6 +7,9 @@ and policy decisions to actions and measured outcomes.
 - [S-1.md](S-1.md) — runnable churn and retention module: data roles,
   levels, policy and holdout defaults, action payloads, run sequence, and every
   domain refusal (#1110).
+- [S-2.md](S-2.md) — runnable lead and opportunity scoring module: conversion
+  labels, capacity-aware CRM queues, SLAs, holdout, and planted-effect proof
+  (#1111).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -119,9 +122,27 @@ Re-scoring an entity does not move its cell when its risk tier changes. Cell
 names include the project/graph scope so unrelated experiments cannot share
 ledger evidence accidentally.
 
+S-2 is the complete lead-routing default:
+
+| Setting | Executable default |
+|---|---|
+| Hot | score ≥ 0.7; sales queue task, A2, one-hour SLA |
+| Standard | score ≥ 0; nurture queue task, A2, four-hour SLA |
+| Approval | optional hot-tier priority queue review; A1 |
+| Contact limits | six lifetime contacts and one action per seven-day window |
+| Eligibility | `eligible`, `territory_eligible`, and `rep_capacity_available` must explicitly be true |
+| Exclusions | `excluded` and `do_not_contact` suppress routing |
+| Budget / stop | zero monetary spend; kill switch off |
+| Experiment | independent 10% holdout probability in each score tier; remaining entities enter `routed` |
+| Guardrails | zero SLA misses and capacity violations; minimum routing coverage 0.9 and execution rate 0.95 |
+| Measurement | holdout; named `converted` outcome per opportunity over 30 days |
+
+S-2 tasks carry the selected queue, owner, territory, capacity evidence, SLA,
+and decision cell through the shared action outbox and connector path.
+
 ### Minimal defaults
 
-**S-2 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-3 through S-12 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -131,7 +152,6 @@ require an owner-approved policy change before spending.
 
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
-| S-2 | sales queue task / A2 | holdout / converted | SLA misses: 0 |
 | S-3 | audience sync / A2 | holdout / net_value | consent violations: 0 |
 | S-4 | collections queue / A2 | champion_challenger / net_recovery | complaints: 0 |
 | S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
@@ -151,13 +171,16 @@ module-specific estimators exist.
 ## Composition and execution
 
 See [executable solution pipelines](executable-pipelines.md) for the input
-contract, example, read-backs, failure behavior, and the S-1 journey.
+contract, example, read-backs, failure behavior, and the S-1 and S-2 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
 with control edges. A missing selected shape or runner is refused explicitly.
-For S-1, the composed gate also enforces the eight domain checks and the selected
+For S-1, the composed gate also enforces its domain checks and the selected
 level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
+For S-2, it refuses non-point-in-time conversion labels, post-qualification
+predictors, and routing without current owner, territory, and rep-capacity
+evidence. Levels 3 and 4 require M-6.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

@@ -563,6 +563,36 @@ const json* s1_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-2") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-2 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s2_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-2 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -573,6 +603,19 @@ CheckResult s1_failure(std::string name, std::string reason) {
 }
 
 CheckResult s1_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s2_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-2 Pipeline to validate"};
+}
+
+CheckResult s2_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s2_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
@@ -961,6 +1004,170 @@ CheckResult S1LevelCompositionCheck::evaluate(
     }
     return s1_success(name(),
                       "S-1 selected level has every required methodology");
+}
+
+CheckResult S2PointInTimeConversionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s2_failure(name(), error);
+    }
+    const auto prediction = profile->find("prediction_time");
+    const auto feature_end = profile->find("feature_window_end");
+    const auto label_start = profile->find("label_window_start");
+    const auto blackout = profile->find("blackout_gap_seconds");
+    const json* labels = object_field(*profile, "labels");
+    if (prediction == profile->end() || feature_end == profile->end() ||
+        label_start == profile->end() || blackout == profile->end() ||
+        !blackout->is_number() || blackout->get<double>() < 0.0 ||
+        labels == nullptr ||
+        labels->value("label_column", std::string{}).empty() ||
+        !labels->value("fully_observed", false)) {
+        return s2_failure(
+            name(), "S-2 requires a named, fully observed conversion label "
+                    "after the feature cutoff and blackout gap");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> feature_time =
+        solutions::parse_time_point(*feature_end);
+    const std::optional<solutions::TimePoint> label_time =
+        solutions::parse_time_point(*label_start);
+    if (!prediction_time || !feature_time || !label_time ||
+        feature_time->kind != label_time->kind ||
+        label_time->value <
+            feature_time->value + blackout->get<double>()) {
+        return s2_failure(
+            name(), "S-2 conversion labels must begin after the point-in-time "
+                    "feature window and its blackout gap");
+    }
+    std::size_t sources = 0;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        ++sources;
+        if (node->attributes.value("source_kind", std::string{}) !=
+            "snapshot") {
+            return s2_failure(
+                name(), node_label(*node) +
+                            ": live CRM features are refused; use the "
+                            "point-in-time snapshot layer");
+        }
+        auto cutoff = node->attributes.find("solution_snapshot_as_of");
+        if (cutoff == node->attributes.end()) {
+            cutoff = node->attributes.find("snapshot_as_of");
+        }
+        if (cutoff == node->attributes.end()) {
+            return s2_failure(
+                name(), node_label(*node) +
+                            ": snapshot source has no inclusive cutoff");
+        }
+        const std::optional<solutions::TimePoint> snapshot_time =
+            solutions::parse_time_point(*cutoff);
+        if (!snapshot_time || snapshot_time->kind != prediction_time->kind ||
+            snapshot_time->value > prediction_time->value) {
+            return s2_failure(
+                name(), node_label(*node) +
+                            ": snapshot cutoff must be at or before the S-2 "
+                            "scoring time");
+        }
+    }
+    if (sources == 0) {
+        return s2_failure(name(), "S-2 has no methodology snapshot sources");
+    }
+    return s2_success(
+        name(), std::to_string(sources) +
+                    " S-2 feature sources and conversion labels are point-in-time safe");
+}
+
+CheckResult S2PostQualificationLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s2_failure(name(), error);
+    }
+    const auto blocklist = profile->find("post_qualification_blocklist");
+    const auto features = profile->find("feature_names");
+    if (blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return s2_failure(
+            name(), "S-2 requires declared features and a non-empty "
+                    "post-qualification field blocklist");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() || entry.get_ref<const std::string&>().empty()) {
+            return s2_failure(
+                name(), "S-2 post-qualification blocklist entries must be names");
+        }
+        blocked.insert(normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return s2_failure(name(), "S-2 feature names must be strings");
+        }
+        if (blocked.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return s2_failure(
+                name(), "S-2 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is only available after qualification or conversion");
+        }
+    }
+    return s2_success(
+        name(), "S-2 predictors exclude post-qualification CRM fields");
+}
+
+CheckResult S2CapacityRoutingCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s2_failure(name(), error);
+    }
+    const json* routing = object_field(*profile, "routing");
+    if (routing == nullptr || !routing->value("capacity_aware", false) ||
+        routing->value("owner_column", std::string{}).empty() ||
+        routing->value("territory_column", std::string{}).empty() ||
+        routing->value("capacity_column", std::string{}).empty() ||
+        routing->value("over_capacity_action", std::string{}) !=
+            "no_contact") {
+        return s2_failure(
+            name(), "S-2 routing must name owner, territory, and current rep "
+                    "capacity evidence and suppress over-capacity tasks");
+    }
+    if (!has_methodology(graph, "M-2") ||
+        !has_methodology(graph, "M-3") ||
+        (level >= 3 && !has_methodology(graph, "M-6"))) {
+        return s2_failure(
+            name(), "S-2 selected level is missing an entity, segment, or "
+                    "incrementality stage required for routing");
+    }
+    return s2_success(
+        name(), "S-2 routing is owner-, territory-, and capacity-aware");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

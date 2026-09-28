@@ -132,9 +132,10 @@ Json create_bindings(Node& node, const pipeline::Project& project,
 void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
     const std::shared_ptr<ir::Node> manifest =
         graph.find_node("solution_manifest");
-    const bool s1 = manifest &&
-                    manifest->attributes.value("solution", std::string{}) ==
-                        "S-1";
+    const bool solution_with_numeric_cutoff =
+        manifest &&
+        (manifest->attributes.value("solution", std::string{}) == "S-1" ||
+         manifest->attributes.value("solution", std::string{}) == "S-2");
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
@@ -145,7 +146,7 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
         step->attributes["source_kind"] = "snapshot";
         if (snapshot.as_of.is_string()) {
             step->attributes["snapshot_as_of"] = snapshot.as_of;
-        } else if (s1) {
+        } else if (solution_with_numeric_cutoff) {
             step->attributes["solution_snapshot_as_of"] = snapshot.as_of;
         }
     }
@@ -223,6 +224,60 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_s2_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-2") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    const double blackout_gap =
+        common.value("blackout_gap_seconds", 86400.0);
+    const std::optional<TimePoint> cutoff = parse_time_point(snapshot.as_of);
+    const double feature_window_end = cutoff ? cutoff->value : 0.0;
+    const Json default_blocklist = {
+        "qualified_at", "qualification_status", "sales_accepted_at",
+        "opportunity_stage", "closed_won", "closed_won_at",
+        "conversion_outcome", "contract_value"};
+    const Json label_window_start =
+        common.contains("label_window_start")
+            ? common.at("label_window_start")
+            : Json(feature_window_end + blackout_gap);
+    Json profile = {
+        {"prediction_time", snapshot.as_of},
+        {"feature_window_end", feature_window_end},
+        {"label_window_start", label_window_start},
+        {"blackout_gap_seconds", blackout_gap},
+        {"labels",
+         {{"label_column",
+           settings.at("dataset").value("label_column", std::string{})},
+          {"fully_observed",
+           common.value("fully_observed_conversion_labels", true)}}},
+        {"post_qualification_blocklist",
+         common.value("post_qualification_blocklist", default_blocklist)},
+        {"feature_names",
+         settings.at("dataset").value("feature_columns", Json::array())},
+        {"routing",
+         {{"capacity_aware", common.value("capacity_aware", true)},
+          {"owner_column", common.value("owner_column", "owner")},
+          {"territory_column",
+           common.value("territory_column", "territory")},
+          {"capacity_column",
+           common.value("capacity_column", "rep_capacity_available")},
+          {"over_capacity_action",
+           common.value("over_capacity_action", "no_contact")}}}};
+    manifest->attributes["s2_correctness"] = std::move(profile);
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -297,6 +352,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["level"] = {
         {"type", "integer"}, {"minimum", 1}, {"maximum", 4}};
     schema["properties"]["s1_correctness"] = {{"type", "object"}};
+    schema["properties"]["s2_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -333,6 +389,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     }
     bind_sources(composed.graph, *snapshot);
     bind_s1_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"));
+    bind_s2_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
@@ -376,6 +434,9 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         if (level >= 3) {
             binding["measurement"]["design"] = "uplift_cells";
         }
+    } else if (solution->id == "S-2") {
+        binding["s2_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("s2_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -585,6 +646,14 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
         entity.value("reason_codes", Json::array());
     spec.payload["decision_cell"] =
         entity.value("decision_cell", Json::object());
+    if (binding.value("solution", std::string{}) == "S-2") {
+        spec.payload["routing_queue"] = decision.action;
+        spec.payload["territory"] =
+            entity.value("territory", std::string{});
+        spec.payload["rep_capacity_available"] =
+            entity.value("rep_capacity_available", false);
+        spec.payload["queue_owner"] = spec.owner;
+    }
     spec.idempotency_key = decision.id;
     spec.model_version = run_id;
     spec.agent_version = "solution-foundation-v1";
@@ -739,6 +808,7 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     double maximum_contacts = 0.0;
     std::size_t actionable = 0;
     std::size_t delivered = 0;
+    std::size_t capacity_violations = 0;
     std::map<std::string, std::size_t> driver_counts;
     Json decision_log = Json::array();
     std::string model_version = "run:" + run_id;
@@ -775,9 +845,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
         const std::string driver =
             entity.value("dominant_driver", "unclassified");
-        entity["decision_cell"] = {{"risk", decision->tier},
-                                   {"value", value_tier},
-                                   {"driver", driver}};
+        if (binding.value("solution", std::string{}) == "S-2") {
+            entity["decision_cell"] = {
+                {"conversion_band", decision->tier},
+                {"value", value_tier},
+                {"territory", entity.value("territory", std::string{})},
+                {"queue_owner",
+                 entity.value("owner",
+                              binding.at("delivery").at("owner").get<std::string>())}};
+        } else {
+            entity["decision_cell"] = {{"risk", decision->tier},
+                                       {"value", value_tier},
+                                       {"driver", driver}};
+        }
         Json decision_row = to_json(*decision);
         decision_row["decision_cell"] = entity.at("decision_cell");
         decision_row["reason_codes"] =
@@ -791,6 +871,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         decisions->add_row(std::move(decision_row));
         if (decision->actionable) {
             ++actionable;
+            if (binding.value("solution", std::string{}) == "S-2" &&
+                !entity.value("rep_capacity_available", false)) {
+                ++capacity_violations;
+            }
         }
         if (!deliver_decision(node, *decision, entity,
                               policy->current()->config,
@@ -828,15 +912,32 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
     }
     if (const auto monitor = node.find_monitor(binding.at("monitor_id"))) {
-        monitor->observe_guardrail("complaints", complaints / entities.size());
-        monitor->observe_guardrail("discount_budget", cost);
-        monitor->observe_guardrail("contact_fatigue", maximum_contacts);
-        monitor->observe_guardrail(
-            "action_execution_rate",
+        const double execution_rate =
             actionable == 0
                 ? 1.0
                 : static_cast<double>(delivered) /
-                      static_cast<double>(actionable));
+                      static_cast<double>(actionable);
+        if (binding.value("solution", std::string{}) == "S-2") {
+            monitor->observe_guardrail("sla_miss_rate", 0.0);
+            monitor->observe_guardrail(
+                "capacity_violation_rate",
+                actionable == 0
+                    ? 0.0
+                    : static_cast<double>(capacity_violations) /
+                          static_cast<double>(actionable));
+            monitor->observe_guardrail("routing_coverage_rate",
+                                       execution_rate);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else {
+            monitor->observe_guardrail("complaints",
+                                       complaints / entities.size());
+            monitor->observe_guardrail("discount_budget", cost);
+            monitor->observe_guardrail("contact_fatigue",
+                                       maximum_contacts);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        }
     }
     std::string publication_id;
     if (binding.value("solution", std::string{}) == "S-1" &&

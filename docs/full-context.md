@@ -70,6 +70,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   tier holdouts and no-contact decisions, publish a driver report, and feed the
   retention ROI readout. See [solutions/S-1.md](solutions/S-1.md).
 
+- **S-2 Lead & Opportunity Scoring (#1111)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 and optional M-6, full routing policy and holdout defaults,
+  point-in-time conversion labels, post-qualification leakage refusal,
+  rep-capacity-aware CRM queues with SLAs, and a conversion ROI readout. See
+  [solutions/S-2.md](solutions/S-2.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

@@ -67,6 +67,45 @@ zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s2_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-2");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] = "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s2_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"feature_window_end", "2024-01-01T00:00:00Z"},
+        {"label_window_start", "2024-01-02T00:00:00Z"},
+        {"blackout_gap_seconds", 86400.0},
+        {"labels",
+         {{"label_column", "converted"}, {"fully_observed", true}}},
+        {"post_qualification_blocklist",
+         {"qualified_at", "opportunity_stage", "closed_won"}},
+        {"feature_names", {"engagement", "company_size"}},
+        {"routing",
+         {{"capacity_aware", true},
+          {"owner_column", "owner"},
+          {"territory_column", "territory"},
+          {"capacity_column", "rep_capacity_available"},
+          {"over_capacity_action", "no_contact"}}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -79,6 +118,15 @@ const zetta::pipeline::CheckResult* check_result(
 }
 
 void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s2_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -109,7 +157,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
                 zetta::solutions::decision_policy_config_schema());
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
-            EXPECT_EQ(solution.templates.minimal, solution.id != "S-1");
+            EXPECT_EQ(solution.templates.minimal,
+                      solution.id != "S-1" && solution.id != "S-2");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -196,6 +245,33 @@ TEST(SolutionRegistry, ChurnEntryCarriesTheCompleteReferenceContract) {
               (nlohmann::json{{"level", 1},
                               {"name", "CL-1"},
                               {"description", "propensity, reasons, segments, holdout and report"}}));
+}
+
+TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* lead_scoring =
+        zetta::ml::find_solution("S-2");
+    ASSERT_NE(lead_scoring, nullptr);
+    EXPECT_TRUE(lead_scoring->runnable);
+    EXPECT_EQ(lead_scoring->issue,
+              "https://github.com/oramasearch/zetta/issues/1111");
+    EXPECT_FALSE(lead_scoring->templates.minimal);
+    EXPECT_EQ(lead_scoring->action_patterns.size(), 2u);
+    EXPECT_EQ(lead_scoring->templates.experiment.holdouts.size(), 2u);
+    EXPECT_EQ(lead_scoring->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"routed"}));
+    ASSERT_EQ(lead_scoring->templates.guardrails.size(), 4u);
+    EXPECT_EQ(lead_scoring->templates.guardrails.front().metric,
+              "sla_miss_rate");
+    EXPECT_EQ(lead_scoring->templates.guardrails.back().direction,
+              "minimum");
+    EXPECT_EQ(lead_scoring->templates.measurement.outcome, "converted");
+
+    const nlohmann::json policy = lead_scoring->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 2u);
+    EXPECT_EQ(policy.at("contact_cap"), 6);
+    EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -307,6 +383,53 @@ TEST(SolutionRegistry, S1EveryLevelBuildsAndLevelThreeProtectsSleepingDogs) {
         }
     }
     expect_s1_failure(graph, "s1_level_composition");
+}
+
+TEST(SolutionRegistry, S2ChecksRefuseWrongConversionAndRoutingCases) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s2_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto conversion_window = bound_s2_graph();
+    conversion_window.find_node("solution_manifest")
+        ->attributes["s2_correctness"]["label_window_start"] =
+            "2024-01-01T12:00:00Z";
+    expect_s2_failure(conversion_window, "s2_point_in_time_conversion");
+
+    auto incomplete_labels = bound_s2_graph();
+    incomplete_labels.find_node("solution_manifest")
+        ->attributes["s2_correctness"]["labels"]["fully_observed"] = false;
+    expect_s2_failure(incomplete_labels, "s2_point_in_time_conversion");
+
+    auto post_qualification = bound_s2_graph();
+    post_qualification.find_node("solution_manifest")
+        ->attributes["s2_correctness"]["feature_names"]
+        .push_back("opportunity_stage");
+    expect_s2_failure(post_qualification,
+                      "s2_post_qualification_leakage");
+
+    auto capacity = bound_s2_graph();
+    capacity.find_node("solution_manifest")
+        ->attributes["s2_correctness"]["routing"]["capacity_aware"] = false;
+    expect_s2_failure(capacity, "s2_capacity_routing");
+}
+
+TEST(SolutionRegistry, S2EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s2_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
 }
 
 } // namespace

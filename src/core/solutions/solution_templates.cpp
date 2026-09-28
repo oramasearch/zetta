@@ -8,8 +8,8 @@ namespace {
 
 using Json = nlohmann::json;
 
-Json frequency(int maximum) {
-    return {{"max_actions", maximum}, {"window_seconds", 30 * 86400}};
+Json frequency(int maximum, int window_days = 30) {
+    return {{"max_actions", maximum}, {"window_seconds", window_days * 86400}};
 }
 
 Json predicate(const std::string& field, bool value) {
@@ -92,6 +92,37 @@ void retention_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void lead_scoring_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "hot"}, {"minimum_score", 0.7}, {"action", "sales_queue_task"},
+         {"allowed_actions", {"sales_queue_task", "priority_queue_review", "no_contact"}}},
+        {{"name", "standard"}, {"minimum_score", 0.0}, {"action", "nurture_queue_task"},
+         {"allowed_actions", {"nurture_queue_task", "no_contact"}}}};
+    result.policy["actions"] = {
+        {"sales_queue_task", {{"autonomy", "A2"}, {"sla_seconds", 3600},
+                              {"frequency_cap", frequency(1, 7)}}},
+        {"nurture_queue_task", {{"autonomy", "A2"}, {"sla_seconds", 14400},
+                                {"frequency_cap", frequency(1, 7)}}},
+        {"priority_queue_review", {{"autonomy", "A1"}, {"sla_seconds", 3600},
+                                   {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 6;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("territory_eligible", true),
+        predicate("rep_capacity_available", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true), predicate("do_not_contact", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {{"hot", 0.1}, {"standard", 0.1}};
+    result.experiment.treatment_cells = {"routed"};
+    result.guardrails = {{"sla_miss_rate", 0.0, "maximum"},
+                         {"capacity_violation_rate", 0.0, "maximum"},
+                         {"routing_coverage_rate", 0.9, "minimum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -100,6 +131,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
             SolutionTemplates result = defaults_for(action);
             if (solution_id == "S-1") {
                 retention_defaults(result);
+            } else if (solution_id == "S-2") {
+                lead_scoring_defaults(result);
             }
             return result;
         }
