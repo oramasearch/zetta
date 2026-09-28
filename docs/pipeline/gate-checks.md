@@ -2,19 +2,20 @@
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three concrete checks are documented here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
@@ -116,6 +117,16 @@ Both checks pass and the gate allows deploy. Change `revenue` to `"string"` in t
 source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
 
+### `bandit_policy` — safe allocation constraints
+
+The bandit check engages on model steps whose `model_kind` is `bandit`,
+`bandits`, or `sequential_decisioning`. Such a step must declare numeric
+`exploration_floor` and `default_arm_cap` values. Every arm-specific cap must
+be between the floor and one. When `arms` are declared on the graph, their
+floors must fit within total probability one and their effective caps must be
+able to carry total probability one. The runtime repeats these checks after
+run-time arms are resolved from parameters or the input table.
+
 ```cpp
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/serialization.hpp"
@@ -145,11 +156,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks use the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
 result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+checks to land on the same extension point.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report

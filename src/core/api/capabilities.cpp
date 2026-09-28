@@ -530,6 +530,15 @@ const nlohmann::json& get_run_report_output_schema() {
              "id, name, and the metrics. `held_out_*` is present only when the run "
              "asked for a holdout; when it is absent the only figures available are "
              "in-sample and they flatter (#953)"}}},
+          {"metrics",
+           {{"type", "object"},
+            {"description", "bandit reward, regret, exploration, and row metrics"}}},
+          {"policy_table",
+           {{"type", "string"},
+            {"description", "bandit allocation-policy table reference"}}},
+          {"decisions_table",
+           {{"type", "string"},
+            {"description", "bandit propensity-log table reference"}}},
           {"drivers",
            {{"type", "array"},
             {"description", "feature -> weight, strongest first. A weight is what "
@@ -634,6 +643,63 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "bandit") {
+        nlohmann::json metric_facts = nlohmann::json::object();
+        for (const char* key :
+             {"cumulative_reward", "baseline_reward", "regret",
+              "exploration_share", "decisions", "rows_read",
+              "rows_excluded"}) {
+            if (const auto value = number(key)) {
+                metric_facts[key] = *value;
+            }
+        }
+        report["model"] = {{"id", model->id()},
+                           {"name", model->name()},
+                           {"kind", "bandit"},
+                           {"metrics", metric_facts}};
+        report["metrics"] = metric_facts;
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const auto value = number("rows_read")) {
+            dataset["rows_read"] = *value;
+        }
+        if (const auto value = number("rows_excluded")) {
+            dataset["rows_excluded"] = *value;
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(9));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        report["dataset"] = std::move(dataset);
+
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind != "dataset") {
+                continue;
+            }
+            if (output.name == "allocation policy") {
+                report["policy_table"] = output.ref;
+            }
+            if (output.name == "decision propensities") {
+                report["decisions_table"] = output.ref;
+            }
+        }
+        report["drivers"] = nlohmann::json::array();
+        report["at_risk"] = nlohmann::json::array();
+        report["caveats"] = nlohmann::json::array();
+        report["missing"] = nlohmann::json::array();
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2895,6 +2961,33 @@ const nlohmann::json& run_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description", "the registered model's name (default churn_model)"}}},
+          {"algorithm",
+           {{"type", "string"},
+            {"enum", {"thompson", "linucb", "linear_thompson"}},
+            {"description", "M-15 policy algorithm"}}},
+          {"arms",
+           {{"type", "array"},
+            {"minItems", 2},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"description", "M-15 arm names; inferred from the table when omitted"}}},
+          {"baseline_arm", {{"type", "string"}}},
+          {"decision_column", {{"type", "string"}, {"minLength", 1}}},
+          {"arm_column", {{"type", "string"}, {"minLength", 1}}},
+          {"reward_column", {{"type", "string"}, {"minLength", 1}}},
+          {"context_columns",
+           {{"type", "array"},
+            {"items", {{"type", "string"}, {"minLength", 1}}}}},
+          {"exploration_floor",
+           {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}},
+          {"default_arm_cap",
+           {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}},
+          {"arm_caps",
+           {{"type", "object"},
+            {"additionalProperties",
+             {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}}}},
+          {"ridge", {{"type", "number"}, {"exclusiveMinimum", 0}}},
+          {"confidence", {{"type", "number"}, {"minimum", 0}}},
+          {"seed", {{"type", "integer"}, {"minimum", 0}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},

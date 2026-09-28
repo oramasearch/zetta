@@ -556,6 +556,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/run.cpp
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
+  src/core/ml/bandit_methodology.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
@@ -653,6 +654,9 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/bandit.cpp
+  src/core/ml/bandit_train_job.cpp
+  src/core/ml/bandit_runner.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/lag_features.cpp

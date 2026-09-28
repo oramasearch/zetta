@@ -23,6 +23,8 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -245,6 +247,72 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneyM15CompilesRunsAndReportsItsOwnTable) {
+    const auto database = node.create_database("experiments");
+    ASSERT_TRUE(database);
+    const auto decisions = database->create_table("decisions");
+    ASSERT_TRUE(decisions);
+    for (int index = 0; index < 240; ++index) {
+        const bool best = index % 3 != 0;
+        decisions->add_row({{"decision_id", index},
+                            {"arm", best ? "best" : "control"},
+                            {"reward", best ? 1 : 0},
+                            {"context", static_cast<double>(index % 5)}});
+    }
+
+    journey::Journey bandit{"m15-bandit", {}};
+    bandit.steps = {
+        {"create the adaptive-allocation project", "create_project",
+         {{"name", "adaptive offers"}}},
+        {"capture its goal", "capture_intent",
+         {{"project", "adaptive offers"},
+          {"text", "Adaptively allocate offers while learning"}},
+         {.checks = {journey::not_empty("/input_id")}},
+         {{"input_id", "/input_id"}}},
+        {"compile M-15 against the pipeline's own table", "compile_intent",
+         {{"project", "adaptive offers"},
+          {"input_id", "$input_id"},
+          {"methodology", "M-15"},
+          {"name", "adaptive policy"},
+          {"hints", {{"source", "experiments"},
+                     {"table", "decisions"},
+                     {"arms", {"control", "best"}}}}},
+         {.checks = {journey::equals("/methodology", "M-15"),
+                     journey::equals("/runnable", true)}},
+         {{"graph", "/name"}}},
+        {"approve the proposed policy plan", "approve_plan",
+         {{"project", "adaptive offers"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"the bandit correctness checks pass", "gate",
+         {{"project", "adaptive offers"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/block_deploy", false)}}},
+        {"run the policy from its connect-step table", "run",
+         {{"project", "adaptive offers"},
+          {"graph", "$graph"},
+          {"arms", {"control", "best"}},
+          {"baseline_arm", "best"},
+          {"model_name", "journey_bandit"}},
+         {.checks = {journey::equals("/engine", "bandit"),
+                     journey::equals("/status", "succeeded")}},
+         {{"run_id", "/run_id"}}},
+        {"read back the completed run", "get_run",
+         {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 4)}}},
+        {"read back policy metrics and output tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/run/status", "succeeded"),
+                     journey::at_least("/metrics/cumulative_reward", 1),
+                     journey::not_empty("/policy_table"),
+                     journey::not_empty("/decisions_table"),
+                     journey::equals("/dataset/source",
+                                     "experiments.decisions")}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(bandit, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

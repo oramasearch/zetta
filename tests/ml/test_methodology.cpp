@@ -85,12 +85,13 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, index == 0);
+        const bool runnable = index == 0 || index == 14;
+        EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), index == 0);
-        if (index > 0) {
+                  runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].run), runnable);
+        if (!runnable) {
             EXPECT_EQ(methodologies[index].issue,
                       "https://github.com/oramasearch/zetta/issues/" +
                           std::to_string(1040 + index));
@@ -101,13 +102,43 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+    EXPECT_TRUE(methodologies[14].runnable);
+    EXPECT_TRUE(methodologies[14].issue.empty());
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     ASSERT_NE(zetta::ml::find_methodology("M-3"), nullptr);
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("S-11")->id, "M-15");
     EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
+}
+
+TEST(MethodologyRegistry, M15BuildsAndOwnsItsBanditPipeline) {
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology("M-15");
+    ASSERT_NE(methodology, nullptr);
+    ASSERT_TRUE(methodology->runnable);
+
+    zetta::ml::ShapeRequest request;
+    request.hints = {{"source", "experiments"},
+                     {"table", "decisions"},
+                     {"arms", {"control", "best"}},
+                     {"exploration_floor", 0.1},
+                     {"default_arm_cap", 0.9}};
+    const zetta::ir::ExecutionGraph graph = methodology->build_shape(request);
+    EXPECT_EQ(graph.node_count(), 5u);
+    EXPECT_EQ(graph.edge_count(), 4u);
+    ASSERT_TRUE(methodology->owns(graph));
+
+    const auto sources = graph.nodes_of_kind(zetta::ir::StepKind::Connect);
+    ASSERT_EQ(sources.size(), 1u);
+    EXPECT_EQ(sources.front()->attributes.at("source"), "experiments");
+    EXPECT_EQ(sources.front()->attributes.at("table"), "decisions");
+    const auto models = graph.nodes_of_kind(zetta::ir::StepKind::Model);
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models.front()->attributes.at("model_kind"), "bandit");
+    EXPECT_EQ(models.front()->attributes.at("arms").size(), 2u);
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {

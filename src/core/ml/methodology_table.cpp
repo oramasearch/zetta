@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m15_methodology();
 
 namespace {
 
@@ -164,14 +165,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "transcripts or task labels")},
                 {"transcripts", "speaker segments", "audio scores"},
                 {"word error rate", "F1"}, 1053),
-        planned("M-15", "Bandits & sequential decisioning", "Action & decision",
-                {"bandit", "bandits", "sequential_decisioning"}, {},
-                {"bandit", "explore", "sequential decision"},
-                {input("entity", true, "decision context"),
-                 input("treatment", true, "available actions"),
-                 input("label", true, "observed reward")},
-                {"action policy", "propensities"},
-                {"cumulative reward", "regret", "policy value"}, 1054),
+        make_m15_methodology(),
         planned("M-16", "Optimization / operations research",
                 "Action & decision", {"optimization", "operations_research"},
                 {}, {"optimize", "schedule", "allocate", "constraints"},
@@ -228,10 +222,24 @@ find_methodology(std::string_view id_or_model_kind_or_solution) {
     const std::string wanted = lower(id_or_model_kind_or_solution);
     for (const Methodology& methodology : methodologies()) {
         if (lower(methodology.id) == wanted ||
-            contains_value(methodology.model_kinds, wanted) ||
-            contains_value(methodology.solutions, wanted)) {
+            contains_value(methodology.model_kinds, wanted)) {
             return &methodology;
         }
+    }
+    const Methodology* planned_match = nullptr;
+    for (const Methodology& methodology : methodologies()) {
+        if (!contains_value(methodology.solutions, wanted)) {
+            continue;
+        }
+        if (methodology.runnable) {
+            return &methodology;
+        }
+        if (planned_match == nullptr) {
+            planned_match = &methodology;
+        }
+    }
+    if (planned_match != nullptr) {
+        return planned_match;
     }
     return nullptr;
 }

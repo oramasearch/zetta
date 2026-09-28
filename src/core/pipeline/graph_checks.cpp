@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -464,6 +465,94 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult BanditPolicyCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](const ir::Node& node, std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail,
+                           node_label(node) + ": " + std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", "");
+        if (kind != "bandit" && kind != "bandits" &&
+            kind != "sequential_decisioning") {
+            continue;
+        }
+        ++checked;
+        const auto floor_value = attributes.find("exploration_floor");
+        if (floor_value == attributes.end() || !floor_value->is_number()) {
+            return fail(*node, "exploration_floor must be declared");
+        }
+        const double floor = floor_value->get<double>();
+        if (!std::isfinite(floor) || !(floor > 0.0) || floor > 1.0) {
+            return fail(*node,
+                        "exploration_floor must be finite and in (0, 1]");
+        }
+        const auto default_cap_value = attributes.find("default_arm_cap");
+        if (default_cap_value == attributes.end() ||
+            !default_cap_value->is_number()) {
+            return fail(*node, "default_arm_cap must be declared");
+        }
+        const double default_cap = default_cap_value->get<double>();
+        if (!std::isfinite(default_cap) || default_cap < floor ||
+            default_cap > 1.0) {
+            return fail(*node,
+                        "default_arm_cap must be finite and no lower than "
+                        "exploration_floor");
+        }
+
+        const json caps = attributes.value("arm_caps", json::object());
+        if (!caps.is_object()) {
+            return fail(*node, "arm_caps must be an object");
+        }
+        for (const auto& [arm, value] : caps.items()) {
+            if (!value.is_number()) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be numeric");
+            }
+            const double cap = value.get<double>();
+            if (!std::isfinite(cap) || cap < floor || cap > 1.0) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be in [exploration_floor, 1]");
+            }
+        }
+
+        const auto arms_value = attributes.find("arms");
+        if (arms_value == attributes.end()) {
+            continue;
+        }
+        if (!arms_value->is_array() || arms_value->size() < 2) {
+            return fail(*node, "arms must declare at least two values");
+        }
+        if (floor * static_cast<double>(arms_value->size()) > 1.0) {
+            return fail(*node,
+                        "exploration floors exceed the available probability");
+        }
+        double total_cap = 0.0;
+        for (const json& arm_value : *arms_value) {
+            if (!arm_value.is_string()) {
+                return fail(*node, "every declared arm must be a string");
+            }
+            const std::string arm = arm_value.get<std::string>();
+            const auto cap = caps.find(arm);
+            total_cap += cap == caps.end() ? default_cap : cap->get<double>();
+        }
+        if (total_cap < 1.0) {
+            return fail(*node,
+                        "arm caps cannot carry total probability 1");
+        }
+    }
+    if (checked == 0) {
+        return CheckResult{name(), CheckStatus::Pass,
+                           "no bandit policy requires allocation checks"};
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every bandit policy has feasible floors and caps"};
 }
 
 } // namespace zetta::pipeline

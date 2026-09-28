@@ -15,8 +15,9 @@ that does the running.
 The gate ships the trivial `NonEmptyGraphCheck` so the path works end to end,
 plus the concrete schema/type and data-leakage / point-in-time checks (`#309` —
 see [gate-checks.md](gate-checks.md)) and the
-[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). They all
-implement the same `Check` seam and plug in without touching the gate;
+[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4), plus the
+M-15 `BanditPolicyCheck` ([#1054](https://github.com/oramasearch/zetta/issues/1054)). They all
+implement the same `Check` interface and plug in without touching the gate;
 `default_gate()` registers each.
 
 ## The shape
@@ -81,9 +82,9 @@ supports it.
 for free — `NonEmptyGraphCheck`, then the concrete `#309` checks (`SchemaTypeCheck`,
 `DataLeakageCheck` — see [gate-checks.md](gate-checks.md)), then the
 [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). The `#309`
-and entity-resolution checks are opt-in per step, so a graph that carries none of
-their annotations still passes. As further concrete checks land they are
-registered there too.
+and entity-resolution checks are opt-in per step; `BanditPolicyCheck` engages
+only on M-15 model steps. A graph outside those scopes still passes. As further
+concrete checks land they are registered there too.
 
 ## Using it
 
@@ -158,8 +159,9 @@ rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
 `#309` schema/type and data-leakage / point-in-time checks
 ([gate-checks.md](gate-checks.md)) and the
-[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) already plug into
-this seam; the gate's wiring into deploy lands on top of it as separate work.
+[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) and M-15
+allocation check already plug into this interface; the gate's wiring into
+deploy lands on top of it as separate work.
 
 See also [gate-checks.md](gate-checks.md) (the concrete checks),
 [validation.md](validation.md) (the result type), the

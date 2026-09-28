@@ -42,6 +42,13 @@ facts as one generated the moment the run ended, and that anything querying
 It follows RULE-7: observable state is a view computed from the live source, never a
 hand-synced copy.
 
+M-15 bandit reports use the same on-read rule. Their Model record supplies
+`cumulative_reward`, fixed-baseline reward, regret, exploration share, decision
+count, and rows read/excluded. Run lineage supplies the source table, while Run
+outputs name the allocation-policy and propensity-log tables. The report exposes
+those as `metrics`, `dataset`, `policy_table`, and `decisions_table`; it does not
+manufacture churn drivers or an at-risk ranking for a policy run.
+
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.
 The at-risk rows are read without typed accessors that throw: a `rank` or `risk`
@@ -118,6 +125,6 @@ tool list, and the agent's read-tool allowlist.
 
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Other engines: any `StepExecutor` can emit a `report` output; churn and M-15
+  currently record the facts behind their reports.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

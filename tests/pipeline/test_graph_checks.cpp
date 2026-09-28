@@ -13,6 +13,7 @@
 
 using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
+using zetta::pipeline::BanditPolicyCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::SchemaTypeCheck;
@@ -272,15 +273,69 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+// ---- bandit_policy ----------------------------------------------------------
+
+TEST(BanditPolicyCheck, RefusesMissingExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"default_arm_cap", 1.0}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exploration_floor"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesAnArmCapBelowTheExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 1.0},
+                        {"arm_caps", {{"guardrail", 0.05}}}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("guardrail"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesCapsThatCannotCarryTotalProbability) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"a", "b"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.4},
+                        {"arm_caps", json::object()}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("total probability"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "best", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.8},
+                        {"arm_caps", {{"guardrail", 0.2}}}},
+                   "policy");
+    EXPECT_EQ(BanditPolicyCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
+
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
     EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[4]->name(), "bandit_policy");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -596,6 +651,8 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bandit"),
+              implemented.end());
     for (const char* unshipped :
          {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())

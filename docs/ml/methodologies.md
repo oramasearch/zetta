@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-15 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -54,7 +54,7 @@ for structural execution and logs that it trained and scored nothing.
 The methodology is `null` for structural graphs and unknown model kinds;
 structural graphs are runnable, while unknown model kinds are not.
 
-## M-1 reference implementation
+## Runnable implementations
 
 `src/core/ml/methodology.cpp` wraps the existing behavior behind the interface:
 
@@ -66,6 +66,19 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+`src/core/ml/bandit_methodology.cpp` provides M-15 independently:
+
+- `build_shape` builds connect → context preparation → bandit model → policy
+  output → propensity-log output;
+- `owns` recognizes the M-15 model kinds; and
+- `run` resolves the connect step's table when no explicit dataset is supplied,
+  runs the native policy, persists the policy and decision tables, and records
+  their lineage and metrics on the Run and Model records.
+
+S-11 is shared with the planned M-8 recommendation entry. Solution lookup
+prefers a runnable implementation, so compiling S-11 selects M-15 until M-8
+has its own runnable adapter.
 
 ## Adding a methodology
 

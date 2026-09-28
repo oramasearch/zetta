@@ -16,6 +16,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [bandit.md](bandit.md) — M-15 native Thompson sampling, LinUCB, and linear Thompson sampling with allreduced per-arm state, constrained propensities, persisted policy tables, and registry execution (#1054).
 
 ## Methodology portfolio
 
@@ -40,7 +41,7 @@ carry `*`. Regenerate it with
 | M-12 | Graph ML | Identity & structure | graph_ml, graph | — | entity*, group*, time | node scores, links, graph embeddings | average precision, AUC, lift | not runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
 | M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label | classifications, detections, masks | mAP, IoU, escape rate | not runnable | [#1052](https://github.com/oramasearch/zetta/issues/1052) |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, label | transcripts, speaker segments, audio scores | word error rate, F1 | not runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
-| M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |
+| M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | S-11 | entity*, treatment*, label*, feature | allocation policy, decision propensities | cumulative reward, regret, exploration share | runnable | — |
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | feature*, group* | plan, allocation, constraint trace | objective value, constraint violations | not runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
 | M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | feature*, group | posterior, prediction intervals | coverage, CRPS, calibration | not runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |

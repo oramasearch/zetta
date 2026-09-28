@@ -47,7 +47,9 @@ relay it to a person.
   metrics, and runnable status. `compile_intent` accepts a methodology or
   solution selector; unsupported work names its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
-  pipeline's methodology and runnable status. See
+  pipeline's methodology and runnable status. M-15 compiles and runs its own
+  bandit shape against the connect step's table, then reports policy metrics
+  and its output tables. See
   [the registry contract](../../ml/methodologies.md).
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:

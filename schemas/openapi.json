@@ -6517,9 +6517,17 @@
                           "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
                           "type": "object"
                         },
+                        "decisions_table": {
+                          "description": "bandit propensity-log table reference",
+                          "type": "string"
+                        },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
+                        },
+                        "metrics": {
+                          "description": "bandit reward, regret, exploration, and row metrics",
+                          "type": "object"
                         },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
@@ -6528,6 +6536,10 @@
                         "model": {
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
+                        },
+                        "policy_table": {
+                          "description": "bandit allocation-policy table reference",
+                          "type": "string"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
@@ -10370,6 +10382,50 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "algorithm": {
+                    "description": "M-15 policy algorithm",
+                    "enum": [
+                      "thompson",
+                      "linucb",
+                      "linear_thompson"
+                    ],
+                    "type": "string"
+                  },
+                  "arm_caps": {
+                    "additionalProperties": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 1,
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "arm_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "arms": {
+                    "description": "M-15 arm names; inferred from the table when omitted",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "baseline_arm": {
+                    "type": "string"
+                  },
+                  "confidence": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "context_columns": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10409,6 +10465,20 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "decision_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "default_arm_cap": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
+                  "exploration_floor": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10433,6 +10503,18 @@
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "reward_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ridge": {
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "seed": {
+                    "minimum": 0,
+                    "type": "integer"
                   },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
