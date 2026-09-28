@@ -10,6 +10,7 @@
 
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
@@ -145,18 +146,16 @@ public:
                                                std::string new_name = {});
 
     // Compile a stored natural-language **intent** input into a new, editable
-    // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge from a
-    // captured intent (FEAT-1) to a reviewable graph in the Graph Workspace. Reads
-    // the intent input's payload body, runs the templated compiler
-    // (zetta::pipeline::compile_intent), and persists the resulting skeleton as a named
-    // ProjectGraph (replicated + editable, exactly like create_graph). `name`
-    // defaults to "<intent-shape> skeleton" when empty. Returns an empty handle if
-    // the input id is unknown, the input is not an Intent, its body is not present
-    // locally, the intent is empty, or the (resolved) name collides with an
-    // existing graph. The intent input is left untouched (it is an immutable
-    // provenance record); the compiled graph is a fresh, separate artifact.
-    std::shared_ptr<ProjectGraph> compile_intent_to_graph(
-        const std::string& input_id, std::string name = {});
+    // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge
+    // from a captured intent (FEAT-1) to a reviewable graph in the Graph
+    // Workspace. Reads the intent input's payload body, resolves the selected
+    // methodology, and persists its graph as a named ProjectGraph. `options`
+    // may select a methodology or solution and carry hints. `error` receives a
+    // compile refusal. The M-1 default name remains "churn skeleton".
+    std::shared_ptr<ProjectGraph>
+    compile_intent_to_graph(const std::string& input_id, std::string name = {},
+                            const IntentCompileOptions& options = {},
+                            std::string* error = nullptr);
 
     // Approve a proposed plan (#885, review-before-build): mark the graph
     // (found by `name`) approved by `approver` at `at` (ISO-8601), capture the
@@ -205,4 +204,4 @@ private:
     zetta::governance::AuditSink* audit_;  // null = not audited (no node behind this project)
 };
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

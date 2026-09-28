@@ -133,7 +133,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
-| `get_project` | read | api:query | one project's full detail (metadata + inputs + graphs) by name or uuid |
+| `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
@@ -144,6 +144,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
+| `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
@@ -158,12 +159,12 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `unexpose_index` | action | orchestration:unexpose_index | withdraw the index's search endpoint everywhere in one action |
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
-| `compile_intent` | action | orchestration:compile_intent | compile a captured intent into a stored, editable graph (audited graph change) |
+| `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |
 | `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
-| `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
+| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner; refuse unknown or unavailable model kinds; graphs without a model remain structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008, [add-dataset.md](../data/add-dataset.md)) |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |

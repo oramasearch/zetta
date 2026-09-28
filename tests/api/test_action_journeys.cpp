@@ -160,6 +160,93 @@ TEST_F(ActionJourneys, JourneyGateBlockedDeployAndRunCarryTheReason) {
     EXPECT_TRUE(report.ok) << report.summary();
 }
 
+TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
+    const ApiResult listed =
+        call("list_methodologies", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
+    EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
+    EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
+
+    ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
+    const ApiResult captured =
+        call("capture_intent", {{"project", "portfolio"},
+                                {"text", "Group customers into personas"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const std::string input_id = captured.value.at("input_id");
+
+    const ApiResult explicit_m3 =
+        call("compile_intent", {{"project", "portfolio"},
+                                {"input_id", input_id},
+                                {"methodology", "M-3"}});
+    EXPECT_FALSE(explicit_m3.ok);
+    EXPECT_EQ(explicit_m3.error.code, "not_supported");
+    EXPECT_NE(explicit_m3.error.message.find("M-3"), std::string::npos);
+    EXPECT_NE(explicit_m3.error.message.find("1042"), std::string::npos);
+
+    const ApiResult solution =
+        call("compile_intent", {{"project", "portfolio"},
+                                {"input_id", input_id},
+                                {"solution", "S-1"},
+                                {"name", "solution graph"}});
+    ASSERT_TRUE(solution.ok) << solution.error.message;
+    EXPECT_EQ(solution.value.at("methodology"), "M-1");
+    EXPECT_TRUE(solution.value.at("runnable"));
+
+    const ApiResult by_keyword = call(
+        "compile_intent", {{"project", "portfolio"}, {"input_id", input_id}});
+    EXPECT_FALSE(by_keyword.ok);
+    EXPECT_EQ(by_keyword.error.code, "not_supported");
+    EXPECT_NE(by_keyword.error.message.find("1042"), std::string::npos);
+
+    const ApiResult unknown =
+        call("capture_intent",
+             {{"project", "portfolio"},
+              {"text", "Summarize incoming support tickets by topic"}});
+    ASSERT_TRUE(unknown.ok) << unknown.error.message;
+    const ApiResult unmatched =
+        call("compile_intent", {{"project", "portfolio"},
+                                {"input_id", unknown.value.at("input_id")}});
+    EXPECT_FALSE(unmatched.ok);
+    EXPECT_EQ(unmatched.error.code, "not_supported");
+    EXPECT_NE(unmatched.error.message.find("Runnable methodologies"),
+              std::string::npos);
+
+    auto project = node.find_project("portfolio");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    graph.add_node(zetta::ir::StepKind::Connect, "source", {}, "source");
+    graph.add_node(zetta::ir::StepKind::Model, "segments",
+                   nlohmann::json{{"model_kind", "segmentation"}}, "segments");
+    graph.add_edge("source", "segments");
+    ASSERT_TRUE(project->create_graph("segmentation graph", std::move(graph)));
+
+    const ApiResult graph_view =
+        call("get_graph",
+             {{"project", "portfolio"}, {"graph", "segmentation graph"}});
+    ASSERT_TRUE(graph_view.ok) << graph_view.error.message;
+    EXPECT_EQ(graph_view.value.at("methodology"), "M-3");
+    EXPECT_FALSE(graph_view.value.at("runnable"));
+
+    const ApiResult project_view = call("get_project", {{"name", "portfolio"}});
+    ASSERT_TRUE(project_view.ok) << project_view.error.message;
+    bool found = false;
+    for (const nlohmann::json& entry : project_view.value.at("graphs")) {
+        if (entry.at("name") == "segmentation graph") {
+            found = true;
+            EXPECT_EQ(entry.at("methodology"), "M-3");
+            EXPECT_FALSE(entry.at("runnable"));
+        }
+    }
+    EXPECT_TRUE(found);
+
+    const ApiResult run = call(
+        "run", {{"project", "portfolio"}, {"graph", "segmentation graph"}});
+    EXPECT_FALSE(run.ok);
+    EXPECT_EQ(run.error.code, "not_supported");
+    EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

@@ -345,10 +345,11 @@ TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("survival"), std::string::npos)
+    EXPECT_NE(result.reason.find("Survival / time-to-event (M-5)"),
+              std::string::npos)
         << "the reason must name the methodology that was refused";
-    EXPECT_NE(result.reason.find("gbdt"), std::string::npos)
-        << "the reason must name what IS implemented, so the author knows the way forward";
+    EXPECT_NE(result.reason.find("1044"), std::string::npos)
+        << "the reason must name the methodology's implementation issue";
 }
 
 TEST(MethodologyCheck, AModelStepWithNoMethodologyIsSkippedNotFailed) {
@@ -371,10 +372,8 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
-    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end())
-        << "M-4 ships: train_forecast composes lag features, a temporal split, the squared-error "
-           "objective and a rolling-origin backtest";
-    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster"}) {
+    for (const char* unshipped :
+         {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -503,7 +502,7 @@ TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
 //
 // A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
 // proposing a forecast the engine silently runs as a classifier.
-TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
+TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRegistryRunPathLands) {
     zetta::agent::EndState facts;
     facts.set("connect", true);
     facts.set("model", true);
@@ -512,12 +511,9 @@ TEST(MethodologyEndToEnd, AForecastNowPassesBecauseItsRunPathExists) {
     facts.set("temporal_validation", true);
 
     const auto graph = zetta::agent::build_solution_graph(facts);
-    // This test asserted a REFUSAL for most of this epic, and that was correct: forecast had no
-    // run path, so passing it would have meant silently running the churn path under a
-    // forecasting name. `train_forecast` landing is what changed the expected answer.
-    EXPECT_FALSE(gate_over(graph).block_deploy)
-        << "forecast is implemented now - lag features, temporal split, squared-error objective, "
-           "rolling-origin backtest";
+    EXPECT_TRUE(gate_over(graph).block_deploy)
+        << "M-4 primitives do not make the methodology runnable; #1043 owns "
+           "its run path";
 
     // And the profile is still enforced: the same methodology WITHOUT temporal validation, or
     // WITH calibration, is refused.
@@ -564,7 +560,7 @@ TEST(MethodologyEndToEnd, TheTwoShapesAreNotInterchangeable) {
 
 // Criterion 1: a forecasting ask produces the forecasting pipeline; a churn ask still produces
 // the calibrated one. Before this epic both produced byte-identical graphs.
-TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
+TEST(EpicAcceptance, ForecastAndChurnProduceDifferentVerdicts) {
     const auto build = [](const std::string& model_kind, bool calibrated, bool temporal) {
         zetta::agent::EndState facts;
         facts.set("connect", true);
@@ -581,7 +577,9 @@ TEST(EpicAcceptance, ForecastAndChurnProduceDifferentAcceptedPipelines) {
     const auto forecast = build("forecast", false, true);
 
     EXPECT_FALSE(gate_over(churn).block_deploy) << "churn calibrates and is accepted";
-    EXPECT_FALSE(gate_over(forecast).block_deploy) << "forecast is backtested and is accepted";
+    EXPECT_TRUE(gate_over(forecast).block_deploy)
+        << "M-4 remains unavailable until #1043 supplies its registry "
+           "callbacks";
 
     // And they are not interchangeable — the neighbouring shape under the other name is refused.
     EXPECT_TRUE(gate_over(build("forecast", true, true)).block_deploy)
@@ -598,8 +596,8 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
-    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "forecast"), implemented.end());
-    for (const char* unshipped : {"anomaly", "uplift", "survival", "cluster", "graph"}) {
+    for (const char* unshipped :
+         {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }
