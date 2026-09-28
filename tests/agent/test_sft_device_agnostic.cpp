@@ -216,18 +216,12 @@ TEST(SftDeviceAgnostic, FineTunesTheBaseAgentOnAnyComputeDevice) {
         const SftExample& example = examples[order[position]];
         const std::vector<int>& ids = example.tokens;
 
-        zetta::autograd::zero_grad(model->parameters());
-        // Predict token t+1 from position t: drop the last row of logits and the first token.
-        const Tensor logits = model->forward(ids);
-        const Tensor predicted =
-            zetta::autograd::row_slice(logits, 0, static_cast<int>(ids.size()) - 1);
-        const std::vector<int> targets(ids.begin() + 1, ids.end());
-        // Score the completion only (#932) — the loss now means "how well did it answer".
-        Tensor loss = cross_entropy(predicted, targets, example.first_scored());
-        loss.backward();
-        optimizer.step(model->parameters());
-
-        const double value = loss.data()[0];
+        std::string step_error;
+        const auto step_metrics = zetta::autograd::fine_tune_qwen_step(
+            *model, optimizer, ids, example.first_scored(),
+            static_cast<std::uint64_t>(step), {}, &step_error);
+        ASSERT_TRUE(step_metrics) << step_error;
+        const double value = step_metrics->loss;
         if (step == 0) first_loss = value;
         last_loss = value;
         min_loss = std::min(min_loss, value);

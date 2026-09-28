@@ -856,7 +856,8 @@ SyntheticPrivateResult run_synthetic_private(
     const std::vector<nlohmann::json>& local_rows,
     const data::DatasetContract& contract,
     const SyntheticPrivateParams& params,
-    const PrivateCollectives& collectives, const std::string& tag) {
+    const PrivateCollectives& collectives, const std::string& tag,
+    const TrainHooks& hooks) {
     SyntheticPrivateResult result;
     if (!collectives.allreduce || !collectives.gather ||
         !collectives.broadcast) {
@@ -987,9 +988,13 @@ SyntheticPrivateResult run_synthetic_private(
             GbdtReduce operation) {
             return reducer(round, local, operation);
         };
+    // Training-data metrics are additional private releases, not telemetry.
+    // Suppress before computing or reducing them, even with a hook installed.
+    TrainHooks private_hooks = hooks;
+    private_hooks.suppress_metrics = true;
     const GbdtTrainResult private_model = train_gbdt(
         private_columns, result.feature_names, private_labels, params.gbdt,
-        private_reduce, tag + ".dp_gbdt");
+        private_reduce, tag + ".dp_gbdt", private_hooks);
     if (!private_model.ok()) {
         result.synthetic_rows.clear();
         result.error = "synthetic_private: DP GBDT failed: " +
@@ -1014,7 +1019,7 @@ SyntheticPrivateResult run_synthetic_private(
 SyntheticPrivateResult run_synthetic_private(
     const std::vector<nlohmann::json>& rows,
     const data::DatasetContract& contract,
-    const SyntheticPrivateParams& params) {
+    const SyntheticPrivateParams& params, const TrainHooks& hooks) {
     const PrivateCollectives collectives{
         .allreduce = [](const std::string&, const std::vector<double>& local,
                         GbdtReduce) {
@@ -1028,7 +1033,8 @@ SyntheticPrivateResult run_synthetic_private(
             return root_value;
         },
         .is_root = true};
-    return run_synthetic_private(rows, contract, params, collectives);
+    return run_synthetic_private(rows, contract, params, collectives,
+                                 "synthetic_private", hooks);
 }
 
 }  // namespace zetta::ml

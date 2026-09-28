@@ -153,6 +153,7 @@ public:
     // the artifacts it materialized (the Run's outputs) + lineage sources, or ok=false
     // with a reason on a compute failure (the orchestrator then fail-fasts the run).
     zetta::pipeline::StepOutcome run_step(const ir::Node& step) const override;
+    void bind_run(Node& node, const std::string& run_id) override;
 
     // --- Produced artifacts (populated as the matching step runs) ---------------
 

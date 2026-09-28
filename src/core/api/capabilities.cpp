@@ -4975,7 +4975,31 @@ ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
     request.project = project.get();
     request.graph = graph.get();
     request.input = input;
-    return methodology->run(request);
+    ApiResult result = methodology->run(request);
+    if (!result.ok || !result.value.contains("run_id") ||
+        !result.value.at("run_id").is_string()) {
+        return result;
+    }
+    const std::string run_id = result.value.at("run_id").get<std::string>();
+    const std::shared_ptr<zetta::pipeline::Run> run =
+        context.node.find_run(run_id);
+    if (!run || !run->value().metrics_suppressed.empty() ||
+        !run->value().metrics.at("series").empty()) {
+        return result;
+    }
+    const bool completed =
+        run->status() == zetta::pipeline::RunStatus::Succeeded;
+    std::string metric_error;
+    if (!context.node.log_run_metrics(
+            run_id, 0,
+            {{completed ? "fit.completed" : "fit.started", 1.0}}, {},
+            &metric_error)) {
+        return ApiResult::failure(
+            "engine_error",
+            "methodology Run was created but its initial metric failed: " +
+                metric_error);
+    }
+    return result;
 }
 // --- score ---------------------------------------------------------------------
 
@@ -9513,6 +9537,8 @@ void register_core_capabilities(Registry& registry) {
 
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
+    register_run_metrics_capabilities(registry);
+    register_study_capabilities(registry);
     register_solution_capabilities(registry);
 
     // Versioned score-to-action policy (#1104).

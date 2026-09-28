@@ -7,7 +7,7 @@ orienting on the codebase or deciding *where* a new capability belongs; the per-
 in the sibling directories.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, the async runtime and cluster, pub/sub (node-local messaging, the one locking subsystem), and module map.
-- [code-map.md](code-map.md) — the annotated file-by-file map of the codebase (build targets, include/zetta, src/core, src/gui, tests).
+- [code-map.md](code-map.md) — the annotated file-by-file map of the codebase (build targets, include/zetta, src/core, src/gui, tests), including the Run-metric registry and native trainer hooks.
 - [../pubsub/crud.md](../pubsub/crud.md) — node-local message mutation and async
   REST/MCP browse; pub/sub stores remain authoritative and D39 remains deferred.
 - [observability.md](observability.md) — **a foundation**: every operation captures intent · plan · performance · result shape as OTel-style spans threaded by trace id across surfaces and nodes; crash reports; feedback bundles; the traced test suite.

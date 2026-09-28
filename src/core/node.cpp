@@ -91,6 +91,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch graphs;
     ReconcileBatch deployments;
     ReconcileBatch runs;
+    ReconcileBatch studies;
     ReconcileBatch models;
     ReconcileBatch monitors;
     ReconcileBatch experiments;
@@ -135,6 +136,9 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kRunPrefix)) {
         return &batches.runs;
+    }
+    if (key.starts_with(catalog::kStudyPrefix)) {
+        return &batches.studies;
     }
     if (key.starts_with(catalog::kModelPrefix)) {
         return &batches.models;
@@ -434,6 +438,7 @@ bool Node::start() {
     load_projects();
     load_deployments();
     load_runs();
+    load_studies();
     load_models();
     load_monitors();
     load_workspace_profiles();
@@ -466,12 +471,12 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu experiments, %zu monitors, "
+        "%zu deployments, %zu runs, %zu studies, %zu models, %zu experiments, %zu monitors, "
         "%zu indexes, %zu jobs, "
         "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
         "%zu audit events, %zu ledger entries)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size(), deployments_.size(), runs_.size(), models_.size(),
+        projects_.size(), deployments_.size(), runs_.size(), studies_.size(), models_.size(),
         experiment_manager_.experiments().size(), monitors_.size(), indexes_.size(),
         jobs_.size(), dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
@@ -1533,6 +1538,215 @@ std::shared_ptr<zetta::pipeline::Run> Node::find_run(const std::string& id) cons
         if (run->id() == id) return run;
     }
     return nullptr;
+}
+
+bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
+                           std::map<std::string, double> values,
+                           std::string time, std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    if (run->value().metrics_suppressed.empty()) {
+        const zetta::cluster::NodeMetrics host = sample_node_metrics();
+        if (host.cpu_percent_available && !values.contains("system.cpu.percent")) {
+            values["system.cpu.percent"] = host.cpu_percent;
+        }
+        if (host.memory_available) {
+            values.try_emplace("system.memory.used_bytes",
+                               static_cast<double>(host.memory_used_bytes));
+            values.try_emplace("system.memory.percent", host.memory_percent);
+        }
+        if (host.gpu_available) {
+            values.try_emplace("system.gpu.percent", host.gpu_percent);
+            values.try_emplace("system.gpu.vram_used_bytes",
+                               static_cast<double>(host.vram_used_bytes));
+        }
+        if (const auto tokens = values.find("train.tokens_per_second");
+            tokens != values.end()) {
+            values.try_emplace("system.throughput.per_second", tokens->second);
+        } else if (const auto rows = values.find("train.rows_per_second");
+                   rows != values.end()) {
+            values.try_emplace("system.throughput.per_second", rows->second);
+        }
+    }
+    if (time.empty()) {
+        time = zetta::util::now_iso8601();
+    }
+    if (!run->log_metrics(step, values, time, error)) {
+        return false;
+    }
+    if (pubsub_ == nullptr) {
+        return true;
+    }
+
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "run-metrics"}, {}};
+    const zetta::pubsub::Address topic{"topic", "run-metrics." + run_id};
+    if (!pubsub_->topic_settings(topic)) {
+        zetta::pubsub::TopicSettings settings;
+        settings.exposed = true;
+        settings.lifecycle = zetta::pubsub::TopicLifecycle::Ephemeral;
+        std::string reason;
+        if (!pubsub_->create_topic(engine, topic, settings, &reason) &&
+            !pubsub_->topic_settings(topic)) {
+            if (error != nullptr) {
+                *error = "/run: metric batch was stored but its live topic could not be created: " +
+                         reason;
+            }
+            return false;
+        }
+    }
+    const std::optional<zetta::pubsub::TopicSettings> settings =
+        pubsub_->topic_settings(topic);
+    if (!settings || !settings->exposed) {
+        if (error != nullptr) {
+            *error = "/run: metric batch was stored but topic " +
+                     topic.to_string() + " is not exposed";
+        }
+        return false;
+    }
+    zetta::pubsub::PublishRequest request;
+    request.to = {topic};
+    request.encoding = zetta::pubsub::Encoding::Json;
+    request.mime_type = "application/json";
+    request.correlation_id = run_id;
+    request.payload = nlohmann::json{{"run", run_id},
+                                     {"step", step},
+                                     {"values", values},
+                                     {"time", time}}
+                          .dump();
+    const zetta::pubsub::PublishResult published =
+        pubsub_->publish(engine, std::move(request));
+    if (!published.accepted) {
+        if (error != nullptr) {
+            *error = "/run: metric batch was stored but live publish failed: " +
+                     published.error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool Node::log_run_params(const std::string& run_id, nlohmann::json params,
+                          std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_params(std::move(params), error);
+}
+
+bool Node::log_run_artifact(const std::string& run_id,
+                            nlohmann::json artifact, std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_artifact(std::move(artifact), error);
+}
+
+// ----- studies (replicated AutoML searches; each trial is a Run) ------------
+
+void Node::load_studies() {
+    studies_.clear();
+    std::error_code error_code;
+    fs::create_directories(config_.data_dir, error_code);
+    for (const auto& entry : fs::directory_iterator(config_.data_dir, error_code)) {
+        if (!entry.is_directory()) continue;
+        const fs::path path = entry.path() / "study.json";
+        if (!fs::exists(path)) continue;
+        std::ifstream input(path);
+        const nlohmann::json document = nlohmann::json::parse(
+            input, nullptr, /*allow_exceptions=*/false);
+        std::string reason;
+        const std::optional<zetta::ml::StudyValue> value =
+            document.is_discarded()
+                ? std::nullopt
+                : zetta::ml::parse_study_value(document, &reason);
+        if (!value) {
+            std::printf("zetta: skipping invalid study %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        document.is_discarded() ? "unparseable JSON"
+                                                : reason.c_str());
+            continue;
+        }
+        studies_.push_back(std::make_shared<zetta::ml::Study>(
+            entry.path().filename().string(), *value, entry.path(), replication_));
+    }
+    std::ranges::sort(studies_, [](const auto& left, const auto& right) {
+        if (left->value().created != right->value().created) {
+            return left->value().created < right->value().created;
+        }
+        return left->id() < right->id();
+    });
+}
+
+std::shared_ptr<zetta::ml::Study> Node::create_study(
+    zetta::ml::StudySpec spec, std::string* error) {
+    if (!zetta::ml::validate_study_spec(spec, error)) return nullptr;
+    if (find_study(spec.name)) {
+        if (error != nullptr) *error = "/name: a study with this name already exists";
+        return nullptr;
+    }
+    zetta::ml::StudyValue value;
+    value.spec = std::move(spec);
+    value.created = zetta::util::now_iso8601();
+    value.updated = value.created;
+    const std::string id = zetta::util::new_uuid();
+    if (replication_ != nullptr) {
+        replication_->set(catalog::study_key(id), zetta::ml::to_json(value));
+    }
+    return materialize_study(id, std::move(value));
+}
+
+std::shared_ptr<zetta::ml::Study> Node::materialize_study(
+    std::string id, zetta::ml::StudyValue value) {
+    if (const auto existing = find_study(id)) return existing;
+    const fs::path directory = fs::path(config_.data_dir) / id;
+    std::error_code error_code;
+    fs::create_directories(directory, error_code);
+    if (error_code) return nullptr;
+    auto study = std::make_shared<zetta::ml::Study>(
+        std::move(id), std::move(value), directory, replication_);
+    study->persist_meta();
+    studies_.push_back(study);
+    return study;
+}
+
+std::shared_ptr<zetta::ml::Study> Node::find_study(
+    const std::string& id_or_name) const {
+    const auto found = std::ranges::find_if(
+        studies_, [&](const std::shared_ptr<zetta::ml::Study>& study) {
+            return study->id() == id_or_name ||
+                   study->spec().name == id_or_name;
+        });
+    return found == studies_.end() ? nullptr : *found;
+}
+
+bool Node::drop_study(const std::string& id) {
+    if (!find_study(id)) return false;
+    if (replication_ != nullptr) replication_->remove(catalog::study_key(id));
+    return materialize_drop_study(id);
+}
+
+bool Node::materialize_drop_study(const std::string& id) {
+    const auto found = std::ranges::find(studies_, id,
+                                         &zetta::ml::Study::id);
+    if (found == studies_.end()) return false;
+    std::error_code error_code;
+    fs::remove_all((*found)->dir(), error_code);
+    studies_.erase(found);
+    return true;
 }
 
 // ----- models (a registered trained model; replicated as model:<uuid>) -------
@@ -3950,6 +4164,12 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::run_key(run->id()), run->metadata());
         }
     }
+    for (const auto& study : studies_) {
+        if (!already_replicated(catalog::study_key(study->id()))) {
+            replication_->set(catalog::study_key(study->id()),
+                              study->metadata());
+        }
+    }
     for (const auto& model : models_) {
         if (!already_replicated(catalog::model_key(model->id()))) {
             replication_->set(catalog::model_key(model->id()),
@@ -4030,6 +4250,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_graphs(snapshot);
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
+    reconcile_studies(snapshot);
     reconcile_models(snapshot);
     reconcile_monitors(snapshot);
     reconcile_workspace_profiles(snapshot);
@@ -4073,6 +4294,9 @@ void Node::reconcile_replication_changes(
     }
     if (!batches.runs.keys.empty()) {
         reconcile_runs(batches.runs.values, &batches.runs.keys);
+    }
+    if (!batches.studies.keys.empty()) {
+        reconcile_studies(batches.studies.values, &batches.studies.keys);
     }
     if (!batches.models.keys.empty()) {
         reconcile_models(batches.models.values, &batches.models.keys);
@@ -4616,6 +4840,36 @@ void Node::reconcile_runs(
             materialize_run(id, std::move(value));
         } else if (run->metadata() != to_json(value)) {
             run->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_studies(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    std::map<std::string, zetta::ml::StudyValue> desired;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kStudyPrefix);
+        if (id.empty()) continue;
+        if (std::optional<zetta::ml::StudyValue> parsed =
+                zetta::ml::parse_study_value(value)) {
+            desired.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& study : studies_) local_ids.push_back(study->id());
+    for (const std::string& id : local_ids) {
+        if (reconciliation_includes_key(changed_keys, catalog::study_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_study(id);
+        }
+    }
+    for (auto& [id, value] : desired) {
+        const auto study = find_study(id);
+        if (!study) {
+            materialize_study(id, std::move(value));
+        } else if (study->metadata() != zetta::ml::to_json(value)) {
+            study->apply_value(std::move(value));
         }
     }
 }

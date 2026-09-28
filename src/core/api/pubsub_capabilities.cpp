@@ -409,7 +409,7 @@ ApiResult handle_receive_events(const nlohmann::json& input, ApiContext& context
     const auto waiter = wait.count() > 0 ? context.wait_event : nullptr;
     // REST and MCP register before this no-wait read, then suspend outside
     // the registry when the result is empty. Direct callers without an event
-    // receive the immediate read (#1076, #1136).
+    // receive the immediate read (#1076, #1136, #1137).
     auto events = pubsub->read_events(
         identity_of(context), *topic, from, max, std::chrono::milliseconds(0),
         &reason, waiter);

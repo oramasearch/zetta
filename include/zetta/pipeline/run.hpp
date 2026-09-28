@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,6 +77,15 @@ struct RunValue {
     // Frozen input choices, not a fresh analysis at report time (#1062).
     nlohmann::json features = {{"used", nlohmann::json::array()},
                                {"excluded", nlohmann::json::array()}};
+    // Append-only training/evaluation measurements (#1137). Series are stored
+    // column-wise as parallel steps/values/times arrays. The closed schema also
+    // carries one-time flattened params, derived summaries and typed chart data.
+    nlohmann::json metrics = {{"params", nlohmann::json::object()},
+                              {"series", nlohmann::json::object()},
+                              {"summary", nlohmann::json::object()},
+                              {"artifacts", nlohmann::json::array()}};
+    // Empty for ordinary runs; DP runs release only their existing final report.
+    std::string metrics_suppressed;
 };
 
 // Serialize a run value to its JSON shape (no id). The inverse of
@@ -138,6 +149,25 @@ public:
     void set_lineage(RunLineage lineage);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
     bool set_features(nlohmann::json features, std::string* error = nullptr);
+    void suppress_metrics_for_privacy();
+
+    // The one internal write API used by trainers. A metric's step must be
+    // strictly greater than its previous step. Values must be finite.
+    bool log_metrics(std::uint64_t step,
+                     const std::map<std::string, double>& values,
+                     std::string time = {}, std::string* error = nullptr);
+    // Params are recorded once. Keys are already flattened dotted names and
+    // values are scalar JSON values.
+    bool log_params(nlohmann::json params, std::string* error = nullptr);
+    // Artifact is validated against the Run's typed artifact union.
+    bool log_artifact(nlohmann::json artifact, std::string* error = nullptr);
+
+    // Read selected series from `from_step`; max_points applies per metric and
+    // uses LTTB while retaining the global min/max envelope.
+    nlohmann::json get_metrics(const std::vector<std::string>& names = {},
+                               std::uint64_t from_step = 0,
+                               std::optional<std::size_t> max_points =
+                                   std::nullopt) const;
 
     // Replace the mutable value to match a (replicated) document value, then
     // rewrite run.json — with NO capture (used by reconciliation).

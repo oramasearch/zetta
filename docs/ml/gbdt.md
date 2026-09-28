@@ -128,6 +128,10 @@ return a `compute::ComputeStatus`.
   that same gather and a second set of objective-appropriate metrics comes back
   beside the in-sample ones — see
   [held-out-metrics.md](held-out-metrics.md) (#953).
+- When the job is attached to a pipeline Run, each committed boosting round
+  records globally reduced `train.log_loss` or `train.mean_squared_error`, row
+  throughput, host gauges, one-time parameters, and a live batch. See
+  [run metrics](run-metrics.md) (#1137).
 - The deterministic collective **root** registers the trained model as a
   `Model` (kind `classifier` for binary logistic and `regressor` for squared
   error): the GBDT weights body (the schema-validated JSON) is attached via
@@ -218,3 +222,10 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
 - Trained on the synthetic [churn fixture](../use-cases/churn-dataset.md) (via featurization),
   it reaches a strong AUC, produces a registered `Model` whose weights re-validate
   against the schema, and surfaces `failed_payments` as a positive churn driver.
+
+## Metric isolation
+
+Metric hooks leave model bytes unchanged. Without an enabled hook, training
+performs no metric pass or metric allreduce. Distributed jobs agree on reporting
+before training; DP callers force suppression before reading private rows for
+metrics. See [run-metrics.md](run-metrics.md) (#1137).

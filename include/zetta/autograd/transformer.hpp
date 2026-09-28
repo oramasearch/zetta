@@ -100,6 +100,7 @@ public:
     explicit Adam(float learning_rate = 1e-3F, float beta1 = 0.9F,
                   float beta2 = 0.999F, float epsilon = 1e-8F);
     void step(std::vector<Tensor>& parameters);
+    float learning_rate() const noexcept { return learning_rate_; }
 
 private:
     float learning_rate_;

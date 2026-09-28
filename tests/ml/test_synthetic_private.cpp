@@ -161,3 +161,37 @@ TEST(DifferentialPrivateGbdt, ReportsSpendAndDegradesWithSmallerEpsilon) {
     EXPECT_TRUE(std::isfinite(smaller.private_model.base_score));
     EXPECT_LE(private_brier(larger, source), private_brier(smaller, source));
 }
+
+TEST(DifferentialPrivateGbdt, MetricHookDoesNotChangeModelOrSpendOrReleaseCurves) {
+    const auto source = source_rows();
+    for (const auto noise : {zetta::ml::PrivacyNoise::Gaussian,
+                             zetta::ml::PrivacyNoise::Laplace}) {
+        auto options = params(6.0);
+        options.noise = noise;
+        const auto baseline =
+            zetta::ml::run_synthetic_private(source, contract(), options);
+        ASSERT_TRUE(baseline.ok()) << baseline.error;
+
+        std::vector<nlohmann::json> batches;
+        zetta::ml::TrainHooks hooks;
+        hooks.on_metrics = [&](int step, const auto& values) {
+            batches.push_back({{"step", step}, {"values", values}});
+            return true;
+        };
+        const auto tracked =
+            zetta::ml::run_synthetic_private(source, contract(), options, hooks);
+        ASSERT_TRUE(tracked.ok()) << tracked.error;
+        EXPECT_EQ(tracked.private_model.to_json().dump(),
+                  baseline.private_model.to_json().dump());
+        EXPECT_EQ(tracked.metrics.privacy.epsilon_spent,
+                  baseline.metrics.privacy.epsilon_spent);
+        EXPECT_EQ(tracked.metrics.privacy.delta_spent,
+                  baseline.metrics.privacy.delta_spent);
+        EXPECT_EQ(tracked.metrics.privacy.mechanisms,
+                  baseline.metrics.privacy.mechanisms);
+        EXPECT_EQ(tracked.metrics.to_json().dump(), baseline.metrics.to_json().dump());
+        EXPECT_LE(tracked.metrics.privacy.epsilon_spent, options.epsilon);
+        EXPECT_LE(tracked.metrics.privacy.delta_spent, options.delta);
+        EXPECT_TRUE(batches.empty());
+    }
+}
