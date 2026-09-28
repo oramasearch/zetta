@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-5 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -66,6 +66,15 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-5 survival implementation
+
+`src/core/ml/survival_methodology.cpp` builds a dedicated survival cohort →
+validation → discrete-hazard model → survival-table → calibration-table graph.
+Its ownership callback recognizes only `survival` and `time_to_event`. Its run
+callback resolves the connect step's own table, calls the native distributed
+runner, and returns the durable Run record read by `get_run` and
+`get_run_report`. See [survival.md](survival.md).
 
 ## Adding a methodology
 

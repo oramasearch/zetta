@@ -753,6 +753,7 @@ SurvivalRunResult run_survival_on_dataset(
             model_value.name = params.model_name;
             model_value.kind = "survival";
             model_value.project = params.project;
+            model_value.run = result.run->id();
             model_value.feature_schema = {
                 {"objective", "discrete_time_hazard"},
                 {"features", dataset.contract.feature_columns},
@@ -849,6 +850,10 @@ SurvivalRunResult run_survival_on_dataset(
         lineage.freshness = util::now_iso8601();
         lineage.confidence = result.training.metrics.concordance;
         result.run->set_lineage(std::move(lineage));
+        for (const std::string& note : params.dataset_notes) {
+            result.run->add_log(
+                {util::now_iso8601(), "info", "dataset: " + note});
+        }
         result.run->add_log(
             {util::now_iso8601(), "info",
              "survival training completed with censoring-aware validation"});

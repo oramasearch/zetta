@@ -85,12 +85,13 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, index == 0);
+        const bool runnable = index == 0 || index == 4;
+        EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), index == 0);
-        if (index > 0) {
+                  runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].run), runnable);
+        if (index > 0 && index != 4) {
             EXPECT_EQ(methodologies[index].issue,
                       "https://github.com/oramasearch/zetta/issues/" +
                           std::to_string(1040 + index));
@@ -108,6 +109,7 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
+    EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-5");
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {

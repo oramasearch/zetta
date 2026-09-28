@@ -129,6 +129,7 @@ struct SurvivalDatasetParams {
     std::string model_name = "survival_model";
     std::string project;
     std::string graph;
+    std::vector<std::string> dataset_notes;
 };
 
 struct SurvivalRunResult {

@@ -10,9 +10,12 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -23,6 +26,10 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/partition_writer.hpp"
+#include "zetta/data/partitioner.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -245,6 +252,87 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, SurvivalMethodologyRunsItsPipelinesTable) {
+    auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("survival_subjects");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (std::int64_t entity = 0; entity < 120; ++entity) {
+        const bool high_risk = entity % 2 == 0;
+        const bool event = entity % 5 != 0;
+        table->add_row({{"entity", entity + 1},
+                        {"start_time", static_cast<double>(entity)},
+                        {"duration", high_risk ? 25.0 : 150.0},
+                        {"event", event ? 1 : 0},
+                        {"feature_time", static_cast<double>(entity)},
+                        {"risk_feature", high_risk ? 1.0 : 0.0}});
+    }
+    const zetta::data::PartitionWriteResult written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+
+    ASSERT_TRUE(call("create_project", {{"name", "survival journey"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "survival journey"},
+         {"text", "Predict when each subject will experience an event"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "survival journey"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-5"},
+         {"name", "survival graph"}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-5");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+    ASSERT_TRUE(call("approve_plan",
+                     {{"project", "survival journey"},
+                      {"graph", "survival graph"}})
+                    .ok);
+
+    const ApiResult started = call(
+        "run",
+        {{"project", "survival journey"},
+         {"graph", "survival graph"},
+         {"dataset",
+          {{"entity_column", "entity"},
+           {"label_column", "event"},
+           {"time_column", "start_time"},
+           {"as_of", 119.0},
+           {"feature_columns", {"risk_feature"}}}},
+         {"interval_width", 30.0},
+         {"max_intervals", 6},
+         {"validation_fraction", 0.2}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    EXPECT_EQ(started.value.at("engine"), "survival");
+    const std::string run_id = started.value.at("run_id");
+
+    ApiResult status;
+    for (int attempt = 0; attempt < 500; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", run_id}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    ASSERT_EQ(status.value.at("status"), "succeeded") << status.value.dump();
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_GT(report.value.at("model").at("concordance").get<double>(), 0.5);
+    EXPECT_TRUE(report.value.at("model").contains("integrated_brier_score"));
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "datasets.survival_subjects");
+    EXPECT_TRUE(report.value.at("outputs").contains("survival_table"));
+    EXPECT_TRUE(report.value.at("outputs").contains("interval_calibration"));
 }
 
 // =====================================================================

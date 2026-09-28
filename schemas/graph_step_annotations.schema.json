@@ -8,6 +8,17 @@
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
       "type": "string"
     },
+    "censoring_handled": {
+      "type": "boolean"
+    },
+    "duration_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "event_indicator": {
+      "minLength": 1,
+      "type": "string"
+    },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "items": {
@@ -44,6 +55,9 @@
       "minLength": 1,
       "type": "string"
     },
+    "point_in_time_features": {
+      "type": "boolean"
+    },
     "requires": {
       "additionalProperties": {
         "minLength": 1,
@@ -59,6 +73,12 @@
       },
       "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
       "type": "object"
+    },
+    "stop_after_event": {
+      "type": "boolean"
+    },
+    "temporal_validation": {
+      "type": "boolean"
     }
   },
   "title": "zetta.GraphStepAnnotations",

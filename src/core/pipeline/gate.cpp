@@ -10,7 +10,7 @@ namespace zetta::pipeline {
 
 namespace {
 
-// Adapts a name + callable to the Check seam (see make_check). Stamps the
+// Adapts a name + callable to the Check interface (see make_check). Stamps the
 // registered name onto whatever CheckResult the callable returns, so the
 // reported name always matches the registered one.
 class FunctionCheck final : public Check {
@@ -72,6 +72,8 @@ ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
 CorrectnessGate default_gate() {
     CorrectnessGate gate;
     gate.add_check(std::make_shared<NonEmptyGraphCheck>());
+    gate.add_check(std::make_shared<TemporalValidationCheck>());
+    gate.add_check(std::make_shared<SurvivalCensoringCheck>());
     // The concrete #309 semantic checks: schema/type then data-leakage /
     // point-in-time. Both are opt-in per step (a graph that carries none of their
     // annotations passes them), so they are safe to ship in the baseline gate.

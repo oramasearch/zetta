@@ -93,9 +93,33 @@ on both sides.
 - Survival curves are non-increasing because each step multiplies by
   `1 - hazard`, where hazard is a probability.
 
-The phase-A runner enforces these rules on data. The methodology adapter adds
-the matching graph checks and control-surface path in the registry integration
-commit.
+The runner enforces these rules on data. `SurvivalCensoringCheck`,
+`TemporalValidationCheck`, and `DataLeakageCheck` enforce the graph declarations
+before a run starts.
+
+## Running it
+
+Land the cohort as a partitioned table, then compile M-5 and run the stored
+graph. Unless `dataset_path` is supplied explicitly, M-5 reads the database and
+table named by its connect step.
+
+```jsonc
+// compile_intent
+{"project":"maintenance", "methodology":"M-5",
+ "hints":{"source":"datasets", "table":"survival_subjects"}}
+
+// run
+{"project":"maintenance", "graph":"survival graph",
+ "dataset":{"entity_column":"entity", "label_column":"event",
+            "time_column":"start_time", "as_of":1700000000,
+            "feature_columns":["temperature","load"]},
+ "duration_column":"duration", "feature_time_column":"feature_time",
+ "interval_width":30, "max_intervals":12, "validation_fraction":0.2}
+```
+
+Poll `get_run`, then call `get_run_report`. The report returns censoring-aware
+concordance, IPCW integrated Brier score, the source table, inferred/excluded
+dataset facts, and references for the survival and interval-calibration tables.
 
 ## Verify
 
@@ -109,11 +133,10 @@ The focused tests prove censor labels, monotone curves, ranking from a known
 feature-driven hazard, deterministic output, and equality between a single-node
 run and subject shards trained across multiple members.
 
-## Boundaries and later work
+## Boundaries
 
 No foreign runtime or hosted model is used. The trainer reuses the validated
 GBDT weights boundary, model/run entities, dataset contract, partition bodies,
 and collective messages; it adds no new JSON boundary. Event-time plus censor-
 time input can be normalized to duration plus event indicator before this API.
-Cox proportional-hazard ratios from the portfolio description are not part of
-this discrete-time delivery.
+Cox proportional-hazard ratios are outside this discrete-time methodology.

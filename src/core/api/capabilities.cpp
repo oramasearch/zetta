@@ -539,6 +539,10 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"outputs",
+           {{"type", "object"},
+            {"description",
+             "materialized survival and interval-calibration table references"}}},
           {"caveats",
            {{"type", "array"},
             {"description",
@@ -635,8 +639,20 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         return found->get<double>();
     };
 
-    nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
-    if (const auto held = number("held_out_auc")) {
+    const bool is_survival = model->kind() == "survival";
+    nlohmann::json model_facts = {{"id", model->id()},
+                                  {"name", model->name()},
+                                  {"kind", model->kind()}};
+    if (is_survival) {
+        for (const char* metric :
+             {"concordance", "integrated_brier_score", "training_subjects",
+              "validation_subjects", "event_subjects", "censored_subjects",
+              "interval_width"}) {
+            if (const auto value = number(metric)) {
+                model_facts[metric] = *value;
+            }
+        }
+    } else if (const auto held = number("held_out_auc")) {
         model_facts["held_out_auc"] = *held;
         if (const auto value = number("held_out_log_loss")) model_facts["held_out_log_loss"] = *value;
         if (const auto value = number("held_out_accuracy")) model_facts["held_out_accuracy"] = *value;
@@ -661,6 +677,12 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     report["model"] = std::move(model_facts);
 
     nlohmann::json dataset = nlohmann::json::object();
+    if (const auto value = number("training_subjects")) {
+        dataset["training_subjects"] = *value;
+    }
+    if (const auto value = number("validation_subjects")) {
+        dataset["validation_subjects"] = *value;
+    }
     if (const auto value = number("dataset_accounts")) dataset["accounts"] = *value;
     if (const auto value = number("dataset_events")) dataset["events"] = *value;
     if (const auto value = number("dataset_churn_rate")) dataset["churn_rate"] = *value;
@@ -685,7 +707,9 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     }
     nlohmann::json notes = nlohmann::json::array();
     for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
-        if (log.message.starts_with("dataset: not used:")) notes.push_back(log.message.substr(9));
+        if (log.message.starts_with("dataset: not used:")) {
+            notes.push_back(log.message.substr(9));
+        }
     }
     if (!notes.empty()) dataset["not_used"] = std::move(notes);
     if (!dataset.empty()) report["dataset"] = std::move(dataset);
@@ -696,9 +720,26 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     }
     if (!drivers.empty()) report["drivers"] = std::move(drivers);
 
+    if (is_survival) {
+        nlohmann::json outputs = nlohmann::json::object();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind != "dataset") {
+                continue;
+            }
+            if (output.name == "survival table") {
+                outputs["survival_table"] = output.ref;
+            } else if (output.name == "interval calibration") {
+                outputs["interval_calibration"] = output.ref;
+            }
+        }
+        report["outputs"] = std::move(outputs);
+    }
+
     // The ranked list, read back from the table the run materialized — so the
     // report and anything querying `churn_results` cannot disagree.
-    if (const std::shared_ptr<zetta::data::Table> table =
+    if (is_survival) {
+        // Survival runs expose their horizon tables above, not a churn ranking.
+    } else if (const std::shared_ptr<zetta::data::Table> table =
             run_at_risk_table(context.node, *run)) {
         std::vector<nlohmann::json> rows;
         const zetta::storage::StorageEngine& store = table->store();
@@ -2907,6 +2948,27 @@ const nlohmann::json& run_schema() {
              "hold this fraction of rows OUT of training and measure the model "
              "on them separately (e.g. 0.3). Without it the run's only metrics "
              "are in-sample — scored on the rows it trained on — and flatter"}}},
+          {"duration_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "survival duration column (default duration)"}}},
+          {"feature_time_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "survival feature cutoff column (default feature_time)"}}},
+          {"interval_width",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"description", "survival interval width (default 30)"}}},
+          {"max_intervals",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "survival horizon in intervals (default 12)"}}},
+          {"validation_fraction",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"exclusiveMaximum", 1},
+            {"description", "newest fraction held out for survival validation"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "

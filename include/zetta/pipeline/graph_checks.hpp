@@ -11,7 +11,7 @@
 #include "zetta/pipeline/validation.hpp"
 
 // The concrete correctness checks for #309 — the first real semantic checks that
-// plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
+// plug into the CorrectnessGate's `Check` interface (gate.hpp) without touching the
 // gate itself. They read a small, documented set of **annotations** from each
 // step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
@@ -70,6 +70,15 @@ public:
     // The methodologies the engine can execute today. Widened by #984, never by a caller —
     // a per-call override is how "the engine supports it" becomes unfalsifiable.
     static const std::vector<std::string>& implemented();
+};
+
+// Survival-censoring check (#1044): a survival graph must declare that censored
+// observations remain non-events, person-period expansion stops after an event,
+// and feature values are bounded by their subject cutoff.
+class SurvivalCensoringCheck final : public Check {
+public:
+    std::string name() const override { return "survival_censoring"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
 class SchemaTypeCheck final : public Check {

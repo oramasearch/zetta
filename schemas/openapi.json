@@ -6529,6 +6529,10 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "outputs": {
+                          "description": "materialized survival and interval-calibration table references",
+                          "type": "object"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
@@ -10409,6 +10413,16 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "duration_column": {
+                    "description": "survival duration column (default duration)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "feature_time_column": {
+                    "description": "survival feature cutoff column (default feature_time)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10424,6 +10438,16 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "interval_width": {
+                    "description": "survival interval width (default 30)",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "max_intervals": {
+                    "description": "survival horizon in intervals (default 12)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
                     "minLength": 1,
@@ -10438,6 +10462,12 @@
                     "description": "at-risk list / playbook cap (0 = all)",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "validation_fraction": {
+                    "description": "newest fraction held out for survival validation",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
                   }
                 },
                 "required": [

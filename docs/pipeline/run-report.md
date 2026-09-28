@@ -33,6 +33,8 @@ state, and `get_run_report` puts them together at query time:
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| survival quality | the survival Model's concordance and IPCW Brier metrics |
+| survival outputs | the run's survival and interval-calibration table refs |
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
