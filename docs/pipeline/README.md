@@ -13,7 +13,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→…→act taxonomy, and its schema-validated JSON form.
-- [intent-compiler.md](intent-compiler.md) — NL intent → a reviewable, editable ExecutionGraph skeleton (`zetta::pipeline::compile_intent`; templated churn mapping, FEAT-2 / #311).
+- [intent-compiler.md](intent-compiler.md) — intent + optional methodology/solution → a runnable methodology's editable graph; unsupported requests name their tracking issue (#1061).
 - [n8n-import.md](n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [n8n-compile.md](n8n-compile.md) — compiling an imported n8n workflow into the IR: nodes → typed steps, connections → edges (FEAT-2 / #308).
 - [python-frontend.md](python-frontend.md) — the simulated-Python language frontend: parse a Python subset, lower to the IR via the engine-faithful verb table (ENT-38 / ADR-33, #520/#522).

@@ -51,6 +51,7 @@ TEST(IntentCompilerTest, ChurnIntentProducesFullChurnSkeleton) {
         "Score every active account for churn risk and tell me why.");
     ASSERT_TRUE(compiled);
     EXPECT_EQ(compiled->shape, IntentShape::Churn);
+    EXPECT_EQ(compiled->methodology, "M-1");
 
     const ExecutionGraph& graph = compiled->graph;
     EXPECT_FALSE(graph.empty());
@@ -59,6 +60,8 @@ TEST(IntentCompilerTest, ChurnIntentProducesFullChurnSkeleton) {
     EXPECT_EQ(graph.nodes_of_kind(StepKind::Connect).size(), 2u);
     EXPECT_EQ(graph.nodes_of_kind(StepKind::Act).size(), 1u);
     EXPECT_TRUE(graph.has_node("train_churn_model"));
+    EXPECT_EQ(graph.find_node("train_churn_model")->attributes.at("model_kind"),
+              "gbdt");
 }
 
 // Various phrasings of the churn shape are all recognized (the heuristic is the
@@ -74,14 +77,38 @@ TEST(IntentCompilerTest, RecognizesChurnSynonyms) {
     }
 }
 
-// An intent the heuristic doesn't recognize still compiles to a well-formed,
-// complete skeleton (a usable starting point, never nothing).
-TEST(IntentCompilerTest, UnrecognizedIntentProducesGenericSkeleton) {
-    const auto compiled =
-        compile_intent("Summarize incoming support tickets by topic.");
+TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-3";
+    std::string error;
+    EXPECT_FALSE(compile_intent("Group customers", options, &error));
+    EXPECT_NE(error.find("Segmentation / clustering (M-3)"), std::string::npos);
+    EXPECT_NE(error.find("1042"), std::string::npos);
+}
+
+TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-1";
+    const auto compiled = compile_intent("Build a retention plan", options);
     ASSERT_TRUE(compiled);
-    EXPECT_EQ(compiled->shape, IntentShape::Generic);
-    EXPECT_TRUE(covers_all_stages(compiled->graph));
+    EXPECT_EQ(compiled->methodology, "M-1");
+    EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
+}
+
+TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
+    std::string error;
+    EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));
+    EXPECT_NE(error.find("Segmentation / clustering (M-3)"), std::string::npos);
+    EXPECT_NE(error.find("1042"), std::string::npos);
+}
+
+TEST(IntentCompilerTest, UnrecognizedNonPredictiveIntentListsWhatRuns) {
+    std::string error;
+    EXPECT_FALSE(
+        compile_intent("Summarize incoming support tickets by topic.", &error));
+    EXPECT_NE(error.find("Runnable methodologies"), std::string::npos);
+    EXPECT_NE(error.find("Tabular supervised learning (M-1)"),
+              std::string::npos);
 }
 
 // Empty / whitespace-only intent carries no meaning → no graph (mirrors
