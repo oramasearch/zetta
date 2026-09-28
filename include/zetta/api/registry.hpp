@@ -152,9 +152,9 @@ struct ApiContext {
     // would to a direct one. Null outside a registry call.
     const Registry* registry = nullptr;
 
-    // REST supplies this one-shot event for an awaitable read. The handler
+    // HTTP renderings supply this one-shot event for an awaitable read. The handler
     // registers it before its no-wait read, so a publish between that read and
-    // the route's co_await cannot be missed (#1076). Other renderings leave it
+    // the route's co_await cannot be missed (#1076). In-process callers leave it
     // empty and receive the same immediate answer as wait_ms 0.
     std::shared_ptr<runtime::async_event> wait_event;
 };
@@ -209,7 +209,7 @@ struct Capability {
     // still runs its authorization + audit gate on the owner thread (#1063), and
     // add() refuses an offloadable entry that mutates or requires consent.
     bool offloadable = false;
-    // An empty REST read may suspend on a runtime event, bounded by wait_for,
+    // An empty HTTP read may suspend on a runtime event, bounded by wait_for,
     // then make one final governed call. No thread is held while it waits.
     std::optional<AwaitableRead> awaitable_read;
 };

@@ -32,6 +32,7 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `outputs` | `vector<RunOutput>` | Each `{ kind, name, ref }`; `kind` ∈ `dataset` / `model` / `index`. |
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |
 | `features` | JSON object | Accepted feature provenance: `used[{name, source[], transform, why}]` and `excluded[{name, why}]`; absent on old records means empty arrays (#1062). |
+| `metrics` | JSON object | Column-oriented step series, one-time flattened params, final/best summaries, and typed JSON artifacts. See [run metrics](../ml/run-metrics.md) (#1137). |
 
 `status` is grounded in the run events: a run starts `Pending`, moves to
 `Running` (RunStarted), and ends `Succeeded` (RunSucceeded, with outputs +
@@ -93,7 +94,7 @@ a **projection** of it ([replication.md](../cluster/replication.md)).
 
 - **Replicated state.** Each run is one flat key in the document:
   `run:<uuid> → { project, graph, status, created, updated, logs, outputs,
-  lineage }` (`src/core/catalog.hpp`). The user-facing mutators capture into the
+  lineage, metrics }` (`src/core/catalog.hpp`). The user-facing mutators capture into the
   document; on each `tick()` the node **reconciles** the projection to match the
   document, so a peer's run (or a status / output update from a peer)
   materializes locally with **no re-capture** (`apply_value`, so no feedback

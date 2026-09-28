@@ -65,6 +65,10 @@ void register_cloud_capabilities(Registry& registry);
 //   receive_events  read    long-poll an exposed topic from a sequence number
 void register_pubsub_capabilities(Registry& registry);
 
+// Run experiment tracking (#1137): three writes and two reads. Live metric
+// batches use the existing receive_events long poll on run-metrics.<run>.
+void register_run_metrics_capabilities(Registry& registry);
+
 // The versioned decision-policy control surface (#1104,
 // docs/solutions/decision-policy.md).
 void register_decision_policy_capabilities(Registry& registry);

@@ -2055,6 +2055,192 @@
         ]
       }
     },
+    "/v1/compare_runs": {
+      "get": {
+        "description": "Read named metric series from multiple Runs aligned by step. No side effects. Requires api:query.",
+        "operationId": "compare_runs",
+        "parameters": [
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              }
+            },
+            "in": "query",
+            "name": "names",
+            "required": true
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "minItems": 2,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              }
+            },
+            "in": "query",
+            "name": "runs",
+            "required": true
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "metrics": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+                                "type": "string"
+                              },
+                              "points": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "values": {
+                                      "items": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "run": {
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "time": {
+                                            "type": "string"
+                                          },
+                                          "value": {
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "run",
+                                          "value",
+                                          "time"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "step",
+                                    "values"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "points"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "runs": {
+                          "items": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "runs",
+                        "metrics"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Compare runs",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/compile_intent": {
       "post": {
         "description": "Resolve a methodology from an explicit methodology, primary solution, or intent keywords, then compile its editable graph. Unavailable methodologies are refused with their implementation issue. Requires orchestration:compile_intent.",
@@ -10964,6 +11150,349 @@
                           },
                           "type": "array"
                         },
+                        "metrics": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "artifacts": {
+                              "items": {
+                                "additionalProperties": false,
+                                "allOf": [
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "type": {
+                                          "const": "confusion_matrix"
+                                        }
+                                      }
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "data": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "labels": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "matrix": {
+                                              "items": {
+                                                "items": {
+                                                  "type": "number"
+                                                },
+                                                "type": "array"
+                                              },
+                                              "type": "array"
+                                            }
+                                          },
+                                          "required": [
+                                            "labels",
+                                            "matrix"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "type": {
+                                          "enum": [
+                                            "roc_curve",
+                                            "pr_curve"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "data": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "thresholds": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "x": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "y": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            }
+                                          },
+                                          "required": [
+                                            "x",
+                                            "y",
+                                            "thresholds"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "type": {
+                                          "const": "calibration"
+                                        }
+                                      }
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "data": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "counts": {
+                                              "items": {
+                                                "minimum": 0,
+                                                "type": "integer"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "observed": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "predicted": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            }
+                                          },
+                                          "required": [
+                                            "predicted",
+                                            "observed",
+                                            "counts"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "type": {
+                                          "const": "feature_importance"
+                                        }
+                                      }
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "data": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "features": {
+                                              "items": {
+                                                "type": "string"
+                                              },
+                                              "type": "array"
+                                            },
+                                            "values": {
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "type": "array"
+                                            }
+                                          },
+                                          "required": [
+                                            "features",
+                                            "values"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  },
+                                  {
+                                    "if": {
+                                      "properties": {
+                                        "type": {
+                                          "const": "sample_predictions"
+                                        }
+                                      }
+                                    },
+                                    "then": {
+                                      "properties": {
+                                        "data": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "rows": {
+                                              "items": {
+                                                "additionalProperties": false,
+                                                "patternProperties": {
+                                                  "^.{1,128}$": {
+                                                    "type": [
+                                                      "string",
+                                                      "number",
+                                                      "integer",
+                                                      "boolean",
+                                                      "null"
+                                                    ]
+                                                  }
+                                                },
+                                                "type": "object"
+                                              },
+                                              "type": "array"
+                                            }
+                                          },
+                                          "required": [
+                                            "rows"
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                ],
+                                "properties": {
+                                  "data": {
+                                    "type": "object"
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "time": {
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "enum": [
+                                      "confusion_matrix",
+                                      "roc_curve",
+                                      "pr_curve",
+                                      "calibration",
+                                      "feature_importance",
+                                      "sample_predictions"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "name",
+                                  "time",
+                                  "data"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "params": {
+                              "additionalProperties": false,
+                              "patternProperties": {
+                                "^[A-Za-z0-9_.-]{1,128}$": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "series": {
+                              "additionalProperties": false,
+                              "patternProperties": {
+                                "^[A-Za-z0-9_.-]{1,128}$": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "steps": {
+                                      "items": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "times": {
+                                      "items": {
+                                        "type": "string"
+                                      },
+                                      "type": "array"
+                                    },
+                                    "values": {
+                                      "items": {
+                                        "type": "number"
+                                      },
+                                      "type": "array"
+                                    }
+                                  },
+                                  "required": [
+                                    "steps",
+                                    "values",
+                                    "times"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "summary": {
+                              "additionalProperties": false,
+                              "patternProperties": {
+                                "^[A-Za-z0-9_.-]{1,128}$": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "best": {
+                                      "type": "number"
+                                    },
+                                    "best_step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "direction": {
+                                      "enum": [
+                                        "min",
+                                        "max"
+                                      ],
+                                      "type": "string"
+                                    },
+                                    "final": {
+                                      "type": "number"
+                                    },
+                                    "final_step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "required": [
+                                    "final",
+                                    "final_step",
+                                    "best",
+                                    "best_step",
+                                    "direction"
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "params",
+                            "series",
+                            "summary",
+                            "artifacts"
+                          ],
+                          "type": "object"
+                        },
+                        "metrics_suppressed": {
+                          "enum": [
+                            "differential_privacy"
+                          ],
+                          "type": "string"
+                        },
                         "outputs": {
                           "items": {
                             "additionalProperties": false,
@@ -11053,6 +11582,479 @@
           }
         },
         "summary": "Get one run",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_run_metrics": {
+      "get": {
+        "description": "Read selected Run metric series and summaries, with optional extrema-preserving LTTB downsampling. No side effects. Requires api:query.",
+        "operationId": "get_run_metrics",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_step",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_points",
+            "required": false,
+            "schema": {
+              "maximum": 10000,
+              "minimum": 4,
+              "type": "integer"
+            }
+          },
+          {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+                    "type": "string"
+                  },
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              }
+            },
+            "in": "query",
+            "name": "names",
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifacts": {
+                          "items": {
+                            "additionalProperties": false,
+                            "allOf": [
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "const": "confusion_matrix"
+                                    }
+                                  }
+                                },
+                                "then": {
+                                  "properties": {
+                                    "data": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "labels": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "matrix": {
+                                          "items": {
+                                            "items": {
+                                              "type": "number"
+                                            },
+                                            "type": "array"
+                                          },
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": [
+                                        "labels",
+                                        "matrix"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "enum": [
+                                        "roc_curve",
+                                        "pr_curve"
+                                      ]
+                                    }
+                                  }
+                                },
+                                "then": {
+                                  "properties": {
+                                    "data": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "thresholds": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "x": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "y": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": [
+                                        "x",
+                                        "y",
+                                        "thresholds"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "const": "calibration"
+                                    }
+                                  }
+                                },
+                                "then": {
+                                  "properties": {
+                                    "data": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "counts": {
+                                          "items": {
+                                            "minimum": 0,
+                                            "type": "integer"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "observed": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "predicted": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": [
+                                        "predicted",
+                                        "observed",
+                                        "counts"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "const": "feature_importance"
+                                    }
+                                  }
+                                },
+                                "then": {
+                                  "properties": {
+                                    "data": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "features": {
+                                          "items": {
+                                            "type": "string"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "values": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": [
+                                        "features",
+                                        "values"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              {
+                                "if": {
+                                  "properties": {
+                                    "type": {
+                                      "const": "sample_predictions"
+                                    }
+                                  }
+                                },
+                                "then": {
+                                  "properties": {
+                                    "data": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "rows": {
+                                          "items": {
+                                            "additionalProperties": false,
+                                            "patternProperties": {
+                                              "^.{1,128}$": {
+                                                "type": [
+                                                  "string",
+                                                  "number",
+                                                  "integer",
+                                                  "boolean",
+                                                  "null"
+                                                ]
+                                              }
+                                            },
+                                            "type": "object"
+                                          },
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": [
+                                        "rows"
+                                      ]
+                                    }
+                                  }
+                                }
+                              }
+                            ],
+                            "properties": {
+                              "data": {
+                                "type": "object"
+                              },
+                              "name": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "time": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "enum": [
+                                  "confusion_matrix",
+                                  "roc_curve",
+                                  "pr_curve",
+                                  "calibration",
+                                  "feature_importance",
+                                  "sample_predictions"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name",
+                              "time",
+                              "data"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "metrics_suppressed": {
+                          "enum": [
+                            "differential_privacy"
+                          ],
+                          "type": "string"
+                        },
+                        "params": {
+                          "additionalProperties": false,
+                          "patternProperties": {
+                            "^[A-Za-z0-9_.-]{1,128}$": {
+                              "type": [
+                                "string",
+                                "number",
+                                "integer",
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "series": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+                                "type": "string"
+                              },
+                              "points": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "step": {
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    "time": {
+                                      "type": "string"
+                                    },
+                                    "value": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "step",
+                                    "value",
+                                    "time"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "points"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "summary": {
+                          "additionalProperties": false,
+                          "patternProperties": {
+                            "^[A-Za-z0-9_.-]{1,128}$": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "best": {
+                                  "type": "number"
+                                },
+                                "best_step": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "direction": {
+                                  "enum": [
+                                    "min",
+                                    "max"
+                                  ],
+                                  "type": "string"
+                                },
+                                "final": {
+                                  "type": "number"
+                                },
+                                "final_step": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "final",
+                                "final_step",
+                                "best",
+                                "best_step",
+                                "direction"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "run",
+                        "params",
+                        "summary",
+                        "artifacts",
+                        "series"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get run metrics",
         "tags": [
           "read"
         ]
@@ -15780,6 +16782,834 @@
         "summary": "List recent traces",
         "tags": [
           "read"
+        ]
+      }
+    },
+    "/v1/log_run_artifact": {
+      "post": {
+        "description": "Append typed JSON chart data to a Run; this mutates the replicated Run. Requires orchestration:log_run_artifact.",
+        "operationId": "log_run_artifact",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact": {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "confusion_matrix"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "data": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "labels": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "matrix": {
+                                  "items": {
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "labels",
+                                "matrix"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "enum": [
+                                "roc_curve",
+                                "pr_curve"
+                              ]
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "data": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "thresholds": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                },
+                                "x": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                },
+                                "y": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "x",
+                                "y",
+                                "thresholds"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "calibration"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "data": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "counts": {
+                                  "items": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "type": "array"
+                                },
+                                "observed": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                },
+                                "predicted": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "predicted",
+                                "observed",
+                                "counts"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "feature_importance"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "data": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "features": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "values": {
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "features",
+                                "values"
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "type": {
+                              "const": "sample_predictions"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "data": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "rows": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "patternProperties": {
+                                      "^.{1,128}$": {
+                                        "type": [
+                                          "string",
+                                          "number",
+                                          "integer",
+                                          "boolean",
+                                          "null"
+                                        ]
+                                      }
+                                    },
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "rows"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "properties": {
+                      "data": {
+                        "type": "object"
+                      },
+                      "name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "time": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "enum": [
+                          "confusion_matrix",
+                          "roc_curve",
+                          "pr_curve",
+                          "calibration",
+                          "feature_importance",
+                          "sample_predictions"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "name",
+                      "time",
+                      "data"
+                    ],
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "run": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "run",
+                  "artifact"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "artifact": {
+                          "additionalProperties": false,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "confusion_matrix"
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "data": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "labels": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "matrix": {
+                                        "items": {
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "type": "array"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "labels",
+                                      "matrix"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "enum": [
+                                      "roc_curve",
+                                      "pr_curve"
+                                    ]
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "data": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "thresholds": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "x": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "y": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "x",
+                                      "y",
+                                      "thresholds"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "calibration"
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "data": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "counts": {
+                                        "items": {
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "observed": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "predicted": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "predicted",
+                                      "observed",
+                                      "counts"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "feature_importance"
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "data": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "features": {
+                                        "items": {
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "values": {
+                                        "items": {
+                                          "type": "number"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "features",
+                                      "values"
+                                    ]
+                                  }
+                                }
+                              }
+                            },
+                            {
+                              "if": {
+                                "properties": {
+                                  "type": {
+                                    "const": "sample_predictions"
+                                  }
+                                }
+                              },
+                              "then": {
+                                "properties": {
+                                  "data": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "rows": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "patternProperties": {
+                                            "^.{1,128}$": {
+                                              "type": [
+                                                "string",
+                                                "number",
+                                                "integer",
+                                                "boolean",
+                                                "null"
+                                              ]
+                                            }
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      }
+                                    },
+                                    "required": [
+                                      "rows"
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          ],
+                          "properties": {
+                            "data": {
+                              "type": "object"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "time": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "enum": [
+                                "confusion_matrix",
+                                "roc_curve",
+                                "pr_curve",
+                                "calibration",
+                                "feature_importance",
+                                "sample_predictions"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "name",
+                            "time",
+                            "data"
+                          ],
+                          "type": "object"
+                        },
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run",
+                        "artifact"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Log run artifact",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/log_run_metrics": {
+      "post": {
+        "description": "Append one step of numeric metrics to a Run, update its summary and publish the batch live to run-metrics.<run>. Requires orchestration:log_run_metrics.",
+        "operationId": "log_run_metrics",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "run": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "step": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "time": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "values": {
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "patternProperties": {
+                      "^[A-Za-z0-9_.-]{1,128}$": {
+                        "type": "number"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "run",
+                  "step",
+                  "values"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "step": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run",
+                        "step",
+                        "topic"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Log run metrics",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/log_run_params": {
+      "post": {
+        "description": "Record a Run's flattened dotted-key parameters once; this mutates the replicated Run. Requires orchestration:log_run_params.",
+        "operationId": "log_run_params",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "params": {
+                    "additionalProperties": false,
+                    "patternProperties": {
+                      "^[A-Za-z0-9_.-]{1,128}$": {
+                        "type": [
+                          "string",
+                          "number",
+                          "integer",
+                          "boolean",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "run": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "run",
+                  "params"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "params": {
+                          "additionalProperties": false,
+                          "patternProperties": {
+                            "^[A-Za-z0-9_.-]{1,128}$": {
+                              "type": [
+                                "string",
+                                "number",
+                                "integer",
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "run": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run",
+                        "params"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Log run parameters",
+        "tags": [
+          "action"
         ]
       }
     },

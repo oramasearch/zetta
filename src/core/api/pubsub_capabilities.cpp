@@ -292,8 +292,8 @@ ApiResult handle_receive_events(const nlohmann::json& input, ApiContext& context
     const auto wait = std::chrono::milliseconds(
         std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
     const auto waiter = wait.count() > 0 ? context.wait_event : nullptr;
-    // REST registers the one-shot event before this no-wait read, then suspends
-    // outside the registry when the result is empty. MCP and in-process callers
+    // HTTP renderings register the one-shot event before this no-wait read, then
+    // suspend outside the registry when the result is empty. In-process callers
     // provide no event and get the same immediate read (#1076).
     auto events = pubsub->read_events(
         identity_of(context), *topic, from, max, std::chrono::milliseconds(0),

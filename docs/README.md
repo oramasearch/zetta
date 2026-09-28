@@ -30,7 +30,7 @@ run / test.
 | [cluster/](cluster/README.md) | Equal-peer clustering, CRDT replication, the signal plane, collectives, per-node telemetry. |
 | [compute/](compute/README.md) | The `ComputeDevice` accelerator interface and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
-| [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, and the native correctness oracle. |
+| [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, live Run metrics, and the native correctness oracle. |
 | [solutions/](solutions/README.md) | The S-1 through S-12 registry, Band-B sketches, executable composed Pipelines, snapshots, incremental replicated projections, and shared audit, policy, experiment, monitoring, action delivery and ROI foundations. |
 | [agent/](agent/README.md) | The native RLVR agent (#555 base, #853 per-customer): the deterministic reward grader, and — as they ship — rollouts and the training loop. The model Orama post-trains and ships. Its data + model [cards](agent/cards/README.md). |
 | [dataset/](dataset/README.md) | Native, in-Zetta training-dataset generation (#873): the `DatasetGenerator` interface + factory (base-agent + Auto-Suggest), plan-grounded + admission-gated — the native replacement for the offline Python corpus generators, and what a per-customer fork grows its own corpus with. |

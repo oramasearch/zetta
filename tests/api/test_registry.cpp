@@ -67,7 +67,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        108u); // +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        113u); // +5 run-metrics controls (#1137), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -86,6 +86,11 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("create_experiment"));
     EXPECT_TRUE(registry.find("assign"));
     EXPECT_TRUE(registry.find("get_experiment"));
+    for (const char* name : {"log_run_metrics", "log_run_params",
+                             "log_run_artifact", "get_run_metrics",
+                             "compare_runs"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // A run's report is readable through the control surface, not only from the
     // node that ran it (#958).
     EXPECT_TRUE(registry.find("get_run_report"));
@@ -145,6 +150,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "update_workspace_profile", "create_plan", "update_plan",
           "record_action", "record_outcome", "create_policy", "update_policy",
           "decide", "approve_decision", "create_experiment", "assign",
+          "log_run_metrics", "log_run_params", "log_run_artifact",
           "create_solution", "run_solution",
           "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);

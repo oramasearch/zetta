@@ -25,8 +25,9 @@ initial no-wait read. If that read is empty, the route suspends on the event, bo
 `wait_ms` through `runtime::timeout`; publish or topic close signals every registered
 waiter. The route then reads once more. Both reads use the normal authorization + audit
 path on the owner loop, so a long poll makes at most two governed calls. MCP
-`tools/call` has no suspended HTTP route and returns the immediate read, as with
-`wait_ms` 0 (#1076).
+`tools/call` uses the same event-based bounded suspension and final governed
+read; neither rendering holds a thread while waiting (#1076, #1137).
+Non-object MCP request bodies retain the JSON-RPC invalid-request response.
 
 The runtime event adapter serializes registration, publish and cancellation cleanup
 across threads. Its lock is held only while updating the event's waiter list; suspended
