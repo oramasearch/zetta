@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-7, and S-12. S-6 and S-8 through S-11 retain minimal defaults. This is the scope of
+S-5, S-7, S-8, and S-12. S-6 and S-9 through S-11 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -37,6 +37,10 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-7.md](S-7.md) — runnable KPI anomaly and driver-analysis module: causal
   seasonal baselines, alert budgets, forum reports, decision logs, protected
   holdouts, and phased measurement (#1116).
+
+- [S-8.md](S-8.md) — runnable predictive-maintenance module: censoring-aware
+  failure timing, sensor/leakage refusals, CMMS work orders, holdout, and
+  planted-effect proof (#1117).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -237,9 +241,25 @@ S-7 tasks and its report carry anomaly evidence, candidate drivers, the causal
 caveat, forum owner, protected cell, and decision-log requirement through the
 shared action-integration path.
 
+S-8 is the complete predictive-maintenance default:
+
+| Setting | Executable default |
+|---|---|
+| Imminent | hazard ≥ 0.65; A0 draft work order with four-hour SLA |
+| Elevated | hazard ≥ 0.25; A2 inspection work order with one-day SLA |
+| Monitor | hazard ≥ 0; deliberate no-action recommendation |
+| Approval | optional scheduled work order; A1 |
+| Work limits | 24 lifetime records and one work order per seven-day window |
+| Eligibility | maintenance eligible, approved asset class, maintenance window available, and safe to service must explicitly be true |
+| Exclusions | safety lockout, active work order, or untrusted sensor data suppresses work |
+| Budget / stop | zero monetary spend; kill switch off |
+| Experiment | independent 10% holdout in each risk tier; remaining assets enter `work_order` |
+| Guardrails | unsafe/false work orders, missed failures, sensor PSI, capacity utilization, and execution rate |
+| Measurement | holdout; named `failure_avoided` outcome per asset over 30 days |
+
 ### Minimal defaults
 
-**S-6 and S-8 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-6 and S-9 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -250,7 +270,6 @@ require an owner-approved policy change before spending.
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
-| S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
 | S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
@@ -264,7 +283,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-7, and S-12 journeys.
+S-5, S-7, S-8, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -286,6 +305,10 @@ thresholds, missing claim-score bindings, and incomplete level composition.
 For S-7, it refuses causal driver claims, a missing or mismatched alert budget,
 and noncausal or nonseasonal baselines. Levels 3 and 4 require rolling-origin
 M-4 context with a seasonal-naive baseline.
+
+For S-8, it refuses discarded censoring, missing or future sensor baselines,
+and post-failure maintenance leakage. M-5 supplies the decision table; levels
+3 and 4 also require M-7.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

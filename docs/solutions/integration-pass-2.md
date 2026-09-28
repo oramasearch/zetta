@@ -19,6 +19,11 @@ the first landing (#1152), preserving S-1, S-2, S-3, S-4, and S-12.
    forum reports. S-7's M-4 source handling is scoped to S-7 so S-5 retains
    its snapshot annotations. Both ordered-name regressions list all 58 checks,
    including the four S-5 checks.
+3. S-8 Predictive Maintenance (#1151): retain censoring, sensor-drift, and
+   post-failure leakage checks, complete maintenance defaults, M-5 horizon
+   selection, CMMS payloads, six monitor observations, and the planted-effect
+   journey. The optional positive decision-source horizon extends the existing
+   foundation schema; OpenAPI will be regenerated from code. Gate count: 61.
 
 Each incoming branch is joined with a merge commit. No formatter is run.
 After each merge, the per-file line counts are audited against both parents.

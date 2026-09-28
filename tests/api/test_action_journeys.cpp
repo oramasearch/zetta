@@ -821,6 +821,308 @@ TEST_F(SolutionJourney,
     EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
+void land_predictive_maintenance_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("assets");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool high_risk = index % 3 != 0;
+        const bool failed = high_risk ? index % 5 != 0 : index % 8 == 0;
+        const double duration = failed
+                                    ? static_cast<double>(high_risk
+                                                              ? 2 + index % 4
+                                                              : 9 + index % 5)
+                                    : static_cast<double>(18 + index % 8);
+        const std::string asset_class =
+            index % 2 == 0 ? "pump" : "compressor";
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "sensor_fixture"},
+             {"name", "Asset " + std::to_string(index + 1)},
+             {"event", failed ? 1 : 0},
+             {"duration", duration},
+             {"start_time", static_cast<double>(index)},
+             {"feature_time", static_cast<double>(index)},
+             {"vibration", high_risk ? 9.0 + index % 3 : 1.0 + index % 2},
+             {"temperature", high_risk ? 95.0 + index % 4 : 55.0 + index % 3},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"asset_class", asset_class},
+             {"owner", asset_class + "-maintenance"},
+             {"maintenance_window", "2026-W40"},
+             {"maintenance_eligible", true},
+             {"approved_asset_class", true},
+             {"maintenance_window_available", true},
+             {"safe_to_service", true},
+             {"safety_lockout", false},
+             {"active_work_order", false},
+             {"sensor_data_untrusted", false},
+             {"failure_within_horizon", failed && duration <= 12.0},
+             {"false_work_order", false},
+             {"sensor_drift_psi", 0.04},
+             {"maintenance_capacity_utilization", 0.6}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "sensor_fixture"},
+         {"name", "Future asset"},
+         {"event", 1},
+         {"duration", 1.0},
+         {"start_time", 240.0},
+         {"feature_time", 240.0},
+         {"vibration", 999.0},
+         {"temperature", 999.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"asset_class", "pump"},
+         {"owner", "pump-maintenance"},
+         {"maintenance_window", "2026-W44"},
+         {"maintenance_eligible", true},
+         {"approved_asset_class", true},
+         {"maintenance_window_available", true},
+         {"safe_to_service", true},
+         {"safety_lockout", false},
+         {"active_work_order", false},
+         {"sensor_data_untrusted", false},
+         {"failure_within_horizon", true},
+         {"false_work_order", false},
+         {"sensor_drift_psi", 0.04},
+         {"maintenance_capacity_utilization", 0.6}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json predictive_maintenance_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "assets"},
+          {"target_table", "predictive_maintenance_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "event"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"vibration", "temperature"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://cmms.example.test/work-orders"},
+          {"owner", "maintenance-planning"}}},
+        {"decision_source",
+         {{"methodology", "M-5"},
+          {"output_name", "survival table"},
+          {"entity_column", "entity"},
+          {"score_column", "hazard"},
+          {"horizon", 30.0}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_maintenance_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"predictive-maintenance-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double failure_avoided =
+            0.2 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record observed failure avoidance",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "failure_avoided"},
+              {"value", failure_avoided},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {}});
+    }
+    outcomes.steps.push_back(
+        {"read measured maintenance effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted maintenance effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       PredictiveMaintenanceCreatesWorkOrdersAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_predictive_maintenance_data(node);
+    journey::Journey flow{"predictive-maintenance-solution", {}};
+    flow.steps = {
+        {"read S-8 defaults",
+         "get_solution",
+         {{"solution", "S-8"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name",
+                         "failure_avoided")}}},
+        {"create maintenance project",
+         "create_project",
+         {{"name", "predictive maintenance"}}},
+        {"create S-8 Pipeline",
+         "create_solution",
+         {{"project", "predictive maintenance"},
+          {"solution", "S-8"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "assets"},
+            {"M-5",
+             {{"duration_column", "duration"},
+              {"event_indicator", "event"}}}}},
+          {"foundation", predictive_maintenance_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"maintenance_graph", "/graph"},
+          {"maintenance_experiment", "/experiment_id"},
+          {"maintenance_readout", "/readout_id"}}},
+        {"run S-8 Pipeline",
+         "run_solution",
+         {{"project", "predictive maintenance"},
+          {"graph", "$maintenance_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"maintenance_run", "/run_id"}}},
+        {"read completed maintenance Run",
+         "get_run",
+         {{"run_id", "$maintenance_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected maintenance assignments",
+         "get_experiment",
+         {{"experiment", "$maintenance_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read maintenance action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("predictive maintenance");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-8 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_FALSE(payload.at("asset_id").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("asset_class").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("cmms_owner").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("maintenance_window").get<std::string>().empty());
+        EXPECT_GT(payload.at("risk_horizon").get<double>(), 0.0);
+        EXPECT_GT(payload.at("expected_time_to_failure").get<double>(), 0.0);
+        EXPECT_GT(payload.at("median_time_to_failure").get<double>(), 0.0);
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("predictive_maintenance_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_maintenance_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
 void land_lead_scoring_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);

@@ -334,6 +334,55 @@ void kpi_anomaly_defaults(SolutionTemplates& result) {
         {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void predictive_maintenance_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "imminent"}, {"minimum_score", 0.65},
+         {"action", "draft_work_order"},
+         {"allowed_actions", {"draft_work_order", "scheduled_work_order",
+                              "no_action"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.25},
+         {"action", "inspection_work_order"},
+         {"allowed_actions", {"inspection_work_order",
+                              "scheduled_work_order", "no_action"}}},
+        {{"name", "monitor"}, {"minimum_score", 0.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"draft_work_order",
+         {{"autonomy", "A0"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"inspection_work_order",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"scheduled_work_order",
+         {{"autonomy", "A1"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 24;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("maintenance_eligible", true),
+        predicate("approved_asset_class", true),
+        predicate("maintenance_window_available", true),
+        predicate("safe_to_service", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("safety_lockout", true),
+        predicate("active_work_order", true),
+        predicate("sensor_data_untrusted", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"imminent", 0.1}, {"elevated", 0.1}, {"monitor", 0.1}};
+    result.experiment.treatment_cells = {"work_order"};
+    result.guardrails = {
+        {"unsafe_work_order_rate", 0.0, "maximum"},
+        {"false_work_order_rate", 0.1, "maximum"},
+        {"missed_failure_rate", 0.05, "maximum"},
+        {"sensor_drift_psi", 0.2, "maximum"},
+        {"maintenance_capacity_utilization", 0.9, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "failure_avoided", "asset", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -354,6 +403,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 demand_forecast_defaults(result);
             } else if (solution_id == "S-7") {
                 kpi_anomaly_defaults(result);
+            } else if (solution_id == "S-8") {
+                predictive_maintenance_defaults(result);
             }
             return result;
         }

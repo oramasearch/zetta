@@ -51,7 +51,7 @@ Graph names are unique within a project; foundation record names include the
 project UUID and graph name.
 
 Non-M-1 primary methodologies without a module default require an explicit `foundation.decision_source`:
-`methodology`, `entity_column`, `score_column`, and optional `output_name`.
+`methodology`, `entity_column`, `score_column`, and optional `output_name` and positive `horizon`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. S-1 and S-2 use M-1's `account` / `risk` score table.
 S-2 binds conversion propensity to its conversion-band decision cell. S-3 uses
@@ -67,6 +67,11 @@ entity and relative interval width in `exception_score` as the policy score.
 S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
 anomaly score. Forum decisions copy the real flag, threshold, period, top
 candidate driver, deviation, and contributor list.
+S-8 binds M-5's `survival table`, using `entity` and `hazard` at a configured
+emitted horizon. M-5 writes one row per asset and horizon, so the runtime selects
+that real row and carries `hazard`, `survival`, `expected_time`, and
+`median_survival` into the decision and CMMS payload. It never substitutes the
+M-1 churn table.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
@@ -109,6 +114,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-7 routes only flagged rows within its exact alert budget, publishes one
    candidate-driver report with a causal caveat, and includes the durable forum
    decision log.
+
+   S-8 rows carry the selected risk horizon and expected failure timing; its
+   monitor observes safety, false work, missed failure, sensor drift,
+   maintenance capacity, and execution.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -192,3 +201,10 @@ the driver caveat, decision log, ledger, and guardrails. It records a planted
 forum-adoption difference and verifies that phased evidence remains visible
 while incrementality and ROI are explicitly non-claimable until a
 module-specific estimator exists.
+
+`SolutionJourney.PredictiveMaintenanceCreatesWorkOrdersAndRecoversPlantedEffect`
+builds and runs S-8 over partitioned synthetic asset history. It excludes a
+future asset, retains censored assets, selects a real M-5 horizon, proves
+holdout suppression, checks the CMMS work-order payload and all six guardrails,
+records a centered 0.18 failure-avoidance effect, and verifies the estimate and
+95% confidence interval recover it.

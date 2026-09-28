@@ -61,7 +61,15 @@ locked-override rows are suppressed. The lifetime cap is 52, the rolling
 seven-day cap is one, and the default budget is zero. Every tier keeps a 10%
 permanent holdout; planner reports omit protected series.
 
-S-6 and S-8 through S-11 intentionally provide minimal starter policies derived from
+S-8 defines imminent/elevated/monitor hazard floors of 0.65/0.25/0.0. Imminent
+assets receive an A0 draft work order; elevated assets receive an A2 inspection
+work order; optional scheduling is A1. Eligibility requires an approved asset
+class, maintenance window, service safety, and maintenance eligibility.
+Lockouts, active work orders, and untrusted sensor evidence suppress action.
+The rolling cap is one work order per seven days. Its permanent 10% holdout and
+`work_order` cell measure `failure_avoided` over 30 days.
+
+S-6 and S-9 through S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -83,6 +91,9 @@ seven-day window. Its permanent 10% tier holdouts compare with `forum_routed`.
 Guardrails cover alert volume, false escalations, sensitive access, causal
 claims, decision closure, and action execution. Phased `decision_adopted`
 measurement remains descriptive until its module-specific estimator ships.
+
+S-8 observes unsafe and false work orders, missed failures, sensor PSI,
+maintenance capacity, and action execution.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

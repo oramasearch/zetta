@@ -43,6 +43,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `S7*Check` family | `s7_causal_humility`, `s7_alert_budget`, `s7_seasonality_baseline` | an S-7 graph that makes causal driver claims, disagrees on the exact alert budget, uses noncausal seasonal windows, or omits required M-7/M-1/M-3/M-4 stages |
 
+| `S8*Check` family | `s8_censoring`, `s8_sensor_drift`, `s8_post_failure_maintenance_leakage` | an S-8 graph that discards censored assets, lacks a bounded pre-decision sensor baseline, or uses maintenance facts recorded after failure |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -163,6 +165,20 @@ level. Levels 3 and 4 also require M-4 rolling-origin context with a
 seasonal-naive baseline. `create_solution` binds the correctness profile from
 the module sources, and `run_solution` checks the stored profile again. See
 [S-7](../solutions/S-7.md) for the data, forum action, and phased measurement
+
+### S-8 composed solution checks
+
+The S-8 checks engage only for a bound S-8 manifest. `s8_censoring` requires a
+named event indicator and duration, retains event `0` assets, checks the native
+M-5 stop-after-event contract, and verifies M-5/M-1/M-2 plus M-7 at levels 3–4.
+`s8_sensor_drift` requires named sensors, an enabled PSI check capped at 0.2,
+and a baseline ending no later than prediction. The maintenance-leakage check
+requires failure-time truncation, exclusion of later records, and a nonempty
+blocklist that no selected feature may match.
+
+`create_solution` derives the profile from the snapshot, dataset roles, M-5
+hints, and optional `sources.correctness` overrides. `run_solution` checks the
+stored profile again. See [S-8](../solutions/S-8.md) for the complete module
 contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.

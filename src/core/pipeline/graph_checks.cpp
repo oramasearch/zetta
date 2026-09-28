@@ -705,6 +705,49 @@ CheckResult s7_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* s8_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-8") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-8 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s8_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-8 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s8_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-8 Pipeline to validate"};
+}
+
+CheckResult s8_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s8_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* object_field(const json& value, const char* name) {
     if (!value.is_object()) {
         return nullptr;
@@ -2108,6 +2151,147 @@ CheckResult S7SeasonalityBaselineCheck::evaluate(
     }
     return s7_success(
         name(), "S-7 baselines are causal, seasonal, and level-complete");
+}
+
+CheckResult S8CensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* censoring = object_field(*profile, "censoring");
+    const ir::Node* survival = model_kind(graph, "survival");
+    if (censoring == nullptr ||
+        censoring->value("event_indicator", std::string{}).empty() ||
+        censoring->value("duration_column", std::string{}).empty() ||
+        !censoring->value("censored_assets_included", false) ||
+        censoring->value("censored_value", -1) != 0 ||
+        survival == nullptr ||
+        !survival->attributes.value("censoring_handled", false) ||
+        !survival->attributes.value("stop_after_event", false)) {
+        return s8_failure(
+            name(), "S-8 must retain event=0 assets as censored observations "
+                    "and stop survival expansion at an observed failure");
+    }
+    if (!has_methodology(graph, "M-5") ||
+        !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-2") ||
+        (level >= 3 && !has_methodology(graph, "M-7"))) {
+        return s8_failure(
+            name(), "S-8 selected level is missing M-5, M-1, M-2, or the "
+                    "level-3 M-7 sensor anomaly stage");
+    }
+    return s8_success(
+        name(), "S-8 retains censored assets and uses its required stages");
+}
+
+CheckResult S8SensorDriftCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* sensors = object_field(*profile, "sensor_drift");
+    if (sensors == nullptr ||
+        !sensors->value("monitoring_enabled", false) ||
+        !sensors->contains("baseline_end") ||
+        !sensors->contains("sensor_columns") ||
+        !sensors->at("sensor_columns").is_array() ||
+        sensors->at("sensor_columns").empty() ||
+        !sensors->contains("maximum_psi") ||
+        !sensors->at("maximum_psi").is_number() ||
+        sensors->at("maximum_psi").get<double>() <= 0.0 ||
+        sensors->at("maximum_psi").get<double>() > 0.2) {
+        return s8_failure(
+            name(), "S-8 requires drift monitoring for named sensor columns "
+                    "with a pre-decision baseline and PSI limit at or below 0.2");
+    }
+    const auto prediction = profile->find("prediction_time");
+    if (prediction == profile->end()) {
+        return s8_failure(name(), "S-8 must declare its prediction time");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> baseline_end =
+        solutions::parse_time_point(sensors->at("baseline_end"));
+    if (!prediction_time || !baseline_end ||
+        prediction_time->kind != baseline_end->kind ||
+        baseline_end->value > prediction_time->value) {
+        return s8_failure(
+            name(), "S-8 sensor-drift baseline must end at or before the "
+                    "prediction cutoff");
+    }
+    return s8_success(
+        name(), "S-8 sensor drift has a bounded pre-decision baseline");
+}
+
+CheckResult S8PostFailureMaintenanceLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* maintenance =
+        object_field(*profile, "maintenance_records");
+    const auto blocklist = profile->find("post_failure_blocklist");
+    const auto features = profile->find("feature_names");
+    if (maintenance == nullptr ||
+        maintenance->value("failure_time_column", std::string{}).empty() ||
+        !maintenance->value("truncate_at_failure", false) ||
+        maintenance->value("post_failure_records", std::string{}) !=
+            "exclude" ||
+        blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return s8_failure(
+            name(), "S-8 must truncate maintenance history at failure, "
+                    "exclude later records, and declare a non-empty leakage blocklist");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string&>().empty()) {
+            return s8_failure(
+                name(), "S-8 post-failure blocklist entries must be names");
+        }
+        blocked.insert(
+            normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return s8_failure(name(), "S-8 feature names must be strings");
+        }
+        if (blocked.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return s8_failure(
+                name(), "S-8 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is recorded only after failure or maintenance");
+        }
+    }
+    return s8_success(
+        name(), "S-8 excludes post-failure maintenance leakage");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

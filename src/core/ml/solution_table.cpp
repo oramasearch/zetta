@@ -75,6 +75,7 @@ Solution band_a(
                            : solution.id == "S-5" ? 1114
                            : solution.id == "S-12" ? 1121
                            : solution.id == "S-7" ? 1116
+                           : solution.id == "S-8" ? 1117
                                                    : 1102);
     return solution;
 }
@@ -366,17 +367,31 @@ const std::vector<Solution>& solutions() {
             "Trade planned intervention against failure risk without exceeding safe operating authority.",
             {{"M-5", "primary", 1}, {"M-1", "foundation", 1},
              {"M-2", "foundation", 1}, {"M-7", "attachable", 3}},
-            {"M-2", "M-1", "M-5", "M-7"}, {"work orders in maintenance system"},
-            {"L3 detect", "L1"},
-            {{"draft work orders", "A0"}, {"approved asset classes", "A2"},
-             {"threshold tuning", "A3"}},
-            {{"entity", true, "asset identity and hierarchy"}, {"time", true, "sensor and maintenance chronology"},
-             {"label", true, "failure or intervention outcome"}, {"feature", true, "condition and usage signals"}},
-            "Risk tiers by asset class with maintenance windows, safety boundaries, approval rules, and kill switches.",
-            "Phased rollout by asset class with confirmed-alert precision and avoided-failure evidence.",
-            {"functional safety", "false work orders", "missed failures", "OT security", "maintenance capacity"},
-            levels("risk and work-order drafts", "add survival timing",
-                   "add anomaly detection", "add bounded automatic scheduling")),
+            {"M-2", "M-1", "M-5", "M-7"},
+            {"CMMS work orders with asset, owner, SLA, risk, and time-to-failure",
+             "governed inspection and scheduling tasks"},
+            {"L3 sensor detection", "L1 CMMS tasks"},
+            {{"draft work orders", "A0"},
+             {"inspection work orders for approved asset classes", "A2"},
+             {"scheduled work orders", "A1"},
+             {"threshold tuning inside approved bounds", "A3"}},
+            {{"entity", true, "stable asset identity and hierarchy"},
+             {"time", true, "sensor, failure, and maintenance chronology"},
+             {"label", true, "observed failure event indicator"},
+             {"duration", true, "time from prediction cutoff to failure or censoring"},
+             {"feature_time", true, "point-in-time sensor observation cutoff"},
+             {"feature", true, "condition, usage, and environment signals"},
+             {"asset_class", true, "approved class and safety policy scope"},
+             {"owner", true, "maintenance team or CMMS queue"},
+             {"eligibility", true, "maintenance window, safety, and capacity evidence"}},
+            "Failure-risk tiers crossed with asset-class approval, maintenance windows, safety exclusions, work-order caps, approval rules, and a kill switch.",
+            "Permanent holdout within each risk tier, measuring failure avoidance after work-order assignment.",
+            {"unsafe work orders", "false work orders", "missed failures",
+             "sensor drift", "maintenance capacity", "action-execution rate"},
+            levels("failure risk, time-to-failure, holdout, and CMMS work orders",
+                   "add asset-class maintenance-window policy",
+                   "add sensor anomaly context",
+                   "add approval-gated scheduling")),
         band_a(
             "S-9", "Automated Outbound",
             "Choose governed outbound journeys and preserve a no-contact option for every audience.",

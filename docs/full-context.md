@@ -118,6 +118,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   decision log, and honest phased measurement. See
   [solutions/S-7.md](solutions/S-7.md).
 
+- **S-8 Predictive Maintenance (#1117)** — runnable at levels 1–4 with
+  M-2/M-1/M-5 and optional M-7, full maintenance policy and holdout defaults,
+  censoring, sensor-drift, and post-failure leakage refusals, governed CMMS
+  work-order payloads, and a failure-avoidance ROI readout. See
+  [solutions/S-8.md](solutions/S-8.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to
