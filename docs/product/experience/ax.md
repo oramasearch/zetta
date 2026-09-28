@@ -42,6 +42,11 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Experiments before actions**: `create_experiment` defines seeded allocation
+  tiers, `assign` records the entity before returning any proposed action and
+  suppresses model-driven action for protected tiers, and `get_experiment`
+  exposes balance, exemption erosion, and the assignment rows used by uplift
+  training ([experiments.md](../../solutions/experiments.md), #1105).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a

@@ -64,12 +64,13 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
-              // (#886), +3 plan (Conflict D), +agent_training_status
-              // +set_training_schedule (#941), +score (#948), +get_run_report
-              // (#958), +explain (#960 item 5), +list_source_tables (#994),
-              // +upload_dataset (#1008), +delete_project (#1009),
-              // +list_methodologies (#1061)
+        89u);  // +3 experiment controls (#1105), +2 featurization reads
+               // (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3
+               // workspace_profile (#886), +3 plan (Conflict D),
+               // +agent_training_status +set_training_schedule (#941), +score
+               // (#948), +get_run_report (#958), +explain (#960 item 5),
+               // +list_source_tables (#994), +upload_dataset (#1008),
+               // +delete_project (#1009), +list_methodologies (#1061)
     // A remote caller can put data on the node without a file on its disk
     // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
@@ -80,6 +81,9 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // information_schema, which materialized a dataset to read a catalog (#994).
     EXPECT_TRUE(registry.find("list_source_tables"));
     EXPECT_TRUE(registry.find("server_info"));
+    EXPECT_TRUE(registry.find("create_experiment"));
+    EXPECT_TRUE(registry.find("assign"));
+    EXPECT_TRUE(registry.find("get_experiment"));
     // A run's report is readable through the control surface, not only from the
     // node that ran it (#958).
     EXPECT_TRUE(registry.find("get_run_report"));
@@ -128,7 +132,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
-          "update_workspace_profile", "create_plan", "update_plan"}) {
+          "update_workspace_profile", "create_plan", "update_plan",
+          "create_experiment", "assign"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,
@@ -139,6 +144,64 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
+}
+
+TEST_F(RegistryFixture, ExperimentJourneyProtectsHoldoutAndReportsExemptions) {
+    const ApiResult created = call(
+        "create_experiment",
+        {{"name", "retention-control"},
+         {"seed", 1105},
+         {"allocations",
+          {{{"name", "holdout"},
+            {"tier", "holdout"},
+            {"fraction", 0.5}},
+           {{"name", "treatment"},
+            {"tier", "treatment"},
+            {"fraction", 0.5}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string experiment = created.value.at("id").get<std::string>();
+
+    std::string holdout_entity;
+    for (std::uint64_t index = 0; index < 100; ++index) {
+        const std::string entity = "account-" + std::to_string(index);
+        const ApiResult decision = call(
+            "assign", {{"experiment", experiment},
+                       {"entity", entity},
+                       {"proposed_action", "send-offer"}});
+        ASSERT_TRUE(decision.ok) << decision.error.message;
+        if (decision.value.at("assignment").at("tier") == "holdout") {
+            EXPECT_FALSE(decision.value.at("allowed").get<bool>());
+            EXPECT_TRUE(decision.value.at("action").get<std::string>().empty());
+            holdout_entity = entity;
+            break;
+        }
+    }
+    ASSERT_FALSE(holdout_entity.empty());
+
+    const ApiResult exempted = call(
+        "assign", {{"experiment", experiment},
+                   {"entity", holdout_entity},
+                   {"proposed_action", "send-required-notice"},
+                   {"exempt", true},
+                   {"exemption_reason", "contract requirement"}});
+    ASSERT_TRUE(exempted.ok) << exempted.error.message;
+    EXPECT_TRUE(exempted.value.at("allowed").get<bool>());
+    EXPECT_EQ(exempted.value.at("action"), "send-required-notice");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_actor"), "local");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_reason"),
+              "contract requirement");
+
+    const ApiResult report =
+        call("get_experiment", {{"experiment", experiment}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("sizes").at("exemptions"), 1);
+    EXPECT_EQ(report.value.at("sizes").at("holdout_exemptions"), 1);
+    EXPECT_GT(report.value.at("erosion").at("exemption_rate").get<double>(),
+              0.0);
+    EXPECT_GT(
+        report.value.at("erosion").at("holdout_erosion_rate").get<double>(),
+        0.0);
+    EXPECT_FALSE(report.value.at("training_rows").empty());
 }
 
 TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {

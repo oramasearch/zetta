@@ -458,7 +458,7 @@ can never disagree:
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
 | `pubsub:publish` / `pubsub:subscribe` / `pubsub:send_wildcard` | `data:pubsub_publish` / `data:pubsub_subscribe` / `data:pubsub_send_wildcard` | publish to, read from, and address wildcards in pub/sub (#1029, [../pubsub/governance.md](../pubsub/governance.md)) |
 | `pubsub:create` / `pubsub:manage` | `orchestration:pubsub_create` / `orchestration:pubsub_manage` | create (incl. auto-create) / drop and reconfigure topics |
-| `pipelines:manage` | `orchestration:{create_project, delete_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, gate, deploy, run, start_run, testsuite_run}` | drive the pipeline authoring → gate → deploy → run control surface over MCP/REST |
+| `pipelines:manage` | `orchestration:{create_project, delete_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, gate, deploy, run, start_run, testsuite_run, create_experiment, assign}` | drive pipeline and experiment control surfaces over MCP/REST |
 | `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
 | `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |
 

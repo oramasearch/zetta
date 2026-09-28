@@ -136,6 +136,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_project` | read | api:query | one project's full detail by name or uuid, including each pipeline's methodology and runnable status |
 | `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
 | `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
+| `get_experiment` | read | api:query | one experiment's sizes, allocation balance, exemption erosion, and uplift-training assignment rows |
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
 | `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
@@ -155,6 +156,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `create_experiment` | action | orchestration:create_experiment | create a replicated seeded holdout, treatment, exploration, and below-the-line allocation definition |
+| `assign` | action | orchestration:assign | assign an entity before a proposed action, suppress protected model-driven actions, and log explicit exemptions |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |

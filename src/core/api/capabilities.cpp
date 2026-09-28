@@ -66,6 +66,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/solutions/experiment.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -7835,6 +7836,185 @@ ApiResult handle_generate_dataset(const nlohmann::json& input, ApiContext&) {
     return ApiResult::success(std::move(output));
 }
 
+// --- experiments ------------------------------------------------------------
+
+const nlohmann::json& create_experiment_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json value = zetta::solutions::experiment_value_schema();
+        value["title"] = "Create experiment input";
+        value["required"] = {"name", "seed", "allocations"};
+        value["properties"].erase("id");
+        value["properties"].erase("created");
+        return value;
+    }();
+    return schema;
+}
+
+const nlohmann::json& experiment_record_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::solutions::experiment_value_schema());
+    return schema;
+}
+
+const nlohmann::json& assign_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment", "entity"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "experiment uuid or unique name"}}},
+          {"entity", {{"type", "string"}, {"minLength", 1}}},
+          {"proposed_action",
+           {{"type", "string"},
+            {"description", "action to return only when the assignment permits it"}}},
+          {"model_driven", {{"type", "boolean"}, {"default", true}}},
+          {"exempt", {{"type", "boolean"}, {"default", false}}},
+          {"exemption_reason", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& assignment_record_schema() {
+    static const nlohmann::json schema = entity_value_with_id_schema(
+        zetta::solutions::experiment_assignment_value_schema());
+    return schema;
+}
+
+const nlohmann::json& assign_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"assignment", "proposed_action", "action", "model_driven", "allowed",
+          "reason"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"assignment", assignment_record_schema()},
+          {"proposed_action", {{"type", "string"}}},
+          {"action", {{"type", "string"}}},
+          {"model_driven", {{"type", "boolean"}}},
+          {"allowed", {{"type", "boolean"}}},
+          {"reason", {{"type", "string"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_experiment_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "experiment uuid or unique name"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_experiment_output_schema() {
+    static const nlohmann::json balance_row = {
+        {"type", "object"},
+        {"required",
+         {"name", "tier", "configured_fraction", "assignments", "expected",
+          "deviation", "tolerance", "balanced"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"tier", {{"type", "string"}}},
+          {"configured_fraction", {{"type", "number"}}},
+          {"assignments", {{"type", "integer"}}},
+          {"expected", {{"type", "number"}}},
+          {"deviation", {{"type", "number"}}},
+          {"tolerance", {{"type", "number"}}},
+          {"balanced", {{"type", "boolean"}}}}}};
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"experiment", "sizes", "balance", "erosion", "training_rows"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"experiment", experiment_record_schema()},
+          {"sizes",
+           {{"type", "object"},
+            {"required",
+             {"assignments", "exemptions", "holdout_assignments",
+              "holdout_exemptions"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"assignments", {{"type", "integer"}}},
+              {"exemptions", {{"type", "integer"}}},
+              {"holdout_assignments", {{"type", "integer"}}},
+              {"holdout_exemptions", {{"type", "integer"}}}}}}},
+          {"balance",
+           {{"type", "object"},
+            {"required", {"balanced", "allocations"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"balanced", {{"type", "boolean"}}},
+              {"allocations", {{"type", "array"}, {"items", balance_row}}}}}}},
+          {"erosion",
+           {{"type", "object"},
+            {"required", {"exemption_rate", "holdout_erosion_rate"}},
+            {"additionalProperties", false},
+            {"properties",
+             {{"exemption_rate", {{"type", "number"}}},
+              {"holdout_erosion_rate", {{"type", "number"}}}}}}},
+          {"training_rows",
+           {{"type", "array"}, {"items", assignment_record_schema()}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_experiment(const nlohmann::json& input,
+                                   ApiContext& context) {
+    zetta::solutions::ExperimentValue value;
+    value.name = input.at("name").get<std::string>();
+    value.seed = input.at("seed").get<std::uint64_t>();
+    for (const nlohmann::json& item : input.at("allocations")) {
+        value.allocations.push_back(
+            {item.at("name").get<std::string>(),
+             *zetta::solutions::experiment_tier_from(
+                 item.at("tier").get<std::string>()),
+             item.at("fraction").get<double>()});
+    }
+    std::string reason;
+    const auto record = context.node.experiment_manager().create(
+        std::move(value), &reason);
+    if (!record) {
+        return ApiResult::failure("invalid_input", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*record));
+}
+
+ApiResult handle_assign(const nlohmann::json& input, ApiContext& context) {
+    const bool exempt = input.value("exempt", false);
+    const std::string actor =
+        exempt ? (context.acting_key.empty() ? std::string("local")
+                                            : context.acting_key)
+               : std::string{};
+    std::string reason;
+    const auto decision = context.node.experiment_manager().decide(
+        input.at("experiment").get<std::string>(),
+        input.at("entity").get<std::string>(),
+        input.value("proposed_action", std::string{}),
+        input.value("model_driven", true), exempt,
+        input.value("exemption_reason", std::string{}), actor, &reason);
+    if (!decision) {
+        return ApiResult::failure("invalid_input", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*decision));
+}
+
+ApiResult handle_get_experiment(const nlohmann::json& input,
+                                ApiContext& context) {
+    std::string reason;
+    const auto report = context.node.experiment_manager().report(
+        input.at("experiment").get<std::string>(), &reason);
+    if (!report) {
+        return ApiResult::failure("not_found", reason);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*report));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -7862,6 +8042,44 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_server_info});
+
+    registry.add(Capability{
+        "create_experiment",
+        "Create an experiment",
+        "Create and replicate a seeded holdout experiment definition. Mutates "
+        "experiment state and returns the durable record.",
+        create_experiment_schema(),
+        experiment_record_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_experiment"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_experiment});
+    registry.add(Capability{
+        "assign",
+        "Assign an experiment entity",
+        "Assign an entity deterministically before any proposed action, suppress "
+        "model-driven actions in protected tiers, and durably log explicit exemptions. "
+        "Mutates assignment state.",
+        assign_schema(),
+        assign_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "assign"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_assign});
+    registry.add(Capability{
+        "get_experiment",
+        "Get an experiment",
+        "Read an experiment's allocation sizes, balance checks, exemption erosion, "
+        "and uplift-training assignment rows. No side effects.",
+        get_experiment_schema(),
+        get_experiment_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_experiment});
 
     registry.add(Capability{
         "sql",

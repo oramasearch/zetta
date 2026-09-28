@@ -75,6 +75,23 @@ Those assignment rows are the randomized treatment/control records consumed by
 native uplift training after joining the observed outcome by entity. There is no
 second export or shadow experiment log.
 
+## REST and MCP capabilities
+
+The capability registry exposes the same owner-thread manager through REST and
+MCP:
+
+- `create_experiment` creates the validated, replicated definition.
+- `assign` always calls `decide` before returning a proposed action. Callers may
+  execute only its `action` field; it is empty when a protected model-driven
+  action is suppressed. Setting `exempt=true` requires `exemption_reason`, and
+  the authenticated principal is recorded as the exemption actor.
+- `get_experiment` returns sizes, balance, erosion, and the complete stable
+  assignment rows used as uplift-training input.
+
+Creation and assignment require `pipelines:manage`; the report is an
+`api:query` read. Their input and output schemas render into both MCP tool
+definitions and OpenAPI from the capability registry.
+
 ## Boundaries
 
 `experiment.schema.json` and `experiment_assignment.schema.json` are generated
