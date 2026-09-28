@@ -65,11 +65,29 @@ testsuite_run submit-then-poll, and the denied-key negative);
 `tests/api/test_mcp_server.cpp` replays dataset-ingest and gate-blocked over
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 
+The methodology registry journey in `test_action_journeys.cpp` discovers all
+21 entries, compiles S-1 through M-1 and M-3 through explicit selection or keywords,
+verifies issue-bearing refusals for M-2, rejects an unmatched non-predictive intent,
+and refuses an incomplete segmentation graph at the correctness gate. Graph and
+project views expose `methodology` plus `runnable` (#1061).
+`Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
+table, creates a project, captures and compiles M-3, runs without a dataset
+override, polls the Run and reads separation metrics, input/exclusion facts and
+assignment/profile tables back through `get_run_report` (#1042).
+
+The M-7 journey lands a label-free table, creates and reads back a project,
+captures intent, compiles the anomaly methodology, runs without a dataset
+override, waits for completion, and verifies report metrics, exact alert count,
+ranked findings, excluded columns, output tables, and lineage. It also compiles
+S-7 and refuses label/feature overrides before starting a Run (#1046).
+`AnomalyMethodology.OneRegistryRunLaunchesOwnedPartitionsOnBothMembers` adds a
+real two-member registry run to prove coordinated launch and primary ownership.
+
 ## Rules
 
 - Journeys run against **real engine state** (temp data_dir, loopback
   cluster) — no mocks of zetta itself; fakes only at the CommandRunner-style
-  outer seams (cloud CLIs).
+  outer boundaries (cloud CLIs).
 - Multi-node journeys follow the patient-convergence rule (poll with a
   deadline, never a fixed count).
 - Every new capability lands with at least one journey step exercising it

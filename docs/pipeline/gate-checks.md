@@ -1,25 +1,84 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+The reusable annotation and methodology-specific checks are:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `TemporalValidationCheck` | `temporal_validation` | a time-ordered model without time-aware validation |
+| `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
+| `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
+| `ForecastGraphCheck` | `forecast_correctness` | an M-4 graph with invalid temporal backtests, future features, calibration, or no seasonal-naive baseline |
+| `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
+| `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
+| `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
+| `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
+| `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
+| `LanguageGroundingCheck` | `language_grounding` | an M-10 graph that does not require citations on every answer sentence or does not refuse empty retrieval |
+| `LanguageTrainingAccessCheck` | `language_training_access` | an M-10 graph whose source and model do not require runtime caller-read authorization |
+| `DocumentReviewCheck` | `document_review` | document extraction without confidence, source evidence, a valid review threshold, and a downstream review queue |
+| `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
+| `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
 
+`SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
+It validates the nested `segmentation` config against `segmentation_config_schema()`
+and requires matching preparation/model contracts. Its implementation and refusal
+tests live in `src/core/ml/segmentation_graph.cpp` and
+`tests/ml/test_segmentation_methodology.cpp`. See the full
+[segmentation correctness rules](../ml/segmentation.md#running-it).
+
+`ForecastGraphCheck` (`forecast_correctness`, #1043) is also registered in the
+default gate. It applies only to forecast model kinds, validates the complete
+M-4 graph and model-attribute schema, and refuses random validation, future
+features, probability calibration, invalid horizon limits, or omission of the
+seasonal-naive baseline. Runtime checks additionally validate each series' real
+history length and ownership. The full contract and refusal tests are documented
+in [forecast.md](../ml/forecast.md).
+### `next_best_action_correctness` — recommendation policy safety
+
+This check engages only when a model step names an M-8 model kind. It parses the
+complete five-stage pipeline through the same contract used by the initiator and
+coordinated peers. It requires the time-based interaction holdout, the explicit
+logging-propensity rule, the predictive-not-causal warning, and an Act step that
+applies eligibility and contact caps as hard constraints before budgeted
+best-action selection. Missing stages, extra transforms, altered outputs, unknown
+attributes, overlapping column roles, and invalid training parameters fail with a
+specific reason.
+
+### M-10 grounding and training access
+
+The language checks engage only when a model step names `model_kind: language`
+or another M-10 alias. `language_grounding` requires boolean
+`citations_required` and `refuse_without_retrieval` attributes on the model.
+`language_training_access` requires `governance_check` on that model and
+`caller_read_required` on an upstream connect step. The runtime then authorizes
+every effective entity, label, feature, text, query, and relevant-id column
+before it reads rows. These graph flags do not replace runtime authorization;
+they make an edited plan that omits it fail verification.
+
 ## How a check reads a step
+
+The default gate also registers `AnomalyGraphCheck` (`anomaly_correctness`,
+`src/core/ml/anomaly_plan.cpp`, #1046). It engages on M-7 model kinds and validates
+the complete executable shape. Missing or ambiguous alert policies, training on
+evaluation labels, role/feature overlap, non-robust scaling, future-fitting KPI
+settings, missing time roles, invalid bounds, grouping, and unsupported operations
+or data flow are hard refusals. Each refusal has a regression in
+`tests/ml/test_anomaly_methodology.cpp`; the same validator checks run overrides
+before a Run is created. See [M-7 correctness rules](../ml/anomaly.md#correctness-rules-enforced-in-code).
 
 A graph node's `attributes` bag (`zetta::ir::Node::attributes`,
 [execution-graph.md](execution-graph.md)) is free-form JSON. These checks read a
@@ -82,6 +141,44 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `entity_resolution_profile` — mandatory M-2 safety declarations
+
+Every `entity_resolution` model step must declare a non-empty `blocking_keys`
+array, numeric `review_threshold` and `match_threshold` values satisfying
+`0 <= review < match <= 1`, and
+`conflict_policy: reject_verified_identifier_conflicts`. A missing or weaker
+declaration fails before execution. The runtime enforces the same thresholds
+and checks whole clusters before each union, preventing a fuzzy bridge from
+merging records across incompatible verified identifiers.
+
+### `causal_uplift` — treatment design and pre-treatment features
+
+Engages on model steps whose `model_kind` is `uplift` or `causal`. The step must
+name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
+`overlap_upper` annotations must remain within `[0.05,0.95]` and be ordered.
+Features named like the outcome, equal to the treatment column, or carrying a
+`data_as_of` later than `treatment_time` fail before execution.
+
+### `graph_edge_time` — graph rows available at prediction time
+
+This check engages only for `graph` and `graph_ml` model steps. The model must
+declare `time_column` and a finite `prediction_time`. An enabled clean step must
+feed the graph model through a data-flow edge and declare the same
+`filter_time_column` and cutoff plus
+`exclude_after_prediction_time: true`. Missing, disabled, or mismatched filters
+fail the gate before the graph can run.
+
+### `vision_source_split` — refuse frame-level evaluation
+
+Engages on a Model step whose `model_kind` is `vision` or `computer_vision`.
+It requires `source_disjoint: true` and a non-empty `source_column`. A missing or
+false flag fails because random frame splitting can put nearly identical frames
+from one camera, site, or document in both train and test. A missing source
+column fails because the runner cannot know which rows must stay together.
+
+The M-13 shape emits both annotations. The runtime also performs the split from
+the named column, so the graph promise and the executed behavior agree.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -112,7 +209,7 @@ typed fields it needs and features all dated before the cutoff:
 }
 ```
 
-Both checks pass and the gate allows deploy. Change `revenue` to `"string"` in the
+The applicable checks pass and the gate allows deploy. Change `revenue` to `"string"` in the
 source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
 
@@ -122,7 +219,7 @@ source profile and `schema_type` fails; add a feature with `"data_as_of":
 using namespace zetta;
 
 ir::ExecutionGraph graph = *ir::from_json(document);   // the compiled graph
-ValidationReport report = default_gate().run(graph);   // ships both #309 checks
+ValidationReport report = default_gate().run(graph);   // runs the default checks
 if (report.block_deploy) {
     // RULE-1: refuse to deploy; report.checks carries the per-check reasons.
 }
@@ -145,12 +242,21 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks implement the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
-result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+result format** here. The earlier UC-1 resolution-output check (`#312`) remains
+alongside the M-2 profile check.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
 type), and the related artifacts: ENT-5, FEAT-3 (`#134` / `#301`), RULE-1.
+
+## Learning-to-rank correctness
+
+The `rank_correctness` check applies to model kinds `rank`, `ranking`, and
+`learning_to_rank`. It requires a group column, a whole-group validation split,
+and features declared available at ranking time. A missing group, a row-level
+split, or an after-outcome feature contract blocks deploy and run. The
+distributed trainer separately verifies that a group is not spread across
+participants.

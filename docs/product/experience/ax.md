@@ -48,6 +48,34 @@ relay it to a person.
   required field is absent, the read returns a named `transform_required` correction
   and proposed SQL or clean step. It never changes the dataset for the agent
   ([featurization.md](../../data/featurization.md), #1062).
+- **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
+  `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
+  metrics, and runnable status. `compile_intent` accepts a methodology or
+  solution selector; M-1 and M-12 are runnable, while unsupported work names
+  its implementation issue. `run`
+  refuses unsupported model kinds, and `get_graph` / `get_project` expose each
+  pipeline's methodology and runnable status. See
+  [the registry contract](../../ml/methodologies.md).
+- **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
+  compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
+  then run the stored pipeline and poll its Run. The report carries temporal
+  metrics, seasonal-naive comparison, read/excluded data and forecast table
+  references. A forecast never falls back to a classifier or structural run.
+  See [Running it](../../ml/forecast.md#running-it).
+- **Label-free anomaly runs** (#1046): select M-7 or S-7, compile against a landed
+  table, run, and poll its durable handle. Reports return the governed threshold,
+  alert rate, ranked anomalies with robust contributors, output tables, and the
+  columns excluded from scoring. Labels are optional evaluation data only;
+  unsupported shapes, grouping, and non-causal KPI settings fail explicitly.
+  See [running M-7](../../ml/anomaly.md#running-it).
+- **Next-best-action runs** (#1047):
+  M-8 and primary solution S-11 compile to a runnable recommendation graph;
+  `run` reads that graph's table and `get_run_report` returns queryable output
+  references, ranked actions, policy metrics, exclusions, and causal caveats.
+- For M-13, compile hints name the image table, its image/label/source columns,
+  and a registered ViT backbone. `run` reads that graph-owned table, refuses an
+  unauthorized image before its bytes are read, and `get_run_report` returns
+  source-disjoint accuracy, macro-F1, the confusion matrix, and prediction table.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

@@ -51,6 +51,7 @@ TEST(IntentCompilerTest, ChurnIntentProducesFullChurnSkeleton) {
         "Score every active account for churn risk and tell me why.");
     ASSERT_TRUE(compiled);
     EXPECT_EQ(compiled->shape, IntentShape::Churn);
+    EXPECT_EQ(compiled->methodology, "M-1");
 
     const ExecutionGraph& graph = compiled->graph;
     EXPECT_FALSE(graph.empty());
@@ -59,6 +60,8 @@ TEST(IntentCompilerTest, ChurnIntentProducesFullChurnSkeleton) {
     EXPECT_EQ(graph.nodes_of_kind(StepKind::Connect).size(), 2u);
     EXPECT_EQ(graph.nodes_of_kind(StepKind::Act).size(), 1u);
     EXPECT_TRUE(graph.has_node("train_churn_model"));
+    EXPECT_EQ(graph.find_node("train_churn_model")->attributes.at("model_kind"),
+              "gbdt");
 }
 
 // Various phrasings of the churn shape are all recognized (the heuristic is the
@@ -74,14 +77,126 @@ TEST(IntentCompilerTest, RecognizesChurnSynonyms) {
     }
 }
 
-// An intent the heuristic doesn't recognize still compiles to a well-formed,
-// complete skeleton (a usable starting point, never nothing).
-TEST(IntentCompilerTest, UnrecognizedIntentProducesGenericSkeleton) {
-    const auto compiled =
-        compile_intent("Summarize incoming support tickets by topic.");
+TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-21";
+    std::string error;
+    EXPECT_FALSE(compile_intent("Group customers", options, &error));
+    EXPECT_NE(error.find("Online / streaming learning (M-21)"), std::string::npos);
+    EXPECT_NE(error.find("1060"), std::string::npos);
+}
+
+TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-1";
+    const auto compiled = compile_intent("Build a retention plan", options);
     ASSERT_TRUE(compiled);
-    EXPECT_EQ(compiled->shape, IntentShape::Generic);
-    EXPECT_TRUE(covers_all_stages(compiled->graph));
+    EXPECT_EQ(compiled->methodology, "M-1");
+    EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
+}
+
+TEST(IntentCompilerTest, CausalMethodologyIdAndModelKindsBuildUpliftShape) {
+    for (const char* methodology : {"M-6", "uplift", "causal"}) {
+        zetta::pipeline::IntentCompileOptions options;
+        options.methodology = methodology;
+        options.hints = {{"source", "experiments"},
+                         {"table", "population"},
+                         {"treatment", "offer"},
+                         {"outcome", "converted"}};
+        const auto compiled = compile_intent("Decide who to treat", options);
+        ASSERT_TRUE(compiled);
+        EXPECT_EQ(compiled->methodology, "M-6");
+        const auto models =
+            compiled->graph.nodes_of_kind(zetta::ir::StepKind::Model);
+        ASSERT_EQ(models.size(), 1u);
+        EXPECT_EQ(models.front()->attributes.at("model_kind"), "uplift");
+        EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+    }
+}
+
+TEST(IntentCompilerTest, SurvivalBuildsItsOwnRunnableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-5";
+    const auto compiled = compile_intent("When will each subject fail?", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-5");
+    EXPECT_TRUE(compiled->graph.has_node("train_survival_model"));
+    EXPECT_TRUE(compiled->graph.has_node("write_survival_table"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+}
+
+TEST(IntentCompilerTest, GraphMethodologyBuildsItsOwnPipeline) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-12";
+    options.hints = {{"source", "fraud"},
+                     {"table", "payments"},
+                     {"prediction_time", 100.0}};
+    const auto compiled =
+        compile_intent("Learn risk from payment relationships", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-12");
+    EXPECT_TRUE(compiled->graph.has_node("load_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("filter_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("train_graph_model"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph.find_node("train_graph_model")
+                  ->attributes.at("model_kind"),
+              "graph");
+    const auto report = zetta::pipeline::default_gate().run(compiled->graph);
+    EXPECT_TRUE(report.passed());
+}
+
+TEST(IntentCompilerTest, FraudPrimarySolutionSelectsM1) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    options.hints = {{"prediction_time", 100.0}};
+    const auto compiled = compile_intent("Review transaction fraud", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-1");
+    EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
+}
+
+TEST(IntentCompilerTest, DocumentMethodologyBuildsItsOwnRunnableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-11";
+    options.hints = {{"source", "documents"},
+                     {"table", "invoices"},
+                     {"fields", {"invoice_number", "total"}},
+                     {"review_threshold", 0.85}};
+    const auto compiled = compile_intent("extract invoice fields", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-11");
+    ASSERT_EQ(compiled->graph.nodes_of_kind(StepKind::Model).size(), 1u);
+    const auto model = compiled->graph.nodes_of_kind(StepKind::Model).front();
+    EXPECT_EQ(model->attributes.at("model_kind"), "document_extraction");
+    EXPECT_EQ(model->attributes.at("fields").size(), 2u);
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Act).front()
+                  ->attributes.at("route"),
+              "review_queue");
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Clean).front()
+                  ->attributes.at("ocr"),
+              "trocr");
+}
+
+TEST(IntentCompilerTest, SegmentationKeywordBuildsItsOwnShape) {
+    std::string error;
+    const auto compiled =
+        compile_intent("segment my customers into groups", &error);
+    ASSERT_TRUE(compiled) << error;
+    EXPECT_EQ(compiled->methodology, "M-3");
+    EXPECT_TRUE(compiled->graph.has_node("train_segments"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph.node_count(), 5u);
+}
+
+TEST(IntentCompilerTest, UnrecognizedNonPredictiveIntentListsWhatRuns) {
+    std::string error;
+    EXPECT_FALSE(
+        compile_intent("Summarize incoming support tickets by topic.", &error));
+    EXPECT_NE(error.find("Runnable methodologies"), std::string::npos);
+    EXPECT_NE(error.find("Tabular supervised learning (M-1)"),
+              std::string::npos);
 }
 
 // Empty / whitespace-only intent carries no meaning → no graph (mirrors

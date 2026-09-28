@@ -133,7 +133,7 @@ reverse path used by reconciliation.
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
-| `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::pipeline::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
+| `compile_intent_to_graph(input_id, name = {}, options = {}, error = nullptr)` | `shared_ptr<ProjectGraph>` | Resolve a runnable [methodology](../ml/methodologies.md), compile the stored **intent** with that methodology's shape callback, and store it through `create_graph` (M-1 defaults to `"churn skeleton"`). `options` may select a methodology or primary solution and carry hints. Empty handle on an invalid input, unsupported methodology, missing body, or name collision; `error` explains compilation refusal. |
 | `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. **Re-proposes the plan** (resets approval → proposed, #885). Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `approve_graph(name, approver, at)` | `shared_ptr<ProjectGraph>` | Mark a proposed plan **approved** (#885, review-before-build): stamps the approver + ISO instant, re-captures `graph:<uuid>`, and audits `graph_approved`. Idempotent. Empty handle if no graph by `name`. Reached over the governed `approve_plan` capability. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
@@ -184,8 +184,9 @@ both the disk and CRDT paths.
   The normal Studio flow is **approve → gate → deploy → run**; `run` inherits
   approval by sequence (it follows a deploy that required it).
 - **Surfaced for the UI.** `get_project` (per graph), `get_graph`, and the
-  compile/save outputs all carry `approval`, so the Studio statuses (Draft /
-  Needs approval / Ready / Running) map onto engine state.
+  compile/save outputs carry `approval`; the two read capabilities also carry
+  `methodology` and `runnable`. Studio statuses (Draft / Needs approval / Ready /
+  Running) therefore map onto engine state without inferring model support.
 
 ## GUI panel
 

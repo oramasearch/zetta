@@ -19,7 +19,9 @@
     },
     "objective": {
       "enum": [
-        "binary_logistic"
+        "binary_logistic",
+        "squared_error",
+        "lambdamart"
       ],
       "type": "string"
     },

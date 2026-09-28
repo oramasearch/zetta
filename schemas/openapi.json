@@ -1656,7 +1656,7 @@
     },
     "/v1/compile_intent": {
       "post": {
-        "description": "Compile a captured intent input into a named, editable execution graph stored on the project (replicated; audited as a graph change). Requires orchestration:compile_intent.",
+        "description": "Resolve a methodology from an explicit methodology, primary solution, or intent keywords, then compile its editable graph. Unavailable methodologies are refused with their implementation issue. Requires orchestration:compile_intent.",
         "operationId": "compile_intent",
         "requestBody": {
           "content": {
@@ -1664,6 +1664,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "hints": {
+                    "description": "known dataset, label, time column, and other shape hints",
+                    "type": "object"
+                  },
                   "input_id": {
                     "description": "the captured intent's uuid (capture_intent). Optional: omit it and the project's most recently captured intent compiles, which is what you want in the common case of describing a goal and building it",
                     "minLength": 1,
@@ -1673,12 +1677,22 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "methodology": {
+                    "description": "methodology id or model kind; takes precedence",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "name": {
                     "description": "the stored graph's name (default '<shape> skeleton')",
                     "type": "string"
                   },
                   "project": {
                     "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "solution": {
+                    "description": "solution id resolved to its primary methodology",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -1728,11 +1742,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -1863,11 +1886,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -1998,11 +2030,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -5684,6 +5725,12 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
@@ -5696,6 +5743,9 @@
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -6377,8 +6427,18 @@
                               "id": {
                                 "type": "string"
                               },
+                              "methodology": {
+                                "description": "the registry methodology id, when known",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
                               "name": {
                                 "type": "string"
+                              },
+                              "runnable": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -6679,16 +6739,16 @@
     },
     "/v1/get_run_report": {
       "get": {
-        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. No side effects. (#958) Requires api:query.",
+        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked anomalies, output tables, and what was read or excluded. Assembled at query time from the run's model and its result tables, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042, #1043, #1046) Requires api:query.",
         "operationId": "get_run_report",
         "parameters": [
           {
-            "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+            "description": "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, or forecast rows by series then timestamp. Limit applies after ordering",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+              "description": "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, or forecast rows by series then timestamp. Limit applies after ordering",
               "minimum": 1,
               "type": "integer"
             }
@@ -6735,33 +6795,93 @@
                     },
                     "value": {
                       "properties": {
+                        "anomalies": {
+                          "description": "M-7 rows ranked by anomaly score, with flags, threshold and robust contributors",
+                          "type": "array"
+                        },
                         "at_risk": {
                           "description": "the ranked entities with their risk and their evidence values, capped by `limit`",
                           "type": "array"
+                        },
+                        "baseline_comparison": {
+                          "description": "whether the forecast beat seasonal-naive in rolling-origin backtests",
+                          "type": "string"
                         },
                         "caveats": {
                           "description": "figures that are PRESENT but must not be read as results — a holdout too small to mean anything, a perfect score. `missing` says what the run cannot tell you; this says what it can and you should not believe",
                           "type": "array"
                         },
+                        "confusion_matrix": {
+                          "description": "vision held-out counts indexed by actual then predicted class",
+                          "type": "array"
+                        },
                         "dataset": {
-                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
+                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Anomaly detection records source, rows read/excluded, roles and unused columns. Forecasting records selected/excluded columns and rows/partitions/bytes read. Absent when the model records no dataset facts",
                           "type": "object"
                         },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
                         },
+                        "fields": {
+                          "description": "M-11 extracted fields with confidence, page, box, and review status",
+                          "type": "array"
+                        },
+                        "forecast": {
+                          "description": "forecast-table rows with series, timestamp, point_forecast, lower and upper; ordered by series then timestamp before applying limit",
+                          "type": "array"
+                        },
+                        "graph": {
+                          "description": "graph runs: component sizes, degree distribution, PageRank top nodes, edge cutoff counts, and held-out node-task accuracy",
+                          "type": "object"
+                        },
+                        "methodology": {
+                          "description": "methodology id for typed reports",
+                          "type": "string"
+                        },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates. Anomaly detection reports threshold, budget, alert rate and optional precision at k. Forecast models carry rolling-origin errors, seasonal-naive comparison and interval coverage. Next-best-action models return hit rate, IPS/DR and importance-weight diagnostics. Language reports expose recall_at_k, MRR, groundedness, and embedder_version",
+                          "type": "object"
+                        },
+                        "output_tables": {
+                          "description": "named result table references, availability and row counts",
+                          "type": "array"
+                        },
+                        "outputs": {
+                          "description": "language methodology output table names and fully qualified refs; absent for tabular reports",
+                          "type": "array"
+                        },
+                        "policy": {
+                          "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
+                          "type": "object"
+                        },
+                        "predictions": {
+                          "description": "vision prediction rows, capped by `limit`",
+                          "type": "array"
+                        },
+                        "ranked_queue": {
+                          "description": "learning-to-rank rows: group, entity, score, rank, and observed relevance, capped by `limit`",
+                          "type": "array"
+                        },
+                        "recommendations": {
+                          "description": "M-8 entity-action rows ordered by entity then rank, including expected value, chosen action and why",
+                          "type": "array"
+                        },
+                        "review_queue": {
+                          "description": "M-11 review-table reference and routed-field count",
                           "type": "object"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
+                        },
+                        "segments": {
+                          "description": "segment sizes, shares, original-unit centers and descriptive labels",
+                          "type": "array"
                         }
                       },
                       "required": [
@@ -8563,6 +8683,177 @@
           }
         },
         "summary": "List jobs",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_methodologies": {
+      "get": {
+        "description": "Read the complete methodology portfolio, including model kinds, primary solutions, data roles, outputs, metrics, implementation status, and tracking issues. No side effects. Requires api:query.",
+        "operationId": "list_methodologies",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "methodologies": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "family": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "inputs": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    },
+                                    "role": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "role",
+                                    "required",
+                                    "description"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "issue": {
+                                "type": "string"
+                              },
+                              "metrics": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "model_kinds": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "outputs": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partial": {
+                                "type": "boolean"
+                              },
+                              "runnable": {
+                                "type": "boolean"
+                              },
+                              "solutions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "family",
+                              "model_kinds",
+                              "solutions",
+                              "inputs",
+                              "outputs",
+                              "metrics",
+                              "runnable",
+                              "partial",
+                              "issue"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "methodologies"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List methodologies",
         "tags": [
           "read"
         ]
@@ -10803,7 +11094,7 @@
     },
     "/v1/run": {
       "post": {
-        "description": "Execute a stored, gate-passing project graph: a churn-shaped graph runs the real engine over the live cluster and returns its run id immediately (poll get_run / system.runs); other graphs run structurally within the call. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Execute a stored, gate-passing project graph through its registered methodology runner. Unknown and unavailable model kinds are refused; a graph with no model step may run structurally. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "run",
         "requestBody": {
           "content": {
@@ -10811,6 +11102,20 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "answer_tokens": {
+                    "description": "M-10 only: native-Qwen completion token limit",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "bootstrap_samples": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "classifier_regularization": {
+                    "description": "M-10 only: non-negative regularization for the linear classifier head",
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10850,6 +11155,40 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "document_column": {
+                    "description": "M-11: source column containing text, PDF, or PGM bytes",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "document_id_column": {
+                    "description": "M-11: stable source document identifier column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "duration_column": {
+                    "description": "survival duration column (default duration)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "embedder_directory": {
+                    "description": "M-10 only: local directory containing the pinned MiniLM config, vocab.txt, and model.safetensors (tests never download it)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "feature_time_column": {
+                    "description": "survival feature cutoff column (default feature_time)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "M-11: declared field names to extract",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10865,8 +11204,39 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "interval_width": {
+                    "description": "survival interval width (default 30)",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "labels_column": {
+                    "description": "M-11: optional object of labelled field values",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "max_intervals": {
+                    "description": "survival horizon in intervals (default 12)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "max_tokens": {
+                    "description": "M-10 only: WordPiece token limit per text",
+                    "minimum": 2,
+                    "type": "integer"
+                  },
+                  "minimum_relevance": {
+                    "description": "M-10 only: refuse an answer below this cosine score",
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "outcome_column": {
+                    "description": "M-6 binary observed outcome column",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -10875,10 +11245,62 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "query_column": {
+                    "description": "M-10 only: labelled evaluation query column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "qwen_directory": {
+                    "description": "M-10 only: optional local native-Qwen checkpoint used to compose answers; without it the grounded path returns an extractive answer",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "relevant_id_column": {
+                    "description": "M-10 only: integer id of the planted relevant chunk",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "review_threshold": {
+                    "description": "M-11: route lower-confidence fields to review",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "seed": {
+                    "description": "M-11: deterministic tiny TrOCR seed",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "targeting_fraction": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
+                  "text_column": {
+                    "description": "M-10 only: text column (default the dataset contract's first feature)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "treatment_column": {
+                    "description": "M-6 binary treatment column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "trocr_directory": {
+                    "description": "M-11: pinned native TrOCR checkpoint directory",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "validation_fraction": {
+                    "description": "newest fraction held out for survival validation",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
                   }
                 },
                 "required": [
@@ -10925,10 +11347,7 @@
                           "type": "array"
                         },
                         "engine": {
-                          "enum": [
-                            "churn",
-                            "structural"
-                          ],
+                          "description": "the methodology runner, or structural",
                           "type": "string"
                         },
                         "error": {
@@ -11094,11 +11513,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"

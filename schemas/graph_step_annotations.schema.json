@@ -1,11 +1,30 @@
 {
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "The correctness annotations the gate's concrete checks (#309) read from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles (schema_type check) and point-in-time / target-leakage metadata (data_leakage check). Only the named fields are constrained; a node may carry any other attributes. Mirrored verbatim by the inline schema in src/core/graph_checks.cpp (the runtime source of truth) — keep the two in sync.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
   "properties": {
     "as_of": {
       "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
+    "caller_read_required": {
+      "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
+    },
+    "censoring_handled": {
+      "type": "boolean"
+    },
+    "citations_required": {
+      "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "duration_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "event_indicator": {
+      "minLength": 1,
       "type": "string"
     },
     "features": {
@@ -39,10 +58,36 @@
       },
       "type": "array"
     },
+    "governance_check": {
+      "description": "Requires runtime authorization before language training reads text.",
+      "type": "boolean"
+    },
     "label": {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
       "minLength": 1,
       "type": "string"
+    },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "overlap_lower": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
+    "overlap_upper": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
+    "point_in_time_features": {
+      "type": "boolean"
+    },
+    "refuse_without_retrieval": {
+      "description": "Requires the language path to refuse when no relevant chunk was retrieved.",
+      "type": "boolean"
     },
     "requires": {
       "additionalProperties": {
@@ -59,6 +104,31 @@
       },
       "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
       "type": "object"
+    },
+    "source_column": {
+      "description": "The camera, site, document, or other source-group column used for a vision holdout.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "source_disjoint": {
+      "description": "Vision models must split whole source groups between train and test.",
+      "type": "boolean"
+    },
+    "stop_after_event": {
+      "type": "boolean"
+    },
+    "temporal_validation": {
+      "type": "boolean"
+    },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
     }
   },
   "title": "zetta.GraphStepAnnotations",

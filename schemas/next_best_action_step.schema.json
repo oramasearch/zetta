@@ -1,0 +1,173 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/next_best_action_step.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "action_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "als_iterations": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "als_regularization": {
+      "exclusiveMinimum": 0,
+      "maximum": 1000000000.0,
+      "type": "number"
+    },
+    "als_weight": {
+      "maximum": 1000000000.0,
+      "minimum": 0,
+      "type": "number"
+    },
+    "contact_cap_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "contacts_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "cost_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "eligibility_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "entity_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "factors": {
+      "maximum": 64,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "feature_columns": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "hit_rate_k": {
+      "maximum": 10000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "implicit_alpha": {
+      "maximum": 1000000000.0,
+      "minimum": 0,
+      "type": "number"
+    },
+    "interaction_count_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "interaction_time_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "label_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "learning_rate": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "logging_propensity_column": {
+      "type": "string"
+    },
+    "max_bins": {
+      "maximum": 1024,
+      "minimum": 2,
+      "type": "integer"
+    },
+    "max_depth": {
+      "maximum": 16,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "maximum_importance_weight": {
+      "exclusiveMinimum": 0,
+      "maximum": 1000000000000.0,
+      "type": "number"
+    },
+    "minimum_logging_propensity": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "model_kind": {
+      "enum": [
+        "next_best_action",
+        "recommendation",
+        "recommender"
+      ]
+    },
+    "num_trees": {
+      "maximum": 1000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "offline_evaluation": {
+      "const": "logging_propensities_required"
+    },
+    "propensity_interpretation": {
+      "const": "predictive_not_causal"
+    },
+    "seed": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "time_based_holdout": {
+      "const": true
+    },
+    "value_column": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "action_column",
+    "als_iterations",
+    "als_regularization",
+    "als_weight",
+    "contact_cap_column",
+    "contacts_column",
+    "cost_column",
+    "eligibility_column",
+    "entity_column",
+    "factors",
+    "feature_columns",
+    "hit_rate_k",
+    "implicit_alpha",
+    "interaction_count_column",
+    "interaction_time_column",
+    "label_column",
+    "learning_rate",
+    "logging_propensity_column",
+    "max_bins",
+    "max_depth",
+    "maximum_importance_weight",
+    "minimum_logging_propensity",
+    "model_kind",
+    "num_trees",
+    "offline_evaluation",
+    "propensity_interpretation",
+    "seed",
+    "time_based_holdout",
+    "value_column"
+  ],
+  "title": "zetta.NextBestActionStep",
+  "type": "object"
+}

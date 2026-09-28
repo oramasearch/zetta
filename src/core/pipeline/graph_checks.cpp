@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@
 #include <nlohmann/json-schema.hpp>
 
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ml/methodology.hpp"
 
 namespace zetta::pipeline {
 
@@ -28,7 +30,7 @@ const nlohmann::json& graph_step_annotations_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "title": "zetta.GraphStepAnnotations",
-  "description": "The correctness annotations the gate's concrete checks (#309) read from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles (schema_type check) and point-in-time / target-leakage metadata (data_leakage check). Only the named fields are constrained; a node may carry any other attributes. Mirrored verbatim by the inline schema in src/core/graph_checks.cpp (the runtime source of truth) — keep the two in sync.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
   "type": "object",
   "properties": {
     "schema": {
@@ -50,6 +52,37 @@ const nlohmann::json& graph_step_annotations_schema() {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
       "type": "string",
       "minLength": 1
+    },
+    "duration_column": { "type": "string", "minLength": 1 },
+    "event_indicator": { "type": "string", "minLength": 1 },
+    "censoring_handled": { "type": "boolean" },
+    "stop_after_event": { "type": "boolean" },
+    "point_in_time_features": { "type": "boolean" },
+    "temporal_validation": { "type": "boolean" },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "overlap_lower": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
+    "overlap_upper": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
     },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
@@ -79,6 +112,31 @@ const nlohmann::json& graph_step_annotations_schema() {
           }
         }
       }
+    },
+    "source_disjoint": {
+      "description": "Vision models must split whole source groups between train and test.",
+      "type": "boolean"
+    },
+    "source_column": {
+      "description": "The camera, site, document, or other source-group column used for a vision holdout.",
+      "type": "string",
+      "minLength": 1
+    },
+    "citations_required": {
+      "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "refuse_without_retrieval": {
+      "description": "Requires the language path to refuse when no relevant chunk was retrieved.",
+      "type": "boolean"
+    },
+    "governance_check": {
+      "description": "Requires runtime authorization before language training reads text.",
+      "type": "boolean"
+    },
+    "caller_read_required": {
+      "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
     }
   }
 }
@@ -224,6 +282,46 @@ std::string join_types(const std::vector<std::string>& types) {
     return out;
 }
 
+bool true_field(const json& object, std::string_view name) {
+    if (!object.is_object()) return false;
+    const auto found = object.find(name);
+    return found != object.end() && found->is_boolean() && found->get<bool>();
+}
+
+bool language_model(const ir::Node& node) {
+    if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+        return false;
+    }
+    const auto field = node.attributes.find("model_kind");
+    if (field == node.attributes.end() || !field->is_string()) return false;
+    const std::string kind = normalize_type(field->get<std::string>());
+    return kind == "language" || kind == "nlp" || kind == "embedding" ||
+           kind == "embeddings" || kind == "rag" ||
+           kind == "fine_tuning" || kind == "retrieval";
+}
+
+bool upstream_requires_caller_read(const ir::ExecutionGraph& graph,
+                                   const ir::NodeId& start) {
+    std::unordered_set<ir::NodeId> visited;
+    std::vector<ir::NodeId> frontier;
+    frontier.push_back(start);
+    while (!frontier.empty()) {
+        const ir::NodeId id = frontier.back();
+        frontier.pop_back();
+        if (!visited.insert(id).second) continue;
+        for (const ir::Edge& edge : graph.edges_into(id)) {
+            if (edge.kind != ir::EdgeKind::DataFlow) continue;
+            const std::shared_ptr<ir::Node> source = graph.find_node(edge.from);
+            if (source && source->kind == ir::StepKind::Connect &&
+                true_field(source->attributes, "caller_read_required")) {
+                return true;
+            }
+            frontier.push_back(edge.from);
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
@@ -282,15 +380,17 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
 }
 
 const std::vector<std::string>& MethodologyCheck::implemented() {
-    // M-1 tabular supervised ships (histogram GBDT + native TreeSHAP + calibration).
-    // Everything else in the catalogue is #984 and must NOT pass this check until its
-    // train/score path exists — passing it early is how the agent learns to propose work the
-    // engine silently will not do.
-    // "forecast" joined on 2026-08-07 when `train_forecast` landed (#984): lag featurization ->
-    // temporal split -> squared-error GBDT -> rolling-origin backtest, verified to beat
-    // predicting the mean on a seasonal series. Before that it was deliberately absent, so the
-    // gate refused it rather than silently running the churn path.
-    static const std::vector<std::string> kImplemented = {"gbdt", "forecast"};
+    static const std::vector<std::string> kImplemented = [] {
+        std::vector<std::string> result;
+        for (const zetta::ml::Methodology& methodology :
+             zetta::ml::methodologies()) {
+            if (!methodology.runnable)
+                continue;
+            result.insert(result.end(), methodology.model_kinds.begin(),
+                          methodology.model_kinds.end());
+        }
+        return result;
+    }();
     return kImplemented;
 }
 
@@ -307,6 +407,14 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
         const std::string named = kind->get<std::string>();
         const std::vector<std::string>& ok = implemented();
         if (std::find(ok.begin(), ok.end(), named) == ok.end()) {
+            if (const zetta::ml::Methodology* methodology =
+                    zetta::ml::find_methodology(named)) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) + ": " +
+                        zetta::ml::unsupported_methodology_message(
+                            *methodology)};
+            }
             std::string supported;
             for (const std::string& entry : ok) {
                 if (!supported.empty()) supported += ", ";
@@ -323,6 +431,113 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return CheckResult{name(), CheckStatus::Pass,
                        "every model step names a methodology the engine can execute"};
+}
+
+CheckResult EntityResolutionGraphCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "entity_resolution" &&
+            model_kind != "entity-resolution") {
+            continue;
+        }
+
+        const auto blocking = node->attributes.find("blocking_keys");
+        if (blocking == node->attributes.end() || !blocking->is_array() ||
+            blocking->empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must declare non-empty blocking_keys"};
+        }
+        const auto match = node->attributes.find("match_threshold");
+        const auto review = node->attributes.find("review_threshold");
+        if (match == node->attributes.end() || !match->is_number() ||
+            review == node->attributes.end() || !review->is_number()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must state numeric match_threshold and "
+                    "review_threshold"};
+        }
+        const double match_value = match->get<double>();
+        const double review_value = review->get<double>();
+        if (review_value < 0.0 || match_value > 1.0 ||
+            review_value >= match_value) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": thresholds must satisfy 0 <= review < match <= 1"};
+        }
+        const auto policy = node->attributes.find("conflict_policy");
+        if (policy == node->attributes.end() || !policy->is_string() ||
+            policy->get<std::string>() !=
+                "reject_verified_identifier_conflicts") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": entity resolution must reject verified identifier "
+                    "conflicts"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every entity-resolution model states safe blocking, thresholds, and "
+        "conflict handling"};
+}
+
+CheckResult SurvivalCensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "survival" && model_kind != "time_to_event") {
+            continue;
+        }
+        if (const auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto requires_true = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_boolean() &&
+                   found->get<bool>();
+        };
+        const auto requires_string = [&](const char* field) {
+            const auto found = node->attributes.find(field);
+            return found != node->attributes.end() && found->is_string() &&
+                   !found->get_ref<const std::string&>().empty();
+        };
+        if (!requires_string("duration_column") ||
+            !requires_string("event_indicator") ||
+            !requires_true("censoring_handled") ||
+            !requires_true("stop_after_event") ||
+            !requires_true("point_in_time_features")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": survival requires duration_column, event_indicator, "
+                        "censoring_handled=true, stop_after_event=true, and "
+                        "point_in_time_features=true"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "survival steps preserve censoring and point-in-time boundaries"};
 }
 
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
@@ -455,4 +670,346 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
                 " ML step(s) are point-in-time correct and target-leakage free");
 }
 
-}  // namespace zetta::pipeline
+CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", std::string{});
+        if (kind != "uplift" && kind != "causal") {
+            continue;
+        }
+        ++checked;
+        if (const auto error = validate_annotations(attributes)) {
+            return fail(node_label(*node) +
+                        ": malformed correctness annotations — " + *error);
+        }
+        const std::optional<std::string> treatment =
+            string_field(attributes, "treatment");
+        const std::optional<std::string> outcome =
+            string_field(attributes, "outcome");
+        if (!treatment || !outcome) {
+            return fail(node_label(*node) +
+                        ": uplift requires explicit treatment and outcome columns");
+        }
+        if (*treatment == *outcome) {
+            return fail(node_label(*node) +
+                        ": treatment and outcome must be different columns");
+        }
+        const double lower = attributes.value("overlap_lower", 0.05);
+        const double upper = attributes.value("overlap_upper", 0.95);
+        if (lower < 0.05 || upper > 0.95 || lower >= upper) {
+            return fail(node_label(*node) +
+                        ": overlap bounds must stay within [0.05,0.95] and be ordered");
+        }
+
+        const std::optional<std::string> treatment_time =
+            string_field(attributes, "treatment_time");
+        const auto features = attributes.find("features");
+        if (features == attributes.end() || !features->is_array()) {
+            continue;
+        }
+        for (const json& feature : *features) {
+            const std::string feature_name = feature.value("name", std::string{});
+            const std::string normalized_feature = normalize_type(feature_name);
+            const std::string normalized_outcome = normalize_type(*outcome);
+            const bool outcome_like =
+                normalized_feature == normalized_outcome ||
+                normalized_feature.starts_with(normalized_outcome + "_") ||
+                normalized_feature.ends_with("_" + normalized_outcome);
+            if (outcome_like) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is named like outcome \"" + *outcome + "\"");
+            }
+            if (feature_name == *treatment) {
+                return fail(node_label(*node) + ": treatment column \"" +
+                            *treatment + "\" cannot be a feature");
+            }
+            const std::optional<std::string> data_as_of =
+                string_field(feature, "data_as_of");
+            if (treatment_time && data_as_of &&
+                comparable_instant(*data_as_of) >
+                    comparable_instant(*treatment_time)) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is timestamped after treatment");
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        checked == 0
+            ? "no causal uplift step to check"
+            : "causal uplift roles, overlap, and feature timing are valid"};
+}
+
+CheckResult RankCorrectnessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node->attributes.is_object()) continue;
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "rank" && *kind != "ranking" &&
+                      *kind != "learning_to_rank")) {
+            continue;
+        }
+        ++checked;
+        const std::optional<std::string> group =
+            string_field(node->attributes, "group_column");
+        if (!group || group->empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": learning-to-rank requires a non-empty group_column"};
+        }
+        const std::optional<std::string> split =
+            string_field(node->attributes, "split_strategy");
+        if (!split || *split != "group") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split_strategy must be \"group\" so one group never "
+                        "appears in both training and validation"};
+        }
+        const std::optional<std::string> availability =
+            string_field(node->attributes, "feature_availability");
+        if (!availability || *availability != "ranking_time") {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": feature_availability must be \"ranking_time\"; later "
+                        "information would leak into the queue"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            checked == 0
+                ? "no learning-to-rank model to validate"
+                : std::to_string(checked) +
+                      " rank model(s) require groups, whole-group splits, and "
+                      "ranking-time features"};
+}
+
+CheckResult LanguageGroundingCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "citations_required")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires citations on every answer sentence"};
+        }
+        if (!true_field(node->attributes, "refuse_without_retrieval")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must refuse when retrieval is empty or irrelevant"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires grounded citations and refusal"};
+}
+
+CheckResult LanguageTrainingAccessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "governance_check")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must authorize every training column before reading text"};
+        }
+        if (!upstream_requires_caller_read(graph, node->id)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires an upstream source with caller-read enforcement"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires caller-authorized training text"};
+}
+
+CheckResult DocumentReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string() ||
+            kind->get<std::string>() != "document_extraction") {
+            continue;
+        }
+        const auto confidence =
+            node->attributes.find("confidence_required");
+        if (confidence == node->attributes.end() ||
+            !confidence->is_boolean() || !confidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must assign a confidence to every field"};
+        }
+        const auto evidence = node->attributes.find("retain_evidence");
+        if (evidence == node->attributes.end() || !evidence->is_boolean() ||
+            !evidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must retain each field's source page and box"};
+        }
+        const auto routing =
+            node->attributes.find("route_low_confidence_to_review");
+        if (routing == node->attributes.end() || !routing->is_boolean() ||
+            !routing->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": fields below the review threshold must be routed to review"};
+        }
+        const auto threshold = node->attributes.find("review_threshold");
+        if (threshold == node->attributes.end() || !threshold->is_number() ||
+            !std::isfinite(threshold->get<double>()) ||
+            threshold->get<double>() < 0.0 ||
+            threshold->get<double>() > 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": review_threshold must be a number between 0 and 1"};
+        }
+        bool has_review_step = false;
+        for (const auto& candidate : graph.successors(node->id)) {
+            if (candidate->kind != ir::StepKind::Act ||
+                !candidate->attributes.is_object()) {
+                continue;
+            }
+            const auto route = candidate->attributes.find("route");
+            if (route != candidate->attributes.end() && route->is_string() &&
+                route->get<std::string>() == "review_queue") {
+                has_review_step = true;
+                break;
+            }
+        }
+        if (!has_review_step) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction needs an Act step that writes the review_queue"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "document fields keep confidence and evidence, with uncertain values routed to review"};
+}
+
+CheckResult GraphEdgeTimeCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& model : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model || !model->attributes.is_object()) continue;
+        const std::string kind =
+            model->attributes.value("model_kind", std::string{});
+        if (kind != "graph" && kind != "graph_ml") continue;
+
+        const auto time = model->attributes.find("time_column");
+        const auto cutoff = model->attributes.find("prediction_time");
+        if (time == model->attributes.end() || !time->is_string() ||
+            time->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name its edge time_column"};
+        }
+        if (cutoff == model->attributes.end() || !cutoff->is_number() ||
+            !std::isfinite(cutoff->get<double>())) {
+            return {name(), CheckStatus::Fail,
+                    "graph model must name a finite prediction_time cutoff"};
+        }
+
+        for (const auto& clean : graph.nodes_of_kind(ir::StepKind::Clean)) {
+            if (!clean || !clean->attributes.is_object()) continue;
+            const std::vector<ir::Edge> outgoing = graph.edges_from(clean->id);
+            const bool feeds_model =
+                std::any_of(outgoing.begin(), outgoing.end(),
+                            [&](const ir::Edge& edge) {
+                                return edge.to == model->id &&
+                                       edge.kind == ir::EdgeKind::DataFlow;
+                            });
+            if (!feeds_model) continue;
+            const auto filter_time =
+                clean->attributes.find("filter_time_column");
+            const auto filter_cutoff = clean->attributes.find("prediction_time");
+            if (filter_time == clean->attributes.end() ||
+                !filter_time->is_string() ||
+                filter_time->get<std::string>() != time->get<std::string>()) {
+                continue;
+            }
+            if (filter_cutoff == clean->attributes.end() ||
+                !filter_cutoff->is_number() ||
+                filter_cutoff->get<double>() != cutoff->get<double>()) {
+                continue;
+            }
+            if (!clean->attributes.value("exclude_after_prediction_time", false)) {
+                return {name(), CheckStatus::Fail,
+                        "graph edge-time filter is disabled"};
+            }
+            return {name(), CheckStatus::Pass,
+                    "graph edges are filtered at the prediction cutoff"};
+        }
+        return {name(), CheckStatus::Fail,
+                "graph model requires an edge-time filter with the same "
+                "column and prediction cutoff"};
+    }
+    return {name(), CheckStatus::Pass, "no graph model step to check"};
+}
+
+CheckResult VisionSourceSplitCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        std::string kind = model_kind->get<std::string>();
+        std::transform(kind.begin(), kind.end(), kind.begin(),
+                       [](unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        if (kind != "vision" && kind != "computer_vision") {
+            continue;
+        }
+        const auto disjoint = node->attributes.find("source_disjoint");
+        if (disjoint == node->attributes.end() || !disjoint->is_boolean() ||
+            !disjoint->get<bool>()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": vision evaluation must set source_disjoint=true; "
+                        "splitting frames can put one source in both train and "
+                        "test"};
+        }
+        const auto source = node->attributes.find("source_column");
+        if (source == node->attributes.end() || !source->is_string() ||
+            source->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": source_column must name the camera, site, document, "
+                        "or other group held out as a unit"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every vision model holds out complete source groups"};
+}
+
+} // namespace zetta::pipeline

@@ -82,7 +82,19 @@ add_executable(zetta-tests
   cloud/test_cloud_provider.cpp
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
+  ml/test_methodology.cpp
+  ml/test_entity_resolution.cpp
+  ml/test_survival.cpp
+  ml/test_graph.cpp
+  ml/test_graph_partitions.cpp
+  ml/test_vision.cpp
+  ml/test_vision_train_partitions.cpp
+  ml/test_document_extraction.cpp
+  ml/test_language.cpp
   ml/test_model.cpp
+  ml/test_next_best_action.cpp
+  ml/test_next_best_action_methodology.cpp
+  ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
   index/test_index.cpp
@@ -150,8 +162,18 @@ add_executable(zetta-tests
   ddf/test_ddf_featurize.cpp
   ddf/test_ddf_featurize_partitions.cpp
   ml/test_gbdt.cpp
+  ml/test_uplift.cpp
+  ml/test_uplift_partitions.cpp
+  ml/test_rank.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
+  ml/test_anomaly.cpp
+  ml/test_anomaly_partitions.cpp
+  ml/test_anomaly_table.cpp
+  ml/test_anomaly_methodology.cpp
+  ml/test_forecast_runner.cpp
+  ml/test_forecast_methodology.cpp
+  ml/test_forecast_launch.cpp
   ml/test_lag_features.cpp
   ml/test_temporal_split.cpp
   ml/test_gbdt_train_partitions.cpp
@@ -160,6 +182,9 @@ add_executable(zetta-tests
   ml/test_tree_shap.cpp
   ml/test_native_oracle.cpp
   ml/test_gbdt_score.cpp
+  ml/test_segmentation.cpp
+  ml/test_segmentation_methodology.cpp
+  ml/test_segmentation_launch.cpp
   ml/test_playbook.cpp
   compute/test_compute_device.cpp
   compute/test_cpu_device.cpp

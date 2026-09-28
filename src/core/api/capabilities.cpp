@@ -6,48 +6,49 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "zetta/agent/agent_store.hpp"
+#include "zetta/agent/chat.hpp"
+#include "zetta/agent/corpus_io.hpp"
 #include "zetta/api/background.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
+#include "zetta/autograd/qwen.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/cpu_device.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
-#include "zetta/data/dataset_path.hpp"
 #include "zetta/data/featurize_plan.hpp"
-#include "zetta/compute/cpu_device.hpp"
-#include "zetta/ml/explain_row.hpp"
-#include "zetta/ml/score_table.hpp"
-#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/dataset_path.hpp"
+#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/table.hpp"
-#include "zetta/storage/engine.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
+#include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
-#include "zetta/input/python_frontend.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/explain_row.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/ml/model.hpp"
-#include "zetta/agent/agent_store.hpp"
-#include "zetta/agent/chat.hpp"
-#include "zetta/agent/corpus_io.hpp"
-#include "zetta/dataset/dataset_generator_factory.hpp"
-#include "zetta/autograd/qwen.hpp"
-#include "zetta/tokenizer/bpe.hpp"
-#include "zetta/util/timestamp.hpp"
-#include "zetta/util/uuid.hpp"
+#include "zetta/ml/score_table.hpp"
+#include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -63,10 +64,12 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
-#include "zetta/usecases/churn/churn_dataset.hpp"
-#include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/tokenizer/bpe.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -364,7 +367,8 @@ const nlohmann::json& get_project_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
-         {"id", "name", "created", "updated", "owner", "description", "inputs", "graphs"}},
+         {"id", "name", "created", "updated", "owner", "description", "inputs",
+          "graphs"}},
         {"additionalProperties", false},
         {"properties",
          {{"id", {{"type", "string"}}},
@@ -393,8 +397,13 @@ const nlohmann::json& get_project_output_schema() {
                {{"id", {{"type", "string"}}},
                 {"name", {{"type", "string"}}},
                 {"approval",
-                 {{"type", "string"}, {"enum", {"proposed", "approved"}},
+                 {{"type", "string"},
+                  {"enum", {"proposed", "approved"}},
                   {"description", "plan-approval state (#885)"}}},
+                {"methodology",
+                 {{"type", {"string", "null"}},
+                  {"description", "the registry methodology id, when known"}}},
+                {"runnable", {{"type", "boolean"}}},
                 {"approved_by", {{"type", "string"}}},
                 {"approved_at", {{"type", "string"}}}}}}}}}}}};
     return schema;
@@ -429,11 +438,21 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     output["inputs"] = std::move(inputs);
     nlohmann::json graphs = nlohmann::json::array();
     for (const auto& graph : project->graphs()) {
-        graphs.push_back({{"id", graph->id()},
-                          {"name", graph->name()},
-                          {"approval", graph->approval_status()},
-                          {"approved_by", graph->approved_by()},
-                          {"approved_at", graph->approved_at()}});
+        const zetta::ml::Methodology* methodology =
+            zetta::ml::methodology_for_graph(graph->graph());
+        const bool has_model =
+            !graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+        graphs.push_back(
+            {{"id", graph->id()},
+             {"name", graph->name()},
+             {"approval", graph->approval_status()},
+             {"approved_by", graph->approved_by()},
+             {"approved_at", graph->approved_at()},
+             {"methodology", methodology != nullptr
+                                 ? nlohmann::json(methodology->id)
+                                 : nlohmann::json(nullptr)},
+             {"runnable",
+              methodology != nullptr ? methodology->runnable : !has_model}});
     }
     output["graphs"] = std::move(graphs);
     return ApiResult::success(std::move(output));
@@ -486,14 +505,15 @@ const nlohmann::json& get_run_report_schema() {
          {{"run_id",
            {{"type", "string"},
             {"minLength", 1},
-            {"description",
-             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
+            {"description", "the run's uuid (system.runs.run_id, or the "
+                            "`report` output's ref)"}}},
           {"limit",
            {{"type", "integer"},
             {"minimum", 1},
             {"description",
-             "how many at-risk entities to return, highest risk first (default 20). "
-             "The whole population is ranked; this caps what comes back"}}}}}};
+             "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, "
+             "or forecast rows by series then timestamp. Limit applies after "
+             "ordering"}}}}}};
     return schema;
 }
 
@@ -502,48 +522,136 @@ const nlohmann::json& get_run_report_output_schema() {
         {"type", "object"},
         {"required", {"run", "model"}},
         {"properties",
-         {{"run", {{"type", "object"},
-                   {"description", "run id, graph, status, and when it finished"}}},
+         {{"run",
+           {{"type", "object"},
+            {"description", "run id, graph, status, and when it finished"}}},
           {"dataset",
            {{"type", "object"},
             {"description",
              "what the model was built from: accounts, events, churn_rate, "
-             "majority_class_accuracy (the accuracy a constant answer scores), and "
-             "the feature columns. Absent when the model records no dataset facts"}}},
+             "majority_class_accuracy (the accuracy a constant answer scores), "
+             "and "
+             "the feature columns. Segmentation reports the source table, "
+             "read/clustered/excluded rows, fitted features and excluded "
+             "columns. Anomaly detection records source, rows read/excluded, "
+             "roles and unused columns. Forecasting records selected/excluded "
+             "columns and rows/partitions/bytes read. Absent when the model records no dataset facts"}}},
           {"model",
            {{"type", "object"},
             {"description",
-             "id, name, and the metrics. `held_out_*` is present only when the run "
-             "asked for a holdout; when it is absent the only figures available are "
-             "in-sample and they flatter (#953)"}}},
+             "id, name, and the metrics. `held_out_*` is present only when the "
+             "run "
+             "asked for a holdout; when it is absent the only figures "
+             "available are "
+             "in-sample and they flatter (#953). Segmentation instead carries "
+             "clustering metrics, chosen_k_reason and k_candidates. Anomaly "
+             "detection reports threshold, budget, alert rate and optional precision at k. "
+             "Forecast models carry rolling-origin errors, seasonal-naive comparison "
+             "and interval coverage. Next-best-action models return hit rate, IPS/DR "
+             "and importance-weight diagnostics. Language reports expose recall_at_k, MRR, "
+             "groundedness, and embedder_version"}}},
+          {"recommendations",
+           {{"type", "array"},
+            {"description",
+             "M-8 entity-action rows ordered by entity then rank, including "
+             "expected value, chosen action and why"}}},
+          {"policy",
+           {{"type", "object"},
+            {"description",
+             "M-8 policy metrics, chronological ALS holdout facts, offline "
+             "evaluation refusal when applicable, and causal warning"}}},
+          {"graph",
+           {{"type", "object"},
+            {"description",
+             "graph runs: component sizes, degree distribution, PageRank top "
+             "nodes, edge cutoff counts, and held-out node-task accuracy"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"description",
+             "language methodology output table names and fully qualified refs; "
+             "absent for tabular reports"}}},
           {"drivers",
            {{"type", "array"},
-            {"description", "feature -> weight, strongest first. A weight is what "
-                            "the model leaned on, not a cause"}}},
+            {"description",
+             "feature -> weight, strongest first. A weight is what "
+             "the model leaned on, not a cause"}}},
+          {"outputs",
+           {{"oneOf", {{{"type", "array"}}, {{"type", "object"}}}},
+            {"description",
+             "forecast/recommendation output references, or survival and interval-calibration table references"}}},
+          {"forecast",
+           {{"type", "array"},
+            {"description",
+             "forecast-table rows with series, timestamp, "
+             "point_forecast, lower and upper; ordered by series "
+             "then timestamp before applying limit"}}},
+          {"baseline_comparison",
+           {{"type", "string"},
+            {"description", "whether the forecast beat seasonal-naive in "
+                            "rolling-origin backtests"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
-          {"caveats",
+          {"fields",
            {{"type", "array"},
             {"description",
-             "figures that are PRESENT but must not be read as results — a holdout "
-             "too small to mean anything, a perfect score. `missing` says what the "
-             "run cannot tell you; this says what it can and you should not believe"}}},
+             "M-11 extracted fields with confidence, page, box, and review status"}}},
+          {"review_queue",
+           {{"type", "object"},
+            {"description",
+             "M-11 review-table reference and routed-field count"}}},
+          {"predictions",
+           {{"type", "array"},
+            {"description", "vision prediction rows, capped by `limit`"}}},
+          {"confusion_matrix",
+           {{"type", "array"},
+            {"description",
+             "vision held-out counts indexed by actual then predicted class"}}},
+          {"methodology",
+           {{"type", "string"},
+            {"description", "methodology id for typed reports"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"description", "named result table references, "
+                            "availability and row counts"}}},
+          {"anomalies",
+           {{"type", "array"},
+            {"description", "M-7 rows ranked by anomaly score, with flags, threshold "
+                            "and robust contributors"}}},
+          {"segments",
+           {{"type", "array"},
+            {"description", "segment sizes, shares, original-unit centers and "
+                            "descriptive labels"}}},
+          {"ranked_queue",
+           {{"type", "array"},
+            {"description",
+             "learning-to-rank rows: group, entity, score, rank, and observed "
+             "relevance, capped by `limit`"}}},
+          {"caveats",
+           {{"type", "array"},
+            {"description", "figures that are PRESENT but must not be read as "
+                            "results — a holdout "
+                            "too small to mean anything, a perfect score. "
+                            "`missing` says what the "
+                            "run cannot tell you; this says what it can and "
+                            "you should not believe"}}},
           {"missing",
            {{"type", "array"},
             {"description",
-             "fields a report would want that this run cannot supply, each saying "
+             "fields a report would want that this run cannot supply, each "
+             "saying "
              "why. Stated rather than omitted so a writer does not quietly "
              "substitute its own number"}}}}}};
     return schema;
 }
 
-// The at-risk table this run wrote, by the run's own `dataset` outputs. Named
-// `churn_results.at_risk_*`, which is what run_act materializes.
-std::shared_ptr<zetta::data::Table> run_at_risk_table(
+// The result table this run wrote, by the run's own `dataset` outputs. Prefer
+// the known churn and ranking result databases over the input-table fallback.
+std::shared_ptr<zetta::data::Table> run_result_table(
     Node& node, const zetta::pipeline::Run& run) {
+    std::shared_ptr<zetta::data::Table> fallback;
     for (const zetta::pipeline::RunOutput& output : run.outputs()) {
         const std::size_t dot = output.ref.find('.');
         if (output.kind != "dataset" || dot == std::string::npos) continue;
@@ -551,10 +659,48 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
             node.find_database(output.ref.substr(0, dot));
         if (!database) continue;
         if (auto table = database->find_table(output.ref.substr(dot + 1))) {
-            return table;
+            if (output.ref.starts_with("churn_results.") ||
+                output.ref.starts_with("rank_results.")) {
+                return table;
+            }
+            fallback = std::move(table);
+        }
+    }
+    return fallback;
+}
+
+std::shared_ptr<zetta::data::Table> run_named_table(
+    Node& node, const zetta::pipeline::Run& run, std::string_view name) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        const std::size_t dot = output.ref.find('.');
+        if (output.kind != "dataset" || output.name != name ||
+            dot == std::string::npos) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (database) {
+            return database->find_table(output.ref.substr(dot + 1));
         }
     }
     return nullptr;
+}
+
+nlohmann::json table_rows(
+    const std::shared_ptr<zetta::data::Table>& table,
+    std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+    nlohmann::json rows = nlohmann::json::array();
+    if (!table) {
+        return rows;
+    }
+    const zetta::storage::StorageEngine& store = table->store();
+    for (std::size_t index = 0; index < store.size() && rows.size() < limit;
+         ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    return rows;
 }
 
 // A number from an at-risk row, or `fallback` when the column is absent or not a
@@ -578,9 +724,242 @@ nlohmann::json row_entity(const nlohmann::json& row) {
     return *found;
 }
 
+std::shared_ptr<zetta::data::Table> run_output_table(
+    Node& node, const zetta::pipeline::Run& run, std::string_view name) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        if (output.kind != "dataset" || output.name != name) {
+            continue;
+        }
+        const std::size_t dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (database) {
+            return database->find_table(output.ref.substr(dot + 1));
+        }
+    }
+    return nullptr;
+}
+
+nlohmann::json document_extraction_report(
+    Node& node, const zetta::pipeline::Run& run,
+    const std::shared_ptr<zetta::ml::Model>& model, std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model->id()},
+                       {"name", model->name()},
+                       {"kind", model->kind()},
+                       {"metrics", model->metrics()}};
+    nlohmann::json dataset = nlohmann::json::object();
+    for (const std::string& source : run.lineage().sources) {
+        if (source.starts_with("dataset:")) {
+            dataset["source"] = source.substr(8);
+        }
+    }
+    const nlohmann::json& metrics = model->metrics();
+    if (metrics.contains("documents_read")) {
+        dataset["documents_read"] = metrics.at("documents_read");
+    }
+    dataset["documents_excluded"] =
+        metrics.value("documents_excluded", 0.0);
+    report["dataset"] = std::move(dataset);
+
+    nlohmann::json fields = nlohmann::json::array();
+    if (const std::shared_ptr<zetta::data::Table> table =
+            run_output_table(node, run, "extracted fields")) {
+        const zetta::storage::StorageEngine& store = table->store();
+        for (std::size_t index = 0;
+             index < store.size() && fields.size() < limit; ++index) {
+            const zetta::storage::ParquetLazyPtr row = store.at(index);
+            if (row) {
+                fields.push_back(*row);
+            }
+        }
+    }
+    report["fields"] = std::move(fields);
+
+    nlohmann::json review = nlohmann::json::object();
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        if (output.kind == "dataset" && output.name == "review queue") {
+            review["table"] = output.ref;
+            break;
+        }
+    }
+    review["fields"] = metrics.value("fields_reviewed", 0.0);
+    review["share"] = metrics.value("review_share", 0.0);
+    report["review_queue"] = std::move(review);
+    return report;
+}
+
 // A row count as a plain integer string — "4", not "4.000000".
 std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
+}
+
+nlohmann::json next_best_action_report(Node& node,
+                                       const zetta::pipeline::Run& run,
+                                       const zetta::ml::Model& model,
+                                       std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model.id()},
+                       {"name", model.name()},
+                       {"kind", model.kind()},
+                       {"metrics", model.metrics()}};
+    const nlohmann::json& facts = model.feature_schema();
+    if (const auto dataset = facts.find("dataset"); dataset != facts.end()) {
+        report["dataset"] = *dataset;
+    }
+    report["outputs"] = nlohmann::json::array();
+    std::vector<nlohmann::json> recommendations;
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        report["outputs"].push_back(
+            {{"kind", output.kind}, {"name", output.name}, {"ref", output.ref}});
+        if (output.kind != "dataset") {
+            continue;
+        }
+        const std::size_t dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const auto database = node.find_database(output.ref.substr(0, dot));
+        const auto table =
+            database ? database->find_table(output.ref.substr(dot + 1)) : nullptr;
+        if (!table) {
+            continue;
+        }
+        const zetta::storage::StorageEngine& store = table->store();
+        if (output.name == "policy report") {
+            if (store.size() > 0) {
+                if (const auto row = store.at(0)) {
+                    report["policy"] = *row;
+                }
+            }
+            continue;
+        }
+        if (output.name != "recommendation table") {
+            continue;
+        }
+        for (std::size_t index = 0; index < store.size(); ++index) {
+            if (const auto row = store.at(index)) {
+                recommendations.push_back(*row);
+            }
+        }
+    }
+    std::ranges::sort(recommendations,
+                      [](const nlohmann::json& left,
+                         const nlohmann::json& right) {
+                          const double left_entity = row_number(left, "entity", 0.0);
+                          const double right_entity = row_number(right, "entity", 0.0);
+                          if (left_entity != right_entity) {
+                              return left_entity < right_entity;
+                          }
+                          return row_number(left, "rank", 0.0) <
+                                 row_number(right, "rank", 0.0);
+                      });
+    if (recommendations.size() > limit) {
+        recommendations.resize(limit);
+    }
+    report["recommendations"] = std::move(recommendations);
+    report["caveats"] = {
+        {{"field", "propensity"},
+         {"why", "propensity is not causal lift; use M-6 to decide whether "
+                 "to treat"}}};
+    if (!report.contains("policy")) {
+        report["missing"] = {
+            {{"field", "policy"},
+             {"why", "the policy report table is not visible on this member"}}};
+    }
+    return report;
+}
+
+nlohmann::json chronological_forecast_rows(const zetta::data::Table &table,
+                                           std::size_t limit) {
+    std::vector<nlohmann::json> rows;
+    const auto &store = table.store();
+    rows.reserve(store.size());
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    // Replicated storage order is not temporal order. Sort the full result
+    // before truncating so every member returns the same earliest forecasts.
+    std::ranges::sort(rows, [](const auto &left, const auto &right) {
+        const double left_series = row_number(left, "series", 0.0);
+        const double right_series = row_number(right, "series", 0.0);
+        if (left_series != right_series) {
+            return left_series < right_series;
+        }
+        return row_number(left, "timestamp", 0.0) <
+               row_number(right, "timestamp", 0.0);
+    });
+    if (rows.size() > limit) {
+        rows.resize(limit);
+    }
+    return rows;
+}
+
+nlohmann::json forecast_report(Node &node, const zetta::pipeline::Run &run,
+                               const zetta::ml::Model &model,
+                               std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model.id()},
+                       {"name", model.name()},
+                       {"kind", model.kind()},
+                       {"metrics", model.metrics()}};
+    const nlohmann::json &facts = model.feature_schema();
+    for (const char *key : {"dataset", "baseline_comparison"}) {
+        if (const auto found = facts.find(key); found != facts.end()) {
+            report[key] = *found;
+        }
+    }
+    report["outputs"] = nlohmann::json::array();
+    report["forecast"] = nlohmann::json::array();
+    for (const auto &output : run.outputs()) {
+        report["outputs"].push_back({{"kind", output.kind},
+                                     {"name", output.name},
+                                     {"ref", output.ref}});
+        if (output.kind != "dataset") {
+            continue;
+        }
+        const auto dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const auto database = node.find_database(output.ref.substr(0, dot));
+        const auto table =
+            database ? database->find_table(output.ref.substr(dot + 1))
+                     : nullptr;
+        if (!table) {
+            report["missing"] = {
+                {{"field", "forecast"},
+                 {"why",
+                  "forecast output table is not yet visible on this member"}}};
+            continue;
+        }
+        report["forecast"] = chronological_forecast_rows(*table, limit);
+    }
+    report["caveats"] = {
+        {{"field", "interval_coverage"},
+         {"why", "empirical coverage on rolling-origin residuals; not a "
+                 "guarantee for future observations"}}};
+    return report;
 }
 
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
@@ -614,6 +993,27 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                 "numbers to report");
     }
 
+    if (model->kind() == "segmentation") {
+        return ApiResult::success(zetta::ml::segmentation_run_report(
+            context.node, *run, *model, limit));
+    }
+    if (model->kind() == "anomaly") {
+        return ApiResult::success(
+            zetta::ml::anomaly_run_report(context.node, *run, *model, limit));
+    }
+
+    if (model->kind() == "forecast") {
+        return ApiResult::success(
+            forecast_report(context.node, *run, *model, limit));
+    }
+    if (model->kind() == "next_best_action") {
+        return ApiResult::success(
+            next_best_action_report(context.node, *run, *model, limit));
+    }
+    if (model->kind() == "document_extraction") {
+        return ApiResult::success(
+            document_extraction_report(context.node, *run, model, limit));
+    }
     const nlohmann::json& metrics = model->metrics();
     const auto number = [&metrics](const char* key) -> std::optional<double> {
         const auto found = metrics.find(key);
@@ -621,8 +1021,281 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         return found->get<double>();
     };
 
-    nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
-    if (const auto held = number("held_out_auc")) {
+    if (model->kind() == "language") {
+        nlohmann::json language_model = {
+            {"id", model->id()}, {"name", model->name()}};
+        for (const char* key : {"recall_at_k", "mrr", "groundedness",
+                                "queries", "answers", "train_rows"}) {
+            if (const std::optional<double> value = number(key)) {
+                language_model[key] = *value;
+            }
+        }
+        if (const auto version =
+                model->feature_schema().find("embedder_version");
+            version != model->feature_schema().end() && version->is_string()) {
+            language_model["embedder_version"] = *version;
+        }
+        report["model"] = std::move(language_model);
+
+        nlohmann::json language_dataset = nlohmann::json::object();
+        if (const std::optional<double> value = number("dataset_rows")) {
+            language_dataset["rows_read"] = *value;
+        }
+        if (const std::optional<double> value = number("excluded_rows")) {
+            language_dataset["rows_excluded"] = *value;
+        }
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                language_dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: ")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            language_dataset["notes"] = std::move(notes);
+        }
+        report["dataset"] = std::move(language_dataset);
+
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                outputs.push_back(
+                    {{"name", output.name}, {"table", output.ref}});
+            }
+        }
+        report["outputs"] = std::move(outputs);
+        if (const std::optional<double> value = number("groundedness");
+            !value.has_value() || *value < 1.0) {
+            report["caveats"] = nlohmann::json::array(
+                {{{"field", "groundedness"},
+                  {"why", "not every non-refused answer sentence cites a retrieved chunk"}}});
+        }
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "vision") {
+        nlohmann::json model_facts = {{"id", model->id()},
+                                      {"name", model->name()}};
+        for (const char* key :
+             {"accuracy", "macro_f1", "train_rows", "held_out_rows"}) {
+            if (const std::optional<double> value = number(key)) {
+                model_facts[key] = *value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+                break;
+            }
+        }
+        if (const std::optional<double> value = number("images_read")) {
+            dataset["images_read"] = *value;
+        }
+        if (const std::optional<double> value = number("images_excluded")) {
+            dataset["images_excluded"] = *value;
+        }
+        report["dataset"] = std::move(dataset);
+
+        const nlohmann::json& feature_schema = model->feature_schema();
+        if (const auto matrix = feature_schema.find("confusion_matrix");
+            matrix != feature_schema.end() && matrix->is_array()) {
+            report["confusion_matrix"] = *matrix;
+        }
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        if (const std::shared_ptr<zetta::data::Table> table =
+                run_named_table(context.node, *run, "image predictions")) {
+            for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+                if (output.kind == "dataset") {
+                    output_tables.push_back(output.ref);
+                }
+            }
+            nlohmann::json predictions = nlohmann::json::array();
+            const zetta::storage::StorageEngine& store = table->store();
+            for (std::size_t index = 0;
+                 index < store.size() && predictions.size() < limit; ++index) {
+                if (const auto row = store.at(index)) {
+                    predictions.push_back(*row);
+                }
+            }
+            report["predictions"] = std::move(predictions);
+        }
+        report["output_tables"] = std::move(output_tables);
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "graph") {
+        nlohmann::json model_facts = {{"id", model->id()},
+                                      {"name", model->name()},
+                                      {"kind", model->kind()}};
+        for (const auto& [key, value] : metrics.items()) {
+            if (value.is_number()) model_facts[key] = value;
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) dataset["source"] = source.substr(8);
+        }
+        if (const auto value = number("edges_read")) dataset["edges_read"] = *value;
+        if (const auto value = number("edges_excluded")) {
+            dataset["edges_excluded"] = *value;
+        }
+        if (!dataset.empty()) report["dataset"] = std::move(dataset);
+
+        nlohmann::json tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind != "dataset") continue;
+            tables.push_back(output.ref);
+            if (output.ref.find(".summary_") == std::string::npos) continue;
+            const std::size_t dot = output.ref.find('.');
+            if (dot == std::string::npos) continue;
+            const std::shared_ptr<zetta::data::Database> database =
+                context.node.find_database(output.ref.substr(0, dot));
+            if (!database) continue;
+            const std::shared_ptr<zetta::data::Table> table =
+                database->find_table(output.ref.substr(dot + 1));
+            if (!table || table->store().size() == 0) continue;
+            if (const auto row = table->store().at(0)) report["graph"] = *row;
+        }
+        report["output_tables"] = std::move(tables);
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "entity_resolution") {
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"kind", model->kind()},
+            {"metrics", metrics},
+        };
+        if (const auto method = model->feature_schema().find("scoring_method");
+            method != model->feature_schema().end() && method->is_string()) {
+            model_facts["scoring_method"] = *method;
+        }
+        report["model"] = std::move(model_facts);
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const auto rows = number("input_rows")) {
+            dataset["rows_read"] = *rows;
+        }
+        if (const auto rows = number("excluded_rows")) {
+            dataset["rows_excluded"] = *rows;
+        }
+        nlohmann::json not_used = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                not_used.push_back(log.message.substr(18));
+            }
+        }
+        if (!not_used.empty()) {
+            dataset["not_used"] = std::move(not_used);
+        }
+        report["dataset"] = std::move(dataset);
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                output_tables.push_back(
+                    {{"name", output.name}, {"table", output.ref}});
+            }
+        }
+        report["output_tables"] = std::move(output_tables);
+        report["thresholds"] =
+            {{"match", metrics.value("match_threshold", 0.0)},
+             {"review", metrics.value("review_threshold", 0.0)},
+             {"non_match", "below review"}};
+        return ApiResult::success(std::move(report));
+    }
+
+    if (model->kind() == "uplift") {
+        const bool selected_x = number("selected_learner").value_or(0.0) != 0.0;
+        const std::string prefix = selected_x ? "x_" : "t_";
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"selected_learner", selected_x ? "x_learner" : "t_learner"},
+            {"metrics", metrics}};
+        report["model"] = std::move(model_facts);
+        report["arm_sizes"] = {
+            {"treated", number("treated_rows").value_or(0.0)},
+            {"control", number("control_rows").value_or(0.0)},
+            {"held_out", number("held_out_rows").value_or(0.0)}};
+        report["propensity"] = {
+            {"minimum", number("propensity_min").value_or(0.0)},
+            {"maximum", number("propensity_max").value_or(0.0)},
+            {"mean", number("propensity_mean").value_or(0.0)},
+            {"standard_deviation", number("propensity_stddev").value_or(0.0)}};
+        report["targeting"] = {
+            {"fraction", number("targeting_fraction").value_or(0.0)},
+            {"uplift",
+             number((prefix + "uplift_at_target").c_str()).value_or(0.0)},
+            {"uncertainty_lower", number("uplift_lower").value_or(0.0)},
+            {"uncertainty_upper", number("uplift_upper").value_or(0.0)},
+            {"overlap_excluded", number("overlap_excluded").value_or(0.0)}};
+        report["treatment_effects"] = table_rows(
+            run_named_table(context.node, *run, "treatment effects"), limit);
+        report["qini_curve"] =
+            table_rows(run_named_table(context.node, *run, "Qini curve"));
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: ")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            dataset["notes"] = std::move(notes);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        if (number("observational").value_or(0.0) != 0.0) {
+            report["assumptions"] = nlohmann::json::array(
+                {"causal claims assume no unmeasured confounding"});
+        }
+        return ApiResult::success(std::move(report));
+    }
+
+    const bool ranking = model->kind() == "rank";
+    const bool is_survival = model->kind() == "survival";
+    nlohmann::json model_facts = {{"id", model->id()},
+                                  {"name", model->name()},
+                                  {"kind", model->kind()}};
+    if (is_survival) {
+        for (const char* metric :
+             {"concordance", "integrated_brier_score", "training_subjects",
+              "validation_subjects", "event_subjects", "censored_subjects",
+              "interval_width"}) {
+            if (const auto value = number(metric)) {
+                model_facts[metric] = *value;
+            }
+        }
+    } else if (ranking) {
+        if (const auto value = number("ndcg_at_k")) model_facts["ndcg_at_k"] = *value;
+        if (const auto value = number("yield_at_k")) model_facts["yield_at_k"] = *value;
+        if (const auto value = number("cutoff")) model_facts["cutoff"] = *value;
+        if (const auto value = number("held_out_groups")) model_facts["held_out_groups"] = *value;
+        if (const auto value = number("held_out_rows")) model_facts["held_out_rows"] = *value;
+        if (const auto value = number("train_groups")) model_facts["train_groups"] = *value;
+        if (const auto value = number("train_rows")) model_facts["train_rows"] = *value;
+    } else if (const auto held = number("held_out_auc")) {
         model_facts["held_out_auc"] = *held;
         if (const auto value = number("held_out_log_loss")) model_facts["held_out_log_loss"] = *value;
         if (const auto value = number("held_out_accuracy")) model_facts["held_out_accuracy"] = *value;
@@ -637,16 +1310,24 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                      "rows the model had not seen. Every figure below is in-sample "
                      "and flatters. Re-run with holdout_fraction to get one"}});
     }
-    if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
-    else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
-    if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
-    else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
-    if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
-    else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
-    if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    if (!ranking && !is_survival) {
+        if (const auto value = number("in_sample_auc")) model_facts["in_sample_auc"] = *value;
+        else if (const auto legacy = number("auc")) model_facts["in_sample_auc"] = *legacy;
+        if (const auto value = number("in_sample_log_loss")) model_facts["in_sample_log_loss"] = *value;
+        else if (const auto legacy = number("log_loss")) model_facts["in_sample_log_loss"] = *legacy;
+        if (const auto value = number("in_sample_accuracy")) model_facts["in_sample_accuracy"] = *value;
+        else if (const auto legacy = number("accuracy")) model_facts["in_sample_accuracy"] = *legacy;
+        if (const auto value = number("in_sample_rows")) model_facts["train_rows"] = *value;
+    }
     report["model"] = std::move(model_facts);
 
     nlohmann::json dataset = nlohmann::json::object();
+    if (const auto value = number("training_subjects")) {
+        dataset["training_subjects"] = *value;
+    }
+    if (const auto value = number("validation_subjects")) {
+        dataset["validation_subjects"] = *value;
+    }
     if (const auto value = number("dataset_accounts")) dataset["accounts"] = *value;
     if (const auto value = number("dataset_events")) dataset["events"] = *value;
     if (const auto value = number("dataset_churn_rate")) dataset["churn_rate"] = *value;
@@ -660,6 +1341,13 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         features.push_back(driver.feature);
     }
     if (!features.empty()) dataset["features"] = std::move(features);
+    if (ranking) {
+        const nlohmann::json& schema = model->feature_schema();
+        const auto excluded = schema.find("excluded_from_features");
+        if (excluded != schema.end() && excluded->is_array()) {
+            dataset["excluded"] = *excluded;
+        }
+    }
     // What the run actually read and what it could not use, from the run itself: its
     // lineage sources and its "dataset: " log notes (a table-backed run, #947).
     const zetta::pipeline::RunLineage& lineage = run->lineage();
@@ -671,7 +1359,9 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     }
     nlohmann::json notes = nlohmann::json::array();
     for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
-        if (log.message.starts_with("dataset: not used:")) notes.push_back(log.message.substr(9));
+        if (log.message.starts_with("dataset: not used:")) {
+            notes.push_back(log.message.substr(9));
+        }
     }
     if (!notes.empty()) dataset["not_used"] = std::move(notes);
     if (!dataset.empty()) report["dataset"] = std::move(dataset);
@@ -682,10 +1372,31 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     }
     if (!drivers.empty()) report["drivers"] = std::move(drivers);
 
+    if (is_survival) {
+        nlohmann::json outputs = nlohmann::json::object();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind != "dataset") {
+                continue;
+            }
+            if (output.name == "survival table") {
+                outputs["survival_table"] = output.ref;
+            } else if (output.name == "interval calibration") {
+                outputs["interval_calibration"] = output.ref;
+            }
+        }
+        report["outputs"] = std::move(outputs);
+        if (!missing.empty()) {
+            report["missing"] = std::move(missing);
+        }
+        return ApiResult::success(std::move(report));
+    }
+
     // The ranked list, read back from the table the run materialized — so the
     // report and anything querying `churn_results` cannot disagree.
-    if (const std::shared_ptr<zetta::data::Table> table =
-            run_at_risk_table(context.node, *run)) {
+    if (is_survival) {
+        // Survival runs expose their horizon tables above, not a churn ranking.
+    } else if (const std::shared_ptr<zetta::data::Table> table =
+            run_result_table(context.node, *run)) {
         std::vector<nlohmann::json> rows;
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t index = 0; index < store.size(); ++index) {
@@ -696,8 +1407,19 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                       return row_number(left, "rank", 0.0) <
                              row_number(right, "rank", 0.0);
                   });
+        nlohmann::json ranked_queue = nlohmann::json::array();
         nlohmann::json at_risk = nlohmann::json::array();
         for (const nlohmann::json& row : rows) {
+            if (ranking) {
+                if (ranked_queue.size() >= limit) break;
+                ranked_queue.push_back(
+                    {{"group", row.value("group", std::int64_t{0})},
+                     {"entity", row.value("entity", std::int64_t{0})},
+                     {"score", row_number(row, "score", 0.0)},
+                     {"rank", static_cast<std::int64_t>(row_number(row, "rank", 0.0))},
+                     {"relevance", row_number(row, "relevance", 0.0)}});
+                continue;
+            }
             if (at_risk.size() >= limit) break;
             // `value<T>` deduces T from the DEFAULT, so a bare `0` picks `int`
             // and silently narrows the entity key to 32 bits (#1000). Entity
@@ -723,10 +1445,19 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             if (!evidence.empty()) entry["evidence"] = std::move(evidence);
             at_risk.push_back(std::move(entry));
         }
-        report["at_risk"] = std::move(at_risk);
+        if (ranking) {
+            report["ranked_queue"] = std::move(ranked_queue);
+        } else {
+            report["at_risk"] = std::move(at_risk);
+        }
     } else {
-        missing.push_back({{"field", "at_risk"},
-                           {"why", "this run materialized no at-risk table"}});
+        if (ranking) {
+            missing.push_back({{"field", "ranked_queue"},
+                               {"why", "this run materialized no ranked-queue table"}});
+        } else {
+            missing.push_back({{"field", "at_risk"},
+                               {"why", "this run materialized no at-risk table"}});
+        }
     }
 
     // Figures that are PRESENT but must not be read as results (#948 step 8's rule,
@@ -738,18 +1469,20 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     // trivially separable — but a perfect score presented without objection is a
     // number that invites a false conclusion, which is worse than a missing one.
     nlohmann::json caveats = nlohmann::json::array();
-    if (const std::optional<double> rows = number("held_out_rows")) {
-        // Below this, a ranking metric is noise: one row changing side moves AUC by
-        // a visible amount, so the figure says more about the split than the model.
-        constexpr double kMeaningfulHoldout = 30.0;
-        if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
-            caveats.push_back(
-                {{"field", "held_out_auc"},
-                 {"why", "measured on only " + fixed_rows(*rows) +
-                             " held-out rows. Below about 30 a ranking metric is "
-                             "noise — one row changing side moves it visibly — so "
-                             "this figure describes the split more than the model. "
-                             "Do not quote it as a result"}});
+    if (!ranking) {
+        if (const std::optional<double> rows = number("held_out_rows")) {
+            // Below this, a ranking metric is noise: one row changing side moves AUC by
+            // a visible amount, so the figure says more about the split than the model.
+            constexpr double kMeaningfulHoldout = 30.0;
+            if (*rows > 0.0 && *rows < kMeaningfulHoldout) {
+                caveats.push_back(
+                    {{"field", "held_out_auc"},
+                     {"why", "measured on only " + fixed_rows(*rows) +
+                                 " held-out rows. Below about 30 a ranking metric is "
+                                 "noise — one row changing side moves it visibly — so "
+                                 "this figure describes the split more than the model. "
+                                 "Do not quote it as a result"}});
+            }
         }
     }
     if (const std::optional<double> auc = number("held_out_auc")) {
@@ -1620,6 +2353,59 @@ ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+const nlohmann::json& list_methodologies_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_methodologies_output_schema() {
+    static const nlohmann::json input_schema = {
+        {"type", "object"},
+        {"required", {"role", "required", "description"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"role", {{"type", "string"}}},
+          {"required", {{"type", "boolean"}}},
+          {"description", {{"type", "string"}}}}}};
+    static const nlohmann::json string_array = {
+        {"type", "array"}, {"items", {{"type", "string"}}}};
+    static const nlohmann::json methodology_schema = {
+        {"type", "object"},
+        {"required",
+         {"id", "name", "family", "model_kinds", "solutions", "inputs",
+          "outputs", "metrics", "runnable", "partial", "issue"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"family", {{"type", "string"}}},
+          {"model_kinds", string_array},
+          {"solutions", string_array},
+          {"inputs", {{"type", "array"}, {"items", input_schema}}},
+          {"outputs", string_array},
+          {"metrics", string_array},
+          {"runnable", {{"type", "boolean"}}},
+          {"partial", {{"type", "boolean"}}},
+          {"issue", {{"type", "string"}}}}}};
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"methodologies"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"methodologies",
+           {{"type", "array"}, {"items", methodology_schema}}}}}};
+    return schema;
+}
+
+ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const zetta::ml::Methodology& methodology :
+         zetta::ml::methodologies()) {
+        entries.push_back(zetta::ml::methodology_json(methodology));
+    }
+    return ApiResult::success({{"methodologies", std::move(entries)}});
+}
+
 // --- create_project ----------------------------------------------------------
 
 const nlohmann::json& create_project_schema() {
@@ -2260,7 +3046,7 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
 //
 // The mutating half of the product loop, each a thin caller of the SAME engine
 // entry point the GUI drives (RULE-1/RULE-3 cannot be bypassed by construction:
-// authorize + audit happen in Registry::call, the gate inside the engine seams).
+// authorize + audit happen in Registry::call, the gate inside the engine interfaces).
 // Long work is `kind: job`: submit, return the engine's durable Run id, poll
 // progress through the read surface (get_run / system.runs) — no request-scoped
 // blocking, no new job infrastructure. Errors carry the engine's path-qualified
@@ -2300,11 +3086,20 @@ nlohmann::json input_json(const zetta::pipeline::ProjectInput& input) {
 }
 
 nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
-    return nlohmann::json{{"graph_id", graph.id()},
-                          {"name", graph.name()},
-                          {"steps", graph.graph().node_count()},
-                          {"edges", graph.graph().edge_count()},
-                          {"approval", graph.approval_status()}};
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph.graph());
+    const bool has_model =
+        !graph.graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    return nlohmann::json{
+        {"graph_id", graph.id()},
+        {"name", graph.name()},
+        {"steps", graph.graph().node_count()},
+        {"edges", graph.graph().edge_count()},
+        {"approval", graph.approval_status()},
+        {"methodology", methodology != nullptr ? nlohmann::json(methodology->id)
+                                               : nlohmann::json(nullptr)},
+        {"runnable",
+         methodology != nullptr ? methodology->runnable : !has_model}};
 }
 
 // --- get_graph / save_graph: the visual graph workspace's read + write path ---
@@ -2334,10 +3129,13 @@ const nlohmann::json& graph_structure_output_schema() {
           {"name", {{"type", "string"}}},
           {"project", {{"type", "string"}}},
           {"approval",
-           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+           {{"type", "string"},
+            {"enum", {"proposed", "approved"}},
             {"description", "plan-approval state (#885)"}}},
           {"approved_by", {{"type", "string"}}},
           {"approved_at", {{"type", "string"}}},
+          {"methodology", {{"type", {"string", "null"}}}},
+          {"runnable", {{"type", "boolean"}}},
           {"nodes",
            {{"type", "array"},
             {"items",
@@ -2374,6 +3172,15 @@ ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
     output["approval"] = graph->approval_status();
     output["approved_by"] = graph->approved_by();
     output["approved_at"] = graph->approved_at();
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph->graph());
+    output["methodology"] = methodology != nullptr
+                                ? nlohmann::json(methodology->id)
+                                : nlohmann::json(nullptr);
+    output["runnable"] =
+        methodology != nullptr
+            ? methodology->runnable
+            : graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
     return ApiResult::success(std::move(output));
 }
 
@@ -2528,8 +3335,12 @@ const nlohmann::json& project_graph_output_schema() {
           {"steps", {{"type", "integer"}}},
           {"edges", {{"type", "integer"}}},
           {"approval",
-           {{"type", "string"}, {"enum", {"proposed", "approved"}},
-            {"description", "plan-approval state (#885); a fresh plan is proposed"}}},
+           {{"type", "string"},
+            {"enum", {"proposed", "approved"}},
+            {"description",
+             "plan-approval state (#885); a fresh plan is proposed"}}},
+          {"methodology", {{"type", {"string", "null"}}}},
+          {"runnable", {{"type", "boolean"}}},
           {"project", {{"type", "string"}}}}}};
     return schema;
 }
@@ -2672,13 +3483,28 @@ const nlohmann::json& compile_intent_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "the captured intent's uuid (capture_intent). Optional: omit it and the "
-             "project's most recently captured intent compiles, which is what you want "
+             "the captured intent's uuid (capture_intent). Optional: omit it "
+             "and the "
+             "project's most recently captured intent compiles, which is what "
+             "you want "
              "in the common case of describing a goal and building it"}}},
           {"name",
            {{"type", "string"},
             {"description",
-             "the stored graph's name (default '<shape> skeleton')"}}}}}};
+             "the stored graph's name (default '<shape> skeleton')"}}},
+          {"methodology",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "methodology id or model kind; takes precedence"}}},
+          {"solution",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "solution id resolved to its primary methodology"}}},
+          {"hints",
+           {{"type", "object"},
+            {"description",
+             "known dataset, label, time column, and other shape hints"}}}}}};
     return schema;
 }
 
@@ -2719,9 +3545,24 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
                                 "' is an artifact, not a captured intent — "
                                 "compile it with compile_n8n");
     }
-    auto graph =
-        project->compile_intent_to_graph(input_id, input.value("name", ""));
+    zetta::pipeline::IntentCompileOptions options;
+    options.project = project->name();
+    options.methodology = input.value("methodology", "");
+    options.solution = input.value("solution", "");
+    options.hints = input.value("hints", nlohmann::json::object());
+    std::string compile_error;
+    auto graph = project->compile_intent_to_graph(
+        input_id, input.value("name", ""), options, &compile_error);
     if (!graph) {
+        if (!compile_error.empty()) {
+            const bool unsupported =
+                compile_error.find("is not supported yet:") !=
+                    std::string::npos ||
+                compile_error.find("does not match a supported methodology") !=
+                    std::string::npos;
+            return ApiResult::failure(
+                unsupported ? "not_supported" : "invalid_input", compile_error);
+        }
         return ApiResult::failure(
             "engine_error",
             "compile_intent could not store a graph from input '" + input_id +
@@ -2966,7 +3807,7 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     }
     // The gate report first, for the failing check's reason; the engine's own
     // deploy_graph re-runs the gate and audits BOTH outcomes (RULE-1 lives in
-    // the engine seam — this handler cannot bypass it by construction).
+    // the engine interface — this handler cannot bypass it by construction).
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     auto deployment = context.node.deploy_graph(
@@ -3035,11 +3876,118 @@ const nlohmann::json& run_schema() {
              "hold this fraction of rows OUT of training and measure the model "
              "on them separately (e.g. 0.3). Without it the run's only metrics "
              "are in-sample — scored on the rows it trained on — and flatter"}}},
+          {"duration_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "survival duration column (default duration)"}}},
+          {"feature_time_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "survival feature cutoff column (default feature_time)"}}},
+          {"interval_width",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"description", "survival interval width (default 30)"}}},
+          {"max_intervals",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "survival horizon in intervals (default 12)"}}},
+          {"validation_fraction",
+           {{"type", "number"},
+            {"exclusiveMinimum", 0},
+            {"exclusiveMaximum", 1},
+            {"description", "newest fraction held out for survival validation"}}},
+          {"embedder_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: local directory containing the pinned MiniLM config, "
+             "vocab.txt, and model.safetensors (tests never download it)"}}},
+          {"qwen_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: optional local native-Qwen checkpoint used to compose "
+             "answers; without it the grounded path returns an extractive answer"}}},
+          {"text_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: text column (default the dataset contract's first feature)"}}},
+          {"query_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-10 only: labelled evaluation query column"}}},
+          {"relevant_id_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: integer id of the planted relevant chunk"}}},
+          {"max_tokens",
+           {{"type", "integer"},
+            {"minimum", 2},
+            {"description", "M-10 only: WordPiece token limit per text"}}},
+          {"answer_tokens",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-10 only: native-Qwen completion token limit"}}},
+          {"minimum_relevance",
+           {{"type", "number"},
+            {"minimum", -1},
+            {"maximum", 1},
+            {"description",
+             "M-10 only: refuse an answer below this cosine score"}}},
+          {"classifier_regularization",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description",
+             "M-10 only: non-negative regularization for the linear classifier head"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
                             "true; false is only correct on a single-member "
-                            "cluster)"}}}}}};
+                            "cluster)"}}},
+          {"treatment_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-6 binary treatment column"}}},
+          {"outcome_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-6 binary observed outcome column"}}},
+          {"targeting_fraction",
+           {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}},
+          {"bootstrap_samples", {{"type", "integer"}, {"minimum", 0}}},
+          {"fields",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"description", "M-11: declared field names to extract"}}},
+          {"document_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: source column containing text, PDF, or PGM bytes"}}},
+          {"document_id_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: stable source document identifier column"}}},
+          {"labels_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: optional object of labelled field values"}}},
+          {"review_threshold",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description", "M-11: route lower-confidence fields to review"}}},
+          {"seed",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-11: deterministic tiny TrOCR seed"}}},
+          {"trocr_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: pinned native TrOCR checkpoint directory"}}}}}};
     return schema;
 }
 
@@ -3053,13 +4001,15 @@ const nlohmann::json& run_output_schema() {
            {{"type", "string"},
             {"description",
              "the durable engine handle — poll get_run / system.runs"}}},
-          {"engine", {{"type", "string"}, {"enum", {"churn", "structural"}}}},
+          {"engine",
+           {{"type", "string"},
+            {"description", "the methodology runner, or structural"}}},
           {"status", {{"type", "string"}}},
           {"note",
            {{"type", "string"},
-            {"description",
-             "structural runs: that nothing was trained, and whether a given dataset was "
-             "read"}}},
+            {"description", "structural runs: that nothing was trained, and "
+                            "whether a given dataset was "
+                            "read"}}},
           {"failed_step",
            {{"type", "string"},
             {"description", "structural runs only, on failure"}}},
@@ -3071,15 +4021,15 @@ const nlohmann::json& run_output_schema() {
             {"description", "churn runs: where to read progress"}}},
           {"dataset",
            {{"type", "object"},
-            {"description",
-             "table datasets only: the resolved column contract the run trained "
-             "under"}}},
+            {"description", "table datasets only: the resolved column contract "
+                            "the run trained "
+                            "under"}}},
           {"dataset_notes",
            {{"type", "array"},
             {"items", {{"type", "string"}}},
-            {"description",
-             "what was inferred rather than given — read these before trusting the "
-             "model"}}}}}};
+            {"description", "what was inferred rather than given — read these "
+                            "before trusting the "
+                            "model"}}}}}};
     return schema;
 }
 
@@ -3098,9 +4048,6 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
                                                    project->name() + "'");
     }
 
-    // The gate, where the GUI's run paths have it (the governed console gates
-    // every run; the coordinated launch re-checks it on every member): RULE-1
-    // holds over MCP exactly as everywhere else.
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     if (report.block_deploy) {
@@ -3108,20 +4055,39 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
             "engine_error", "blocked by gate: " + first_gate_failure(report));
     }
 
-    // Non-churn graphs run structurally (DefaultStepExecutor) — quick, within
-    // the call, same as the governed console's fallback path.
-    if (!zetta::usecases::churn::is_churn_graph(graph->graph())) {
+    const bool has_model =
+        !graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph->graph());
+    if (has_model && methodology == nullptr) {
+        return ApiResult::failure(
+            "not_supported",
+            "this pipeline names a model_kind no registered methodology can "
+            "run. Runnable methodologies: " +
+                zetta::ml::runnable_methodologies());
+    }
+    if (methodology != nullptr && !methodology->runnable) {
+        return ApiResult::failure(
+            "not_supported",
+            zetta::ml::unsupported_methodology_message(*methodology));
+    }
+    if (methodology != nullptr && !methodology->run) {
+        return ApiResult::failure(
+            "not_supported",
+            methodology->name + " (" + methodology->id +
+                ") is marked runnable but has no run callback");
+    }
+
+    if (methodology == nullptr) {
         const zetta::pipeline::ExecutionResult executed =
             context.node.run_graph(graph->graph(), project->id(), graph->id());
         if (!executed.run) {
             return ApiResult::failure("engine_error",
                                       "the run record could not be created");
         }
-        // Said on the run itself (lake#251): a structural run trains nothing, and a person
-        // reading it must not take its succeeded steps for a trained model.
         std::string structural =
-            "structural: this pipeline is not churn-shaped, so its steps ran without training "
-            "or scoring anything; only churn-shaped pipelines train today";
+            "structural: this pipeline has no model step, so its steps ran "
+            "without training or scoring anything";
         if (input.contains("dataset_path")) {
             structural += ", and the dataset it was given was not read";
         }
@@ -3138,133 +4104,13 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::success(std::move(output));
     }
 
-    // Churn-shaped: THE canonical runner over the node's live coordinator
-    // (#637/#580, SPMD across the membership via the coordinated launch #601),
-    // driven off-thread (AsyncChurnRun, #624). kind: job — return the durable
-    // Run id as soon as the record exists; progress/outcome ride system.runs /
-    // system.jobs / get_run.
-    if (!context.background) {
-        return ApiResult::failure(
-            "engine_error",
-            "run is a job capability and this embedding wired no background "
-            "action owner");
-    }
-    // ONE dataset_path grammar (#947): a `database.table` landed by a connection
-    // or a query, or a dataset directory on the node's filesystem. Before this,
-    // only the directory form was accepted and a customer's own data — already
-    // partitioned and healthy — could not reach the pipeline that trains on it.
-    zetta::usecases::churn::ChurnDataset dataset;
-    zetta::usecases::churn::ChurnTableInput table;
-    nlohmann::json dataset_notes = nlohmann::json::array();
-    nlohmann::json dataset_contract;
-    if (const auto dataset_path = input.find("dataset_path");
-        dataset_path != input.end()) {
-        const zetta::data::DatasetPath path =
-            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
-        if (path.kind == zetta::data::DatasetPathKind::Table) {
-            zetta::data::DatasetContract overrides;
-            if (const auto given = input.find("dataset"); given != input.end()) {
-                std::string reason;
-                const std::optional<zetta::data::DatasetContract> parsed =
-                    zetta::data::dataset_contract_from_json(*given, &reason);
-                if (!parsed) return ApiResult::failure("invalid_input", reason);
-                overrides = *parsed;
-            }
-            const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
-                context.node, path, overrides,
-                zetta::data::default_dataset_sampler(context.node, context.cluster));
-            if (!resolved.ok()) {
-                return ApiResult::failure("engine_error", resolved.error);
-            }
-            table.table_id = resolved.table_id;
-            table.contract = resolved.contract;
-            table.dataset_name = dataset_path->get<std::string>();
-            table.notes = resolved.notes;
-            // What was INFERRED travels back with the run: an assumption the caller
-            // never sees is one they discover inside a trained model.
-            dataset_notes = resolved.notes;
-            dataset_contract = to_json(resolved.contract);
-        } else {
-            auto loaded = zetta::usecases::churn::load_churn_dataset(path.directory);
-            if (!loaded.ok()) {
-                return ApiResult::failure("engine_error", loaded.error);
-            }
-            dataset = std::move(loaded.dataset);
-        }
-    } else {
-        dataset = zetta::usecases::churn::demo_churn_dataset();
-    }
-    zetta::usecases::churn::ChurnSolutionOptions options;
-    options.project = project->id();
-    options.graph = graph->id();
-    options.model_name = input.value("model_name", options.model_name);
-    options.top_k = input.value("top_k", options.top_k);
-    options.coordinate = input.value("coordinate", true);
-    options.params.holdout_fraction =
-        input.value("holdout_fraction", options.params.holdout_fraction);
-
-    std::set<std::string> prior;
-    for (const auto& existing : context.node.runs()) {
-        if (existing) prior.insert(existing->id());
-    }
-    auto handle = table.empty()
-                      ? zetta::usecases::churn::AsyncChurnRun::start(
-                            context.node, graph->graph(), std::move(dataset), options)
-                      : zetta::usecases::churn::AsyncChurnRun::start(
-                            context.node, graph->graph(), std::move(table), options);
-    context.background->adopt(
-        handle, [worker = handle.get()] { return worker->done(); });
-
-    // The Run record is created by the worker through the owner gate; this
-    // handler IS on the owner thread (the bridge contract), so pump the gate
-    // until the durable handle exists — milliseconds for the demo dataset,
-    // bounded for a large custom one. An early-failing run (no live
-    // coordinator, empty dataset) surfaces its engine reason instead.
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    std::string run_id;
-    while (std::chrono::steady_clock::now() < deadline) {
-        context.node.drain_owner_work();
-        for (const auto& candidate : context.node.runs()) {
-            if (!candidate || prior.contains(candidate->id())) continue;
-            if (candidate->project() != project->id()) continue;
-            if (candidate->graph() != graph->id()) continue;
-            run_id = candidate->id();
-            break;
-        }
-        if (!run_id.empty()) break;
-        if (handle->done()) {
-            if (handle->result().execution.run) {
-                run_id = handle->result().execution.run->id();
-            }
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    if (run_id.empty()) {
-        if (handle->done() && !handle->result().ok()) {
-            return ApiResult::failure("engine_error",
-                                      handle->result().execution.error);
-        }
-        return ApiResult::failure(
-            "engine_error",
-            "the run was submitted but its Run record did not appear in time "
-            "— poll list_runs for a run labelled project '" + project->id() +
-                "'");
-    }
-    nlohmann::json output;
-    output["run_id"] = run_id;
-    output["engine"] = "churn";
-    output["status"] = "running";
-    output["poll"] = "get_run / system.runs for status+logs; system.jobs for "
-                     "the featurize/train/explain/score jobs";
-    if (!dataset_contract.is_null()) {
-        output["dataset"] = std::move(dataset_contract);
-        output["dataset_notes"] = std::move(dataset_notes);
-    }
-    return ApiResult::success(std::move(output));
+    zetta::ml::RunRequest request;
+    request.context = &context;
+    request.project = project.get();
+    request.graph = graph.get();
+    request.input = input;
+    return methodology->run(request);
 }
-
 // --- score ---------------------------------------------------------------------
 
 const nlohmann::json& score_schema() {
@@ -5839,44 +6685,53 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
     static const std::vector<zetta::agent::AgentToolSpec> kAgentTools = {
         {"list_projects", "list the Projects on this node"},
         {"get_project", "read one Project: {\"name\": \"<project>\"}"},
-        {"list_datasets", "list the datasets (tables) available, with row and column counts"},
+        {"list_datasets",
+         "list the datasets (tables) available, with row and column counts"},
         {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
         {"analyze_dataset", "read semantic types, distributions, grain, keys, joins, and "
                             "leakage candidates for a landed dataset"},
         {"plan_features",
          "read a methodology-specific feature/exclusion plan or required dataset transform"},
         {"list_models", "list the trained models and their measures"},
-        {"get_model",
-         "read one model: its measures, its feature columns, and its ranked churn "
-         "drivers: {\"model\": \"<id or name>\"}"},
+        {"get_model", "read one model: its measures, its feature columns, and "
+                      "its ranked churn "
+                      "drivers: {\"model\": \"<id or name>\"}"},
         {"score",
-         "run a trained model and get accounts ranked by risk plus what drives it — "
+         "run a trained model and get accounts ranked by risk plus what drives "
+         "it — "
          "over a whole dataset: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"top_k\": 10}, or over an account that is not in "
+         "\"<database.table>\", \"top_k\": 10}, or over an account that is not "
+         "in "
          "the data: {\"model\": \"<id>\", \"rows\": [{...}]}"},
-        {"propose_improvement",
-         "propose a change to a model and state its predicted effect, or say why the effect "
-         "cannot be predicted: {\"model_id\": \"<uuid>\", \"change\": \"add_holdout\"}"},
-        {"model_health",
-         "check whether a deployed model can still be trusted - the held-out figure, the "
-         "overfitting gap, whether scores are calibrated: {\"model_id\": \"<uuid>\"}"},
+        {"propose_improvement", "propose a change to a model and state its "
+                                "predicted effect, or say why the effect "
+                                "cannot be predicted: {\"model_id\": "
+                                "\"<uuid>\", \"change\": \"add_holdout\"}"},
+        {"model_health", "check whether a deployed model can still be trusted "
+                         "- the held-out figure, the "
+                         "overfitting gap, whether scores are calibrated: "
+                         "{\"model_id\": \"<uuid>\"}"},
         {"get_run_report",
-         "read what a finished run found — model quality (held-out first), the "
-         "drivers, and the ranked at-risk list with the evidence behind each row: "
+         "read what a finished run found — classification quality and at-risk "
+         "evidence, forecast backtests and baseline comparison, or anomaly "
+         "metrics and output tables: "
          "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
         {"explain",
          "explain WHY one account scored as it did — every feature's signed "
-         "contribution, strongest first: {\"model\": \"<id>\", \"dataset_path\": "
-         "\"<database.table>\", \"entity\": 8336}, or for an account not in the "
+         "contribution, strongest first: {\"model\": \"<id>\", "
+         "\"dataset_path\": "
+         "\"<database.table>\", \"entity\": 8336}, or for an account not in "
+         "the "
          "data: {\"model\": \"<id>\", \"row\": {...}}"},
         {"deployment_profile",
-         "ask this node how to deploy it — ports, storage, peering, security, and what "
+         "ask this node how to deploy it — ports, storage, peering, security, "
+         "and what "
          "it does NOT need: {\"target\": \"helm\"} returns chart values"},
         {"list_indexes", "list the search indexes and the fields they cover"},
         {"list_connections", "list the configured source connections"},
         {"server_info", "read this node's version and cluster membership"},
-        // "which version are you" is asked of the model as often as of the binary,
-        // and the agent is the only surface a person asks it on.
+        // "which version are you" is asked of the model as often as of the
+        // binary, and the agent is the only surface a person asks it on.
         {"versions",
          "report the software version and WHICH agent version is answering, "
          "including its checkpoint"},
@@ -6539,21 +7394,27 @@ void register_core_capabilities(Registry& registry) {
         handle_get_run});
 
     registry.add(Capability{
-        "get_run_report",
-        "Get a run's report facts",
-        "Read the facts a finished run produced — how good the model is (held-out "
+        "get_run_report", "Get a run's report facts",
+        "Read the facts a finished run produced — how good the model is "
+        "(held-out "
         "first, in-sample beside it), what drives the outcome, and the ranked "
-        "at-risk list with its evidence. Assembled at query time from the run's "
-        "model and its at-risk table, so it cannot drift from them. Anything a "
-        "report would want and this run cannot supply is listed in `missing` with "
-        "the reason, rather than left blank. No side effects. (#958)",
-        get_run_report_schema(),
-        get_run_report_output_schema(),
-        CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        "at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, "
+        "read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked "
+        "anomalies, output tables, and what was read or excluded. Assembled at query time from the "
+        "run's "
+        "model and its result tables, so it cannot drift from them. Anything a "
+        "report would want and this run cannot supply is listed in `missing` "
+        "with "
+        "the reason, rather than left blank. For M-3 segmentation, returns K "
+        "selection, "
+        "separation and stability metrics, input/exclusion facts and "
+        "assignment/profile "
+        "tables instead of supervised risk metrics. No side effects. (#958, "
+        "#1042, #1043, #1046)",
+        get_run_report_schema(), get_run_report_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
-        /*requires_consent=*/false,
-        handle_get_run_report});
+        /*requires_consent=*/false, handle_get_run_report});
 
     registry.add(Capability{
         "propose_improvement",
@@ -6777,6 +7638,16 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_list_datasets});
+
+    registry.add(Capability{
+        "list_methodologies", "List methodologies",
+        "Read the complete methodology portfolio, including model kinds, "
+        "primary solutions, data roles, outputs, metrics, implementation "
+        "status, and tracking issues. No side effects.",
+        list_methodologies_schema(), list_methodologies_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false, handle_list_methodologies});
 
     registry.add(Capability{
         "submit_feedback",
@@ -7134,17 +8005,15 @@ void register_core_capabilities(Registry& registry) {
         handle_import_n8n});
 
     registry.add(Capability{
-        "compile_intent",
-        "Compile intent to graph",
-        "Compile a captured intent input into a named, editable execution "
-        "graph stored on the project (replicated; audited as a graph change).",
-        compile_intent_schema(),
-        project_graph_output_schema(),
+        "compile_intent", "Compile intent to graph",
+        "Resolve a methodology from an explicit methodology, primary solution, "
+        "or intent keywords, then compile its editable graph. Unavailable "
+        "methodologies are refused with their implementation issue.",
+        compile_intent_schema(), project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_intent"},
         /*mutates=*/true,
-        /*requires_consent=*/false,
-        handle_compile_intent});
+        /*requires_consent=*/false, handle_compile_intent});
 
     registry.add(Capability{
         "compile_n8n",
@@ -7203,19 +8072,14 @@ void register_core_capabilities(Registry& registry) {
         handle_deploy});
 
     registry.add(Capability{
-        "run",
-        "Run a graph",
-        "Execute a stored, gate-passing project graph: a churn-shaped graph "
-        "runs the real engine over the live cluster and returns its run id "
-        "immediately (poll get_run / system.runs); other graphs run "
-        "structurally within the call.",
-        run_schema(),
-        run_output_schema(),
-        CapabilityKind::Job,
+        "run", "Run a graph",
+        "Execute a stored, gate-passing project graph through its registered "
+        "methodology runner. Unknown and unavailable model kinds are refused; "
+        "a graph with no model step may run structurally.",
+        run_schema(), run_output_schema(), CapabilityKind::Job,
         Operation{CapabilityDomain::Orchestration, "run"},
         /*mutates=*/true,
-        /*requires_consent=*/false,
-        handle_run});
+        /*requires_consent=*/false, handle_run});
 
     registry.add(Capability{
         "add_dataset",

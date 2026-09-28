@@ -3,8 +3,10 @@
 **Issue:** [#958](https://github.com/oramasearch/zetta/issues/958)
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
-**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp` ·
-**Tests:** `tests/usecases/churn/test_churn_solution.cpp`
+**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp`,
+`src/core/ml/rank_runner.cpp` ·
+**Tests:** `tests/usecases/churn/test_churn_solution.cpp`,
+`tests/api/test_action_journeys.cpp`
 
 A run's outputs say what it *produced* — a dataset, a model, an index. A run's
 **report** says what it *found*: how good the model is, what drives the outcome, and
@@ -25,6 +27,14 @@ The run itself names the report among its outputs:
 
 ## Assembled on read, not stored
 
+For [M-7 anomaly runs](../ml/anomaly.md), the same capability returns
+`methodology: "M-7"`, native `model.metrics` (threshold, budget, alert rate, optional
+precision@k), ranked `anomalies` capped by `limit`, and both `output_tables`.
+`dataset` records the actual source, rows read/excluded, feature roles, and excluded
+columns with reasons. Its source is the anomaly Model plus this Run's anomaly table;
+it does not invent supervised quality metrics or holdout advice. A missing evaluation
+label is reported in `missing`. The remaining sections describe the M-1 report.
+
 There is no report document on disk. Every number in it already lives in replicated
 state, and `get_run_report` puts them together at query time:
 
@@ -32,7 +42,16 @@ state, and `get_run_report` puts them together at query time:
 |---|---|
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
-| the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| the ranked rows | the run's result table in `churn_results` or `rank_results` |
+| survival quality | the survival Model's concordance and IPCW Brier metrics |
+| survival outputs | the run's survival and interval-calibration table refs |
+| M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
+
+For an M-2 entity-resolution run, the same capability returns the registered
+model's native metrics and scoring method, the stated match/review/non-match
+thresholds, rows read and excluded, and both output-table references. Labelled
+runs include blocking recall, pairwise precision/recall/F1, and B-cubed
+precision/recall. Unlabelled runs omit those label-dependent measurements.
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
@@ -41,6 +60,12 @@ facts as one generated the moment the run ended, and that anything querying
 
 It follows RULE-7: observable state is a view computed from the live source, never a
 hand-synced copy.
+
+For a `next_best_action` Model, the report returns the Model's hit-rate and IPS/DR
+metrics, the selected and excluded input columns, every output reference, ranked
+entity-action rows with expected value and `why`, and the policy report's clipping
+diagnostics. It always includes the warning that response propensity is predictive,
+not causal lift, and directs treat/no-treat decisions to M-6.
 
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.
@@ -116,8 +141,36 @@ No new JSON format and no new storage. `run.schema.json`'s output `kind` enum ga
 `"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
 tool list, and the agent's read-tool allowlist.
 
+## Learning-to-rank reports
+
+For a model whose kind is `rank`, `get_run_report` reports `ndcg_at_k`,
+`yield_at_k`, the cutoff, and train/held-out row and group counts. Its result
+table is returned as `ranked_queue` rows with group, entity, score, rank, and
+relevance. Classification-only AUC fields and at-risk wording are not applied
+to these runs.
+
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- M-3 segmentation also emits a `report` output. Its typed report contains
+  `model.metrics`, `model.chosen_k_reason`, `model.k_candidates`, input table and
+  row counts, fitted features, excluded columns, `output_tables` and a bounded
+  `segments` preview. It does not invent churn accuracy or an at-risk list for
+  unsupervised clusters. See [segmentation.md](../ml/segmentation.md).
+- Other methodology engines can add their own model-kind report view without storing
+  a duplicate document.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.
+
+## Forecast reports (M-4)
+
+The native [forecast runner](../ml/forecast.md) also emits a report reference.
+For `kind: forecast`, this capability returns `model.metrics` (per-fold and mean
+MAE, MASE, sMAPE, seasonal-naive MAE, FVA and interval coverage), the explicit
+`baseline_comparison`, `dataset` read/exclusion facts, and `outputs` references.
+It does not substitute classification metrics or request probability calibration.
+
+`forecast` rows come from the output table and are sorted by numeric series key,
+then timestamp, **before** `limit` is applied. Replicated table storage order is
+not chronological, so limiting in storage order would return different periods
+on different members. The multi-member forecast launch test checks identical
+timestamps and predictions against the single-member oracle, plus the limited
+prefix. Tables not yet replicated are identified under `missing`.

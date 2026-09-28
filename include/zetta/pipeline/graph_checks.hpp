@@ -11,7 +11,7 @@
 #include "zetta/pipeline/validation.hpp"
 
 // The concrete correctness checks for #309 — the first real semantic checks that
-// plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
+// plug into the CorrectnessGate's `Check` interface (gate.hpp) without touching the
 // gate itself. They read a small, documented set of **annotations** from each
 // step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
@@ -24,6 +24,24 @@
 // these checks are opt-in per step and never penalise a graph that doesn't use
 // them.
 namespace zetta::pipeline {
+
+// M-4's executable shape and mandatory correctness contract, including a
+// temporal split, strictly past features and a seasonal-naive baseline.
+class ForecastGraphCheck final : public Check {
+  public:
+    std::string name() const override;
+    CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
+// M-7 (#1046): labels are evaluation-only, the budget is explicit, scales
+// are robust, and KPI baselines use only prior observations.
+class AnomalyGraphCheck final : public Check {
+public:
+  std::string name() const override {
+    return "anomaly_correctness";
+  }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
 
 // Schema/type check (#309): every field a step `requires` from its inputs must be
 // provided — with a matching type — by the `schema` (source profile) of one of
@@ -72,10 +90,78 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-2 refuses graphs that omit the information needed to enforce its runtime
+// safety rules. Blocking keys and both decision thresholds must be explicit,
+// and clustering must declare the verified-identifier conflict policy.
+class EntityResolutionGraphCheck final : public Check {
+public:
+    std::string name() const override { return "entity_resolution_profile"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Survival-censoring check (#1044): a survival graph must declare that censored
+// observations remain non-events, person-period expansion stops after an event,
+// and feature values are bounded by their subject cutoff.
+class SurvivalCensoringCheck final : public Check {
+public:
+    std::string name() const override { return "survival_censoring"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-8 policy correctness (#1047): only the validated next-best-action graph is
+// accepted. It must retain chronological interaction holdout, explicit logging
+// propensity handling, eligibility/contact-cap constraints and budgeted
+// best-action selection.
+class NextBestActionGraphCheck final : public Check {
+public:
+    std::string name() const override { return "next_best_action_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-11 document extraction must never accept a field without a confidence,
+// source evidence, and an explicit low-confidence review route.
+class DocumentReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "document_review";
+    }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 language outputs may never answer without retrieved evidence, and every
+// answer sentence must carry a citation. The executable graph records both
+// invariants explicitly so an edited plan cannot silently weaken them.
+class LanguageGroundingCheck final : public Check {
+public:
+    std::string name() const override { return "language_grounding"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 may not train on text outside the caller's read scope. This graph-level
+// check requires the model and its source to opt into the runtime authorization
+// check; the methodology runner then performs that check before reading rows.
+class LanguageTrainingAccessCheck final : public Check {
+public:
+    std::string name() const override { return "language_training_access"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-3 must keep entity/outcome roles out of features and execute its own
+// globally fitted preprocessing and assignment/profile output graph.
+class SegmentationCheck final : public Check {
+  public:
+    std::string name() const override;
+    CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
 };
 
 // Data-leakage / point-in-time check (#309): for an ML step that declares
@@ -90,9 +176,49 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// M-6 causal correctness: treatment and outcome roles must be explicit and
+// distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
+// and outcome-like or post-treatment features are refused before execution.
+class CausalUpliftCheck final : public Check {
+public:
+    std::string name() const override { return "causal_uplift"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Learning-to-rank correctness (#1048): every rank model names its group,
+// assigns whole groups to a holdout side, and declares that every feature is
+// available when ranking occurs.
+class RankCorrectnessCheck final : public Check {
+public:
+    std::string name() const override { return "rank_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-12 edge-time check (#1051): graph learning must name a prediction cutoff
+// and an explicit filter over the same edge-time column. A graph that omits,
+// disables, or disagrees about that filter is refused before execution.
+class GraphEdgeTimeCheck final : public Check {
+public:
+    std::string name() const override { return "graph_edge_time"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Vision source-split check (#1052): a vision model must declare that holdout
+// assignment is made by a named source column. Frame-level random splitting can
+// put near-identical frames from one camera, site, or document in both sets and
+// report a score that does not measure generalization to a new source.
+class VisionSourceSplitCheck final : public Check {
+public:
+    std::string name() const override { return "vision_source_split"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& graph_step_annotations_schema();
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline
