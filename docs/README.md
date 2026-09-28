@@ -25,21 +25,22 @@ run / test.
 | Domain | Covers |
 |---|---|
 | [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |
-| [architecture/](architecture/README.md) | The node, run modes, module map, the code map, schema-as-code, the async runtime seam, true hybrid, the living codebase health audit. |
-| [data/](data/README.md) | Storage engines and the on-disk format, large objects, datasets, partitioning (seam, write path, rebalance, sharded placement), the native Parquet reader, the query layer. |
+| [architecture/](architecture/README.md) | The node, run modes, module map, the code map, schema-as-code, the async runtime interface, true hybrid, the living codebase health audit. |
+| [data/](data/README.md) | Storage engines and the on-disk format, large objects, datasets, partitioning (interface, write path, rebalance, sharded placement), the native Parquet reader, the query layer. |
 | [cluster/](cluster/README.md) | Equal-peer clustering, CRDT replication, the signal plane, collectives, per-node telemetry. |
-| [compute/](compute/README.md) | The `ComputeDevice` accelerator seam and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
+| [compute/](compute/README.md) | The `ComputeDevice` accelerator interface and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
 | [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, and the native correctness oracle. |
 | [agent/](agent/README.md) | The native RLVR agent (#555 base, #853 per-customer): the deterministic reward grader, and — as they ship — rollouts and the training loop. The model Orama post-trains and ships. Its data + model [cards](agent/cards/README.md). |
-| [dataset/](dataset/README.md) | Native, in-Zetta training-dataset generation (#873): the `DatasetGenerator` seam + factory (base-agent + Auto-Suggest), plan-grounded + admission-gated — the native replacement for the offline Python corpus generators, and what a per-customer fork grows its own corpus with. |
+| [dataset/](dataset/README.md) | Native, in-Zetta training-dataset generation (#873): the `DatasetGenerator` interface + factory (base-agent + Auto-Suggest), plan-grounded + admission-gated — the native replacement for the offline Python corpus generators, and what a per-customer fork grows its own corpus with. |
 | [autograd/](autograd/README.md) | zetta's own reverse-mode autodiff engine (native C++26, no foreign runtime): the `Tensor` value graph + `backward()`, the Qwen3-parity model, checkpoint I/O, and the RLVR training math the agent is built on. |
 | [tokenizer/](tokenizer/README.md) | The native byte-level BPE tokenizer (GPT-2 / Qwen family): text ⇄ token ids for the model — UTF-8 codec + byte↔unicode map, pre-tokenizer, merges, vocab, HF-format loading. |
 | [pipeline/](pipeline/README.md) | AI projects and their inputs, the ExecutionGraph IR, the compilers (intent / n8n / sim-Python), the correctness gate, deploy + the reconcile control plane, runs, the solution catalog. |
-| [indexing/](indexing/README.md) | The pluggable `IndexBackend` seam, the oramacore-cpp full-text backend, the index step executor, distributed full-text. |
+| [indexing/](indexing/README.md) | The pluggable `IndexBackend` interface, the oramacore-cpp full-text backend, the index step executor, distributed full-text. |
+| [solutions/](solutions/README.md) | Shared score-to-action runtime components: versioned decision policy, hard constraints, autonomy, approvals, and request/batch decisions. |
 | [pubsub/](pubsub/README.md) | In-memory pub/sub (#1024): addressed events, inboxes, runtime topics, governed delivery options, detected limits, spilling, restart survival. Design: [plans/pubsub/](plans/pubsub/README.md). |
 | [api/](api/README.md) | The programmatic control surface: the capability registry, the MCP server + REST rendering, auth/consent, the main-thread bridge. |
-| [cloud/](cloud/README.md) | The `Provisioner` seam, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
+| [cloud/](cloud/README.md) | The `Provisioner` interface, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [workspace/](workspace/README.md) | The Workspace Profile — the environment/role/daily-work + approved-source-refs entity behind the "Discover Opportunities" pathway (#886). |
 | [billing/](billing/README.md) | Metered usage + plan: the live `system.usage` snapshot (metered from engine state) and the Plan quota/tier entity it is measured against (Conflict D). No payment processor — on-prem. |

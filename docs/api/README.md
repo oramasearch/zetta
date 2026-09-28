@@ -139,6 +139,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
 | `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
+| `get_policy` | read | api:query | one decision policy's current config and immutable version history |
 | `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
 | `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
 | `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
@@ -155,6 +156,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `create_policy` | action | orchestration:create_policy | create version 1 of a replicated decision policy |
+| `update_policy` | action | orchestration:update_policy | append a replacement version or apply bounded numeric tuning |
+| `decide` | action | orchestration:decide | apply a policy to one scored entity or a scored table and persist versioned decisions |
+| `approve_decision` | action | orchestration:approve_decision | approve a pending A1 decision without changing its policy version |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |

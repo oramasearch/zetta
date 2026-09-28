@@ -1072,6 +1072,189 @@
         ]
       }
     },
+    "/v1/approve_decision": {
+      "post": {
+        "description": "Approve one pending A1 decision, make it actionable, and append an audit event. Requires orchestration:approve_decision.",
+        "operationId": "approve_decision",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "decision_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "decision_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "action": {
+                          "type": "string"
+                        },
+                        "actionable": {
+                          "type": "boolean"
+                        },
+                        "approved_at": {
+                          "type": "string"
+                        },
+                        "approved_by": {
+                          "type": "string"
+                        },
+                        "autonomy": {
+                          "enum": [
+                            "A0",
+                            "A1",
+                            "A2",
+                            "A3"
+                          ],
+                          "type": "string"
+                        },
+                        "cost": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "created": {
+                          "type": "string"
+                        },
+                        "entity_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "type": "object"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "policy_id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "policy_version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "reasons": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "score": {
+                          "type": "number"
+                        },
+                        "status": {
+                          "enum": [
+                            "blocked",
+                            "manual",
+                            "pending_approval",
+                            "allowed",
+                            "approved"
+                          ],
+                          "type": "string"
+                        },
+                        "tier": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "policy_id",
+                        "policy_version",
+                        "entity_id",
+                        "score",
+                        "cost",
+                        "tier",
+                        "action",
+                        "autonomy",
+                        "status",
+                        "actionable",
+                        "reasons",
+                        "evidence",
+                        "created",
+                        "approved_at",
+                        "approved_by"
+                      ],
+                      "title": "zetta.DecisionRecord",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Approve an A1 decision",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/approve_plan": {
       "post": {
         "description": "Approve a stored, proposed Pipeline for build (#885, the design's review-before-build flow): records the approving principal + time, replicates, and audits it (graph_approved). gate and deploy require an approved plan; editing a plan re-proposes it. Requires orchestration:approve_plan.",
@@ -3179,6 +3362,497 @@
         ]
       }
     },
+    "/v1/create_policy": {
+      "post": {
+        "description": "Create version 1 of a replicated score-to-action policy and audit the change. Requires orchestration:create_policy.",
+        "operationId": "create_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "additionalProperties": false,
+                    "properties": {
+                      "autonomy": {
+                        "enum": [
+                          "A0",
+                          "A1",
+                          "A2",
+                          "A3"
+                        ],
+                        "type": "string"
+                      },
+                      "budget": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "limit": {
+                            "minimum": 0,
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "limit"
+                        ],
+                        "type": "object"
+                      },
+                      "contact_cap": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "eligibility_rules": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "eq",
+                                "neq",
+                                "lt",
+                                "lte",
+                                "gt",
+                                "gte",
+                                "in",
+                                "not_in",
+                                "exists"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "field",
+                            "operator"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "exclusion_rules": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "eq",
+                                "neq",
+                                "lt",
+                                "lte",
+                                "gt",
+                                "gte",
+                                "in",
+                                "not_in",
+                                "exists"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "field",
+                            "operator"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "frequency_cap": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "max_actions": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "window_seconds": {
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "max_actions",
+                          "window_seconds"
+                        ],
+                        "type": "object"
+                      },
+                      "kill_switch": {
+                        "type": "boolean"
+                      },
+                      "threshold": {
+                        "type": "number"
+                      },
+                      "tiers": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "minimum_score": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "minimum_score",
+                            "action"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "tunable_bounds": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "maximum": {
+                              "type": "number"
+                            },
+                            "minimum": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "minimum",
+                            "maximum"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "autonomy"
+                    ],
+                    "title": "zetta.DecisionPolicyConfig",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "current_version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        },
+                        "versions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actor": {
+                                "type": "string"
+                              },
+                              "config": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "autonomy": {
+                                    "enum": [
+                                      "A0",
+                                      "A1",
+                                      "A2",
+                                      "A3"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "budget": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "limit": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "limit"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "contact_cap": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "eligibility_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "exclusion_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "frequency_cap": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "max_actions": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "window_seconds": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "max_actions",
+                                      "window_seconds"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "kill_switch": {
+                                    "type": "boolean"
+                                  },
+                                  "threshold": {
+                                    "type": "number"
+                                  },
+                                  "tiers": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "action": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "minimum_score": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "minimum_score",
+                                        "action"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "tunable_bounds": {
+                                    "additionalProperties": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "minimum",
+                                        "maximum"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "autonomy"
+                                ],
+                                "title": "zetta.DecisionPolicyConfig",
+                                "type": "object"
+                              },
+                              "created": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "minimum": 1,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "config",
+                              "actor",
+                              "reason",
+                              "created"
+                            ],
+                            "type": "object"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "current_version",
+                        "versions",
+                        "created",
+                        "updated"
+                      ],
+                      "title": "zetta.DecisionPolicy",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a decision policy",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",
@@ -3545,6 +4219,307 @@
           }
         },
         "summary": "Create a workspace profile",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/decide": {
+      "post": {
+        "description": "Apply the current policy version to one scored entity or a scored table and persist version-stamped decisions. Requires orchestration:decide.",
+        "operationId": "decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "required": [
+                      "entity"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "database",
+                      "table"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "contacts_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cost_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "entity": {
+                    "properties": {
+                      "action": {
+                        "type": "string"
+                      },
+                      "contacts": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "cost": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "entity_id": {
+                        "oneOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      },
+                      "recent_actions": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "score": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "entity_id",
+                      "score"
+                    ],
+                    "type": "object"
+                  },
+                  "entity_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "output_database": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "output_table": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "policy_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "recent_actions_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "score_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "table": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "policy_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "oneOf": [
+                        {
+                          "$schema": "http://json-schema.org/draft-07/schema#",
+                          "additionalProperties": false,
+                          "properties": {
+                            "action": {
+                              "type": "string"
+                            },
+                            "actionable": {
+                              "type": "boolean"
+                            },
+                            "approved_at": {
+                              "type": "string"
+                            },
+                            "approved_by": {
+                              "type": "string"
+                            },
+                            "autonomy": {
+                              "enum": [
+                                "A0",
+                                "A1",
+                                "A2",
+                                "A3"
+                              ],
+                              "type": "string"
+                            },
+                            "cost": {
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "created": {
+                              "type": "string"
+                            },
+                            "entity_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "evidence": {
+                              "type": "object"
+                            },
+                            "id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "policy_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "policy_version": {
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "reasons": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "score": {
+                              "type": "number"
+                            },
+                            "status": {
+                              "enum": [
+                                "blocked",
+                                "manual",
+                                "pending_approval",
+                                "allowed",
+                                "approved"
+                              ],
+                              "type": "string"
+                            },
+                            "tier": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "policy_id",
+                            "policy_version",
+                            "entity_id",
+                            "score",
+                            "cost",
+                            "tier",
+                            "action",
+                            "autonomy",
+                            "status",
+                            "actionable",
+                            "reasons",
+                            "evidence",
+                            "created",
+                            "approved_at",
+                            "approved_by"
+                          ],
+                          "title": "zetta.DecisionRecord",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "actionable": {
+                              "type": "integer"
+                            },
+                            "blocked": {
+                              "type": "integer"
+                            },
+                            "pending_approval": {
+                              "type": "integer"
+                            },
+                            "rows": {
+                              "type": "integer"
+                            },
+                            "table": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "table",
+                            "rows",
+                            "actionable",
+                            "pending_approval",
+                            "blocked"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Apply a decision policy",
         "tags": [
           "action"
         ]
@@ -6347,6 +7322,323 @@
           }
         },
         "summary": "Get one plan",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_policy": {
+      "get": {
+        "description": "Read a decision policy and its immutable version history by uuid with no side effects. Requires api:query.",
+        "operationId": "get_policy",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "policy_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "current_version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        },
+                        "versions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actor": {
+                                "type": "string"
+                              },
+                              "config": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "autonomy": {
+                                    "enum": [
+                                      "A0",
+                                      "A1",
+                                      "A2",
+                                      "A3"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "budget": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "limit": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "limit"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "contact_cap": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "eligibility_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "exclusion_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "frequency_cap": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "max_actions": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "window_seconds": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "max_actions",
+                                      "window_seconds"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "kill_switch": {
+                                    "type": "boolean"
+                                  },
+                                  "threshold": {
+                                    "type": "number"
+                                  },
+                                  "tiers": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "action": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "minimum_score": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "minimum_score",
+                                        "action"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "tunable_bounds": {
+                                    "additionalProperties": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "minimum",
+                                        "maximum"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "autonomy"
+                                ],
+                                "title": "zetta.DecisionPolicyConfig",
+                                "type": "object"
+                              },
+                              "created": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "minimum": 1,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "config",
+                              "actor",
+                              "reason",
+                              "created"
+                            ],
+                            "type": "object"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "current_version",
+                        "versions",
+                        "created",
+                        "updated"
+                      ],
+                      "title": "zetta.DecisionPolicy",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a decision policy",
         "tags": [
           "read"
         ]
@@ -14147,6 +15439,518 @@
           }
         },
         "summary": "Update a plan",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_policy": {
+      "post": {
+        "description": "Create and audit a new policy version, or tune declared numeric parameters within their bounds. Requires orchestration:update_policy.",
+        "operationId": "update_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "required": [
+                      "config"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "tuning"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "config": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "additionalProperties": false,
+                    "properties": {
+                      "autonomy": {
+                        "enum": [
+                          "A0",
+                          "A1",
+                          "A2",
+                          "A3"
+                        ],
+                        "type": "string"
+                      },
+                      "budget": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "limit": {
+                            "minimum": 0,
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "limit"
+                        ],
+                        "type": "object"
+                      },
+                      "contact_cap": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "eligibility_rules": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "eq",
+                                "neq",
+                                "lt",
+                                "lte",
+                                "gt",
+                                "gte",
+                                "in",
+                                "not_in",
+                                "exists"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "field",
+                            "operator"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "exclusion_rules": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "eq",
+                                "neq",
+                                "lt",
+                                "lte",
+                                "gt",
+                                "gte",
+                                "in",
+                                "not_in",
+                                "exists"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {}
+                          },
+                          "required": [
+                            "field",
+                            "operator"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "frequency_cap": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "max_actions": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "window_seconds": {
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "max_actions",
+                          "window_seconds"
+                        ],
+                        "type": "object"
+                      },
+                      "kill_switch": {
+                        "type": "boolean"
+                      },
+                      "threshold": {
+                        "type": "number"
+                      },
+                      "tiers": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "minimum_score": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "minimum_score",
+                            "action"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "tunable_bounds": {
+                        "additionalProperties": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "maximum": {
+                              "type": "number"
+                            },
+                            "minimum": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "minimum",
+                            "maximum"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "autonomy"
+                    ],
+                    "title": "zetta.DecisionPolicyConfig",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "policy_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "tuning": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "minProperties": 1,
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "policy_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "created": {
+                          "type": "string"
+                        },
+                        "current_version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "id": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "updated": {
+                          "type": "string"
+                        },
+                        "versions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actor": {
+                                "type": "string"
+                              },
+                              "config": {
+                                "$schema": "http://json-schema.org/draft-07/schema#",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "autonomy": {
+                                    "enum": [
+                                      "A0",
+                                      "A1",
+                                      "A2",
+                                      "A3"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "budget": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "limit": {
+                                        "minimum": 0,
+                                        "type": "number"
+                                      }
+                                    },
+                                    "required": [
+                                      "limit"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "contact_cap": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "eligibility_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "exclusion_rules": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "operator": {
+                                          "enum": [
+                                            "eq",
+                                            "neq",
+                                            "lt",
+                                            "lte",
+                                            "gt",
+                                            "gte",
+                                            "in",
+                                            "not_in",
+                                            "exists"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "value": {}
+                                      },
+                                      "required": [
+                                        "field",
+                                        "operator"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "frequency_cap": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "max_actions": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "window_seconds": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "max_actions",
+                                      "window_seconds"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "kill_switch": {
+                                    "type": "boolean"
+                                  },
+                                  "threshold": {
+                                    "type": "number"
+                                  },
+                                  "tiers": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "action": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "minimum_score": {
+                                          "type": "number"
+                                        },
+                                        "name": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "minimum_score",
+                                        "action"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "array"
+                                  },
+                                  "tunable_bounds": {
+                                    "additionalProperties": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "maximum": {
+                                          "type": "number"
+                                        },
+                                        "minimum": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "minimum",
+                                        "maximum"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "autonomy"
+                                ],
+                                "title": "zetta.DecisionPolicyConfig",
+                                "type": "object"
+                              },
+                              "created": {
+                                "type": "string"
+                              },
+                              "reason": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "minimum": 1,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "version",
+                              "config",
+                              "actor",
+                              "reason",
+                              "created"
+                            ],
+                            "type": "object"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "current_version",
+                        "versions",
+                        "created",
+                        "updated"
+                      ],
+                      "title": "zetta.DecisionPolicy",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update a decision policy",
         "tags": [
           "action"
         ]

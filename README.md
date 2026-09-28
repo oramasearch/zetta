@@ -87,6 +87,10 @@ What's inside, by domain (each links to that domain's docs):
   M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
   hard eligibility/contact-cap policy selection, recommendation tables, and
   IPS/DR policy reporting through `get_run_report`.
+  The shared [decision-policy engine](docs/solutions/decision-policy.md) then
+  applies versioned thresholds, tiers, budgets, caps, exclusions, autonomy
+  classes, approvals, and kill-switches between any score and its action; every
+  decision records the exact policy version.
   Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
   and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio

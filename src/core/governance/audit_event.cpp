@@ -33,7 +33,8 @@ const nlohmann::json& schema_document() {
                               "provision_requested",
                               "cloud_inspected", "dataset_added",
                               "consent_requested", "consent_decided",
-                              "consent_bypassed"] },
+                              "consent_bypassed", "decision_policy_created",
+                              "decision_policy_updated", "decision_approved"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -90,6 +91,9 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::ConsentRequested: return "consent_requested";
         case AuditAction::ConsentDecided:   return "consent_decided";
         case AuditAction::ConsentBypassed:  return "consent_bypassed";
+        case AuditAction::DecisionPolicyCreated: return "decision_policy_created";
+        case AuditAction::DecisionPolicyUpdated: return "decision_policy_updated";
+        case AuditAction::DecisionApproved: return "decision_approved";
     }
     return "data_access";
 }
@@ -110,6 +114,9 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "consent_requested") return AuditAction::ConsentRequested;
     if (name == "consent_decided")   return AuditAction::ConsentDecided;
     if (name == "consent_bypassed")  return AuditAction::ConsentBypassed;
+    if (name == "decision_policy_created") return AuditAction::DecisionPolicyCreated;
+    if (name == "decision_policy_updated") return AuditAction::DecisionPolicyUpdated;
+    if (name == "decision_approved") return AuditAction::DecisionApproved;
     return std::nullopt;
 }
 

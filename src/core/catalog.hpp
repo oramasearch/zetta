@@ -53,7 +53,7 @@
 //                          index over a table — search / vector / feature; a
 //                          top-level entity with no parent (ENT-39 / ENT-40);
 //                          metadata only — building the index is the IndexBackend
-//                          seam's job; see index/index.hpp)
+//                          index subsystem's job; see index/index.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -87,6 +87,13 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   decision_policy:<uuid> -> { id, name, current_version, versions, created,
+//                          updated }  (the immutable version history for one
+//                          score-to-action policy; see decision_policy.hpp)
+//   decision:<uuid>    -> { id, policy_id, policy_version, entity_id, score,
+//                          action, autonomy, status, actionable, ... }  (one
+//                          durable policy result, stamped with its exact policy
+//                          version; see decision_policy.hpp)
 //   vtable:<name>      -> { name, prefix, columns:[{name,type,tier,key}] }  (a
 //                          user-declared VIRTUAL TABLE over a CRDT key-family —
 //                          CREATE VIRTUAL TABLE (#809 slice 3). Keyed by its
@@ -145,6 +152,8 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
+inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
 
 inline std::string node_key(const std::string& node_id) {
@@ -200,6 +209,12 @@ inline std::string principal_key(const std::string& principal_id) {
 }
 inline std::string access_key_key(const std::string& access_key_id) {
     return std::string(kAccessKeyPrefix) + access_key_id;
+}
+inline std::string decision_policy_key(const std::string& policy_id) {
+    return std::string(kDecisionPolicyPrefix) + policy_id;
+}
+inline std::string decision_key(const std::string& decision_id) {
+    return std::string(kDecisionPrefix) + decision_id;
 }
 inline std::string audit_key(const std::string& audit_id) {
     return std::string(kAuditPrefix) + audit_id;
