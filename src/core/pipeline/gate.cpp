@@ -86,6 +86,7 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<AnomalyGraphCheck>());
     gate.add_check(std::make_shared<NextBestActionGraphCheck>());
     gate.add_check(std::make_shared<RankCorrectnessCheck>());
+    gate.add_check(std::make_shared<DocumentReviewCheck>());
     gate.add_check(std::make_shared<GraphEdgeTimeCheck>());
     gate.add_check(std::make_shared<VisionSourceSplitCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous

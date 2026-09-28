@@ -18,6 +18,7 @@ Methodology make_m5_methodology();
 Methodology make_m6_methodology();
 Methodology make_m8_methodology();
 Methodology make_m9_methodology();
+Methodology make_m11_methodology();
 Methodology make_graph_methodology();
 Methodology make_m13_methodology();
 
@@ -90,14 +91,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "task labels or golden answers")},
                 {"embeddings", "search results", "generated text"},
                 {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
-        planned("M-11", "Document intelligence",
-                "Language, documents & perception",
-                {"document_intelligence", "ocr", "document"}, {},
-                {"extract document", "ocr", "invoice", "form"},
-                {input("text", true, "document image or text"),
-                 input("label", false, "field annotations")},
-                {"structured fields", "evidence links"},
-                {"field accuracy", "F1", "straight-through rate"}, 1050),
+        make_m11_methodology(),
         make_graph_methodology(),
         make_m13_methodology(),
         planned("M-14", "Speech & audio analytics",

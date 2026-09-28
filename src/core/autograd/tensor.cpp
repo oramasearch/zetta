@@ -623,6 +623,91 @@ Tensor embedding(const Tensor& table, const std::vector<int>& ids) {
     return Tensor{node};
 }
 
+Tensor patch_embedding(const Tensor& image, const Tensor& weight,
+                       const Tensor& bias, int patch_size) {
+    const int height = image.shape()[0];
+    const int width = image.shape()[1];
+    const int channels = image.shape()[2];
+    const int hidden = weight.shape()[0];
+    const int patch_rows = height / patch_size;
+    const int patch_columns = width / patch_size;
+    const int patch_count = patch_rows * patch_columns;
+    const int patch_values = patch_size * patch_size * channels;
+    std::vector<float> out(static_cast<std::size_t>(patch_count) * hidden,
+                           0.0F);
+    for (int patch_row = 0; patch_row < patch_rows; ++patch_row) {
+        for (int patch_column = 0; patch_column < patch_columns;
+             ++patch_column) {
+            const int patch_index = patch_row * patch_columns + patch_column;
+            for (int output = 0; output < hidden; ++output) {
+                float value = bias.data()[output];
+                int element = 0;
+                for (int y = 0; y < patch_size; ++y) {
+                    for (int x = 0; x < patch_size; ++x) {
+                        for (int channel = 0; channel < channels; ++channel) {
+                            const int image_index =
+                                (((patch_row * patch_size + y) * width +
+                                  patch_column * patch_size + x) *
+                                     channels +
+                                 channel);
+                            value += image.data()[image_index] *
+                                     weight.data()[output * patch_values +
+                                                   element];
+                            ++element;
+                        }
+                    }
+                }
+                out[patch_index * hidden + output] = value;
+            }
+        }
+    }
+
+    auto node = make_node(std::move(out), {patch_count, hidden});
+    node->parents = {image.node(), weight.node(), bias.node()};
+    const std::shared_ptr<Node> image_node = image.node();
+    const std::shared_ptr<Node> weight_node = weight.node();
+    const std::shared_ptr<Node> bias_node = bias.node();
+    node->backward = [image_node, weight_node, bias_node, width, channels,
+                      hidden, patch_size, patch_rows, patch_columns,
+                      patch_values](const std::vector<float>& gradient) {
+        for (int patch_row = 0; patch_row < patch_rows; ++patch_row) {
+            for (int patch_column = 0; patch_column < patch_columns;
+                 ++patch_column) {
+                const int patch_index =
+                    patch_row * patch_columns + patch_column;
+                for (int output = 0; output < hidden; ++output) {
+                    const float output_gradient =
+                        gradient[patch_index * hidden + output];
+                    bias_node->grad[output] += output_gradient;
+                    int element = 0;
+                    for (int y = 0; y < patch_size; ++y) {
+                        for (int x = 0; x < patch_size; ++x) {
+                            for (int channel = 0; channel < channels;
+                                 ++channel) {
+                                const int image_index =
+                                    (((patch_row * patch_size + y) * width +
+                                      patch_column * patch_size + x) *
+                                         channels +
+                                     channel);
+                                const int weight_index =
+                                    output * patch_values + element;
+                                image_node->grad[image_index] +=
+                                    output_gradient *
+                                    weight_node->data[weight_index];
+                                weight_node->grad[weight_index] +=
+                                    output_gradient *
+                                    image_node->data[image_index];
+                                ++element;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets, int first_scored) {
     const int rows = logits.shape()[0];
     const int vocab = logits.shape()[1];

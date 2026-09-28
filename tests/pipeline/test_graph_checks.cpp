@@ -543,7 +543,7 @@ TEST(VisionSourceSplitCheck, RefusesAnUnnamedSourceGroup) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 15u);
+    ASSERT_EQ(gate.check_count(), 16u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -556,9 +556,10 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[9]->name(), "anomaly_correctness");
     EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
     EXPECT_EQ(gate.checks()[11]->name(), "rank_correctness");
-    EXPECT_EQ(gate.checks()[12]->name(), "graph_edge_time");
-    EXPECT_EQ(gate.checks()[13]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[14]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[12]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[13]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[14]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[15]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -593,6 +594,90 @@ TEST(RankGraphCheck, FeaturesUnavailableAtRankingTimeFail) {
         zetta::pipeline::RankCorrectnessCheck{}.evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
     EXPECT_NE(result.reason.find("ranking_time"), std::string::npos);
+}
+
+namespace {
+
+ExecutionGraph document_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "documents", {}, "documents");
+    graph.add_node(StepKind::Model, "extract", std::move(attributes),
+                   "extract");
+    graph.add_node(StepKind::Act, "review", json{{"route", "review_queue"}},
+                   "review");
+    graph.add_edge("documents", "extract");
+    graph.add_edge("extract", "review");
+    return graph;
+}
+
+json valid_document_attributes() {
+    return {{"model_kind", "document_extraction"},
+            {"confidence_required", true},
+            {"retain_evidence", true},
+            {"route_low_confidence_to_review", true},
+            {"review_threshold", 0.8}};
+}
+
+}  // namespace
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutConfidence) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMistypedConfidenceRuleWithoutThrowing) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = "yes";
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutSourceEvidence) {
+    json attributes = valid_document_attributes();
+    attributes["retain_evidence"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("page and box"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesSilentLowConfidenceAcceptance) {
+    json attributes = valid_document_attributes();
+    attributes["route_low_confidence_to_review"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("routed to review"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMissingReviewQueueStep) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "extract", valid_document_attributes(),
+                   "extract");
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("review_queue"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesInvalidReviewThreshold) {
+    json attributes = valid_document_attributes();
+    attributes["review_threshold"] = 1.1;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("between 0 and 1"), std::string::npos);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

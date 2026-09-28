@@ -117,6 +117,17 @@ public:
 class NextBestActionGraphCheck final : public Check {
 public:
     std::string name() const override { return "next_best_action_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-11 document extraction must never accept a field without a confidence,
+// source evidence, and an explicit low-confidence review route.
+class DocumentReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "document_review";
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-9 and M-12/M-13 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-9 and M-11 through M-13 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -167,6 +167,15 @@ or an explicit `dataset_path`, then calls the shared resolved-dataset runner.
 
 The objective, distributed job, output table, metrics, correctness refusals,
 and API example are documented in [rank.md](rank.md).
+
+## M-11 document implementation
+
+`src/core/ml/document_methodology.cpp` supplies M-11's document-specific
+connect, text-recovery, field-extraction, and review-routing shape. Its runner
+resolves that graph's own input table and writes extracted-field and review
+tables with model and run lineage. See
+[document_extraction.md](document_extraction.md) for its input contract,
+correctness rules, checkpoint licence, and operating instructions.
 
 ## M-12 graph implementation
 

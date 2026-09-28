@@ -33,6 +33,7 @@ for model work.
 - [next_best_action.md](next_best_action.md) — M-8 propensity composition, implicit-feedback ALS, hard policy constraints, recommendation tables, and offline IPS/DR evaluation (#1047).
 - [rank.md](rank.md) — M-9 native LambdaMART: whole-group validation, distributed histogram training, ranked-queue tables, NDCG@k, and yield at budget (#1048).
 - [vision.md](vision.md) — M-13 native PNG/JPEG decoding, frozen ViT embeddings, source-disjoint distributed head training, prediction tables, and evaluation reports (#1052).
+- [document_extraction.md](document_extraction.md) — M-11 native PDF text recovery and TrOCR line recognition, declared-field extraction, evidence retention, review routing, and field-level metrics (#1050).
 
 ## Methodology portfolio
 
@@ -53,7 +54,7 @@ carry `*`. Regenerate it with
 | M-8 | Recommendation / next-best-action | Action & decision | next_best_action, recommendation, recommender | S-11 | entity*, treatment*, label*, time*, feature*, group | recommendation table, policy report, next-best-action model | hit rate at k, popularity hit rate at k, inverse propensity value, doubly robust value, effective sample size, maximum clipped weight | runnable | [#1047](https://github.com/oramasearch/zetta/issues/1047) |
 | M-9 | Learning-to-rank | Action & decision | ranking, learning_to_rank, rank | — | entity*, group*, label*, time, feature* | ranked-queue table, priority scores, model | NDCG@k, yield at budget | runnable | [#1048](https://github.com/oramasearch/zetta/issues/1048) |
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |
-| M-11 | Document intelligence | Language, documents & perception | document_intelligence, ocr, document | — | text*, label | structured fields, evidence links | field accuracy, F1, straight-through rate | not runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |
+| M-11 | Document intelligence | Language, documents & perception | document_extraction, document_intelligence, ocr, document | document_automation | document*, label | extracted fields, review queue, evidence links | field precision, field recall, field F1, review share | runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |
 | M-12 | Graph ML | Identity & structure | graph, graph_ml | — | entity*, group*, feature*, time*, label* | node feature table, graph summary, node scores, graph embeddings | held-out node accuracy, component count, degree distribution, PageRank top nodes | runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
 | M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label*, group* | vision model, prediction table, confusion matrix | accuracy, macro-F1 | runnable | — |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, label | transcripts, speaker segments, audio scores | word error rate, F1 | not runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |

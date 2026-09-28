@@ -22,6 +22,7 @@ The reusable annotation and methodology-specific checks are:
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
+| `DocumentReviewCheck` | `document_review` | document extraction without confidence, source evidence, a valid review threshold, and a downstream review queue |
 | `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 | `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
 

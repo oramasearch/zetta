@@ -587,6 +587,14 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"fields",
+           {{"type", "array"},
+            {"description",
+             "M-11 extracted fields with confidence, page, box, and review status"}}},
+          {"review_queue",
+           {{"type", "object"},
+            {"description",
+             "M-11 review-table reference and routed-field count"}}},
           {"predictions",
            {{"type", "array"},
             {"description", "vision prediction rows, capped by `limit`"}}},
@@ -707,6 +715,79 @@ nlohmann::json row_entity(const nlohmann::json& row) {
     if (found == row.end() || found->is_null()) return std::int64_t{0};
     if (found->is_number_integer()) return found->get<std::int64_t>();
     return *found;
+}
+
+std::shared_ptr<zetta::data::Table> run_output_table(
+    Node& node, const zetta::pipeline::Run& run, std::string_view name) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        if (output.kind != "dataset" || output.name != name) {
+            continue;
+        }
+        const std::size_t dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (database) {
+            return database->find_table(output.ref.substr(dot + 1));
+        }
+    }
+    return nullptr;
+}
+
+nlohmann::json document_extraction_report(
+    Node& node, const zetta::pipeline::Run& run,
+    const std::shared_ptr<zetta::ml::Model>& model, std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model->id()},
+                       {"name", model->name()},
+                       {"kind", model->kind()},
+                       {"metrics", model->metrics()}};
+    nlohmann::json dataset = nlohmann::json::object();
+    for (const std::string& source : run.lineage().sources) {
+        if (source.starts_with("dataset:")) {
+            dataset["source"] = source.substr(8);
+        }
+    }
+    const nlohmann::json& metrics = model->metrics();
+    if (metrics.contains("documents_read")) {
+        dataset["documents_read"] = metrics.at("documents_read");
+    }
+    dataset["documents_excluded"] =
+        metrics.value("documents_excluded", 0.0);
+    report["dataset"] = std::move(dataset);
+
+    nlohmann::json fields = nlohmann::json::array();
+    if (const std::shared_ptr<zetta::data::Table> table =
+            run_output_table(node, run, "extracted fields")) {
+        const zetta::storage::StorageEngine& store = table->store();
+        for (std::size_t index = 0;
+             index < store.size() && fields.size() < limit; ++index) {
+            const zetta::storage::ParquetLazyPtr row = store.at(index);
+            if (row) {
+                fields.push_back(*row);
+            }
+        }
+    }
+    report["fields"] = std::move(fields);
+
+    nlohmann::json review = nlohmann::json::object();
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        if (output.kind == "dataset" && output.name == "review queue") {
+            review["table"] = output.ref;
+            break;
+        }
+    }
+    review["fields"] = metrics.value("fields_reviewed", 0.0);
+    review["share"] = metrics.value("review_share", 0.0);
+    report["review_queue"] = std::move(review);
+    return report;
 }
 
 // A row count as a plain integer string — "4", not "4.000000".
@@ -921,6 +1002,10 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     if (model->kind() == "next_best_action") {
         return ApiResult::success(
             next_best_action_report(context.node, *run, *model, limit));
+    }
+    if (model->kind() == "document_extraction") {
+        return ApiResult::success(
+            document_extraction_report(context.node, *run, model, limit));
     }
     const nlohmann::json& metrics = model->metrics();
     const auto number = [&metrics](const char* key) -> std::optional<double> {
@@ -3515,7 +3600,36 @@ const nlohmann::json& run_schema() {
           {"targeting_fraction",
            {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}},
           {"bootstrap_samples", {{"type", "integer"}, {"minimum", 0}}},
-          {"seed", {{"type", "integer"}, {"minimum", 0}}}}}};
+          {"fields",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"description", "M-11: declared field names to extract"}}},
+          {"document_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: source column containing text, PDF, or PGM bytes"}}},
+          {"document_id_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: stable source document identifier column"}}},
+          {"labels_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: optional object of labelled field values"}}},
+          {"review_threshold",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", 1},
+            {"description", "M-11: route lower-confidence fields to review"}}},
+          {"seed",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-11: deterministic tiny TrOCR seed"}}},
+          {"trocr_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-11: pinned native TrOCR checkpoint directory"}}}}}};
     return schema;
 }
 

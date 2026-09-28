@@ -131,6 +131,13 @@ Tensor transpose(const Tensor& a);
 // backward scatter-adds each row's gradient back into the selected table rows.
 Tensor embedding(const Tensor& table, const std::vector<int>& ids);
 
+// Split an image [height, width, channels] into non-overlapping square patches
+// and project each flattened patch with `weight` [hidden, patch_values] plus
+// `bias` [hidden], producing [patches, hidden]. Backward accumulates gradients
+// into the image, projection, and bias.
+Tensor patch_embedding(const Tensor& image, const Tensor& weight,
+                       const Tensor& bias, int patch_size);
+
 // Mean cross-entropy of `logits` [rows, vocab] against integer `targets` [rows] —
 // the language-model loss. Numerically stable (log-sum-exp), returns a scalar.
 // Backward: dLogits[row, j] = (softmax[row, j] − 1[j == target]) / rows.

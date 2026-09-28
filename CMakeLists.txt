@@ -564,6 +564,8 @@ add_library(zetta-core STATIC
   src/core/ml/graph_methodology.cpp
   src/core/ml/graph_runner.cpp
   src/core/ml/vision_methodology.cpp
+  src/core/ml/document_methodology.cpp
+  src/core/ml/document_extraction.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp
