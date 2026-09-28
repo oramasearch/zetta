@@ -56,8 +56,10 @@ It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. M-1 defaults to its `account` / `risk` score table.
 S-2 also uses M-1 as its primary methodology. Its shared table carries the
 entity in `account` and conversion propensity in `risk`; S-2 binds that real
-output and relabels the downstream decision cell as a conversion band. Inputs
-and score scales for S-3 through S-12 remain their catalogue module's
+output and relabels the downstream decision cell as a conversion band. S-5
+defaults to the real M-4 `forecast` output, with `series` as the entity and
+relative interval width in `exception_score` as the policy score. Inputs and
+score scales for S-3, S-4, and S-6 through S-12 remain their catalogue module's
 responsibility; their templates are deliberately minimal.
 
 ## Run and read back
@@ -73,8 +75,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. All stage Connect nodes read this snapshot. An ISO cutoff is
-   carried into feature planning from the snapshot annotation, not inferred.
+   each child Run. All stage Connect nodes read this snapshot. Wrapper stage
+   annotations are removed while reconstructing the child graph, so they are
+   never interpreted as methodology parameters. An ISO cutoff is carried into
+   feature planning from the snapshot annotation, not inferred.
 3. Join the chosen model output to snapshot evidence, exactly once per entity.
    `DecisionPolicyStore::decide` selects the tier/action and enforces policy,
    then calls the experiment manager in the same path. Protected cells clear
@@ -101,6 +105,12 @@ Outcome producers call `record_outcome` against the emitted ledger action IDs.
 outcome/window and configured design, and returns a confidence interval plus
 customer-supplied economics. No missing outcomes are invented. FVA/phased
 measurement remains non-claimable pending a design-specific estimator.
+
+S-5 publishes its planner report through action integration after holdout
+assignment and routes actionable critical/review rows through the same action
+outbox. Its report contains only non-held-out series. The FVA readout preserves
+the methodology metrics but refuses causal incrementality and ROI claims until
+the design-specific estimator exists.
 
 ## Proof
 
@@ -129,3 +139,9 @@ territory, capacity evidence and SLA payloads, observes all four guardrails,
 records centered conversion outcomes with a 0.15 routing effect, and checks
 that the readout's estimate and 95% confidence interval recover the planted
 effect.
+
+`SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
+S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
+checks protected-series suppression in both task and report actions, records
+planted forecast errors, observes all five guardrails, and verifies the FVA
+readout reports its current claim boundary.

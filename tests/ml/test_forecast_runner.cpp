@@ -283,4 +283,8 @@ TEST(ForecastRunner, AResolvedTableWritesForecastModelOutputsAndLineage) {
       output_database->find_table("result");
   ASSERT_TRUE(output_table);
   EXPECT_EQ(output_table->store().size(), 14u);
+  const auto first_forecast = output_table->store().at(0);
+  ASSERT_TRUE(first_forecast);
+  EXPECT_TRUE(first_forecast->contains("exception_score"));
+  EXPECT_GE(first_forecast->at("exception_score").get<double>(), 0.0);
 }

@@ -325,6 +325,37 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-5's domain adaptations (#1114). The methodology check proves M-4's own
+// shape; these checks bind its temporal contract to the complete demand
+// solution and require a coherent leaf-level hierarchy declaration.
+class S5RollingOriginCheck final : public Check {
+public:
+    std::string name() const override { return "s5_rolling_origin"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5FutureCovariateCheck final : public Check {
+public:
+    std::string name() const override { return "s5_future_covariates"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5HierarchyConsistencyCheck final : public Check {
+public:
+    std::string name() const override { return "s5_hierarchy_consistency"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s5_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

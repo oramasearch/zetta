@@ -70,7 +70,8 @@ Solution band_a(
     solution.status = "catalogue";
     solution.issue = issue(solution.id == "S-1" ? 1110
                            : solution.id == "S-2" ? 1111
-                                                   : 1102);
+                           : solution.id == "S-5" ? 1114
+                                                  : 1102);
     return solution;
 }
 
@@ -668,7 +669,11 @@ ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
             node->attributes.value("solution_stage", 0) != stage) {
             continue;
         }
-        result.add_node(node->kind, node->name, node->attributes, node->id);
+        nlohmann::json attributes = node->attributes;
+        attributes.erase("methodology");
+        attributes.erase("solution_stage");
+        attributes.erase("preview");
+        result.add_node(node->kind, node->name, std::move(attributes), node->id);
     }
     for (const ir::Edge& edge : graph.edges()) {
         if (result.has_node(edge.from) && result.has_node(edge.to)) {

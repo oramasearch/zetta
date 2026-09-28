@@ -106,6 +106,42 @@ zetta::ir::ExecutionGraph bound_s2_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-5");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"M-4",
+          {{"time_column", "day"},
+           {"target_column", "demand"},
+           {"series_column", "series"}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["solution_snapshot_as_of"] = 167.0;
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s5_correctness"] = {
+        {"validation", {{"split", "rolling_origin"}, {"backtest_folds", 4}}},
+        {"future_covariates", nlohmann::json::array()},
+        {"time_column", "day"},
+        {"target_column", "demand"},
+        {"series_column", "series"},
+        {"hierarchy_columns", {"item", "location", "series"}},
+        {"hierarchy_mode", "bottom_level_only"},
+        {"hierarchy_consistent", true}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -127,6 +163,15 @@ void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
 }
 
 void expect_s2_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s5_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -158,7 +203,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
             EXPECT_EQ(solution.templates.minimal,
-                      solution.id != "S-1" && solution.id != "S-2");
+                      solution.id != "S-1" && solution.id != "S-2" &&
+                          solution.id != "S-5");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -272,6 +318,35 @@ TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
               "A1");
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, DemandForecastEntryCarriesExecutableDefaults) {
+    const zetta::ml::Solution* forecast = zetta::ml::find_solution("S-5");
+    ASSERT_NE(forecast, nullptr);
+    EXPECT_TRUE(forecast->runnable);
+    EXPECT_EQ(forecast->issue,
+              "https://github.com/oramasearch/zetta/issues/1114");
+    EXPECT_EQ(forecast->action_patterns,
+              (std::vector<std::string>{"planner report",
+                                        "exception queues"}));
+    EXPECT_FALSE(forecast->templates.minimal);
+    EXPECT_EQ(forecast->templates.measurement.design, "fva");
+    EXPECT_EQ(forecast->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"planner_report"}));
+    ASSERT_EQ(forecast->templates.guardrails.size(), 5u);
+    EXPECT_EQ(forecast->templates.guardrails.front().metric,
+              "forecast_value_added");
+    EXPECT_EQ(forecast->templates.guardrails.front().direction, "minimum");
+    EXPECT_EQ(
+        forecast->templates.policy.at("actions")
+            .at("exception_queue")
+            .at("autonomy"),
+        "A2");
+    EXPECT_EQ(
+        forecast->templates.policy.at("actions")
+            .at("no_contact")
+            .at("autonomy"),
+        "A0");
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -430,6 +505,83 @@ TEST(SolutionRegistry, S2EveryLevelBuildsThroughRegisteredMethodologies) {
                              .empty());
         }
     }
+}
+
+TEST(SolutionRegistry, S5CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s5_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto temporal = bound_s5_graph();
+    temporal.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["validation"]["split"] = "random";
+    expect_s5_failure(temporal, "s5_rolling_origin");
+
+    auto too_few_folds = bound_s5_graph();
+    too_few_folds.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["validation"]["backtest_folds"] = 1;
+    expect_s5_failure(too_few_folds, "s5_rolling_origin");
+
+    auto future = bound_s5_graph();
+    future.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["future_covariates"] = {"promotion"};
+    expect_s5_failure(future, "s5_future_covariates");
+
+    auto current_target = bound_s5_graph();
+    for (const auto& step : current_target.nodes_of_kind(
+             zetta::ir::StepKind::Clean)) {
+        if (step->attributes.value("transform", std::string{}) ==
+            "past_lags") {
+            step->attributes["strictly_past"] = false;
+        }
+    }
+    expect_s5_failure(current_target, "s5_future_covariates");
+
+    auto hierarchy = bound_s5_graph();
+    hierarchy.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["hierarchy_consistent"] = false;
+    expect_s5_failure(hierarchy, "s5_hierarchy_consistency");
+
+    auto wrong_leaf = bound_s5_graph();
+    wrong_leaf.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["hierarchy_columns"] = {
+            "item", "location"};
+    expect_s5_failure(wrong_leaf, "s5_hierarchy_consistency");
+}
+
+TEST(SolutionRegistry, S5EveryLevelBuildsWithItsDeclaredComposition) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s5_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n'
+            << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            const zetta::ir::ExecutionGraph stage_graph =
+                zetta::ml::solution_stage_graph(
+                    graph, static_cast<int>(stage));
+            EXPECT_FALSE(stage_graph.empty()) << level << ':' << stage;
+            const std::string methodology =
+                manifest->attributes.at("methodologies").at(stage - 1);
+            const zetta::ml::Methodology* callback =
+                zetta::ml::find_methodology(methodology);
+            ASSERT_NE(callback, nullptr) << methodology;
+            EXPECT_TRUE(callback->run) << methodology;
+        }
+    }
+
+    auto missing_timing = bound_s5_graph(3);
+    missing_timing.find_node("solution_manifest")
+        ->attributes["methodologies"] = {"M-2", "M-4", "M-3"};
+    expect_s5_failure(missing_timing, "s5_level_composition");
+
+    auto missing_foundation = bound_s5_graph();
+    missing_foundation.find_node("solution_manifest")
+        ->attributes["methodologies"] = {"M-4", "M-3"};
+    expect_s5_failure(missing_foundation, "s5_level_composition");
 }
 
 } // namespace

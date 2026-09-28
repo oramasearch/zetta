@@ -10,6 +10,9 @@ and policy decisions to actions and measured outcomes.
 - [S-2.md](S-2.md) — runnable lead and opportunity scoring module: conversion
   labels, capacity-aware CRM queues, SLAs, holdout, and planted-effect proof
   (#1111).
+- [S-5.md](S-5.md) — runnable demand forecasting module: prediction intervals,
+  planner reports, exception queues, FVA, hierarchy checks, and protected
+  holdouts (#1114).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -140,9 +143,19 @@ S-2 is the complete lead-routing default:
 S-2 tasks carry the selected queue, owner, territory, capacity evidence, SLA,
 and decision cell through the shared action outbox and connector path.
 
+S-5 is the complete demand-planning default. Its critical/review/routine tiers
+use relative interval uncertainty floors of 0.20/0.05/0.0. Critical and review
+series create an A2 exception task with a one-day SLA; routine series record
+no contact. Named freshness, ownership, hierarchy, stockout and override rules
+control eligibility. The cap is one task per seven days and 52 lifetime tasks.
+Each tier has a 10% protected holdout, and the planner report omits held-out
+series. Its five observed guardrails cover FVA, interval coverage, freshness,
+stockout censoring, and override auditability.
+
 ### Minimal defaults
 
-**S-3 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-3, S-4, and S-6 through S-12 are minimal**, marked
+`minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -154,7 +167,6 @@ require an owner-approved policy change before spending.
 |---|---|---|---|
 | S-3 | audience sync / A2 | holdout / net_value | consent violations: 0 |
 | S-4 | collections queue / A2 | champion_challenger / net_recovery | complaints: 0 |
-| S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
 | S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
 | S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |

@@ -80,8 +80,10 @@ The deterministic collective root writes:
 - a replicated model with `kind = "forecast"`, mean and per-fold numeric
   backtest metrics, the seasonal-naive comparison text, and the serialized
   squared-error GBDT weights;
-- a forecast table with `series`, `timestamp`, `point_forecast`, `lower`, and
-  `upper` columns;
+- a forecast table with `series`, `timestamp`, `point_forecast`, `lower`,
+  `upper`, and `exception_score` columns. `exception_score` is the interval
+  half-width divided by the larger of the absolute point forecast and one, so
+  decision policies can compare relative uncertainty across series;
 - `RunOutput` values for the table and model, plus lineage naming the resolved
   `database.table` source and the temporal-backtest, train, and write stages.
 

@@ -102,6 +102,10 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
         request.project = project.get();
         request.graph = &stage_graph;
         request.input = state->input;
+        if (stage.methodology->id == "M-4") {
+            request.input.erase("dataset_path");
+            request.input.erase("dataset");
+        }
         result = stage.methodology->run(request);
     });
     return result;

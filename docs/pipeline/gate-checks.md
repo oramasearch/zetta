@@ -35,6 +35,7 @@ The reusable annotation and methodology-specific checks are:
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
+| `S5*Check` family | `s5_rolling_origin`, `s5_future_covariates`, `s5_hierarchy_consistency`, `s5_level_composition` | an S-5 graph with non-temporal validation, future covariates, a hierarchy that does not end at the forecast leaf, or a missing required methodology stage |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -93,6 +94,21 @@ M-6 at levels 3 and 4.
 optional `sources.correctness` overrides. `run_solution` checks the stored
 profile again. See [S-2](../solutions/S-2.md) for its data, policy, action, and
 measurement contract.
+
+### S-5 composed solution checks
+
+The S-5 checks engage only for a bound S-5 manifest and evaluate the composed
+graph once. `s5_rolling_origin` requires M-4 rolling-origin validation and at
+least two backtest folds. `s5_future_covariates` refuses any declared future
+covariate and requires strictly past lag generation. `s5_hierarchy_consistency`
+requires a named hierarchy ending in the leaf series and bottom-level-only
+forecasts so parent totals are sums of leaves. `s5_level_composition` requires
+M-2, M-4, and M-3 at every level and M-5 at levels 3 and 4.
+
+`create_solution` binds this profile from the M-4 graph and optional
+`sources.correctness` hierarchy settings. `run_solution` checks the stored
+profile again. See [S-5](../solutions/S-5.md) for its data, policy, actions,
+measurement, and readout boundary.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

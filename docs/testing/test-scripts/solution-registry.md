@@ -1,6 +1,6 @@
 # Compose a catalogue solution · `solution-registry`
 
-**Issues:** https://github.com/oramasearch/zetta/issues/1102, https://github.com/oramasearch/zetta/issues/1111, and https://github.com/oramasearch/zetta/issues/1128
+**Issues:** https://github.com/oramasearch/zetta/issues/1102, https://github.com/oramasearch/zetta/issues/1111, https://github.com/oramasearch/zetta/issues/1114, and https://github.com/oramasearch/zetta/issues/1128
 **Persona:** An operations analyst evaluating a retention solution on landed customer data.
 **Goal:** Discover executable defaults, run a governed retention Pipeline, and read its decision and outcome evidence.
 **Status:** automated native journey passes; human walkthrough not yet run
@@ -18,7 +18,7 @@ snapshot cutoff, and supplied ROI economics. The complete input contract is in
 1. Ask the node to list its solutions.
    → It shows twelve catalogue modules and eight entries marked as sketches.
 2. Open Churn & Retention.
-   → It returns typed policy, experiment, measurement and guardrail defaults, `runnable: true`, and an empty `missing_components` list. S-2 also has complete lead-routing defaults; S-3 through S-12 are marked as minimal defaults.
+   → It returns typed policy, experiment, measurement and guardrail defaults, `runnable: true`, and an empty `missing_components` list. S-2 also has complete lead-routing defaults and S-5 has complete demand-planning defaults; S-3, S-4, and S-6 through S-12 are marked as minimal defaults.
 3. Create a project and choose level 1 of Churn & Retention against the customer table, supplying the foundation inputs above.
    → A Pipeline is created with three selected methodologies and real policy, experiment, monitor, and readout IDs; `preview` is false.
 4. Read the project back.

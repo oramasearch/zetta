@@ -1,6 +1,7 @@
 #include "zetta/ml/forecast_runner.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <set>
 #include <utility>
@@ -156,11 +157,15 @@ bool write_root_outputs(Node &node, const ForecastRunParams &params,
     return false;
   }
   for (const ForecastPoint &row : output.result.forecast) {
+    const double interval_half_width = (row.upper - row.lower) / 2.0;
+    const double exception_score =
+        interval_half_width / std::max(std::abs(row.point), 1.0);
     table->add_row(nlohmann::json{{"series", row.series},
                                   {"timestamp", row.timestamp},
                                   {"point_forecast", row.point},
                                   {"lower", row.lower},
-                                  {"upper", row.upper}});
+                                  {"upper", row.upper},
+                                  {"exception_score", exception_score}});
   }
   output.forecast_table = params.output_database + "." + params.output_table;
 
