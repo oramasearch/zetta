@@ -12,6 +12,7 @@
 #include <nlohmann/json-schema.hpp>
 
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ml/methodology.hpp"
 
 namespace zetta::pipeline {
 
@@ -282,15 +283,17 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
 }
 
 const std::vector<std::string>& MethodologyCheck::implemented() {
-    // M-1 tabular supervised ships (histogram GBDT + native TreeSHAP + calibration).
-    // Everything else in the catalogue is #984 and must NOT pass this check until its
-    // train/score path exists — passing it early is how the agent learns to propose work the
-    // engine silently will not do.
-    // "forecast" joined on 2026-08-07 when `train_forecast` landed (#984): lag featurization ->
-    // temporal split -> squared-error GBDT -> rolling-origin backtest, verified to beat
-    // predicting the mean on a seasonal series. Before that it was deliberately absent, so the
-    // gate refused it rather than silently running the churn path.
-    static const std::vector<std::string> kImplemented = {"gbdt", "forecast"};
+    static const std::vector<std::string> kImplemented = [] {
+        std::vector<std::string> result;
+        for (const zetta::ml::Methodology& methodology :
+             zetta::ml::methodologies()) {
+            if (!methodology.runnable)
+                continue;
+            result.insert(result.end(), methodology.model_kinds.begin(),
+                          methodology.model_kinds.end());
+        }
+        return result;
+    }();
     return kImplemented;
 }
 
@@ -307,6 +310,14 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
         const std::string named = kind->get<std::string>();
         const std::vector<std::string>& ok = implemented();
         if (std::find(ok.begin(), ok.end(), named) == ok.end()) {
+            if (const zetta::ml::Methodology* methodology =
+                    zetta::ml::find_methodology(named)) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) + ": " +
+                        zetta::ml::unsupported_methodology_message(
+                            *methodology)};
+            }
             std::string supported;
             for (const std::string& entry : ok) {
                 if (!supported.empty()) supported += ", ";
@@ -455,4 +466,4 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
                 " ML step(s) are point-in-time correct and target-leakage free");
 }
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

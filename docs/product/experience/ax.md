@@ -42,6 +42,13 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
+  `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
+  metrics, and runnable status. `compile_intent` accepts a methodology or
+  solution selector; unsupported work names its implementation issue. `run`
+  refuses unsupported model kinds, and `get_graph` / `get_project` expose each
+  pipeline's methodology and runnable status. See
+  [the registry contract](../../ml/methodologies.md).
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

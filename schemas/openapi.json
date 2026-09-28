@@ -1366,7 +1366,7 @@
     },
     "/v1/compile_intent": {
       "post": {
-        "description": "Compile a captured intent input into a named, editable execution graph stored on the project (replicated; audited as a graph change). Requires orchestration:compile_intent.",
+        "description": "Resolve a methodology from an explicit methodology, primary solution, or intent keywords, then compile its editable graph. Unavailable methodologies are refused with their implementation issue. Requires orchestration:compile_intent.",
         "operationId": "compile_intent",
         "requestBody": {
           "content": {
@@ -1374,6 +1374,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "hints": {
+                    "description": "known dataset, label, time column, and other shape hints",
+                    "type": "object"
+                  },
                   "input_id": {
                     "description": "the captured intent's uuid (capture_intent). Optional: omit it and the project's most recently captured intent compiles, which is what you want in the common case of describing a goal and building it",
                     "minLength": 1,
@@ -1383,12 +1387,22 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "methodology": {
+                    "description": "methodology id or model kind; takes precedence",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "name": {
                     "description": "the stored graph's name (default '<shape> skeleton')",
                     "type": "string"
                   },
                   "project": {
                     "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "solution": {
+                    "description": "solution id resolved to its primary methodology",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -1438,11 +1452,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -1573,11 +1596,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -1708,11 +1740,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"
@@ -5394,6 +5435,12 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
@@ -5406,6 +5453,9 @@
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -6087,8 +6137,18 @@
                               "id": {
                                 "type": "string"
                               },
+                              "methodology": {
+                                "description": "the registry methodology id, when known",
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
                               "name": {
                                 "type": "string"
+                              },
+                              "runnable": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -8278,6 +8338,177 @@
         ]
       }
     },
+    "/v1/list_methodologies": {
+      "get": {
+        "description": "Read the complete methodology portfolio, including model kinds, primary solutions, data roles, outputs, metrics, implementation status, and tracking issues. No side effects. Requires api:query.",
+        "operationId": "list_methodologies",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "methodologies": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "family": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "inputs": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    },
+                                    "role": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "role",
+                                    "required",
+                                    "description"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "issue": {
+                                "type": "string"
+                              },
+                              "metrics": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "model_kinds": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "outputs": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partial": {
+                                "type": "boolean"
+                              },
+                              "runnable": {
+                                "type": "boolean"
+                              },
+                              "solutions": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "family",
+                              "model_kinds",
+                              "solutions",
+                              "inputs",
+                              "outputs",
+                              "metrics",
+                              "runnable",
+                              "partial",
+                              "issue"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "methodologies"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List methodologies",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_models": {
       "get": {
         "description": "Read a compact listing of every registered model — id, name, kind, lineage refs, weights presence. No side effects. Requires api:query.",
@@ -10131,7 +10362,7 @@
     },
     "/v1/run": {
       "post": {
-        "description": "Execute a stored, gate-passing project graph: a churn-shaped graph runs the real engine over the live cluster and returns its run id immediately (poll get_run / system.runs); other graphs run structurally within the call. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "description": "Execute a stored, gate-passing project graph through its registered methodology runner. Unknown and unavailable model kinds are refused; a graph with no model step may run structurally. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
         "operationId": "run",
         "requestBody": {
           "content": {
@@ -10253,10 +10484,7 @@
                           "type": "array"
                         },
                         "engine": {
-                          "enum": [
-                            "churn",
-                            "structural"
-                          ],
+                          "description": "the methodology runner, or structural",
                           "type": "string"
                         },
                         "error": {
@@ -10422,11 +10650,20 @@
                         "graph_id": {
                           "type": "string"
                         },
+                        "methodology": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "name": {
                           "type": "string"
                         },
                         "project": {
                           "type": "string"
+                        },
+                        "runnable": {
+                          "type": "boolean"
                         },
                         "steps": {
                           "type": "integer"

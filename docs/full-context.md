@@ -63,6 +63,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Methodology registry (#1061)** — one 21-entry table drives discovery,
+  intent compilation, and run dispatch. M-1 wraps the existing churn runner;
+  M-10 is partial; unsupported methodologies name their tracking issues.
+  [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
+  [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
+
 - **In review (PR [#1035](https://github.com/oramasearch/zetta/pull/1035), stacked on the
   design PR [#1023](https://github.com/oramasearch/zetta/pull/1023)) — pub/sub stage 1**
   (epic [#1024](https://github.com/oramasearch/zetta/issues/1024)): an in-memory,
