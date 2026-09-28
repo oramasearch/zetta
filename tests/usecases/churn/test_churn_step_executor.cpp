@@ -26,6 +26,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 #include "zetta/storage/json_store.hpp"
 
 // The real churn StepExecutor (#396): run_graph over the churn graph, behind the
@@ -162,6 +163,19 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
     std::string schema_error;
     EXPECT_TRUE(zetta::pipeline::validate_run_value(result.run->metadata(), &schema_error))
         << schema_error;
+    const nlohmann::json run_metrics =
+        result.run->get_metrics({"train.log_loss"});
+    ASSERT_EQ(run_metrics["series"].size(), 1u);
+    EXPECT_EQ(run_metrics["series"][0]["points"].size(),
+              config.params.num_trees);
+    EXPECT_EQ(run_metrics["params"]["trainer"], "gbdt");
+    EXPECT_TRUE(run_metrics["summary"].contains("train.log_loss"));
+    const zetta::pubsub::Address metric_topic{
+        "topic", "run-metrics." + result.run->id()};
+    const auto metric_topic_settings =
+        host.node.pubsub()->topic_settings(metric_topic);
+    ASSERT_TRUE(metric_topic_settings);
+    EXPECT_TRUE(metric_topic_settings->exposed);
 
     // (1) A `model` output that references a REAL registered Model.
     const std::vector<RunOutput>& outputs = result.run->outputs();

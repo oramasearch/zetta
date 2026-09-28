@@ -34,6 +34,13 @@ ownership callbacks, then resolves the model step's `model_kind` or legacy
 `algo` value.
 Compile and run refusal messages list runnable entries from the same registry.
 
+Methodology fits use the shared [run metrics](run-metrics.md) API on their durable
+Run. The dispatcher records a fit-status point only when no series exists yet;
+iterative trainers append
+increasing steps through that same storage and live channel. DP fits suppress
+training curves and the status point, record the suppression reason, and log
+only their existing final released report.
+
 The `list_methodologies` read capability exposes every entry as JSON over REST
 and MCP. Each object contains `id`, `name`, `family`, `model_kinds`, `solutions`,
 `inputs`, `outputs`, `metrics`, `runnable`, `partial`, and `issue`.

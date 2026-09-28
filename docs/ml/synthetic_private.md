@@ -147,6 +147,15 @@ release state. Releasing another model, including a rerun with another seed,
 incurs another budget and must be composed by the operator. M-20 reports each
 run; it does not maintain a cross-run privacy ledger.
 
+Run metrics (#1137) never compute or reduce per-tree loss, counts, or throughput
+on private training rows. The DP entry point forces metric suppression even if
+a caller installs `TrainHooks::on_metrics`: model bytes, released metrics, and
+epsilon/delta spend are identical with and without that hook. The Run records
+`metrics_suppressed: "differential_privacy"` and logs only the trainer's existing
+final report through `get_run_metrics` and its live topic. No extra system or
+fit-status points are added. Public parameters are recorded once; the protected
+noise seed is excluded. See [run-metrics.md](run-metrics.md).
+
 ## Running it
 
 Land a table, create a project and privacy/synthetic-data intent, then compile

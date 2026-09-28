@@ -123,7 +123,7 @@ DistributedTrainResult run_train_job(
     const std::string& label_column, const GbdtParams& params, Node* node,
     const std::string& model_name, const std::string& round_tag,
     CalibrationConfig calibration, std::chrono::milliseconds timeout,
-    TrainCheckpointConfig checkpoint) {
+    TrainCheckpointConfig checkpoint, const std::string& run_id) {
     DistributedTrainResult out;
     const std::string tag =
         round_tag.empty() ? default_round_tag(feature_columns, label_column)
@@ -215,6 +215,42 @@ DistributedTrainResult run_train_job(
         // the trees up to a given round are identical on every node, so truncating to
         // the agreed round is safe).
         TrainHooks hooks;
+        // The root owns the Run; peers still participate in metric reductions.
+        const auto metrics_enabled = round.broadcast(
+            tag + ".metrics.enabled",
+            {node != nullptr && !run_id.empty() ? 1.0 : 0.0}, timeout);
+        if (!metrics_enabled || metrics_enabled->size() != 1) {
+            return {.ok = false,
+                    .detail = "gbdt run metrics: participant agreement failed"};
+        }
+        if (metrics_enabled->front() != 0.0) {
+            hooks.on_metrics = [](int, const std::map<std::string, double>&) {
+                return true;
+            };
+        }
+        if (round.is_root() && node != nullptr && !run_id.empty()) {
+            nlohmann::json run_params = params.to_json();
+            run_params["trainer"] = "gbdt";
+            run_params["features"] = feature_columns.size();
+            bool params_logged = false;
+            node->run_on_owner([&] {
+                params_logged = node->log_run_params(run_id, run_params);
+            });
+            if (!params_logged) {
+                return {.ok = false,
+                        .detail = "gbdt run metrics: parameters could not be logged"};
+            }
+            hooks.on_metrics = [node, &run_id](
+                                   int step,
+                                   const std::map<std::string, double>& values) {
+                bool logged = false;
+                node->run_on_owner([&] {
+                    logged = node->log_run_metrics(
+                        run_id, static_cast<std::uint64_t>(step), values);
+                });
+                return logged;
+            };
+        }
         if (checkpoint.store != nullptr) {
             std::optional<GbdtCheckpointPayload> resumed;
             std::uint64_t local_round = 0;
