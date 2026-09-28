@@ -276,13 +276,14 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 6u);
+    ASSERT_EQ(gate.check_count(), 7u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
     EXPECT_EQ(gate.checks()[3]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[4]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[4]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[5]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[6]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -375,7 +376,7 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
     for (const char *unshipped :
-         {"forecast", "uplift", "survival"}) {
+         {"uplift", "survival"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -497,14 +498,10 @@ TEST(MethodologyEndToEnd, TheChurnShapeSurvivesFactsToGateVerdict) {
         << "the one methodology that ships must still pass end to end";
 }
 
-// The honest state of M-4 today. Its primitives exist and are tested — temporal split, backtest,
-// lag features, the squared-error objective — but nothing wires them into a run, so `forecast` is
-// deliberately NOT in MethodologyCheck::implemented(). The gate therefore refuses it, loudly,
-// with a reason that names what is implemented.
-//
-// A loud refusal is the honest outcome and the whole point of B1b: the alternative is the agent
-// proposing a forecast the engine silently runs as a classifier.
-TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRegistryRunPathLands) {
+// Availability and temporal checks accept M-4. The default gate additionally
+// validates its complete executable shape through ForecastGraphCheck.
+TEST(MethodologyEndToEnd,
+     AForecastHasARegistryRunPathAndStillRequiresTemporalValidation) {
     zetta::agent::EndState facts;
     facts.set("connect", true);
     facts.set("model", true);
@@ -513,18 +510,17 @@ TEST(MethodologyEndToEnd, AForecastIsRefusedUntilItsRegistryRunPathLands) {
     facts.set("temporal_validation", true);
 
     const auto graph = zetta::agent::build_solution_graph(facts);
-    EXPECT_TRUE(gate_over(graph).block_deploy)
-        << "M-4 primitives do not make the methodology runnable; #1043 owns "
-           "its run path";
+    EXPECT_FALSE(gate_over(graph).block_deploy);
 
-    // And the profile is still enforced: the same methodology WITHOUT temporal validation, or
-    // WITH calibration, is refused.
+    // And the profile is still enforced: the same methodology WITHOUT temporal
+    // validation, or WITH calibration, is refused.
     zetta::agent::EndState uncalibrated_but_unvalidated;
     uncalibrated_but_unvalidated.set("connect", true);
     uncalibrated_but_unvalidated.set("model", true);
     uncalibrated_but_unvalidated.set("serve", true);
     uncalibrated_but_unvalidated.set("model_kind", std::string("forecast"));
-    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(uncalibrated_but_unvalidated))
+    EXPECT_TRUE(gate_over(zetta::agent::build_solution_graph(
+                              uncalibrated_but_unvalidated))
                     .block_deploy)
         << "shipping the run path must not relax the correctness profile";
 }
@@ -579,9 +575,8 @@ TEST(EpicAcceptance, ForecastAndChurnProduceDifferentVerdicts) {
     const auto forecast = build("forecast", false, true);
 
     EXPECT_FALSE(gate_over(churn).block_deploy) << "churn calibrates and is accepted";
-    EXPECT_TRUE(gate_over(forecast).block_deploy)
-        << "M-4 remains unavailable until #1043 supplies its registry "
-           "callbacks";
+    EXPECT_FALSE(gate_over(forecast).block_deploy)
+        << "M-4 has a registry runner and validates temporally";
 
     // And they are not interchangeable — the neighbouring shape under the other name is refused.
     EXPECT_TRUE(gate_over(build("forecast", true, true)).block_deploy)
@@ -599,7 +594,7 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
     for (const char *unshipped :
-         {"forecast", "uplift", "survival", "graph"}) {
+         {"uplift", "survival", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }

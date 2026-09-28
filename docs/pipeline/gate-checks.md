@@ -27,6 +27,14 @@ tests live in `src/core/ml/segmentation_graph.cpp` and
 `tests/ml/test_segmentation_methodology.cpp`. See the full
 [segmentation correctness rules](../ml/segmentation.md#running-it).
 
+`ForecastGraphCheck` (`forecast_correctness`, #1043) is also registered in the
+default gate. It applies only to forecast model kinds, validates the complete
+M-4 graph and model-attribute schema, and refuses random validation, future
+features, probability calibration, invalid horizon limits, or omission of the
+seasonal-naive baseline. Runtime checks additionally validate each series' real
+history length and ownership. The full contract and refusal tests are documented
+in [forecast.md](../ml/forecast.md).
+
 ## How a check reads a step
 
 The default gate also registers `AnomalyGraphCheck` (`anomaly_correctness`,

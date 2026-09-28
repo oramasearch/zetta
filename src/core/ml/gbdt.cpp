@@ -73,7 +73,10 @@ const nlohmann::json& model_schema_document() {
       "title": "zetta.ml.GbdtModel",
       "type": "object",
       "properties": {
-        "objective": { "type": "string", "enum": ["binary_logistic"] },
+        "objective": {
+          "type": "string",
+          "enum": ["binary_logistic", "squared_error"]
+        },
         "base_score": { "type": "number" },
         "learning_rate": { "type": "number" },
         "feature_names": { "type": "array", "items": { "type": "string" } },
@@ -564,40 +567,48 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     const std::vector<double> global_max =
         reduce("edges.max", local_max, GbdtReduce::Max);
 
-    // 2. Global base rate: local [Σy, n] -> allreduce Sum.
-    double local_pos = 0.0;
-    for (const double label : labels) local_pos += label >= 0.5 ? 1.0 : 0.0;
+    // 2. Global label total: local [Σy, n] -> allreduce Sum. Classification
+    // contributes binary class membership; regression contributes target
+    // values.
+    const bool regression_objective = params.objective == "squared_error";
+    double local_total = 0.0;
+    for (const double label : labels) {
+        local_total += regression_objective ? label : (label >= 0.5 ? 1.0 : 0.0);
+    }
     const std::vector<double> base =
-        reduce("base", {local_pos, static_cast<double>(local_rows)},
+        reduce("base", {local_total, static_cast<double>(local_rows)},
                GbdtReduce::Sum);
     if (collective_failed) {
-        result.status = ComputeStatus::backend_error(
-            "train_gbdt: a collective round failed (peer unreachable or timeout)");
+        result.status =
+            ComputeStatus::backend_error("train_gbdt: a collective round failed "
+                                         "(peer unreachable or timeout)");
         return result;
     }
-    const double global_pos = base[0];
+    const double global_total = base[0];
     const double global_count = base[1];
     if (global_count <= 0.0) {
         result.status =
             ComputeStatus::invalid_argument("train_gbdt: no training rows");
         return result;
     }
-    // "A single class" is a classification concept. Regression labels are continuous, so
-    // `global_pos` is their SUM and this guard would reject perfectly good data — a forecast of
-    // daily revenue would fail because every value is positive.
-    const bool regression_objective = params.objective == "squared_error";
-    if (!regression_objective && (global_pos <= 0.0 || global_pos >= global_count)) {
+    // "A single class" is a classification concept. Regression labels are
+    // continuous, so `global_total` is their SUM and this guard would reject
+    // perfectly good data — a forecast of daily revenue would fail because
+    // every value is positive.
+    if (!regression_objective &&
+        (global_total <= 0.0 || global_total >= global_count)) {
         result.status = ComputeStatus::invalid_argument(
             "train_gbdt: training labels are a single class");
         return result;
     }
-    // The starting point the trees correct from: the mean label for regression, its logit for
-    // classification. Starting a regression at the logit of a mean revenue figure would make the
-    // first several trees do nothing but climb back to the right order of magnitude.
+    // The starting point the trees correct from: the mean label for regression,
+    // its logit for classification. Starting a regression at the logit of a
+    // mean revenue figure would make the first several trees do nothing but
+    // climb back to the right order of magnitude.
     const double mean = regression_objective
-                            ? global_pos / global_count
-                            : std::clamp(global_pos / global_count, kProbEpsilon,
-                                         1.0 - kProbEpsilon);
+                            ? global_total / global_count
+                            : std::clamp(global_total / global_count,
+                                         kProbEpsilon, 1.0 - kProbEpsilon);
 
     // Establish the bin layout, then pre-bin every local row per feature.
     FeatureBins binner;

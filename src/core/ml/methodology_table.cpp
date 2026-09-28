@@ -7,6 +7,7 @@
 
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
 
 namespace zetta::ml {
 
@@ -73,15 +74,7 @@ const std::vector<Methodology>& methodologies() {
                 {"entity map", "match evidence"},
                 {"pair precision", "pair recall", "blocking recall"}, 1041),
         make_m3_methodology(),
-        planned(
-            "M-4", "Time-series forecasting", "Time & vigilance",
-            {"forecast", "forecasting", "time_series"}, {"S-5", "S-6"},
-            {"forecast", "demand", "predict next week", "predict next month"},
-            {input("time", true, "ordered observation time"),
-             input("label", true, "value to forecast"),
-             input("group", false, "series identifier")},
-            {"forecasts", "prediction intervals"},
-            {"MAE", "RMSE", "WAPE", "forecast value added"}, 1043),
+        make_m4_methodology(),
         planned("M-5", "Survival / time-to-event", "The tabular decision core",
                 {"survival", "time_to_event"}, {"S-8"},
                 {"time to", "when will", "survival", "remaining useful life"},

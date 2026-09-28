@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "backtest_folds": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "baseline": {
+      "const": "seasonal_naive"
+    },
+    "calibrated": {
+      "const": false
+    },
+    "history_length": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "holdout_fraction": {
+      "const": 0
+    },
+    "horizon": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "interval_level": {
+      "exclusiveMaximum": 1,
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "lags": {
+      "items": {
+        "maximum": 1000000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "learning_rate": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "max_depth": {
+      "maximum": 16,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "maximum_horizon_fraction": {
+      "exclusiveMinimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "model_kind": {
+      "enum": [
+        "forecast",
+        "forecasting",
+        "time_series"
+      ]
+    },
+    "num_trees": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "objective": {
+      "const": "squared_error"
+    },
+    "rolling_window": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "seasonal_period": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "seed": {
+      "maximum": 4294967295,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "series_column": {
+      "type": "string"
+    },
+    "split": {
+      "const": "rolling_origin"
+    },
+    "target_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "temporal_validation": {
+      "const": true
+    },
+    "time_column": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "backtest_folds",
+    "baseline",
+    "calibrated",
+    "holdout_fraction",
+    "horizon",
+    "interval_level",
+    "lags",
+    "learning_rate",
+    "max_depth",
+    "maximum_horizon_fraction",
+    "model_kind",
+    "num_trees",
+    "objective",
+    "rolling_window",
+    "seasonal_period",
+    "seed",
+    "series_column",
+    "split",
+    "target_column",
+    "temporal_validation",
+    "time_column"
+  ],
+  "type": "object"
+}

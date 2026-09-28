@@ -25,6 +25,14 @@
 // them.
 namespace zetta::pipeline {
 
+// M-4's executable shape and mandatory correctness contract, including a
+// temporal split, strictly past features and a seasonal-naive baseline.
+class ForecastGraphCheck final : public Check {
+  public:
+    std::string name() const override;
+    CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
 // M-7 (#1046): labels are evaluation-only, the budget is explicit, scales
 // are robust, and KPI baselines use only prior observations.
 class AnomalyGraphCheck final : public Check {

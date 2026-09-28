@@ -73,10 +73,8 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
 
     const ValidationReport report = gate.run(empty_graph);
 
-    // The default gate ships five checks (non_empty_graph + the #309 checks +
-    // entity_resolution); the empty graph trips the first, and the opt-in #309
-    // + entity-resolution checks pass vacuously.
-    ASSERT_EQ(report.checks.size(), 6u);
+    // Only the non-empty check fails; the other checks have no matching steps.
+    ASSERT_EQ(report.checks.size(), 7u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -89,10 +87,8 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
     const ValidationReport report = gate.run(one_step_graph());
 
-    // All six default checks pass an un-annotated single-step graph: it is
-    // non-empty, carries no #309 annotations, and has no entity-resolution
-    // step.
-    ASSERT_EQ(report.checks.size(), 6u);
+    // All default checks pass an unannotated single-step graph.
+    ASSERT_EQ(report.checks.size(), 7u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -100,13 +96,14 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 6u);
+    ASSERT_EQ(gate.check_count(), 7u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
     EXPECT_EQ(gate.checks()[3]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[4]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[4]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[5]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[6]->name(), "entity_resolution");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

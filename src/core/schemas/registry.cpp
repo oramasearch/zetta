@@ -56,6 +56,7 @@
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/model.hpp"
@@ -104,6 +105,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
         {"gbdt_params", "gbdt_params.schema.json",
          &zetta::ml::gbdt_params_schema},
+        {"forecast_step", "forecast_step.schema.json",
+         &zetta::ml::forecast_step_schema},
+        {"forecast_launch", "forecast_launch.schema.json",
+         &zetta::ml::forecast_launch_schema},
         {"golden_oracle", "golden_oracle.schema.json",
          &zetta::ml::golden_oracle_schema},
         {"playbook_entry", "playbook_entry.schema.json",

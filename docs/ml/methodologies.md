@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1, M-3 and M-7 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1, M-3, M-4 and M-7 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -77,6 +77,24 @@ native trainer across owned partitions, and returns a durable Run immediately.
 `get_run_report` reads measured K selection, separation, stability, input/exclusion
 facts and both output table references. The `SegmentationCheck` is part of the
 default gate. See [segmentation.md](segmentation.md#running-it).
+
+## M-4 forecasting
+
+`forecast_methodology.cpp` builds M-4's own four-stage graph: read the named
+history table → strictly past lag features → rolling-origin backtest and
+squared-error forecast → forecast table with intervals. `forecast_execution.cpp`
+resolves that graph's source/table and roles into a `ResolvedDataset`, launches
+the distributed Phase-A runner, and records a durable Run. The initiating node
+does not have to be the collective root. The root's model/output references are
+broadcast so the Run names the same replicated artifacts everywhere.
+
+`ForecastGraphCheck` is part of the default gate. It refuses altered stage
+dependencies, extra feature transforms, future lags, random holdouts,
+calibration, a missing seasonal-naive baseline, malformed roles and invalid
+horizon bounds. Actual history bounds are also enforced per series at runtime.
+`get_run_report` renders forecast metrics and table rows without classification
+metrics or probability language. See [forecast.md](forecast.md#running-it) for
+the tool sequence and supported inputs.
 
 ## M-7 anomaly implementation
 

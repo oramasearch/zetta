@@ -175,6 +175,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     anomaly_job.hpp         zetta::ml::run_anomaly_job — distributed tabular anomaly ComputeJob: tree and robust-summary allreduces, compact score gather, exact global budget, result broadcast; multi-member KPI refused in phase A (#1046)
     anomaly_table.hpp       zetta::ml::run_anomaly_on_table — resolved-dataset entry: primary-owned partition reads, `anomaly` Model registration, queryable anomaly/report tables, optional Run outputs and lineage (#1046)
     anomaly_methodology.hpp M-7 registry adapter, validated plan, coordinated-launch registration, and report interface (#1046)
+    forecast.hpp            zetta::ml::ForecastParams/ForecastResult/train_forecast_partitions — lagged squared-error forecasting with rolling temporal origins, seasonal-naive FVA, and residual-quantile intervals (#1043)
+    forecast_runner.hpp     zetta::ml::run_forecast_job/run_forecast_table — distributed ComputeJob and ResolvedDataset entry points; write a `forecast` Model plus forecast table, RunOutputs, and lineage (#1043)
+    forecast_methodology.hpp zetta::ml — M-4 graph contract, registry callbacks and coordinated-launch registration (#1043)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -386,6 +389,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check
     graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
+    forecast_graph_check.cpp
+                            zetta::pipeline::ForecastGraphCheck — refuse invalid forecast shapes, non-temporal splits, future features, calibration and missing baselines (#1043)
     run.cpp                 zetta::pipeline::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
     deployment_target.cpp   zetta::pipeline::DeploymentTarget — names + JSON (boundary-validated)
     deployment.cpp          zetta::pipeline::Deployment — persist deployment.json
@@ -439,6 +444,10 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
+    forecast.cpp            zetta::ml — refit-at-origin backtesting, recursive multi-step prediction, per-fold/mean MAE·MASE·sMAPE·FVA, and distributed residual intervals (#1043)
+    forecast_runner.cpp     zetta::ml — verify per-series ownership, bridge JobRound allreduce into forecasting, load resolved owned partitions, and write root model/table outputs with lineage (#1043)
+    forecast_methodology.cpp / forecast_execution.cpp
+                            M-4's own shape, validated roles/options, table resolution, coroutine launch and durable Run lifecycle (#1043)
     gbdt_train_job.cpp      run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast); opt-in checkpoint/restart (resume the partial model, allreduce-min the cluster resume round, checkpoint each round via TrainHooks; #468) (zetta-core; #390/#391)
     gbdt_score.cpp          zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
     gbdt_score_job.cpp      run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
@@ -628,6 +637,12 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime interface)
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
+  ml/test_forecast.cpp / ml/test_forecast_runner.cpp
+                            temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
+  ml/test_forecast_methodology.cpp
+                            runnable M-4 ownership and negative forecast graph checks; API journey in api/test_action_journeys.cpp (#1043)
+  ml/test_forecast_launch.cpp
+                            non-root forecast submission, peer launch validation, replicated artifacts and single-member equivalence (#1043)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
 build/generated/            embedded font header (generated; git-ignored)
 ```

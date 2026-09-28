@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        const bool runnable = index == 0 || index == 2 || index == 6;
+        const bool runnable = index == 0 || index == 2 || index == 3 || index == 6;
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
                   runnable);

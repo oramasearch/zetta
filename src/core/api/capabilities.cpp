@@ -508,9 +508,9 @@ const nlohmann::json& get_run_report_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"description",
-             "how many at-risk entities, anomalies or segment profiles to return (default "
-             "20). "
-             "The whole population is ranked; this caps what comes back"}}}}}};
+             "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, "
+             "or forecast rows by series then timestamp. Limit applies after "
+             "ordering"}}}}}};
     return schema;
 }
 
@@ -531,7 +531,8 @@ const nlohmann::json& get_run_report_output_schema() {
              "the feature columns. Segmentation reports the source table, "
              "read/clustered/excluded rows, fitted features and excluded "
              "columns. Anomaly detection records source, rows read/excluded, "
-             "roles and unused columns. Absent when the model records no dataset facts"}}},
+             "roles and unused columns. Forecasting records selected/excluded "
+             "columns and rows/partitions/bytes read. Absent when the model records no dataset facts"}}},
           {"model",
            {{"type", "object"},
             {"description",
@@ -541,12 +542,28 @@ const nlohmann::json& get_run_report_output_schema() {
              "available are "
              "in-sample and they flatter (#953). Segmentation instead carries "
              "clustering metrics, chosen_k_reason and k_candidates. Anomaly "
-             "detection reports threshold, budget, alert rate and optional precision at k"}}},
+             "detection reports threshold, budget, alert rate and optional precision at k. "
+             "Forecast models carry rolling-origin errors, seasonal-naive comparison "
+             "and interval coverage"}}},
           {"drivers",
            {{"type", "array"},
             {"description",
              "feature -> weight, strongest first. A weight is what "
              "the model leaned on, not a cause"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"description",
+             "forecast output table, model and report references"}}},
+          {"forecast",
+           {{"type", "array"},
+            {"description",
+             "forecast-table rows with series, timestamp, "
+             "point_forecast, lower and upper; ordered by series "
+             "then timestamp before applying limit"}}},
+          {"baseline_comparison",
+           {{"type", "string"},
+            {"description", "whether the forecast beat seasonal-naive in "
+                            "rolling-origin backtests"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
@@ -628,6 +645,85 @@ std::string fixed_rows(double value) {
     return std::to_string(static_cast<long long>(value));
 }
 
+nlohmann::json chronological_forecast_rows(const zetta::data::Table &table,
+                                           std::size_t limit) {
+    std::vector<nlohmann::json> rows;
+    const auto &store = table.store();
+    rows.reserve(store.size());
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    // Replicated storage order is not temporal order. Sort the full result
+    // before truncating so every member returns the same earliest forecasts.
+    std::ranges::sort(rows, [](const auto &left, const auto &right) {
+        const double left_series = row_number(left, "series", 0.0);
+        const double right_series = row_number(right, "series", 0.0);
+        if (left_series != right_series) {
+            return left_series < right_series;
+        }
+        return row_number(left, "timestamp", 0.0) <
+               row_number(right, "timestamp", 0.0);
+    });
+    if (rows.size() > limit) {
+        rows.resize(limit);
+    }
+    return rows;
+}
+
+nlohmann::json forecast_report(Node &node, const zetta::pipeline::Run &run,
+                               const zetta::ml::Model &model,
+                               std::size_t limit) {
+    nlohmann::json report;
+    report["run"] = {{"id", run.id()},
+                     {"graph", run.graph()},
+                     {"project", run.project()},
+                     {"status", to_string(run.status())},
+                     {"finished", run.updated()}};
+    report["model"] = {{"id", model.id()},
+                       {"name", model.name()},
+                       {"kind", model.kind()},
+                       {"metrics", model.metrics()}};
+    const nlohmann::json &facts = model.feature_schema();
+    for (const char *key : {"dataset", "baseline_comparison"}) {
+        if (const auto found = facts.find(key); found != facts.end()) {
+            report[key] = *found;
+        }
+    }
+    report["outputs"] = nlohmann::json::array();
+    report["forecast"] = nlohmann::json::array();
+    for (const auto &output : run.outputs()) {
+        report["outputs"].push_back({{"kind", output.kind},
+                                     {"name", output.name},
+                                     {"ref", output.ref}});
+        if (output.kind != "dataset") {
+            continue;
+        }
+        const auto dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const auto database = node.find_database(output.ref.substr(0, dot));
+        const auto table =
+            database ? database->find_table(output.ref.substr(dot + 1))
+                     : nullptr;
+        if (!table) {
+            report["missing"] = {
+                {{"field", "forecast"},
+                 {"why",
+                  "forecast output table is not yet visible on this member"}}};
+            continue;
+        }
+        report["forecast"] = chronological_forecast_rows(*table, limit);
+    }
+    report["caveats"] = {
+        {{"field", "interval_coverage"},
+         {"why", "empirical coverage on rolling-origin residuals; not a "
+                 "guarantee for future observations"}}};
+    return report;
+}
+
 ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
@@ -668,6 +764,10 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             zetta::ml::anomaly_run_report(context.node, *run, *model, limit));
     }
 
+    if (model->kind() == "forecast") {
+        return ApiResult::success(
+            forecast_report(context.node, *run, *model, limit));
+    }
     const nlohmann::json& metrics = model->metrics();
     const auto number = [&metrics](const char* key) -> std::optional<double> {
         const auto found = metrics.find(key);
@@ -5672,9 +5772,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
                          "overfitting gap, whether scores are calibrated: "
                          "{\"model_id\": \"<uuid>\"}"},
         {"get_run_report",
-         "read what a finished run found — model quality (held-out first), the "
-         "drivers, and ranked at-risk evidence; M-7 returns anomaly metrics "
-         "and output tables: "
+         "read what a finished run found — classification quality and at-risk "
+         "evidence, forecast backtests and baseline comparison, or anomaly "
+         "metrics and output tables: "
          "{\"run_id\": \"<uuid>\", \"limit\": 20}"},
         {"explain",
          "explain WHY one account scored as it did — every feature's signed "
@@ -6358,7 +6458,8 @@ void register_core_capabilities(Registry& registry) {
         "Read the facts a finished run produced — how good the model is "
         "(held-out "
         "first, in-sample beside it), what drives the outcome, and the ranked "
-        "at-risk list with its evidence. M-7 returns anomaly metrics, ranked "
+        "at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, "
+        "read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked "
         "anomalies, output tables, and what was read or excluded. Assembled at query time from the "
         "run's "
         "model and its result tables, so it cannot drift from them. Anything a "
@@ -6369,7 +6470,7 @@ void register_core_capabilities(Registry& registry) {
         "separation and stability metrics, input/exclusion facts and "
         "assignment/profile "
         "tables instead of supervised risk metrics. No side effects. (#958, "
-        "#1042, #1046)",
+        "#1042, #1043, #1046)",
         get_run_report_schema(), get_run_report_output_schema(),
         CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,

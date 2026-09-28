@@ -660,6 +660,10 @@ add_library(zetta-core STATIC
   src/core/ml/anomaly_table.cpp
   src/core/ml/anomaly_plan.cpp
   src/core/ml/anomaly_methodology.cpp
+  src/core/ml/forecast_runner.cpp
+  src/core/ml/forecast_methodology.cpp
+  src/core/ml/forecast_execution.cpp
+  src/core/pipeline/forecast_graph_check.cpp
   src/core/ml/lag_features.cpp
   src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp

@@ -11,6 +11,7 @@
 #include "zetta/index/in_memory_index_backend.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -542,6 +543,7 @@ void Node::start_coordinator() {
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
     zetta::ml::install_segmentation_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_forecast_launch_runner(*launch_listener_, *this);
     zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
