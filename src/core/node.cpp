@@ -607,6 +607,14 @@ void Node::stop_coordinator() {
     // launch listener — pending, undrained launches are ephemeral signal-plane
     // messages and die with the attachment (the initiator's collective rounds
     // surface the absence with their bounded timeout).
+    // The coordinator's stop restored the cluster's handler to its fallback,
+    // which is this listener; hand the chain on to the listener's own fallback
+    // (the telemetry exchange) before destroying it. set_signal_handler waits
+    // out any dispatch still inside the listener, so the reset below cannot
+    // race the network thread (#1131: a heap use-after-free under repeat).
+    if (cluster_ && cluster_->signal_handler() == launch_listener_.get()) {
+        cluster_->set_signal_handler(telemetry_.get());
+    }
     launch_listener_.reset();
 }
 
