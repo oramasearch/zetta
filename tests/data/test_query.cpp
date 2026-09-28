@@ -1160,6 +1160,13 @@ TEST(QueryService, SelectsNodeMetricsSystemTable) {
     // Network utilization needs a link cap, so it degrades to null.
     EXPECT_TRUE(row["net_percent"].is_null());
 
+    EXPECT_EQ(row["pubsub_dispatch_mode"], "pool");
+    EXPECT_EQ(row["pubsub_dispatch_threads"], 1);
+    EXPECT_EQ(row["pubsub_dispatch_keys"], 0);
+    EXPECT_EQ(row["pubsub_topics_per_dispatch_thread"], 250);
+    EXPECT_EQ(row["pubsub_dispatch_min_threads"], 1);
+    EXPECT_GE(row["pubsub_dispatch_max_threads"].get<std::size_t>(), 1u);
+
     // Projection works like any system table.
     auto projected =
         svc.run("SELECT node_id, gpu_present FROM system.node_metrics;", "");

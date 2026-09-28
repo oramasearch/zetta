@@ -359,8 +359,12 @@ returns exactly **one row** — the node the query hits. Columns: `node_id`,
 `memory_percent`, `gpu_present`, `gpu_percent`, `vram_used_bytes`,
 `vram_total_bytes`, `storage_used_bytes`, `storage_total_bytes`,
 `storage_percent`, `net_rx_bytes_per_sec`, `net_tx_bytes_per_sec`, `net_percent`,
-`sampled_at`. Counters a host can't report are `null` (graceful degradation — the
-GPU group is absent in a CPU-only core build). Like `system.checkpoints` /
+`sampled_at`, `pubsub_dispatch_mode`, `pubsub_dispatch_threads`,
+`pubsub_dispatch_keys`, `pubsub_topics_per_dispatch_thread`,
+`pubsub_dispatch_min_threads`, and `pubsub_dispatch_max_threads`. The pub/sub
+columns report the current shared-pool size and its configured sizing bounds;
+they are `null` when pub/sub is disabled. Counters a host can't report are `null`
+(graceful degradation — the GPU group is absent in a CPU-only core build). Like `system.checkpoints` /
 `system.cloud_status` it is **ephemeral, observed, NOT replicated** (no CRDT
 backing). Qualified-name only.
 

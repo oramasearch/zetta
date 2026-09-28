@@ -11,7 +11,9 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine interface (`zetta::storage::StorageEngine`).
 - [lazy-rows.md](lazy-rows.md) — the row handle `StorageEngine::at()` returns: refcounted pages that survive a reap, a borrowed (allocation-free) state for in-memory engines, and a failed read that reports a reason instead of null (`zetta::storage::ParquetLazyPtr`, #833).
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
-- [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset, `GROUP BY` through the [DDF engine](../ddf/ddf.md), and the virtual `system` tables.
+- [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset,
+  `GROUP BY` through the [DDF engine](../ddf/ddf.md), and the virtual `system`
+  tables, including live pub/sub dispatch sizing in `system.node_metrics`.
 - [virtual-tables.md](virtual-tables.md) — `CREATE VIRTUAL TABLE <name> OVER CRDT '<prefix>' (…)`: a user-declared, read-only table over any CRDT key-family (durable/ephemeral tiers), stored as durable `vtable:` catalog metadata (`zetta::data::VirtualTable`, #809 slice 3).
 - [replication-strategy.md](replication-strategy.md) — the per-table/db strategy: `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(rf)`, recorded + replicated (`zetta::data::ReplicationStrategy`, ENT-35).
 - [partitioner.md](partitioner.md) — the `Partitioner` seam: record→partition (Hash/RoundRobin) + partition→node (`RendezvousPlacement` HRW) over a fixed P >> nodes (ADR-31 / #512–#514).

@@ -20,6 +20,11 @@ passes one and two (#1152 and #1159), preserving S-1 through S-9 and S-12.
    catalogue modules have complete templates; the eight sketches are unchanged.
 3. Current `dev` after #1159 (`4c54eec1`): merge its history without content
    conflicts. The per-file line-count audit shows no incoming content changes.
+4. Final synchronization found #1161 on `dev` (`a920271b`): preserve its
+   active-topic dispatch pool, operational configuration, metrics, tests, and
+   documentation. The merge is conflict-free; per-file counts match the incoming
+   change. Its header changes require another empty-directory static build and
+   full proof before delivery.
 
 Module branches are joined with merge commits. Per-file line counts are
 audited after each merge. No formatter is run. The integration adds no new
@@ -45,7 +50,7 @@ ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 --gtest_filter='
 Schema regeneration produced no changes. The test inventory retains every
 registry and action-journey test from both module branches, without duplicates.
 
-## Full static proof
+## Initial full static proof
 
 After merging `dev`, recursive submodule synchronization completed and the
 generated build directory was removed. The fresh native static build passed:

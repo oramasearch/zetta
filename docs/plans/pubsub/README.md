@@ -1,20 +1,17 @@
 # Pub/sub in zetta — design
 
-**Status:** design in progress, started 2026-09-27. No code yet. There is no
-pub/sub in zetta today and no issue for it (the only related issue is
-[#1014](https://github.com/oramasearch/zetta/issues/1014), which reads Kafka
-*as a source*; it does not make zetta a broker).
+**Status:** stage 1 is built. The design remains the decision record for shipped
+node-local pub/sub and later stages; D24 now records the shared, topic-sized
+dispatch pool from [#1157](https://github.com/oramasearch/zetta/issues/1157).
 
 **Who uses it.** Anything in zetta can publish or subscribe; **agents** are the
 main user, and **agent tasks** will run over pub/sub (designed separately,
 [D25](decisions.md)).
 
-**How this folder works.** We design slowly, one decision at a time. Each file is
-one subject. Questions go into [`questions.md`](questions.md) and are answered
-there, with the date and who answered; a settled answer moves into the page it
-governs. **One question at a time**; every design iteration is committed and
-pushed to the design PR (branch `docs/pubsub-design`). Nothing here is built until the design says how it distributes (zetta's
-first principle — see [`context.md`](context.md)).
+**How this folder works.** Each file is one subject. Questions go into
+[`questions.md`](questions.md); settled answers move into the page they govern.
+Shipped behavior is documented in [../../pubsub/](../../pubsub/README.md), while
+this folder preserves the decisions and later-stage design.
 
 ## Pages
 

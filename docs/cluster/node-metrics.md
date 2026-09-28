@@ -60,6 +60,15 @@ answer depended on whether the steady clock advanced between two adjacent statem
 | `net_rx_bytes_per_sec` / `net_tx_bytes_per_sec` | network receive / transmit rate |
 | `net_percent` | link utilization 0..100 |
 | `sampled_at` | ISO-8601 UTC stamp of the sample |
+| `pubsub_dispatch_mode` | effective node-wide pub/sub dispatch mode |
+| `pubsub_dispatch_threads` | current shared-pool worker count |
+| `pubsub_dispatch_keys` | active topic and inbox keys known to the dispatcher |
+| `pubsub_topics_per_dispatch_thread` | configured active-key target per worker |
+| `pubsub_dispatch_min_threads` / `pubsub_dispatch_max_threads` | configured pool bounds |
+
+The pub/sub columns are live engine state rather than OS counters. They are
+`null` when pub/sub is disabled. A resize updates `pubsub_dispatch_threads` on
+the next query; see [pub/sub dispatch](../pubsub/dispatch.md).
 
 ## Graceful degradation
 
@@ -112,7 +121,10 @@ schema boundary to validate (and `test_schemas` confirms none was added).
   degrades.
 - `tests/data/test_query.cpp` (`QueryService.SelectsNodeMetricsSystemTable`) — the SQL
   read view: `SELECT * FROM system.node_metrics` returns one row for this node,
-  GPU/`net_percent` are `null`, storage is populated, and projection works.
+  GPU/`net_percent` are `null`, storage is populated, pub/sub dispatch sizing is
+  present, and projection works.
+- `tests/api/test_rest_server.cpp` — the `sql` capability returns matching
+  dispatch metric rows through REST and MCP.
 
 ## See also
 

@@ -1173,6 +1173,43 @@ TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
             EXPECT_NO_THROW(validator.validate(envelope.at("value"))) << response.body;
         }
     }
+
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"dispatch-metrics","exposed":true})")
+                  .status,
+              200);
+    const std::vector<std::string> metric_statements = {
+        "SELECT topic, dispatch_mode, dispatch_threads, dispatch_keys, "
+        "topics_per_dispatch_thread, dispatch_min_threads, dispatch_max_threads "
+        "FROM system.pubsub_topics;",
+        "SELECT pubsub_dispatch_mode, pubsub_dispatch_threads, "
+        "pubsub_dispatch_keys, pubsub_topics_per_dispatch_thread, "
+        "pubsub_dispatch_min_threads, pubsub_dispatch_max_threads "
+        "FROM system.node_metrics;"};
+    for (const auto& statement : metric_statements) {
+        std::string rest_target = "/v1/sql?statement=";
+        for (const char character : statement) {
+            if (character == ' ') {
+                rest_target += "%20";
+            } else {
+                rest_target += character;
+            }
+        }
+        const auto rest = request("GET", rest_target);
+        ASSERT_EQ(rest.status, 200) << rest.body;
+        const nlohmann::json mcp_call = {
+            {"jsonrpc", "2.0"},
+            {"id", 4},
+            {"method", "tools/call"},
+            {"params", {{"name", "sql"}, {"arguments", {{"statement", statement}}}}}};
+        const auto mcp = request("POST", "/mcp", mcp_call.dump());
+        ASSERT_EQ(mcp.status, 200) << mcp.body;
+        const auto rest_value = json_of(rest).at("value");
+        const auto mcp_value =
+            json_of(mcp).at("result").at("structuredContent").at("value");
+        EXPECT_EQ(rest_value, mcp_value);
+        ASSERT_FALSE(rest_value.at("rows").empty());
+    }
 }
 
 TEST_F(RestServerFixture, BrowseLongPollWorksOnRestAndMcpWithoutConsuming) {

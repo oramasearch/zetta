@@ -137,8 +137,18 @@ backend.
 ./build/bin/zetta --advertise HOST:PORT # extra reachable endpoint(s) to advertise (a NAT'd/LB'd node's public address; repeatable)
 ./build/bin/zetta --log-cluster         # log gossip events to stderr (debugging)
 ./build/bin/zetta --no-preflight        # skip the startup integrity check
+./build/bin/zetta --pubsub-dispatch-mode pool       # shared pool (default); auto, per_key and inline are explicit
+./build/bin/zetta --pubsub-topics-per-thread 250    # active keys per dispatch worker
+./build/bin/zetta --pubsub-dispatch-threads 1       # minimum dispatch workers
+./build/bin/zetta --pubsub-dispatch-max-threads 16  # maximum; detected CPU count by default
 ./build/bin/zetta --help
 ```
+
+The matching environment variables are `ZETTA_PUBSUB_DISPATCH_MODE`,
+`ZETTA_PUBSUB_TOPICS_PER_THREAD`, `ZETTA_PUBSUB_DISPATCH_THREADS`, and
+`ZETTA_PUBSUB_DISPATCH_MAX_THREADS`. An explicit CLI value wins over its
+environment variable. See [pub/sub dispatch](pubsub/dispatch.md) for sizing,
+ordering and fairness.
 
 On startup a node runs a **preflight integrity check** by default (disable with
 `--no-preflight`): it re-hashes each local large-object body against its recorded

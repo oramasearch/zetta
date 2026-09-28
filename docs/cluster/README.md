@@ -12,4 +12,6 @@ messaging; the compute layers built on these seams live in [../compute/](../comp
 - [solution-reconciliation.md](solution-reconciliation.md) — incremental solution projections, direct-read records, parent ordering, and one-tick tests (#1128).
 - [signal-plane.md](signal-plane.md) — the ephemeral signal plane (`zetta::cluster::Signal`): RPC / events / tasks addressed by node id, schema-validated at the boundary (ADR-28).
 - [collectives.md](collectives.md) — allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order (`zetta::cluster::Collectives`, #365).
-- [node-metrics.md](node-metrics.md) — live per-node resource telemetry: `system.node_metrics`, ephemeral + observed, no CRDT backing (`zetta::cluster::NodeMetricsSampler`, #581).
+- [node-metrics.md](node-metrics.md) — live per-node resource telemetry plus
+  pub/sub dispatch pool sizing: `system.node_metrics`, ephemeral + observed, no
+  CRDT backing (`zetta::cluster::NodeMetricsSampler`, #581, #1157).

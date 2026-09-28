@@ -392,30 +392,32 @@ with producers, and each consumer only with the dispatcher feeding it. Answers
 hop (refcounted event pointers, D4). Something has to move events along the
 chain ([Q26](questions.md)).
 
-## D24 — Dispatch: a thread per topic by default, a shared pool past a threshold, inline as an option (2026-09-27)
+## D24 — Dispatch: a shared, topic-sized pool by default (2026-09-27; revised 2026-09-28)
 
-**What.** Configurable. **Default: a dispatcher thread per topic.** When the
-topic count passes a threshold, or a heuristic fires, the node **moves to a
-shared pool** of dispatcher threads. **Inline dispatch** (the publisher's thread
-carries its event through every queue, no dispatcher) is a configuration option.
-Answers [Q26](questions.md).
+**What.** Configurable. **Default: one shared pool, beginning at one thread and
+growing at no more than 250 active topics per thread.** The minimum defaults to
+one and the maximum to the detected CPU count. `PerKey`, `Inline`, and the legacy
+`Auto` transition remain explicit node or topic choices; the node never selects
+a thread per topic automatically. Answers [Q26](questions.md) and supersedes the
+original thread-per-topic default in this decision
+([#1157](https://github.com/oramasearch/zetta/issues/1157)).
 
-**Proposals under the standing rule** (overrulable):
-- the threshold is derived from the detected CPU budget (D11): switch when
-  topics exceed **2 × detected CPUs**; the pool size is the detected CPU count;
-- heuristics that also trigger the switch: total pub/sub threads over a limit,
-  or most dispatcher threads idle most of the time;
-- **hysteresis**: switch back to per-topic threads only when the count falls
-  well below the threshold (e.g. half), so the node does not flap;
-- a topic can be **pinned** to a dedicated thread (or to inline) by
-  configuration, and keeps it in pool mode;
-- the pool serves topics fairly: round robin, with a cap on events moved per
-  turn;
-- **every switch is logged** with the reason:
-  `pubsub: INFO dispatch: 34 topics > threshold 32 (2 × 16 cpus); moving 32 topics to a pool of 16 threads`.
+The pool serves keys round robin, with a cap on jobs moved per key per turn. A
+key stays on one worker and moves during a resize only between jobs, preserving
+submission order. Growth occurs at each 250-key boundary. Shrink waits for a
+ten-key margin, so a pool that grew to two threads returns to one at 240 topics.
+Every resize is logged and reported in `system.pubsub_topics` and
+`system.node_metrics`. The minimum, maximum, and topics-per-thread values are
+configurable by CLI and environment.
 
-**Cost.** Two dispatch modes to test, and a migration step that must hand a
-topic from its thread to the pool without losing or reordering events.
+**Why.** A thread per topic made resource use depend directly on topic count and
+left many threads idle. The shared pool gives fewer threads, predictable node
+resources, fairness even with one worker, and explicit configuration for nodes
+that need more parallel dispatch.
+
+**Cost.** Pool resizing must rebalance keys without overlapping two jobs for one
+key. Dispatch jobs may not block a worker; blocking topic paths assert in debug
+builds, and long polls use the coroutine event path.
 
 ## D25 — Anything can publish or subscribe; agents first, including agent tasks (2026-09-27)
 
