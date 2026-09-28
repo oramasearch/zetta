@@ -85,11 +85,11 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), index == 0);
+        const bool runnable = index == 0 || index == 13;
+        EXPECT_EQ(methodologies[index].runnable, runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape), runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), runnable);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].run), runnable);
         if (index > 0) {
             EXPECT_EQ(methodologies[index].issue,
                       "https://github.com/oramasearch/zetta/issues/" +
@@ -101,6 +101,26 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+}
+
+TEST(MethodologyRegistry, SpeechBuildsItsOwnRunnableShape) {
+  const auto *methodology = zetta::ml::find_methodology("M-14");
+  ASSERT_NE(methodology, nullptr);
+  ASSERT_TRUE(methodology->runnable);
+  const auto graph = methodology->build_shape(
+      {.project = "project",
+       .intent = "transcribe recordings",
+       .hints = {{"database", "media"},
+                 {"table", "calls"},
+                 {"checkpoint_model", "whisper-tiny"}}});
+  EXPECT_TRUE(methodology->owns(graph));
+  ASSERT_EQ(graph.node_count(), 4u);
+  const auto model = graph.find_node("transcribe_audio");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->attributes.at("model_kind"), "speech");
+  EXPECT_TRUE(model->attributes.at("consent_required").get<bool>());
+  EXPECT_TRUE(model->attributes.at("redact_pii").get<bool>());
+  EXPECT_TRUE(model->attributes.at("audio_local_only").get<bool>());
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {

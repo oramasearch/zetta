@@ -16,6 +16,9 @@ using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::SchemaTypeCheck;
+using zetta::pipeline::SpeechConsentCheck;
+using zetta::pipeline::SpeechLocalAudioCheck;
+using zetta::pipeline::SpeechPiiRedactionCheck;
 using zetta::pipeline::ValidationReport;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
@@ -275,12 +278,47 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
-    const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
-    EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
-    EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
-    EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+  const CorrectnessGate gate = zetta::pipeline::default_gate();
+  ASSERT_EQ(gate.check_count(), 7u);
+  EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
+  EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
+  EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
+  EXPECT_EQ(gate.checks()[3]->name(), "speech_consent");
+  EXPECT_EQ(gate.checks()[4]->name(), "speech_pii_redaction");
+  EXPECT_EQ(gate.checks()[5]->name(), "speech_local_audio");
+  EXPECT_EQ(gate.checks()[6]->name(), "entity_resolution");
+}
+
+TEST(SpeechGraphCheck, RefusesMissingConsentContract) {
+  ExecutionGraph graph;
+  graph.add_node(StepKind::Model, "speech",
+                 json{{"model_kind", "speech"},
+                      {"redact_pii", true},
+                      {"audio_local_only", true}});
+  EXPECT_EQ(SpeechConsentCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesDisabledPiiRedaction) {
+  ExecutionGraph graph;
+  graph.add_node(StepKind::Model, "speech",
+                 json{{"model_kind", "speech"},
+                      {"consent_required", true},
+                      {"consent_column", "consent"},
+                      {"redact_pii", false},
+                      {"audio_local_only", true}});
+  EXPECT_EQ(SpeechPiiRedactionCheck{}.evaluate(graph).status,
+            CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
+  ExecutionGraph graph;
+  graph.add_node(StepKind::Model, "speech",
+                 json{{"model_kind", "speech"},
+                      {"consent_required", true},
+                      {"consent_column", "consent"},
+                      {"redact_pii", true},
+                      {"audio_local_only", false}});
+  EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

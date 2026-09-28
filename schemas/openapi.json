@@ -6529,9 +6529,20 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "output_tables": {
+                          "description": "durable tables materialized by this run",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
+                        },
+                        "transcripts": {
+                          "description": "redacted speech segments with recording, time bounds, text, and confidence",
+                          "type": "array"
                         }
                       },
                       "required": [

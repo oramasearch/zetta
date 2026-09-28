@@ -52,6 +52,23 @@ const nlohmann::json& graph_step_annotations_schema() {
       "type": "string",
       "minLength": 1
     },
+    "consent_required": {
+      "description": "Speech transcription must require explicit source consent.",
+      "type": "boolean"
+    },
+    "consent_column": {
+      "description": "The boolean source field that records speech-processing consent.",
+      "type": "string",
+      "minLength": 1
+    },
+    "redact_pii": {
+      "description": "Speech transcript text is privacy-filtered before durable storage.",
+      "type": "boolean"
+    },
+    "audio_local_only": {
+      "description": "Audio samples remain on their owner node.",
+      "type": "boolean"
+    },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "type": "array",
@@ -225,7 +242,36 @@ std::string join_types(const std::vector<std::string>& types) {
     return out;
 }
 
-}  // namespace
+bool speech_step(const ir::Node &node) {
+  if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+    return false;
+  }
+  const auto kind = node.attributes.find("model_kind");
+  if (kind == node.attributes.end() || !kind->is_string()) {
+    return false;
+  }
+  const std::string value = normalize_type(kind->get<std::string>());
+  return value == "speech" || value == "audio";
+}
+
+CheckResult require_speech_flag(const ir::ExecutionGraph &graph,
+                                std::string name, const char *flag,
+                                std::string failure, std::string success) {
+  for (const auto &node : graph.nodes()) {
+    if (!node || !speech_step(*node)) {
+      continue;
+    }
+    const auto value = node->attributes.find(flag);
+    if (value == node->attributes.end() || !value->is_boolean() ||
+        !value->get<bool>()) {
+      return {std::move(name), CheckStatus::Fail,
+              node_label(*node) + ": " + std::move(failure)};
+    }
+  }
+  return {std::move(name), CheckStatus::Pass, std::move(success)};
+}
+
+} // namespace
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
     return model_kind == "forecast" || model_kind == "survival" || model_kind == "streaming";
@@ -464,6 +510,42 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult
+SpeechConsentCheck::evaluate(const ir::ExecutionGraph &graph) const {
+  for (const auto &node : graph.nodes()) {
+    if (!node || !speech_step(*node)) {
+      continue;
+    }
+    const auto required = node->attributes.find("consent_required");
+    const auto column = node->attributes.find("consent_column");
+    if (required == node->attributes.end() || !required->is_boolean() ||
+        !required->get<bool>() || column == node->attributes.end() ||
+        !column->is_string() || column->empty()) {
+      return {name(), CheckStatus::Fail,
+              node_label(*node) +
+                  ": speech requires explicit consent and a consent_column"};
+    }
+  }
+  return {name(), CheckStatus::Pass,
+          "every speech model requires an explicit consent field"};
+}
+
+CheckResult
+SpeechPiiRedactionCheck::evaluate(const ir::ExecutionGraph &graph) const {
+  return require_speech_flag(
+      graph, name(), "redact_pii",
+      "speech transcript PII redaction must be enabled",
+      "every speech model redacts transcript PII before storage");
+}
+
+CheckResult
+SpeechLocalAudioCheck::evaluate(const ir::ExecutionGraph &graph) const {
+  return require_speech_flag(
+      graph, name(), "audio_local_only",
+      "speech audio must remain on its owner node",
+      "every speech model keeps audio on its owner node");
 }
 
 } // namespace zetta::pipeline

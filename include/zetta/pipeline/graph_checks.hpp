@@ -90,6 +90,24 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+class SpeechConsentCheck final : public Check {
+public:
+  std::string name() const override { return "speech_consent"; }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
+class SpeechPiiRedactionCheck final : public Check {
+public:
+  std::string name() const override { return "speech_pii_redaction"; }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
+class SpeechLocalAudioCheck final : public Check {
+public:
+  std::string name() const override { return "speech_local_audio"; }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).

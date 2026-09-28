@@ -556,6 +556,11 @@ add_library(zetta-core STATIC
   src/core/pipeline/run.cpp
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
+  src/core/ml/speech_audio.cpp
+  src/core/ml/speech_whisper.cpp
+  src/core/ml/speech_train_job.cpp
+  src/core/ml/speech_runner.cpp
+  src/core/ml/speech_methodology.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp

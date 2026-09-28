@@ -168,6 +168,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
+    speech.hpp              M-14 audio decode/resample/log-mel, energy segmentation, native Whisper checkpoint/inference, privacy filtering, WER, transcript runner contract (#1053)
+    speech_train_job.hpp    distributed M-14 numeric statistics reduction through JobRound allreduce (#1053)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
@@ -420,6 +422,11 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   ml/
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
+    speech_audio.cpp        native WAV/PCM decoding, 16 kHz resampling, log-mel, energy segmentation, transcript filtering, WER and counter aggregation (#1053)
+    speech_whisper.cpp      native Whisper config/checkpoint validation plus encoder-decoder greedy inference and timestamp tokens (#1053)
+    speech_train_job.cpp    coordinated allreduce of partition-local M-14 metrics (#1053)
+    speech_runner.cpp       consent-first owned-partition transcription, transcript/model outputs, metrics, and run lineage (#1053)
+    speech_methodology.cpp  M-14 registry shape, graph ownership, dataset resolution, and run callback (#1053)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
@@ -607,6 +614,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
+  ml/test_speech.cpp        WAV/resample, log-mel reference, random Whisper determinism, privacy filtering, WER, and checkpoint test contract (#1053)
+  ml/test_speech_train_partitions.cpp  multi-member allreduce equivalence for owned-partition speech statistics (#1053)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

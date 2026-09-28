@@ -539,6 +539,15 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"transcripts",
+           {{"type", "array"},
+            {"description",
+             "redacted speech segments with recording, time bounds, text, and "
+             "confidence"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "durable tables materialized by this run"}}},
           {"caveats",
            {{"type", "array"},
             {"description",
@@ -634,6 +643,53 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "speech") {
+        nlohmann::json model_facts = {
+            {"id", model->id()}, {"name", model->name()}};
+        for (const char* key :
+             {"word_error_rate", "word_edits", "reference_words",
+              "recordings_read", "recordings_excluded", "segments"}) {
+            if (const auto value = number(key)) {
+                model_facts[key] = *value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const auto value = number("recordings_read")) {
+            dataset["recordings_read"] = *value;
+        }
+        if (const auto value = number("recordings_excluded")) {
+            dataset["recordings_excluded"] = *value;
+        }
+        report["dataset"] = std::move(dataset);
+
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const auto& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                outputs.push_back(output.ref);
+            }
+        }
+        nlohmann::json transcripts = nlohmann::json::array();
+        if (const auto table = run_at_risk_table(context.node, *run)) {
+            const zetta::storage::StorageEngine& store = table->store();
+            for (std::size_t index = 0;
+                 index < store.size() && transcripts.size() < limit; ++index) {
+                if (const auto row = store.at(index)) {
+                    transcripts.push_back(*row);
+                }
+            }
+        }
+        report["output_tables"] = std::move(outputs);
+        report["transcripts"] = std::move(transcripts);
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {

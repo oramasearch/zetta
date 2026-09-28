@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m14_methodology();
 
 namespace {
 
@@ -157,13 +158,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "class, box, or mask annotations")},
                 {"classifications", "detections", "masks"},
                 {"mAP", "IoU", "escape rate"}, 1052),
-        planned("M-14", "Speech & audio analytics",
-                "Language, documents & perception", {"speech", "audio"}, {},
-                {"speech", "audio", "transcribe", "diarize"},
-                {input("audio", true, "audio recordings"),
-                 input("label", false, "transcripts or task labels")},
-                {"transcripts", "speaker segments", "audio scores"},
-                {"word error rate", "F1"}, 1053),
+        make_m14_methodology(),
         planned("M-15", "Bandits & sequential decisioning", "Action & decision",
                 {"bandit", "bandits", "sequential_decisioning"}, {},
                 {"bandit", "explore", "sequential decision"},

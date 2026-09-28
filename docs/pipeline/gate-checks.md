@@ -7,12 +7,15 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Five checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `SpeechConsentCheck` | `speech_consent` | a speech model that does not require an explicit boolean consent field |
+| `SpeechPiiRedactionCheck` | `speech_pii_redaction` | a speech model that could store unfiltered transcript text |
+| `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
 
 Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -81,6 +84,16 @@ A feature **fails** the check when:
 
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
+
+### Speech correctness checks
+
+Model steps with `model_kind: speech` or `audio` must set
+`consent_required: true`, name a non-empty `consent_column`, set
+`redact_pii: true`, and set `audio_local_only: true`. These declarations make a
+compiled graph that weakens any M-14 privacy rule fail before execution. The
+speech runner independently validates row consent before reading a blob and
+filters text before table insertion; graph annotations are not treated as proof
+that the underlying data complied.
 
 ## Example
 
