@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <nlohmann/json-schema.hpp>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
@@ -768,6 +769,96 @@ TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {
     EXPECT_GE(elapsed, std::chrono::milliseconds(20));
     EXPECT_LT(elapsed, std::chrono::seconds(2));
     EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+}
+
+TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
+    const auto openapi_response = request("GET", "/v1/openapi.json");
+    ASSERT_EQ(openapi_response.status, 200);
+    const auto openapi = json_of(openapi_response);
+    const auto listed = request("POST", "/mcp", R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    ASSERT_EQ(listed.status, 200);
+    const auto tools = json_of(listed).at("result").at("tools");
+    const std::vector<std::string> names = {"create_topic", "get_topic", "list_topics", "update_topic",
+        "browse_topic", "publish_event", "update_event", "delete_events", "drop_topic"};
+    for (const auto& name : names) {
+        SCOPED_TRACE(name);
+        const auto capability = server->registry().find(name);
+        ASSERT_TRUE(capability);
+        const auto tool = std::ranges::find_if(tools, [&](const auto& item) {
+            return item.at("name") == name;
+        });
+        ASSERT_NE(tool, tools.end());
+        EXPECT_EQ(tool->at("inputSchema"), capability->input_schema);
+        EXPECT_EQ(tool->at("outputSchema"), capability->output_schema);
+        const auto& operation = openapi.at("paths").at("/v1/" + name).at("post");
+        auto input_schema = operation.at("requestBody").at("content").at("application/json").at("schema");
+        input_schema["properties"].erase("intent");
+        EXPECT_EQ(input_schema, tool->at("inputSchema"));
+        EXPECT_EQ(operation.at("responses").at("200").at("content").at("application/json")
+            .at("schema").at("properties").at("value"), tool->at("outputSchema"));
+    }
+    for (const bool mcp : {false, true}) {
+        const std::string topic = mcp ? "parity-mcp" : "parity-rest";
+        const std::vector<std::pair<std::string, nlohmann::json>> calls = {
+            {"create_topic", {{"topic", topic}, {"exposed", true}}},
+            {"get_topic", {{"topic", topic}}}, {"list_topics", nlohmann::json::object()},
+            {"update_topic", {{"topic", topic}, {"settings", {{"max_events", 20}}}}},
+            {"publish_event", {{"topic", topic}, {"payload", "original"}}},
+            {"browse_topic", {{"topic", topic}, {"limit", 1}}},
+            {"update_event", {{"topic", topic}, {"sequence", 1}, {"payload", "edited"}, {"expected_revision", 1}}},
+            {"delete_events", {{"topic", topic}, {"before_sequence", 2}}},
+            {"drop_topic", {{"topic", topic}}}};
+        for (const auto& [name, input] : calls) {
+            SCOPED_TRACE(name + (mcp ? " MCP" : " REST"));
+            const nlohmann::json body = mcp ? nlohmann::json{{"jsonrpc", "2.0"}, {"id", 2},
+                {"method", "tools/call"}, {"params", {{"name", name}, {"arguments", input}}}} : input;
+            const auto response = request("POST", mcp ? "/mcp" : "/v1/" + name, body.dump());
+            ASSERT_EQ(response.status, 200) << response.body;
+            const auto envelope = mcp ? json_of(response).at("result").at("structuredContent") : json_of(response);
+            ASSERT_TRUE(envelope.at("ok").get<bool>()) << response.body;
+            nlohmann::json_schema::json_validator validator(server->registry().find(name)->output_schema);
+            EXPECT_NO_THROW(validator.validate(envelope.at("value"))) << response.body;
+        }
+    }
+}
+
+TEST_F(RestServerFixture, BrowseLongPollWorksOnRestAndMcpWithoutConsuming) {
+    for (const bool mcp : {false, true}) {
+        const std::string topic = mcp ? "wait-mcp" : "wait-rest";
+        ASSERT_EQ(request("POST", "/v1/create_topic", nlohmann::json{{"topic", topic}, {"exposed", true}}.dump()).status, 200);
+        const nlohmann::json input = {{"topic", topic}, {"wait_ms", 5000}, {"limit", 1}};
+        const nlohmann::json body = mcp ? nlohmann::json{{"jsonrpc", "2.0"}, {"id", 3},
+            {"method", "tools/call"}, {"params", {{"name", "browse_topic"}, {"arguments", input}}}} : input;
+        const auto audit_before = node.audit_event_count();
+        const int descriptor = open_http_request(server->port(), "POST", mcp ? "/mcp" : "/v1/browse_topic", body.dump(), owner_secret);
+        ASSERT_GE(descriptor, 0);
+        const auto registered_by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (node.audit_event_count() == audit_before && std::chrono::steady_clock::now() < registered_by) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        EXPECT_GT(node.audit_event_count(), audit_before);
+        ASSERT_EQ(request("POST", "/v1/publish_event", nlohmann::json{{"topic", topic}, {"payload", "wakeup"}}.dump()).status, 200);
+        HttpResponse waiting;
+        std::atomic<bool> finished{false};
+        std::thread reader([&] {
+            waiting = read_http_response(descriptor);
+            finished = true;
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!finished && std::chrono::steady_clock::now() < deadline) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        reader.join();
+        ASSERT_EQ(waiting.status, 200) << waiting.body;
+        const auto envelope = mcp ? json_of(waiting).at("result").at("structuredContent") : json_of(waiting);
+        ASSERT_TRUE(envelope.at("ok").get<bool>()) << waiting.body;
+        ASSERT_EQ(envelope.at("value").at("events").size(), 1u);
+        EXPECT_EQ(envelope.at("value").at("events")[0].at("payload"), "wakeup");
+        const auto inspected = request("POST", "/v1/get_topic", nlohmann::json{{"topic", topic}}.dump());
+        EXPECT_EQ(json_of(inspected).at("value").at("subscriber_count"), 0);
+    }
 }
 
 TEST_F(RestServerFixture, DroppingATopicWakesItsLongPoll) {

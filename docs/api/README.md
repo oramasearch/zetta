@@ -14,6 +14,8 @@ MCP/HTTP work.
   the error mapping, the consent challenge, and awaitable REST reads (#1076).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
+- [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,
+  non-consuming browse, POST read aliases and bounded REST/MCP long polls (#1136).
 - [governed-actions.md](governed-actions.md) — action parity (#617): the
   product loop's mutating tools, the kind:job handle semantics
   (BackgroundActions, run-id-at-submit), gate parity, boundaries.

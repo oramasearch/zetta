@@ -1600,6 +1600,449 @@
         ]
       }
     },
+    "/v1/browse_topic": {
+      "get": {
+        "description": "Browse held events without creating or advancing a subscription; wait_ms is bounded on REST and MCP. Requires data:topics_read.",
+        "operationId": "browse_topic",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "enum": [
+                "forward",
+                "backward"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "first sequence to return (default 1)",
+            "in": "query",
+            "name": "from_sequence",
+            "required": false,
+            "schema": {
+              "description": "first sequence to return (default 1)",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "long-poll: wait up to this long when nothing is there yet",
+            "in": "query",
+            "name": "wait_ms",
+            "required": false,
+            "schema": {
+              "description": "long-poll: wait up to this long when nothing is there yet",
+              "maximum": 30000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "earliest_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "edited_at": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "edited_by": {
+                                "type": "string"
+                              },
+                              "encoding": {
+                                "type": "string"
+                              },
+                              "from": {
+                                "type": "string"
+                              },
+                              "headers": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "value": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "payload": {
+                                "type": "string"
+                              },
+                              "published_at": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "revision": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "sequence": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "size": {
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "sequence",
+                              "id",
+                              "revision",
+                              "from",
+                              "published_at",
+                              "payload",
+                              "size",
+                              "encoding",
+                              "headers",
+                              "edited_at",
+                              "edited_by"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "next_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "events",
+                        "earliest_sequence",
+                        "next_sequence"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Browse topic",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Browse held events without creating or advancing a subscription; wait_ms is bounded on REST and MCP. Requires data:topics_read.",
+        "operationId": "browse_topic_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "direction": {
+                    "enum": [
+                      "forward",
+                      "backward"
+                    ],
+                    "type": "string"
+                  },
+                  "from_sequence": {
+                    "description": "first sequence to return (default 1)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "topic": {
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "wait_ms": {
+                    "description": "long-poll: wait up to this long when nothing is there yet",
+                    "maximum": 30000,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "earliest_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "edited_at": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ]
+                              },
+                              "edited_by": {
+                                "type": "string"
+                              },
+                              "encoding": {
+                                "type": "string"
+                              },
+                              "from": {
+                                "type": "string"
+                              },
+                              "headers": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string"
+                                    },
+                                    "value": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "value"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "payload": {
+                                "type": "string"
+                              },
+                              "published_at": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "revision": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "sequence": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "size": {
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "sequence",
+                              "id",
+                              "revision",
+                              "from",
+                              "published_at",
+                              "payload",
+                              "size",
+                              "encoding",
+                              "headers",
+                              "edited_at",
+                              "edited_by"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "next_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "events",
+                        "earliest_sequence",
+                        "next_sequence"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Browse topic",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/capture_intent": {
       "post": {
         "description": "Capture a natural-language intent as a replicated project input with provenance; compile it into a graph with compile_intent. Requires orchestration:capture_intent.",
@@ -4874,7 +5317,7 @@
     },
     "/v1/create_topic": {
       "post": {
-        "description": "Create a pub/sub topic. Topics are engine-internal unless `exposed` is true; only exposed topics are reachable through publish_event, receive_events, list_topics and drop_topic. Requires orchestration:pubsub_create.",
+        "description": "Create a node-local topic or concrete inbox with full settings. Only explicitly exposed topics are reachable through topic/message CRUD. Requires orchestration:pubsub_create.",
         "operationId": "create_topic",
         "requestBody": {
           "content": {
@@ -4906,8 +5349,246 @@
                     ],
                     "type": "string"
                   },
+                  "settings": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bounds": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "allowed_recipient_modes": {
+                            "items": {
+                              "enum": [
+                                "all",
+                                "one",
+                                "count"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "max_guarantee": {
+                            "enum": [
+                              null,
+                              "at_most_once",
+                              "at_least_once",
+                              "exactly_once"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "max_priority": {
+                            "maximum": 255,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "max_recipients": {
+                            "maximum": 4294967295,
+                            "minimum": 1,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "default_ttl_ms": {
+                        "minimum": 1,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "delivery": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "ack_deadline_ms": {
+                            "minimum": 1,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "count": {
+                            "maximum": 4294967295,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "guarantee": {
+                            "enum": [
+                              null,
+                              "at_most_once",
+                              "at_least_once",
+                              "exactly_once"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ordering": {
+                            "enum": [
+                              null,
+                              "fifo",
+                              "priority"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "priority": {
+                            "maximum": 255,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "recipients": {
+                            "enum": [
+                              null,
+                              "all",
+                              "one",
+                              "count"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reply": {
+                            "enum": [
+                              null,
+                              "none",
+                              "reply_to",
+                              "reply_all"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "disk_cap_bytes": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "dispatch": {
+                        "enum": [
+                          null,
+                          "inline",
+                          "per_key",
+                          "auto",
+                          "pool"
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "exposed": {
+                        "type": "boolean"
+                      },
+                      "inline_threshold": {
+                        "maximum": 1048576,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "lifecycle": {
+                        "enum": [
+                          "default",
+                          "ephemeral"
+                        ],
+                        "type": "string"
+                      },
+                      "max_events": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "memory_cap_bytes": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "over_bound": {
+                        "enum": [
+                          "clamp",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "overflow": {
+                        "enum": [
+                          null,
+                          "unbounded",
+                          "skip_ahead",
+                          "disconnect",
+                          "hold_publisher",
+                          "reject_new",
+                          "spill_to_disk"
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "priority_aging_ms": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "priority_levels": {
+                        "maximum": 256,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "producer_queue": {
+                        "type": "boolean"
+                      },
+                      "retention_ms": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "ring_capacity": {
+                        "maximum": 1048576,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "store": {
+                        "enum": [
+                          "ring_stack",
+                          "queue"
+                        ],
+                        "type": "string"
+                      },
+                      "topics_chain_max": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "topic": {
-                    "description": "topic:<name> or <name>",
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -4946,13 +5627,252 @@
                         "exposed": {
                           "type": "boolean"
                         },
+                        "settings": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bounds": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "allowed_recipient_modes": {
+                                  "items": {
+                                    "enum": [
+                                      "all",
+                                      "one",
+                                      "count"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "max_guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "max_priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "max_recipients": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "default_ttl_ms": {
+                              "minimum": 1,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "delivery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "ack_deadline_ms": {
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "count": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "ordering": {
+                                  "enum": [
+                                    null,
+                                    "fifo",
+                                    "priority"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "recipients": {
+                                  "enum": [
+                                    null,
+                                    "all",
+                                    "one",
+                                    "count"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "reply": {
+                                  "enum": [
+                                    null,
+                                    "none",
+                                    "reply_to",
+                                    "reply_all"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "disk_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "dispatch": {
+                              "enum": [
+                                null,
+                                "inline",
+                                "per_key",
+                                "auto",
+                                "pool"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "exposed": {
+                              "type": "boolean"
+                            },
+                            "inline_threshold": {
+                              "maximum": 1048576,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "lifecycle": {
+                              "enum": [
+                                "default",
+                                "ephemeral"
+                              ],
+                              "type": "string"
+                            },
+                            "max_events": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "memory_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "over_bound": {
+                              "enum": [
+                                "clamp",
+                                "reject"
+                              ],
+                              "type": "string"
+                            },
+                            "overflow": {
+                              "enum": [
+                                null,
+                                "unbounded",
+                                "skip_ahead",
+                                "disconnect",
+                                "hold_publisher",
+                                "reject_new",
+                                "spill_to_disk"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "priority_aging_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "priority_levels": {
+                              "maximum": 256,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "producer_queue": {
+                              "type": "boolean"
+                            },
+                            "retention_ms": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "ring_capacity": {
+                              "maximum": 1048576,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "store": {
+                              "enum": [
+                                "ring_stack",
+                                "queue"
+                              ],
+                              "type": "string"
+                            },
+                            "topics_chain_max": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        },
                         "topic": {
                           "type": "string"
                         }
                       },
                       "required": [
                         "topic",
-                        "exposed"
+                        "exposed",
+                        "settings"
                       ],
                       "type": "object"
                     }
@@ -5655,6 +6575,137 @@
           }
         },
         "summary": "Delete a saved connection",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_events": {
+      "post": {
+        "description": "Remove selected held events or all sequences strictly below before_sequence; pending subscribers skip them. Requires data:pubsub_publish.",
+        "operationId": "delete_events",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "oneOf": [
+                  {
+                    "required": [
+                      "sequences"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "before_sequence"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "before_sequence": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "sequences": {
+                    "items": {
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "maxItems": 1000,
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "topic": {
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "removed": {
+                          "type": "integer"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete events",
         "tags": [
           "action"
         ]
@@ -6542,7 +7593,7 @@
                     "type": "string"
                   },
                   "topic": {
-                    "description": "topic:<name> or <name>",
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
                     "minLength": 1,
                     "type": "string"
                   }
@@ -12121,6 +13172,835 @@
         ]
       }
     },
+    "/v1/get_topic": {
+      "get": {
+        "description": "Inspect an exposed node-local topic without consuming events. Requires data:topics_read.",
+        "operationId": "get_topic",
+        "parameters": [
+          {
+            "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "earliest_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "held_events": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "next_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "settings": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bounds": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "allowed_recipient_modes": {
+                                  "items": {
+                                    "enum": [
+                                      "all",
+                                      "one",
+                                      "count"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "max_guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "max_priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "max_recipients": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "default_ttl_ms": {
+                              "minimum": 1,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "delivery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "ack_deadline_ms": {
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "count": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "ordering": {
+                                  "enum": [
+                                    null,
+                                    "fifo",
+                                    "priority"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "recipients": {
+                                  "enum": [
+                                    null,
+                                    "all",
+                                    "one",
+                                    "count"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "reply": {
+                                  "enum": [
+                                    null,
+                                    "none",
+                                    "reply_to",
+                                    "reply_all"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "disk_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "dispatch": {
+                              "enum": [
+                                null,
+                                "inline",
+                                "per_key",
+                                "auto",
+                                "pool"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "exposed": {
+                              "type": "boolean"
+                            },
+                            "inline_threshold": {
+                              "maximum": 1048576,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "lifecycle": {
+                              "enum": [
+                                "default",
+                                "ephemeral"
+                              ],
+                              "type": "string"
+                            },
+                            "max_events": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "memory_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "over_bound": {
+                              "enum": [
+                                "clamp",
+                                "reject"
+                              ],
+                              "type": "string"
+                            },
+                            "overflow": {
+                              "enum": [
+                                null,
+                                "unbounded",
+                                "skip_ahead",
+                                "disconnect",
+                                "hold_publisher",
+                                "reject_new",
+                                "spill_to_disk"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "priority_aging_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "priority_levels": {
+                              "maximum": 256,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "producer_queue": {
+                              "type": "boolean"
+                            },
+                            "retention_ms": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "ring_capacity": {
+                              "maximum": 1048576,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "store": {
+                              "enum": [
+                                "ring_stack",
+                                "queue"
+                              ],
+                              "type": "string"
+                            },
+                            "topics_chain_max": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "subscriber_count": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "subscriptions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "connected": {
+                                "type": "boolean"
+                              },
+                              "group": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "in_flight": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "lag": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "next_sequence": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "positions": {
+                                "items": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "type": "array"
+                              },
+                              "redeliveries": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "subscriber": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "subscriber",
+                              "positions",
+                              "next_sequence",
+                              "lag",
+                              "in_flight",
+                              "redeliveries",
+                              "connected",
+                              "group"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "settings",
+                        "subscriber_count",
+                        "subscriptions",
+                        "held_events",
+                        "earliest_sequence",
+                        "next_sequence"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get topic",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "Inspect an exposed node-local topic without consuming events. Requires data:topics_read.",
+        "operationId": "get_topic_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "topic": {
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "earliest_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "held_events": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "next_sequence": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "settings": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bounds": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "allowed_recipient_modes": {
+                                  "items": {
+                                    "enum": [
+                                      "all",
+                                      "one",
+                                      "count"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "max_guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "max_priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "max_recipients": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "default_ttl_ms": {
+                              "minimum": 1,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "delivery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "ack_deadline_ms": {
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "count": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "ordering": {
+                                  "enum": [
+                                    null,
+                                    "fifo",
+                                    "priority"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "recipients": {
+                                  "enum": [
+                                    null,
+                                    "all",
+                                    "one",
+                                    "count"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "reply": {
+                                  "enum": [
+                                    null,
+                                    "none",
+                                    "reply_to",
+                                    "reply_all"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "disk_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "dispatch": {
+                              "enum": [
+                                null,
+                                "inline",
+                                "per_key",
+                                "auto",
+                                "pool"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "exposed": {
+                              "type": "boolean"
+                            },
+                            "inline_threshold": {
+                              "maximum": 1048576,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "lifecycle": {
+                              "enum": [
+                                "default",
+                                "ephemeral"
+                              ],
+                              "type": "string"
+                            },
+                            "max_events": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "memory_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "over_bound": {
+                              "enum": [
+                                "clamp",
+                                "reject"
+                              ],
+                              "type": "string"
+                            },
+                            "overflow": {
+                              "enum": [
+                                null,
+                                "unbounded",
+                                "skip_ahead",
+                                "disconnect",
+                                "hold_publisher",
+                                "reject_new",
+                                "spill_to_disk"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "priority_aging_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "priority_levels": {
+                              "maximum": 256,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "producer_queue": {
+                              "type": "boolean"
+                            },
+                            "retention_ms": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "ring_capacity": {
+                              "maximum": 1048576,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "store": {
+                              "enum": [
+                                "ring_stack",
+                                "queue"
+                              ],
+                              "type": "string"
+                            },
+                            "topics_chain_max": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "subscriber_count": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "subscriptions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "connected": {
+                                "type": "boolean"
+                              },
+                              "group": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "in_flight": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "lag": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "next_sequence": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "positions": {
+                                "items": {
+                                  "minimum": 0,
+                                  "type": "integer"
+                                },
+                                "type": "array"
+                              },
+                              "redeliveries": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "subscriber": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "subscriber",
+                              "positions",
+                              "next_sequence",
+                              "lag",
+                              "in_flight",
+                              "redeliveries",
+                              "connected",
+                              "group"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "settings",
+                        "subscriber_count",
+                        "subscriptions",
+                        "held_events",
+                        "earliest_sequence",
+                        "next_sequence"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get topic",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_trace": {
       "get": {
         "description": "Read every recorded span of one trace by its 32-hex trace id. No side effects. Requires api:query.",
@@ -15546,7 +17426,7 @@
     },
     "/v1/list_topics": {
       "get": {
-        "description": "The exposed pub/sub topics on this node with their subscriber counts, held events and next sequence number. Requires data:pubsub_subscribe.",
+        "description": "The exposed pub/sub topics on this node with their subscriber counts, held events and next sequence number. Requires data:topics_read.",
         "operationId": "list_topics",
         "parameters": [
           {
@@ -15583,6 +17463,122 @@
                       "properties": {
                         "topics": {
                           "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "held_events": {
+                                "type": "integer"
+                              },
+                              "next_sequence": {
+                                "type": "integer"
+                              },
+                              "subscribers": {
+                                "type": "integer"
+                              },
+                              "topic": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "topic",
+                              "subscribers",
+                              "held_events",
+                              "next_sequence"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "topics"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List topics",
+        "tags": [
+          "read"
+        ]
+      },
+      "post": {
+        "description": "The exposed pub/sub topics on this node with their subscriber counts, held events and next sequence number. Requires data:topics_read.",
+        "operationId": "list_topics_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "topics": {
+                          "items": {
+                            "additionalProperties": false,
                             "properties": {
                               "held_events": {
                                 "type": "integer"
@@ -16779,7 +18775,7 @@
                     "type": "array"
                   },
                   "topic": {
-                    "description": "topic:<name> or <name>",
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -17192,12 +19188,12 @@
             }
           },
           {
-            "description": "topic:<name> or <name>",
+            "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
             "in": "query",
             "name": "topic",
             "required": true,
             "schema": {
-              "description": "topic:<name> or <name>",
+              "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
               "minLength": 1,
               "type": "string"
             }
@@ -17248,6 +19244,7 @@
                       "properties": {
                         "events": {
                           "items": {
+                            "additionalProperties": false,
                             "properties": {
                               "correlation_id": {
                                 "type": "string"
@@ -20974,6 +22971,142 @@
         ]
       }
     },
+    "/v1/update_event": {
+      "post": {
+        "description": "Replace a held payload with revision checking; redeliver explicitly requeues it for subscribers that received it. Requires data:pubsub_publish.",
+        "operationId": "update_event",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "string"
+                  },
+                  "redeliver": {
+                    "type": "boolean"
+                  },
+                  "sequence": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "topic": {
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic",
+                  "sequence",
+                  "payload",
+                  "expected_revision"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "edited_at": {
+                          "type": "integer"
+                        },
+                        "edited_by": {
+                          "type": "string"
+                        },
+                        "revision": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "sequence": {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "topic": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "sequence",
+                        "revision",
+                        "edited_by",
+                        "edited_at"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update event",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/update_plan": {
       "post": {
         "description": "Update a Plan's name, tier, quotas, or period by its uuid (Conflict D); the created stamp stays fixed. Replicates. Requires orchestration:update_plan.",
@@ -21770,6 +23903,589 @@
           }
         },
         "summary": "Update a decision policy",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/update_topic": {
+      "post": {
+        "description": "Update mutable node-local topic settings and trim history on retention shrink; immutable settings are refused. Requires orchestration:pubsub_manage.",
+        "operationId": "update_topic",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "settings": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bounds": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "allowed_recipient_modes": {
+                            "items": {
+                              "enum": [
+                                "all",
+                                "one",
+                                "count"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "max_guarantee": {
+                            "enum": [
+                              null,
+                              "at_most_once",
+                              "at_least_once",
+                              "exactly_once"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "max_priority": {
+                            "maximum": 255,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "max_recipients": {
+                            "maximum": 4294967295,
+                            "minimum": 1,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "default_ttl_ms": {
+                        "minimum": 1,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "delivery": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "ack_deadline_ms": {
+                            "minimum": 1,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "count": {
+                            "maximum": 4294967295,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "guarantee": {
+                            "enum": [
+                              null,
+                              "at_most_once",
+                              "at_least_once",
+                              "exactly_once"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "ordering": {
+                            "enum": [
+                              null,
+                              "fifo",
+                              "priority"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "priority": {
+                            "maximum": 255,
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "recipients": {
+                            "enum": [
+                              null,
+                              "all",
+                              "one",
+                              "count"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "reply": {
+                            "enum": [
+                              null,
+                              "none",
+                              "reply_to",
+                              "reply_all"
+                            ],
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "disk_cap_bytes": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "dispatch": {
+                        "enum": [
+                          null,
+                          "inline",
+                          "per_key",
+                          "auto",
+                          "pool"
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "exposed": {
+                        "type": "boolean"
+                      },
+                      "inline_threshold": {
+                        "maximum": 1048576,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "lifecycle": {
+                        "enum": [
+                          "default",
+                          "ephemeral"
+                        ],
+                        "type": "string"
+                      },
+                      "max_events": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "memory_cap_bytes": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "over_bound": {
+                        "enum": [
+                          "clamp",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "overflow": {
+                        "enum": [
+                          null,
+                          "unbounded",
+                          "skip_ahead",
+                          "disconnect",
+                          "hold_publisher",
+                          "reject_new",
+                          "spill_to_disk"
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "priority_aging_ms": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "priority_levels": {
+                        "maximum": 256,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "producer_queue": {
+                        "type": "boolean"
+                      },
+                      "retention_ms": {
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "ring_capacity": {
+                        "maximum": 1048576,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "store": {
+                        "enum": [
+                          "ring_stack",
+                          "queue"
+                        ],
+                        "type": "string"
+                      },
+                      "topics_chain_max": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "topic": {
+                    "description": "topic:<name>, <name>, or inbox:<owner kind>.<owner name>",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "topic",
+                  "settings"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "settings": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bounds": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "allowed_recipient_modes": {
+                                  "items": {
+                                    "enum": [
+                                      "all",
+                                      "one",
+                                      "count"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "max_guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "max_priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "max_recipients": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "default_ttl_ms": {
+                              "minimum": 1,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "delivery": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "ack_deadline_ms": {
+                                  "minimum": 1,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "count": {
+                                  "maximum": 4294967295,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "guarantee": {
+                                  "enum": [
+                                    null,
+                                    "at_most_once",
+                                    "at_least_once",
+                                    "exactly_once"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "ordering": {
+                                  "enum": [
+                                    null,
+                                    "fifo",
+                                    "priority"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "priority": {
+                                  "maximum": 255,
+                                  "minimum": 0,
+                                  "type": [
+                                    "integer",
+                                    "null"
+                                  ]
+                                },
+                                "recipients": {
+                                  "enum": [
+                                    null,
+                                    "all",
+                                    "one",
+                                    "count"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "reply": {
+                                  "enum": [
+                                    null,
+                                    "none",
+                                    "reply_to",
+                                    "reply_all"
+                                  ],
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "disk_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "dispatch": {
+                              "enum": [
+                                null,
+                                "inline",
+                                "per_key",
+                                "auto",
+                                "pool"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "exposed": {
+                              "type": "boolean"
+                            },
+                            "inline_threshold": {
+                              "maximum": 1048576,
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "lifecycle": {
+                              "enum": [
+                                "default",
+                                "ephemeral"
+                              ],
+                              "type": "string"
+                            },
+                            "max_events": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "memory_cap_bytes": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "over_bound": {
+                              "enum": [
+                                "clamp",
+                                "reject"
+                              ],
+                              "type": "string"
+                            },
+                            "overflow": {
+                              "enum": [
+                                null,
+                                "unbounded",
+                                "skip_ahead",
+                                "disconnect",
+                                "hold_publisher",
+                                "reject_new",
+                                "spill_to_disk"
+                              ],
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "priority_aging_ms": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "priority_levels": {
+                              "maximum": 256,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "producer_queue": {
+                              "type": "boolean"
+                            },
+                            "retention_ms": {
+                              "minimum": 0,
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "ring_capacity": {
+                              "maximum": 1048576,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "store": {
+                              "enum": [
+                                "ring_stack",
+                                "queue"
+                              ],
+                              "type": "string"
+                            },
+                            "topics_chain_max": {
+                              "minimum": 1,
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "topic": {
+                          "type": "string"
+                        },
+                        "trimmed": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "topic",
+                        "settings",
+                        "trimmed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Update topic",
         "tags": [
           "action"
         ]

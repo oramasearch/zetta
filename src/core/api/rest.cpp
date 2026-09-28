@@ -100,6 +100,7 @@ int rest_status(const ApiResult& result) {
     if (code == "unauthorized") return 403;
     if (code == "consent_required") return 403;
     if (code == "not_found") return 404;
+    if (code == "conflict") return 409;
     if (code == "unknown_capability") return 404;
     if (code == "engine_error") return 422;
     if (code == "busy") return 503;
@@ -344,6 +345,15 @@ nlohmann::json openapi_document(const Registry& registry) {
         responses["5XX"] = error_response(
             "the engine refused or the owning loop is saturated (busy)");
         operation["responses"] = std::move(responses);
+
+        if (method == "GET" && capability->post_alias) {
+            auto post = operation;
+            post["operationId"] = capability->name + "_post";
+            post.erase("parameters");
+            post["requestBody"] = {{"required", true}, {"content", {{"application/json",
+                {{"schema", request_body_schema(capability->input_schema)}}}}}};
+            paths[rest_path(*capability)]["post"] = std::move(post);
+        }
 
         paths[rest_path(*capability)]
              [method == "GET" ? "get" : "post"] = std::move(operation);
