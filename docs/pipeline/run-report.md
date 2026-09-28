@@ -25,6 +25,14 @@ The run itself names the report among its outputs:
 
 ## Assembled on read, not stored
 
+For [M-7 anomaly runs](../ml/anomaly.md), the same capability returns
+`methodology: "M-7"`, native `model.metrics` (threshold, budget, alert rate, optional
+precision@k), ranked `anomalies` capped by `limit`, and both `output_tables`.
+`dataset` records the actual source, rows read/excluded, feature roles, and excluded
+columns with reasons. Its source is the anomaly Model plus this Run's anomaly table;
+it does not invent supervised quality metrics or holdout advice. A missing evaluation
+label is reported in `missing`. The remaining sections describe the M-1 report.
+
 There is no report document on disk. Every number in it already lives in replicated
 state, and `get_run_report` puts them together at query time:
 

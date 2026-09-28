@@ -168,6 +168,8 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
     EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
+    EXPECT_EQ(listed.value.at("methodologies")[6].at("id"), "M-7");
+    EXPECT_TRUE(listed.value.at("methodologies")[6].at("runnable"));
 
     ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
     const ApiResult captured =
@@ -449,6 +451,131 @@ TEST_F(Uc1Journey, SegmentationMethodologyRecordsTrainingFailureOnItsRun) {
     };
     const auto report = journey::run_journey(failed, caller(), pump());
     EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(Uc1Journey, AnomalyMethodologyRunsItsPipelinesTableAndReportsFindings) {
+  std::string content;
+  for (int row = 0; row < 100; ++row) {
+    content += nlohmann::json{{"request_id", row + 1},
+                              {"latency", row == 41 ? 80.0 : (row % 19) / 10.0},
+                              {"errors", row == 82 ? 90.0 : (row % 11) / 10.0},
+                              {"description", "request"}}
+                   .dump() +
+               "\n";
+  }
+  using namespace zetta::test::journey;
+  const Journey flow{
+      "M-7 table to measured findings",
+      {{"land the observations",
+        "upload_dataset",
+        {{"database", "operations"},
+         {"table_name", "requests"},
+         {"format", "jsonl"},
+         {"content", content}},
+        {.checks = {equals("/rows", 100)}}},
+       {"read the landed table",
+        "get_dataset",
+        {{"database", "operations"}, {"dataset", "requests"}},
+        {.checks = {equals("/rows", 100)}}},
+       {"create anomaly project",
+        "create_project",
+        {{"name", "anomaly-project"}}},
+       {"read project",
+        "get_project",
+        {{"name", "anomaly-project"}},
+        {.checks = {not_empty("/id")}}},
+       {"capture the detection goal",
+        "capture_intent",
+        {{"project", "anomaly-project"},
+         {"text", "Find unusual request latency and errors"}}},
+       {"read captured goal",
+        "get_project",
+        {{"name", "anomaly-project"}},
+        {.checks = {size_equals("/inputs", 1)}}},
+       {"compile M-7",
+        "compile_intent",
+        {{"project", "anomaly-project"},
+         {"methodology", "M-7"},
+         {"name", "detector"},
+         {"hints",
+          {{"source", "operations"},
+           {"table", "requests"},
+           {"entity_column", "request_id"},
+           {"alert_budget", 2}}}},
+        {.checks = {equals("/methodology", "M-7"), equals("/runnable", true)}}},
+       {"read M-7 pipeline",
+        "get_graph",
+        {{"project", "anomaly-project"}, {"graph", "detector"}},
+        {.checks = {equals("/methodology", "M-7"), equals("/runnable", true)}}},
+       {"execute the pipeline's own table",
+        "run",
+        {{"project", "anomaly-project"}, {"graph", "detector"}},
+        {.checks = {equals("/engine", "anomaly"), not_empty("/run_id")}},
+        {{"anomaly_run", "/run_id"}}},
+       {"wait for measured results",
+        "get_run",
+        {{"run_id", "$anomaly_run"}},
+        {.checks = {equals("/status", "succeeded"), size_equals("/outputs", 4),
+                    contains_element("/lineage/sources",
+                                     "operations.requests")}},
+        {},
+        Poll{"/status", {"succeeded", "failed"}}},
+       {"read anomaly facts",
+        "get_run_report",
+        {{"run_id", "$anomaly_run"}},
+        {.checks = {equals("/methodology", "M-7"),
+                    equals("/model/kind", "anomaly"),
+                    equals("/model/metrics/rows_scored", 100),
+                    equals("/model/metrics/flagged", 2),
+                    equals("/model/metrics/alert_rate", 0.02),
+                    equals("/model/metrics/alert_budget", 2),
+                    exists("/model/metrics/threshold"),
+                    equals("/dataset/source", "operations.requests"),
+                    equals("/dataset/rows_read", 100),
+                    equals("/dataset/rows_excluded", 0),
+                    contains_element(
+                        "/dataset/not_used",
+                        "description: not selected as a numeric feature"),
+                    size_equals("/output_tables", 2),
+                    equals("/anomalies/0/flagged", true),
+                    equals("/anomalies/1/flagged", true),
+                    equals("/anomalies/2/flagged", false),
+                    any_element("/missing", {{"/field", "precision_at_k"}})}},
+        {{"anomaly_table", "/output_tables/0/table"}}},
+       {"verify report table remains queryable",
+        "get_run_report",
+        {{"run_id", "$anomaly_run"}, {"limit", 1}},
+        {.checks = {size_equals("/anomalies", 1),
+                    size_equals("/output_tables", 2)}}}}};
+  const auto report = run_journey(flow, caller(), pump());
+  ASSERT_TRUE(report.ok) << report.summary();
+  const auto compiled = call("compile_intent", {{"project", "anomaly-project"},
+                                                {"solution", "S-7"},
+                                                {"name", "solution-detector"}});
+  ASSERT_TRUE(compiled.ok) << compiled.error.message;
+  EXPECT_EQ(compiled.value.at("methodology"), "M-7");
+  EXPECT_TRUE(compiled.value.at("runnable"));
+}
+
+TEST_F(Uc1Journey,
+       AnomalyMethodologyRejectsLabelFeatureOverridesBeforeStarting) {
+  ASSERT_TRUE(call("create_project", {{"name", "anomaly-negative"}}).ok);
+  ASSERT_TRUE(call("capture_intent", {{"project", "anomaly-negative"},
+                                      {"text", "detect anomalies"}})
+                  .ok);
+  ASSERT_TRUE(call("compile_intent", {{"project", "anomaly-negative"},
+                                      {"methodology", "M-7"},
+                                      {"name", "detector"}})
+                  .ok);
+  const auto result = call(
+      "run", {{"project", "anomaly-negative"},
+              {"graph", "detector"},
+              {"dataset",
+               {{"label_column", "fraud"}, {"feature_columns", {"fraud"}}}}});
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error.code, "invalid_input");
+  EXPECT_NE(result.error.message.find("label"), std::string::npos);
+  EXPECT_TRUE(node.runs().empty());
 }
 
 // =====================================================================

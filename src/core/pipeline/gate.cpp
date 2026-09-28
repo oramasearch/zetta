@@ -10,7 +10,7 @@ namespace zetta::pipeline {
 
 namespace {
 
-// Adapts a name + callable to the Check seam (see make_check). Stamps the
+// Adapts a name + callable to the Check interface (see make_check). Stamps the
 // registered name onto whatever CheckResult the callable returns, so the
 // reported name always matches the registered one.
 class FunctionCheck final : public Check {
@@ -78,6 +78,7 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());
+    gate.add_check(std::make_shared<AnomalyGraphCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.

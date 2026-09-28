@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "zetta/ir/step_kind.hpp"
+#include "zetta/ml/anomaly_methodology.hpp"
 
 namespace zetta::ml {
 
@@ -97,13 +98,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", true, "observed outcome")},
                 {"treatment effects", "targeting policy"},
                 {"uplift", "Qini", "policy value"}, 1045),
-        planned("M-7", "Anomaly detection", "Time & vigilance",
-                {"anomaly", "anomaly_detection", "outlier"}, {"S-7"},
-                {"anomaly", "outlier", "unusual", "spike"},
-                {input("time", false, "observation time"),
-                 input("feature", true, "signals to monitor")},
-                {"anomaly scores", "alerts"},
-                {"precision", "recall", "false alerts"}, 1046),
+        make_anomaly_methodology(),
         planned("M-8", "Recommendation / next-best-action", "Action & decision",
                 {"recommendation", "recommender", "next_best_action"}, {"S-11"},
                 {"recommend", "next best action", "next-best-action"},

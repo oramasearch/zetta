@@ -276,12 +276,13 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 5u);
+    ASSERT_EQ(gate.check_count(), 6u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
     EXPECT_EQ(gate.checks()[3]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[4]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -374,7 +375,7 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
     for (const char *unshipped :
-         {"forecast", "anomaly", "uplift", "survival"}) {
+         {"forecast", "uplift", "survival"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -598,7 +599,7 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
     for (const char *unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "graph"}) {
+         {"forecast", "uplift", "survival", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }

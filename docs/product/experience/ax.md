@@ -49,6 +49,12 @@ relay it to a person.
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).
+- **Label-free anomaly runs** (#1046): select M-7 or S-7, compile against a landed
+  table, run, and poll its durable handle. Reports return the governed threshold,
+  alert rate, ranked anomalies with robust contributors, output tables, and the
+  columns excluded from scoring. Labels are optional evaluation data only;
+  unsupported shapes, grouping, and non-causal KPI settings fail explicitly.
+  See [running M-7](../../ml/anomaly.md#running-it).
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.
