@@ -61,7 +61,7 @@ locked-override rows are suppressed. The lifetime cap is 52, the rolling
 seven-day cap is one, and the default budget is zero. Every tier keeps a 10%
 permanent holdout; planner reports omit protected series.
 
-S-6 through S-11 intentionally provide minimal starter policies derived from
+S-6 and S-8 through S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -73,6 +73,16 @@ S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
 S-5 uses the `planner_report` treatment cell and observes FVA, interval
 coverage, freshness, stockout censoring, and override auditability.
+
+S-7 defines critical/anomaly score floors of 0.8/0.0. Flagged rows create an A2
+decision-forum report with a one-day SLA; critical rows may be changed to an A1
+executive review with a four-hour SLA. Routing requires explicit eligibility,
+forum-owner assignment, and sensitive-driver access, while `suppressed` blocks
+action. The exact alert and lifetime cap is 12, with one action per entity per
+seven-day window. Its permanent 10% tier holdouts compare with `forum_routed`.
+Guardrails cover alert volume, false escalations, sensitive access, causal
+claims, decision closure, and action execution. Phased `decision_adopted`
+measurement remains descriptive until its module-specific estimator ships.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

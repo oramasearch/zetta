@@ -447,6 +447,30 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-7's domain adaptations (#1116). Driver language must remain
+// associational, anomaly delivery must obey an explicit alert budget, and KPI
+// scoring must use causal seasonal baselines rather than future observations.
+class S7CausalHumilityCheck final : public Check {
+public:
+    std::string name() const override { return "s7_causal_humility"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S7AlertBudgetCheck final : public Check {
+public:
+    std::string name() const override { return "s7_alert_budget"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S7SeasonalityBaselineCheck final : public Check {
+public:
+    std::string name() const override { return "s7_seasonality_baseline"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

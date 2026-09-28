@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, and S-12. S-6 through S-11 retain minimal defaults. This is the scope of
+S-5, S-7, and S-12. S-6 and S-8 through S-11 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -33,6 +33,10 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-5.md](S-5.md) — runnable demand forecasting module: prediction intervals,
   planner reports, exception queues, FVA, hierarchy checks, and protected
   holdouts (#1114).
+
+- [S-7.md](S-7.md) — runnable KPI anomaly and driver-analysis module: causal
+  seasonal baselines, alert budgets, forum reports, decision logs, protected
+  holdouts, and phased measurement (#1116).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -214,9 +218,28 @@ Each tier has a 10% protected holdout, and the planner report omits held-out
 series. Its five observed guardrails cover FVA, interval coverage, freshness,
 stockout censoring, and override auditability.
 
+S-7 is the complete KPI-forum default:
+
+| Setting | Executable default |
+|---|---|
+| Critical | score ≥ 0.8; decision-forum report, A2, one-day SLA |
+| Anomaly | score ≥ 0; decision-forum report, A2, one-day SLA |
+| Approval | optional critical-tier executive review; A1, four-hour SLA |
+| Alert/contact limits | 12 total and one action per entity per seven-day window |
+| Eligibility | `eligible`, `forum_owner_assigned`, and `sensitive_driver_access` must explicitly be true |
+| Exclusion | `suppressed` blocks routing |
+| Budget / stop | zero monetary spend; kill switch off |
+| Experiment | independent 10% holdout probability in each tier; remaining entities enter `forum_routed` |
+| Guardrails | alert volume 12; false escalations 0.25; zero access and causal-claim violations; closure 0.9; execution 0.95 |
+| Measurement | phased; named `decision_adopted` outcome per decision over 30 days; causal effect and ROI remain non-claimable |
+
+S-7 tasks and its report carry anomaly evidence, candidate drivers, the causal
+caveat, forum owner, protected cell, and decision-log requirement through the
+shared action-integration path.
+
 ### Minimal defaults
 
-**S-6 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-6 and S-8 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -227,7 +250,6 @@ require an owner-approved policy change before spending.
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
-| S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
 | S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
@@ -242,7 +264,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-and S-12 journeys.
+S-5, S-7, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -260,6 +282,10 @@ and point-in-time promise-to-pay labels. All completed modules run these checks 
 the graph is persisted and again before execution.
 For S-12, it refuses automated denial, missing fairness review, weak document
 thresholds, missing claim-score bindings, and incomplete level composition.
+
+For S-7, it refuses causal driver claims, a missing or mismatched alert budget,
+and noncausal or nonseasonal baselines. Levels 3 and 4 require rolling-origin
+M-4 context with a seasonal-naive baseline.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

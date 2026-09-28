@@ -103,7 +103,9 @@ relay it to a person.
   fairness review, and referral measurement. S-5 has full demand-planning
   defaults, rolling-origin and hierarchy refusals, interval exception tasks,
   protected planner reports, and an honest FVA readout.
-  S-6 through S-11 are marked minimal.
+  S-7 has full KPI anomaly defaults, causal-seasonality and alert-budget
+  refusals, candidate drivers, forum reports, a decision log, protected cells,
+  and a non-claimable phased readout. S-6 and S-8 through S-11 are marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,

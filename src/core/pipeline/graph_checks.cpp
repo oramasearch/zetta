@@ -662,6 +662,49 @@ CheckResult s5_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* s7_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-7") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-7 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s7_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-7 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s7_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-7 Pipeline to validate"};
+}
+
+CheckResult s7_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s7_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* object_field(const json& value, const char* name) {
     if (!value.is_object()) {
         return nullptr;
@@ -1937,6 +1980,134 @@ CheckResult S5LevelCompositionCheck::evaluate(
     }
     return s5_success(name(),
                       "S-5 selected level has every required methodology");
+}
+
+CheckResult S7CausalHumilityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* attribution = object_field(*profile, "driver_attribution");
+    if (attribution == nullptr ||
+        attribution->value("claim", std::string{}) != "associational" ||
+        attribution->value("causal_claims", true) ||
+        !attribution->value("caveat_required", false) ||
+        attribution->value("caveat", std::string{}).empty()) {
+        return s7_failure(
+            name(), "S-7 driver attribution must remain associational and "
+                    "carry an explicit causal caveat");
+    }
+    return s7_success(
+        name(), "S-7 reports candidate drivers without causal claims");
+}
+
+CheckResult S7AlertBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* alerting = object_field(*profile, "alerting");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (alerting == nullptr || anomaly == nullptr ||
+        !alerting->contains("alert_budget") ||
+        !alerting->at("alert_budget").is_number_integer() ||
+        alerting->at("alert_budget").get<int>() < 1 ||
+        alerting->value("owner_column", std::string{}).empty() ||
+        alerting->value("window_days", 0) < 1) {
+        return s7_failure(
+            name(), "S-7 requires a positive alert budget, reporting window, "
+                    "and forum owner role");
+    }
+    const auto configured = anomaly->attributes.find("alert_budget");
+    if (configured == anomaly->attributes.end() ||
+        !configured->is_number_integer() ||
+        configured->get<int>() != alerting->at("alert_budget").get<int>() ||
+        anomaly->attributes.contains("contamination")) {
+        return s7_failure(
+            name(), "S-7 anomaly scoring must use the declared exact alert "
+                    "budget instead of a contamination-rate approximation");
+    }
+    return s7_success(
+        name(), "S-7 anomaly scoring and forum routing share one alert budget");
+}
+
+CheckResult S7SeasonalityBaselineCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* baseline = object_field(*profile, "baseline");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (baseline == nullptr || anomaly == nullptr ||
+        baseline->value("kind", std::string{}) != "causal_seasonal" ||
+        !baseline->value("strictly_prior", false) ||
+        anomaly->attributes.value("mode", std::string{}) !=
+            "kpi_time_series" ||
+        !anomaly->attributes.value("causal", false) ||
+        anomaly->attributes.value("time_column", std::string{}).empty()) {
+        return s7_failure(
+            name(), "S-7 KPI detection requires a causal, seasonality-aware "
+                    "time-series baseline and an explicit time role");
+    }
+    const int seasonal_period =
+        anomaly->attributes.value("seasonal_period", 0);
+    const int trend_window = anomaly->attributes.value("trend_window", 0);
+    const int residual_window =
+        anomaly->attributes.value("residual_window", 0);
+    const int seasonal_cycles =
+        anomaly->attributes.value("seasonal_cycles", 0);
+    if (seasonal_period < 2 || trend_window < seasonal_period ||
+        residual_window < seasonal_period * 2 || seasonal_cycles < 2) {
+        return s7_failure(
+            name(), "S-7 seasonal windows must cover at least two complete "
+                    "cycles using only prior observations");
+    }
+    if (!has_methodology(graph, "M-7") ||
+        !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-3")) {
+        return s7_failure(
+            name(), "S-7 requires anomaly, tabular driver, and segmentation "
+                    "methodologies at every level");
+    }
+    if (level >= 3) {
+        const ir::Node* forecast = model_kind(graph, "forecast");
+        if (!has_methodology(graph, "M-4") || forecast == nullptr ||
+            forecast->attributes.value("baseline", std::string{}) !=
+                "seasonal_naive" ||
+            !forecast->attributes.value("temporal_validation", false) ||
+            forecast->attributes.value("split", std::string{}) !=
+                "rolling_origin") {
+            return s7_failure(
+                name(), "S-7 levels 3 and 4 require rolling-origin M-4 "
+                        "forecast context against a seasonal-naive baseline");
+        }
+    }
+    return s7_success(
+        name(), "S-7 baselines are causal, seasonal, and level-complete");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

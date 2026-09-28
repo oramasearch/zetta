@@ -64,6 +64,9 @@ S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
+S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
+anomaly score. Forum decisions copy the real flag, threshold, period, top
+candidate driver, deviation, and contributor list.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
@@ -102,6 +105,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    actionable audience syncs with predicted value and horizon, retain budget
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
+
+   S-7 routes only flagged rows within its exact alert budget, publishes one
+   candidate-driver report with a causal caveat, and includes the durable forum
+   decision log.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -176,3 +183,12 @@ S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
 checks protected-series suppression in both task and report actions, records
 planted forecast errors, observes all five guardrails, and verifies the FVA
 readout reports its current claim boundary.
+
+`SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
+and runs S-7 over a partitioned seasonal KPI table with planted spikes and
+correlated driver spikes. It excludes a future observation, verifies exact
+alert-budget selection, protected holdouts, action-integration tasks and report,
+the driver caveat, decision log, ledger, and guardrails. It records a planted
+forum-adoption difference and verifies that phased evidence remains visible
+while incrementality and ROI are explicitly non-claimable until a
+module-specific estimator exists.

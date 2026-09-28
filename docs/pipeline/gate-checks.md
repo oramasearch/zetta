@@ -41,6 +41,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `S5*Check` family | `s5_rolling_origin`, `s5_future_covariates`, `s5_hierarchy_consistency`, `s5_level_composition` | an S-5 graph with non-temporal validation, future covariates, a hierarchy that does not end at the forecast leaf, or a missing required methodology stage |
 
+| `S7*Check` family | `s7_causal_humility`, `s7_alert_budget`, `s7_seasonality_baseline` | an S-7 graph that makes causal driver claims, disagrees on the exact alert budget, uses noncausal seasonal windows, or omits required M-7/M-1/M-3/M-4 stages |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -146,6 +148,22 @@ M-2, M-4, and M-3 at every level and M-5 at levels 3 and 4.
 `sources.correctness` hierarchy settings. `run_solution` checks the stored
 profile again. See [S-5](../solutions/S-5.md) for its data, policy, actions,
 measurement, and readout boundary.
+
+### S-7 composed solution checks
+
+The S-7 checks engage only for a bound S-7 manifest. `s7_causal_humility`
+requires associational driver language, disables causal claims, and requires a
+nonempty forum caveat. `s7_alert_budget` requires one positive integer budget,
+a routing window and owner, and M-7 exact-budget selection with the same cap;
+contamination fractions are refused.
+
+`s7_seasonality_baseline` requires KPI time-series mode, causal windows, a time
+role, sufficient seasonal/trend/residual history, and M-7, M-1, and M-3 at every
+level. Levels 3 and 4 also require M-4 rolling-origin context with a
+seasonal-naive baseline. `create_solution` binds the correctness profile from
+the module sources, and `run_solution` checks the stored profile again. See
+[S-7](../solutions/S-7.md) for the data, forum action, and phased measurement
+contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

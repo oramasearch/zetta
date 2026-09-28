@@ -12,6 +12,13 @@ the first landing (#1152), preserving S-1, S-2, S-3, S-4, and S-12.
    uplift handling, claim safeguards, tests, and documentation remain intact.
    The gate now has 55 checks; both count assertions and the ordered-name
    regression reflect the registration list.
+2. S-7 KPI Anomaly & Driver Analysis (#1149): retain all three anomaly domain
+   checks, defaults, exact alert selection, flagged-only forum tasks, driver
+   caveats, decision-log evidence, phased readout, and registry/journey tests.
+   Report dispatch now keeps S-1 driver, S-3 allocation, S-5 planner, and S-7
+   forum reports. S-7's M-4 source handling is scoped to S-7 so S-5 retains
+   its snapshot annotations. Both ordered-name regressions list all 58 checks,
+   including the four S-5 checks.
 
 Each incoming branch is joined with a merge commit. No formatter is run.
 After each merge, the per-file line counts are audited against both parents.

@@ -112,6 +112,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   guardrails, and an explicitly non-causal FVA readout. See
   [solutions/S-5.md](solutions/S-5.md).
 
+- **S-7 KPI Anomaly & Driver Analysis (#1116)** — runnable at levels 1–4 with
+  M-7/M-1/M-3 and optional M-4 context, causal seasonal baselines, an exact
+  alert budget, associational driver evidence, protected forum routing, a
+  decision log, and honest phased measurement. See
+  [solutions/S-7.md](solutions/S-7.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to
