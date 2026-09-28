@@ -53,7 +53,15 @@ customer. It caps lifetime contacts at six and rolling contacts at one per
 seven days. Its champion/challenger design protects a 10% holdout and splits
 treatment between dialer and digital cells.
 
-S-5 through S-11 intentionally provide minimal starter policies derived from
+S-10 defines critical/elevated/standard score floors of 0.9/0.65/0.0. Critical
+requests create A2 fraud-review tasks with a 15-minute SLA, elevated requests
+return A2 challenges, and standard requests return A2 approvals. An optional
+block is A1. Eligibility requires current request-time and graph evidence; a
+named exclusion or manual-authorization-only flag suppresses action. Its
+deterministic experiment protects 10% of every score band and assigns the rest
+across champion, challenger, and exploration cells.
+
+S-5 through S-9 and S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -63,6 +71,8 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-10 observes fraud loss, false declines, challenge rate, review load, and
+action execution over a champion/challenger design.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

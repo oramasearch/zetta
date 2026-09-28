@@ -38,6 +38,7 @@ The reusable annotation and methodology-specific checks are:
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 | `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
+| `S10*Check` family | `s10_label_delay`, `s10_declined_selection_bias`, `s10_request_time_feature_parity`, `s10_level_composition` | an S-10 graph with immature labels, declined-request selection bias, unlogged exploration, request-time feature drift, stale graph evidence, or missing level stages |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -129,6 +130,25 @@ low-confidence review routing, and exactly the methodology stages registered
 for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
+
+### S-10 composed solution checks
+
+The S-10 checks engage only for a bound S-10 manifest and evaluate the full
+composed graph once. `s10_label_delay` requires a named fully matured fraud or
+case label whose observed delay meets the configured minimum.
+`s10_declined_selection_bias` requires declined requests in the learning
+population, logged exploration propensity in the training contract, and
+below-the-line audit evidence. `s10_request_time_feature_parity` requires exact
+training/authorization feature equality, named graph features, bounded
+freshness, and a graph cutoff no later than the decision.
+`s10_level_composition` requires M-1, M-2, and M-12 at every level and M-5 at
+levels 3 and 4. M-12's `graph_edge_time` check still validates the graph stage
+itself.
+
+`create_solution` derives the profile from the snapshot, dataset roles, and
+optional `sources.correctness` overrides. `run_solution` checks the persisted
+profile again. See [S-10](../solutions/S-10.md) for the full run, action, and
+measurement contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

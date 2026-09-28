@@ -136,7 +136,8 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
     const bool solution_with_numeric_cutoff =
         manifest &&
         (manifest->attributes.value("solution", std::string{}) == "S-1" ||
-         manifest->attributes.value("solution", std::string{}) == "S-2");
+         manifest->attributes.value("solution", std::string{}) == "S-2" ||
+         manifest->attributes.value("solution", std::string{}) == "S-10");
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
@@ -415,6 +416,59 @@ void bind_s12_correctness(ir::ExecutionGraph& graph,
            common.value("fast_track_requires_clear", true)}}}};
 }
 
+void bind_s10_correctness(ir::ExecutionGraph& graph,
+                          const SnapshotSpec& snapshot,
+                          const Json& settings,
+                          const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-10") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    const Json training_features =
+        settings.at("dataset").value("feature_columns", Json::array());
+    const double minimum_delay =
+        common.value("minimum_label_delay_seconds", 14.0 * 86400.0);
+    Json profile = {
+        {"prediction_time", snapshot.as_of},
+        {"labels",
+         {{"label_column",
+           settings.at("dataset").value("label_column", std::string{})},
+          {"minimum_delay_seconds", minimum_delay},
+          {"observed_delay_seconds",
+           common.value("observed_label_delay_seconds", 45.0 * 86400.0)},
+          {"fully_matured", common.value("fully_matured_labels", true)}}},
+        {"selection_bias",
+         {{"declined_transactions_included",
+           common.value("declined_transactions_included", true)},
+          {"exploration_logged",
+           common.value("exploration_logged", true)},
+          {"below_line_audit", common.value("below_line_audit", true)},
+          {"decision_propensity_column",
+           common.value("decision_propensity_column",
+                        "decision_propensity")}}},
+        {"feature_parity",
+         {{"training_features", training_features},
+          {"request_time_features",
+           common.value("request_time_features", training_features)},
+          {"graph_features",
+           common.value("graph_features", Json{"graph_page_rank"})},
+          {"maximum_age_seconds",
+           common.value("maximum_feature_age_seconds", 5.0)},
+          {"observed_age_seconds",
+           common.value("observed_feature_age_seconds", 0.0)},
+          {"graph_cutoff_at_or_before_decision",
+           common.value("graph_cutoff_at_or_before_decision", true)}}}};
+    manifest->attributes["s10_correctness"] = std::move(profile);
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -493,6 +547,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s3_correctness"] = {{"type", "object"}};
     schema["properties"]["s4_correctness"] = {{"type", "object"}};
     schema["properties"]["s12_correctness"] = {{"type", "object"}};
+    schema["properties"]["s10_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -536,6 +591,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s4_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"), *solution);
     bind_s12_correctness(composed.graph, *solution, settings,
+                         input.at("sources"));
+    bind_s10_correctness(composed.graph, *snapshot, settings,
                          input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
@@ -589,6 +646,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "claim_id"},
                 {"score_column", "referral_score"},
                 {"output_name", "Publish claim referral scores"}};
+        } else if (solution->id == "S-10") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "transaction"},
+                {"score_column", "fraud_score"},
+                {"output_name", "Write fraud authorization scores"}};
         }
     }
     if (solution->id == "S-1") {
@@ -611,6 +674,9 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         binding["s12_correctness"] =
             composed.graph.find_node("solution_manifest")
                 ->attributes.at("s12_correctness");
+    } else if (solution->id == "S-10") {
+        binding["s10_correctness"] = composed.graph.find_node("solution_manifest")
+                                         ->attributes.at("s10_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -844,6 +910,22 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             entity.value("document_confidence_clear", false);
         spec.payload["fairness_review_passed"] =
             entity.value("fairness_review_passed", false);
+    } else if (binding.value("solution", std::string{}) == "S-10") {
+        spec.payload["authorization_decision"] =
+            decision.action == "fraud_review_task"
+                ? "review"
+                : decision.action;
+        spec.payload["case_task"] =
+            decision.action == "fraud_review_task";
+        spec.payload["case_queue"] = spec.owner;
+        spec.payload["transaction_id"] = decision.entity_id;
+        for (const std::string field :
+             {"account_id", "merchant_id", "counterparty_id", "amount",
+              "graph_page_rank", "graph_component"}) {
+            if (entity.contains(field)) {
+                spec.payload[field] = entity.at(field);
+            }
+        }
     }
     spec.idempotency_key = decision.id;
     spec.model_version = run_id;
@@ -1072,6 +1154,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t actionable = 0;
     std::size_t delivered = 0;
     std::size_t capacity_violations = 0;
+    std::size_t operational_fraud_rows = 0;
+    std::size_t operational_legitimate_rows = 0;
+    std::size_t fraud_losses = 0;
+    std::size_t false_declines = 0;
+    std::size_t challenges = 0;
+    std::size_t review_tasks = 0;
+    std::size_t operational_decisions = 0;
     std::map<std::string, std::size_t> driver_counts;
     Json decision_log = Json::array();
     std::string model_version = "run:" + run_id;
@@ -1121,6 +1210,16 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 {"value_band", decision->tier},
                 {"segment", entity.value("segment", "unclassified")},
                 {"driver", driver}};
+        } else if (binding.value("solution", std::string{}) == "S-10") {
+            entity["decision_cell"] = {
+                {"authorization_band", decision->tier},
+                {"graph_component",
+                 entity.value("graph_component", -1)},
+                {"graph_page_rank",
+                 entity.value("graph_page_rank", 0.0)},
+                {"case_owner",
+                 entity.value("owner",
+                              binding.at("delivery").at("owner").get<std::string>())}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -1169,6 +1268,34 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             }
             if (entity.value("vulnerable", true)) {
                 vulnerable_customer_contacts += 1.0;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "S-10" &&
+            !decision->holdout) {
+            ++operational_decisions;
+            const std::string label_column =
+                binding.at("dataset").at("label_column");
+            const bool fraudulent =
+                entity.contains(label_column) &&
+                ((entity.at(label_column).is_boolean() &&
+                  entity.at(label_column).get<bool>()) ||
+                 (entity.at(label_column).is_number() &&
+                  entity.at(label_column).get<double>() != 0.0));
+            if (fraudulent) {
+                ++operational_fraud_rows;
+                if (decision->action == "approve") {
+                    ++fraud_losses;
+                }
+            } else {
+                ++operational_legitimate_rows;
+                if (decision->action == "block") {
+                    ++false_declines;
+                }
+            }
+            if (decision->action == "challenge") {
+                ++challenges;
+            } else if (decision->action == "fraud_review_task") {
+                ++review_tasks;
             }
         }
         ++driver_counts[driver];
@@ -1279,6 +1406,33 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                         metrics.at("field_precision").get<double>());
                 }
             }
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "S-10") {
+            monitor->observe_guardrail(
+                "fraud_loss_rate",
+                operational_fraud_rows == 0
+                    ? 0.0
+                    : static_cast<double>(fraud_losses) /
+                          static_cast<double>(operational_fraud_rows));
+            monitor->observe_guardrail(
+                "false_decline_rate",
+                operational_legitimate_rows == 0
+                    ? 0.0
+                    : static_cast<double>(false_declines) /
+                          static_cast<double>(operational_legitimate_rows));
+            monitor->observe_guardrail(
+                "challenge_rate",
+                operational_decisions == 0
+                    ? 0.0
+                    : static_cast<double>(challenges) /
+                          static_cast<double>(operational_decisions));
+            monitor->observe_guardrail(
+                "review_queue_rate",
+                operational_decisions == 0
+                    ? 0.0
+                    : static_cast<double>(review_tasks) /
+                          static_cast<double>(operational_decisions));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else {

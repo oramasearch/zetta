@@ -62,8 +62,11 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
-Inputs and score scales for the remaining modules stay their catalogue module's
-responsibility while their templates are minimal.
+S-10's M-1 stage writes `fraud_results.authorization_scores_*` with
+`transaction` and `fraud_score` columns. The module binds that real output,
+not the retention table, and crosses its authorization band with graph and
+case-owner evidence. Inputs and score scales for the remaining modules stay
+their catalogue module's responsibility while their templates are minimal.
 
 ## Run and read back
 
@@ -98,6 +101,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    actionable audience syncs with predicted value and horizon, retain budget
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
+
+S-10 uses the same execution order with M-2 → M-12 → M-1 at levels 1 and 2;
+levels 3 and 4 append M-5. Its action payload includes the request-time
+authorization decision and graph evidence. Critical decisions also create an
+owned case task. Holdout requests produce ledger evidence but no connector
+delivery.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -160,3 +169,11 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.FraudDecisioningActsAtRequestTimeAndRecoversPlantedEffect`
+builds and runs S-10 over a partitioned authorization and relationship fixture.
+It excludes a future request, reads a fraud-specific M-1 score table, verifies
+request-time and case-management payloads, proves permanent holdout
+suppression, observes all five guardrails, records centered fraud-loss outcomes
+with a `-0.12` treatment effect, and checks that the champion/challenger
+readout's estimate and 95% confidence interval recover the planted effect.

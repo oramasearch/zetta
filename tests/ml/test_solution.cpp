@@ -230,6 +230,42 @@ zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s10_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-10");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s10_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"labels",
+         {{"label_column", "fraud_label"},
+          {"minimum_delay_seconds", 1209600.0},
+          {"observed_delay_seconds", 3888000.0},
+          {"fully_matured", true}}},
+        {"selection_bias",
+         {{"declined_transactions_included", true},
+          {"exploration_logged", true},
+          {"below_line_audit", true},
+          {"decision_propensity_column", "decision_propensity"}}},
+        {"feature_parity",
+         {{"training_features",
+           {"amount", "decision_propensity", "graph_page_rank"}},
+          {"request_time_features",
+           {"amount", "decision_propensity", "graph_page_rank"}},
+          {"graph_features", {"graph_page_rank"}},
+          {"maximum_age_seconds", 5.0},
+          {"observed_age_seconds", 0.5},
+          {"graph_cutoff_at_or_before_decision", true}}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -287,6 +323,15 @@ void expect_s12_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_s10_failure(const zetta::ir::ExecutionGraph& graph,
+                        const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
@@ -312,7 +357,7 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.templates.minimal,
                       solution.id != "S-1" && solution.id != "S-2" &&
                       solution.id != "S-3" && solution.id != "S-4" &&
-                      solution.id != "S-12");
+                      solution.id != "S-10" && solution.id != "S-12");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -426,6 +471,38 @@ TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
               "A1");
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, FraudDecisioningEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* fraud =
+        zetta::ml::find_solution("S-10");
+    ASSERT_NE(fraud, nullptr);
+    EXPECT_TRUE(fraud->runnable);
+    EXPECT_EQ(fraud->issue,
+              "https://github.com/oramasearch/zetta/issues/1119");
+    EXPECT_FALSE(fraud->templates.minimal);
+    EXPECT_EQ(fraud->action_patterns.size(), 2u);
+    EXPECT_EQ(fraud->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(fraud->templates.experiment.treatment_cells,
+              (std::vector<std::string>{
+                  "champion", "challenger", "exploration"}));
+    ASSERT_EQ(fraud->templates.guardrails.size(), 5u);
+    EXPECT_EQ(fraud->templates.guardrails.front().metric,
+              "fraud_loss_rate");
+    EXPECT_EQ(fraud->templates.guardrails.back().direction, "minimum");
+    EXPECT_EQ(fraud->templates.measurement.design,
+              "champion_challenger");
+    EXPECT_EQ(fraud->templates.measurement.outcome, "fraud_loss");
+
+    const nlohmann::json policy = fraud->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("contact_cap"), 1);
+    EXPECT_EQ(policy.at("actions").at("block").at("autonomy"), "A1");
+    EXPECT_EQ(policy.at("actions")
+                  .at("fraud_review_task")
+                  .at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 4u);
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -772,6 +849,58 @@ TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
         EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
                       methods.end(),
                   level >= 3);
+    }
+}
+
+TEST(SolutionRegistry, S10ChecksRefuseEachFraudDecisioningWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_s10_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto delayed_label = bound_s10_graph();
+    delayed_label.find_node("solution_manifest")
+        ->attributes["s10_correctness"]["labels"]
+                   ["observed_delay_seconds"] = 86400.0;
+    expect_s10_failure(delayed_label, "s10_label_delay");
+
+    auto declined_bias = bound_s10_graph();
+    declined_bias.find_node("solution_manifest")
+        ->attributes["s10_correctness"]["selection_bias"]
+                   ["declined_transactions_included"] = false;
+    expect_s10_failure(declined_bias, "s10_declined_selection_bias");
+
+    auto feature_parity = bound_s10_graph();
+    feature_parity.find_node("solution_manifest")
+        ->attributes["s10_correctness"]["feature_parity"]
+                   ["request_time_features"] = {
+        "amount", "decision_propensity"};
+    expect_s10_failure(feature_parity,
+                       "s10_request_time_feature_parity");
+
+    auto stale_graph = bound_s10_graph();
+    stale_graph.find_node("solution_manifest")
+        ->attributes["s10_correctness"]["feature_parity"]
+                   ["observed_age_seconds"] = 6.0;
+    expect_s10_failure(stale_graph,
+                       "s10_request_time_feature_parity");
+}
+
+TEST(SolutionRegistry, S10EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s10_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
     }
 }
 

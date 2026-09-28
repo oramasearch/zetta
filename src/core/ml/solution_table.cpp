@@ -72,6 +72,7 @@ Solution band_a(
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
+                           : solution.id == "S-10" ? 1119
                            : solution.id == "S-12" ? 1121
                                                      : 1102);
     return solution;
@@ -389,13 +390,18 @@ const std::vector<Solution>& solutions() {
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-12", "foundation", 1}, {"M-5", "attachable", 3}},
             {"M-2", "M-12", "M-1", "M-5"},
-            {"request-time authorization decision", "case tasks"}, {"L4", "L1"},
-            {{"in-band decisions", "A2"}, {"emergency rules and promotions", "A1"},
+            {"request-time authorization decisions", "case-management tasks"},
+            {"L4 authorization decision", "L1 case triage"},
+            {{"approve, challenge, and review decisions", "A2"},
+             {"blocks, emergency rules, and promotions", "A1"},
              {"thresholds inside approved bands", "A3"}},
-            {{"entity", true, "account, device, merchant, and counterparty graph"},
+            {{"entity", true, "transaction or authorization request"},
              {"label", true, "matured fraud, dispute, or case disposition"},
              {"time", true, "request-time and label-maturation chronology"},
-             {"group", true, "relationship edges and investigation groups"}},
+             {"feature", true, "request-time transaction, device, and behavioral signals"},
+             {"group", true, "account, device, merchant, and counterparty edges"},
+             {"propensity", true, "logged authorization or exploration propensity"},
+             {"owner", true, "case queue or investigation owner"}},
             "Approve, challenge, review, and block bands with friction budgets, fallback rules, approvals, and expiry.",
             "Continuous champion/challenger with a protected exploration slice and below-the-line audits.",
             {"fraud loss", "approval rate", "challenge rate", "review load", "fairness"},

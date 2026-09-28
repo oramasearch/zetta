@@ -416,6 +416,41 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-10's domain adaptations (#1119). Fraud labels must be mature, declined
+// requests must remain represented through logged exploration and audit, and
+// the online authorization path must use the exact training feature contract.
+class S10LabelDelayCheck final : public Check {
+public:
+    std::string name() const override { return "s10_label_delay"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10DeclinedSelectionBiasCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s10_declined_selection_bias";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10RequestTimeFeatureParityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s10_request_time_feature_parity";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s10_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

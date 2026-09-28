@@ -122,8 +122,10 @@ What's inside, by domain (each links to that domain's docs):
   dialer delivery; a permanent holdout; and net-recovery readout.
   S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
   SIU paths, A0-only denial, document-confidence and fairness refusals, action
-  tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
-  editable defaults. Snapshot
+  tasks, holdout, and ROI readout. S-5 through S-9 and S-11 have explicitly minimal
+  editable defaults. S-10 adds
+  request-time fraud decisions with graph evidence, case tasks, and delayed-
+  label, selection-bias, and feature-parity refusals. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
