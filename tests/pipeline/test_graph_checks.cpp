@@ -698,7 +698,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 51u);
+    ASSERT_EQ(gate.check_count(), 55u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -750,6 +750,10 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[48]->name(), "privacy_budget");
     EXPECT_EQ(gate.checks()[49]->name(), "streaming_correctness");
     EXPECT_EQ(gate.checks()[50]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[51]->name(), "s6_service_budget_constraints");
+    EXPECT_EQ(gate.checks()[52]->name(), "s6_lead_time_realism");
+    EXPECT_EQ(gate.checks()[53]->name(), "s6_order_approval");
+    EXPECT_EQ(gate.checks()[54]->name(), "s6_level_composition");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {

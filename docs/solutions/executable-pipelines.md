@@ -62,8 +62,11 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
-Inputs and score scales for the remaining modules stay their catalogue module's
-responsibility while their templates are minimal.
+S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
+the declared lead-time horizon into one decision score per item-location. Its
+M-4 stage reads the configured bounded history table; M-16 and M-5 read the
+latest decision snapshot. Inputs and score scales for the remaining modules
+stay their catalogue module's responsibility while their templates are minimal.
 
 ## Run and read back
 
@@ -78,8 +81,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. All stage Connect nodes read this snapshot. An ISO cutoff is
-   carried into feature planning from the snapshot annotation, not inferred.
+   each child Run. Stage Connect nodes read this snapshot except S-6 M-4, which
+   reads its configured bounded history table. An ISO cutoff is carried into
+   feature planning from the snapshot annotation, not inferred.
 3. Join the chosen model output to snapshot evidence, exactly once per entity.
    `DecisionPolicyStore::decide` selects the tier/action and enforces policy,
    then calls the experiment manager in the same path. Protected cells clear
@@ -160,3 +164,10 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect`
+builds and runs level-4 S-6 over partitioned demand history. It executes M-4,
+M-16, and M-5, aggregates the real lead-time forecast, protects the permanent
+holdout, checks bounded ERP release payloads and all five guardrails, records
+centered service-level outcomes with a 0.12 effect, and verifies that the
+readout estimate and 95% confidence interval recover the planted effect.

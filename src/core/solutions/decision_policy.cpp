@@ -317,9 +317,23 @@ Json select_action(const Json& config, const Json& entity, DecisionRecord& decis
     const Json actions = config.value("actions", Json::object());
     const Json settings = actions.value(decision.action, Json::object());
     decision.autonomy = settings.value("autonomy", decision.autonomy);
-    if (settings.contains("approval_above") &&
-        decision.cost > settings.at("approval_above").get<double>()) {
-        decision.autonomy = "A1";
+    if (settings.contains("approval_above")) {
+        double approval_value = decision.cost;
+        bool approval_evidence_valid = true;
+        if (settings.contains("approval_field")) {
+            const std::string approval_field =
+                settings.at("approval_field").get<std::string>();
+            const auto evidence = entity.find(approval_field);
+            approval_evidence_valid =
+                evidence != entity.end() && evidence->is_number();
+            if (approval_evidence_valid) {
+                approval_value = evidence->get<double>();
+            }
+        }
+        if (!approval_evidence_valid ||
+            approval_value > settings.at("approval_above").get<double>()) {
+            decision.autonomy = "A1";
+        }
     }
     return settings;
 }
@@ -608,6 +622,10 @@ const Json& decision_policy_config_schema() {
       "approval_above": {
         "type": "number",
         "minimum": 0
+      },
+      "approval_field": {
+        "type": "string",
+        "minLength": 1
       },
       "sla_seconds": {
         "type": "integer",

@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-and S-12. S-5 through S-11 retain minimal defaults. This is the scope of
+S-6, and S-12. S-5 and S-7 through S-11 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 
@@ -28,6 +28,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
   data, claim paths, A0-only denial, fairness and document checks, holdout, and
   execution (#1121).
+- [S-6.md](S-6.md) — runnable replenishment module: lead-time forecasts,
+  constrained plans, ERP actions, bounded release, holdout, and planted-effect
+  proof (#1115).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -200,9 +203,25 @@ fairness-review evidence are mandatory. Catastrophe and manual-only flags block
 delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
 10% tier holdout measures `referral_confirmed` over 45 days.
 
+### S-6 executable defaults
+
+S-6 is the complete replenishment default:
+
+| Setting | Executable default |
+|---|---|
+| Replenish | lead-time demand score ≥ 1; action selected by capability level |
+| Actions | draft A0; ERP task A2; release A2 through 100 units and A1 above 100 |
+| Hard bounds | quantities above 500 blocked; positive service and budget constraints required |
+| Eligibility | `eligible` and `lead_time_confirmed` true; inventory holds and supplier blocks excluded |
+| Contact limits | 52 lifetime actions and one action per 30-day window |
+| Budget / stop | 10,000 currency units; kill switch off |
+| Experiment | permanent 10% holdout; remaining entities enter `replenishment_action` |
+| Guardrails | spend, minimum service level, inventory exposure, order volatility, and unapproved over-bound orders |
+| Measurement | holdout; named `service_level` outcome per item-location over 30 days |
+
 ### Minimal defaults
 
-**S-5 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-5 and S-7 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -213,7 +232,6 @@ require an owner-approved policy change before spending.
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
 | S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
-| S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
 | S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
 | S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
@@ -229,7 +247,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-and S-12 journeys.
+S-6, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -247,6 +265,9 @@ and point-in-time promise-to-pay labels. All completed modules run these checks 
 the graph is persisted and again before execution.
 For S-12, it refuses automated denial, missing fairness review, weak document
 thresholds, missing claim-score bindings, and incomplete level composition.
+For S-6, it refuses missing service or budget constraints, an M-4 horizon
+shorter than lead time, unsafe automatic/hard quantity bounds, and a level that
+omits M-4, M-16, M-5 when required, or its configured kill switch.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

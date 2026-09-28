@@ -4237,6 +4237,10 @@
                               "minimum": 0,
                               "type": "number"
                             },
+                            "approval_field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "autonomy": {
                               "enum": [
                                 "A0",
@@ -4545,6 +4549,10 @@
                                         "approval_above": {
                                           "minimum": 0,
                                           "type": "number"
+                                        },
+                                        "approval_field": {
+                                          "minLength": 1,
+                                          "type": "string"
                                         },
                                         "autonomy": {
                                           "enum": [
@@ -10903,6 +10911,10 @@
                                           "minimum": 0,
                                           "type": "number"
                                         },
+                                        "approval_field": {
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
                                         "autonomy": {
                                           "enum": [
                                             "A0",
@@ -12706,6 +12718,10 @@
                                       "approval_above": {
                                         "minimum": 0,
                                         "type": "number"
+                                      },
+                                      "approval_field": {
+                                        "minLength": 1,
+                                        "type": "string"
                                       },
                                       "autonomy": {
                                         "enum": [
@@ -16690,6 +16706,10 @@
                                         "approval_above": {
                                           "minimum": 0,
                                           "type": "number"
+                                        },
+                                        "approval_field": {
+                                          "minLength": 1,
+                                          "type": "string"
                                         },
                                         "autonomy": {
                                           "enum": [
@@ -23284,6 +23304,10 @@
                               "minimum": 0,
                               "type": "number"
                             },
+                            "approval_field": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
                             "autonomy": {
                               "enum": [
                                 "A0",
@@ -23601,6 +23625,10 @@
                                         "approval_above": {
                                           "minimum": 0,
                                           "type": "number"
+                                        },
+                                        "approval_field": {
+                                          "minLength": 1,
+                                          "type": "string"
                                         },
                                         "autonomy": {
                                           "enum": [

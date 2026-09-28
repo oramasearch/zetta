@@ -42,6 +42,8 @@ struct SolutionTemplates {
 };
 
 SolutionTemplates solution_templates(const std::string& solution_id);
+nlohmann::json solution_policy_template(const std::string& solution_id,
+                                        int level);
 nlohmann::json to_json(const SolutionExperimentTemplate& value);
 nlohmann::json to_json(const SolutionGuardrail& value);
 nlohmann::json to_json(const SolutionMeasurement& value);

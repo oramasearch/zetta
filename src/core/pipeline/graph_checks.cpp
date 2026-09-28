@@ -593,6 +593,36 @@ const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s6_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-6") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-6 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s6_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-6 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -616,6 +646,19 @@ CheckResult s2_failure(std::string name, std::string reason) {
 }
 
 CheckResult s2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s6_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-6 Pipeline to validate"};
+}
+
+CheckResult s6_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s6_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
@@ -1276,6 +1319,162 @@ CheckResult S2CapacityRoutingCheck::evaluate(
     }
     return s2_success(
         name(), "S-2 routing is owner-, territory-, and capacity-aware");
+}
+
+CheckResult S6ServiceBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto service = profile->find("service_level_target");
+    const auto budget = profile->find("budget_limit");
+    const auto constraints = profile->find("required_constraints");
+    if (service == profile->end() || !service->is_number() ||
+        service->get<double>() <= 0.0 || service->get<double>() > 1.0) {
+        return s6_failure(
+            name(), "S-6 service-level target must be in the interval (0, 1]");
+    }
+    if (budget == profile->end() || !budget->is_number() ||
+        budget->get<double>() <= 0.0) {
+        return s6_failure(name(),
+                          "S-6 requires a positive replenishment budget cap");
+    }
+    if (constraints == profile->end() || !constraints->is_array()) {
+        return s6_failure(
+            name(), "S-6 must name service-level and budget constraints");
+    }
+    std::unordered_set<std::string> named;
+    for (const json& constraint : *constraints) {
+        if (constraint.is_string()) {
+            named.insert(constraint.get<std::string>());
+        }
+    }
+    if (!named.contains("service_level") || !named.contains("budget")) {
+        return s6_failure(
+            name(), "S-6 must optimize under both service-level and budget constraints");
+    }
+    const ir::Node* optimization = model_kind(graph, "optimization");
+    if (optimization == nullptr ||
+        !optimization->attributes.value("verify_constraints", false)) {
+        return s6_failure(
+            name(), "S-6 requires M-16 to verify every replenishment constraint");
+    }
+    return s6_success(
+        name(), "S-6 has bounded service and spend constraints with verification");
+}
+
+CheckResult S6LeadTimeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto lead_time = profile->find("lead_time_days");
+    const auto horizon = profile->find("forecast_horizon_days");
+    const std::string source =
+        profile->value("lead_time_source", std::string{});
+    if (lead_time == profile->end() || !lead_time->is_number() ||
+        lead_time->get<double>() <= 0.0 || source != "snapshot") {
+        return s6_failure(
+            name(), "S-6 requires a positive lead time from frozen source evidence");
+    }
+    if (horizon == profile->end() || !horizon->is_number() ||
+        horizon->get<double>() < lead_time->get<double>()) {
+        return s6_failure(
+            name(), "S-6 forecast horizon must cover the replenishment lead time");
+    }
+    return s6_success(name(),
+                      "S-6 forecast horizon covers the evidenced lead time");
+}
+
+CheckResult S6OrderApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto automatic =
+        profile->find("automatic_release_max_quantity");
+    const auto hard = profile->find("hard_order_max_quantity");
+    const auto approval = profile->find("approval_above");
+    if (automatic == profile->end() || !automatic->is_number() ||
+        automatic->get<double>() <= 0.0 || hard == profile->end() ||
+        !hard->is_number() ||
+        hard->get<double>() < automatic->get<double>()) {
+        return s6_failure(
+            name(), "S-6 order quantities need positive automatic and hard bounds");
+    }
+    if (approval == profile->end() || !approval->is_number() ||
+        approval->get<double>() > automatic->get<double>() ||
+        profile->value("approval_field", std::string{}) != "order_quantity" ||
+        !profile->value("approval_required", false) ||
+        !profile->value("hard_order_bound_enforced", false)) {
+        return s6_failure(
+            name(), "S-6 must require approval above the automatic quantity bound and block the hard bound");
+    }
+    return s6_success(
+        name(), "S-6 routes over-bound orders to approval and enforces a hard limit");
+}
+
+CheckResult S6LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    if (!has_methodology(graph, "M-4") ||
+        !has_methodology(graph, "M-16")) {
+        return s6_failure(
+            name(), "S-6 requires M-4 forecasting and M-16 optimization");
+    }
+    if (level >= 3 && !has_methodology(graph, "M-5")) {
+        return s6_failure(
+            name(), "S-6 level 3 and above requires M-5 time-to-stockout");
+    }
+    const std::string expected_action =
+        level <= 1 ? "draft_order"
+        : level >= 4 ? "release_order"
+                     : "erp_replenishment_task";
+    if (profile->value("level_action", std::string{}) != expected_action) {
+        return s6_failure(
+            name(), "S-6 selected level has the wrong action authority");
+    }
+    if (level >= 4 &&
+        !profile->value("kill_switch_configured", false)) {
+        return s6_failure(
+            name(), "S-6 level 4 requires a configured kill switch");
+    }
+    return s6_success(name(),
+                      "S-6 selected level has every required stage and action bound");
 }
 
 CheckResult S3ShortTenureCensoringCheck::evaluate(

@@ -53,7 +53,16 @@ customer. It caps lifetime contacts at six and rolling contacts at one per
 seven days. Its champion/challenger design protects a 10% holdout and splits
 treatment between dialer and digital cells.
 
-S-5 through S-11 intentionally provide minimal starter policies derived from
+S-6 defines replenish/no-order tiers. The replenish action is selected by
+level: A0 draft at level 1, A2 ERP task at levels 2–3, and A2 bounded release
+at level 4. `approval_field: order_quantity` changes release authority to A1
+above 100 units, while the 500-unit eligibility bound blocks larger orders.
+Eligibility also requires confirmed lead time; inventory holds and supplier
+blocks suppress action. The budget is 10,000 currency units, the rolling cap is
+one action per 30 days, and the lifetime cap is 52. Its permanent 10% holdout
+measures `service_level` against the `replenishment_action` cell.
+
+S-5 and S-7 through S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -63,6 +72,8 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-6 observes replenishment spend, service level, inventory exposure, order
+volatility, and unapproved over-bound orders.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

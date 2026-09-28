@@ -97,6 +97,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   fairness review, protected holdouts, and measured referral outcomes are
   covered by [solutions/S-12.md](solutions/S-12.md).
 
+- **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
+  with M-4 lead-time forecasting, M-16 constrained planning, optional M-5
+  time-to-stockout, complete policy and holdout defaults, bounded ERP release,
+  five observed guardrails, and a service-level ROI readout. See
+  [solutions/S-6.md](solutions/S-6.md).
+
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal
   handler protection. Solution monitors, experiments/assignments and ledger
