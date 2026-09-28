@@ -1,15 +1,37 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "temp_dir.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/node.hpp"
 #include "zetta/util/uuid.hpp"
 
 using zetta::cluster::ReplicationManager;
 using zetta::cluster::ReplicationPolicy;
+
+namespace {
+
+zetta::NodeConfig config_for(const zetta::test::TempDir& temporary_directory) {
+    zetta::NodeConfig config;
+    config.data_dir = temporary_directory.path().string();
+    return config;
+}
+
+nlohmann::json audit_value(std::string target) {
+    zetta::governance::AuditEventValue value;
+    value.target = std::move(target);
+    value.time = "2026-09-27T00:00:00Z";
+    return zetta::governance::to_json(value);
+}
+
+}  // namespace
 
 TEST(Replication, DefaultPolicyReplicatesToAllNodes) {
     ReplicationManager manager{zetta::util::new_uuid()};
@@ -193,4 +215,65 @@ TEST(Replication, AMeshOfThreeConvergesAfterConcurrentWrites) {
             << "node " << n << " holds different content than node 0";
     }
 }
-// appended temporarily to test_replication.cpp
+
+TEST(IncrementalReconcile, AppliesPeerLocalAndRemovalChangesInOneTick) {
+    zetta::test::TempDir temporary_directory;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    for (int index = 0; index < 16; ++index) {
+        replication.set("audit:seed-" + std::to_string(index),
+                        audit_value("seed"));
+    }
+    replication.set("db:removed", nlohmann::json{{"name", "removed"}});
+
+    zetta::Node node{config_for(temporary_directory), &replication};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.find_database("removed"));
+
+    ReplicationManager peer{zetta::util::new_uuid()};
+    peer.merge(replication.save());
+    peer.set("db:peer", nlohmann::json{{"name", "peer"}});
+    replication.merge(peer.save());
+    replication.set("db:local", nlohmann::json{{"name", "local"}});
+    replication.remove("db:removed");
+
+    node.tick();
+
+    EXPECT_TRUE(node.find_database("peer"));
+    EXPECT_TRUE(node.find_database("local"));
+    EXPECT_FALSE(node.find_database("removed"));
+    node.stop();
+}
+
+TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandAuditKeys) {
+    zetta::test::TempDir temporary_directory;
+    ReplicationManager replication{zetta::util::new_uuid()};
+    constexpr int kExistingEvents = 100000;
+    constexpr int kTicks = 40;
+    for (int index = 0; index < kExistingEvents; ++index) {
+        replication.set("audit:existing-" + std::to_string(index),
+                        audit_value("existing"));
+    }
+
+    zetta::Node node{config_for(temporary_directory), &replication};
+    ASSERT_TRUE(node.start());
+    ASSERT_EQ(node.audit_event_count(),
+              static_cast<std::size_t>(kExistingEvents));
+
+    const auto started = std::chrono::steady_clock::now();
+    for (int index = 0; index < kTicks; ++index) {
+        replication.set("audit:tick-" + std::to_string(index),
+                        audit_value("tick"));
+        node.tick();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    const auto elapsed_milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+    std::printf(
+        "zetta-test: %d one-change ticks with %d existing audit keys: %lld ms\n",
+        kTicks, kExistingEvents,
+        static_cast<long long>(elapsed_milliseconds.count()));
+    EXPECT_LT(elapsed, std::chrono::seconds(4));
+    EXPECT_EQ(node.audit_event_count(),
+              static_cast<std::size_t>(kExistingEvents + kTicks));
+    node.stop();
+}

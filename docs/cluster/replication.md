@@ -312,10 +312,11 @@ are a materialized *projection* of it.** Concretely:
 - **Gossip:** unchanged — peers exchange `save()`/`merge()` blobs and converge.
 - **Apply (remote → local):** on the **main/Node thread** (the network thread only
   merges into the CRDT, which is thread-safe), `Node::tick()` notices the CRDT
-  `version()` changed and **reconciles** the on-disk projection to match the
-  document — creating missing databases/tables/rows (and dropping removed ones).
-  Reconcile reads the CRDT and writes only disk, so it never loops back into the
-  CRDT, and it is idempotent.
+  `version()` changed and **reconciles** changed prefix buckets into the on-disk
+  projection — creating missing databases/tables/rows and dropping removed ones.
+  Startup, journal gaps, and batches larger than one quarter of live keys use the
+  complete snapshot. Reconcile reads the CRDT and writes only disk, so it never
+  loops back into the CRDT, and it is idempotent.
 
   **The watermark is the version read at the TOP of the tick, never the current
   one.** Peers merge on the network thread, so a merge can land at any moment
@@ -330,8 +331,9 @@ are a materialized *projection* of it.** Concretely:
   reconciles a snapshot it has already applied, which is idempotent.
 - **Persistence:** the CRDT document is saved to `data_dir/replication.automerge`
   (Automerge `save()`), and `merge()`d back on startup, so replicated state
-  survives restarts. On first run with pre-existing on-disk data, that data is
-  captured into the document (migrated) so nothing is lost.
+  survives restarts. A dirty document is saved at most once per second and is
+  always saved by `stop()`. On first run with pre-existing on-disk data, that
+  data is captured into the document (migrated) so nothing is lost.
 
 ## Status / next steps
 
@@ -341,10 +343,11 @@ are a materialized *projection* of it.** Concretely:
   every node's disk, and persisted across restart (`tests/cluster/test_data_replication.cpp`).
 - **Documented, not built:** the leadership / `leadership` table and Raft
   (see *Consistency model* above) — design only for now.
-- **Known limits (v1):** the whole document is re-saved on each change and
-  reconcile rescans on each version bump (fine for modest data; incremental
-  save / per-table versioning can come later). **The document keeps full change
-  history** (a CRDT keeps it so merges stay conflict-free), so `save()` grows
+- **Known limits (v1):** persistence still serializes the whole document, but
+  no more than once per second plus `stop()`; peer merge still makes one full
+  comparison pass because Automerge exposes no changed top-level keys.
+  **The document keeps full change history** (a CRDT keeps it so merges stay
+  conflict-free), so `save()` grows
   with every change — it does *not* grow while idle, but a write-heavy or
   long-lived document will accumulate. **History compaction** (dropping changes
   all peers already have) is the future mitigation; for now, deleting

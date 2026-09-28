@@ -65,6 +65,155 @@ std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot
     return members;
 }
 
+bool reconciliation_includes_key(
+    const std::vector<std::string>* changed_keys,
+    const std::string& key) {
+    return !changed_keys ||
+           std::ranges::find(*changed_keys, key) != changed_keys->end();
+}
+
+struct ReconcileBatch {
+    nlohmann::json values = nlohmann::json::object();
+    std::vector<std::string> keys;
+};
+
+struct ReplicationReconcileBatches {
+    ReconcileBatch data;
+    ReconcileBatch projects;
+    ReconcileBatch inputs;
+    ReconcileBatch graphs;
+    ReconcileBatch deployments;
+    ReconcileBatch runs;
+    ReconcileBatch models;
+    ReconcileBatch profiles;
+    ReconcileBatch plans;
+    ReconcileBatch indexes;
+    ReconcileBatch jobs;
+    ReconcileBatch partitions;
+    ReconcileBatch principals;
+    ReconcileBatch access_keys;
+    ReconcileBatch users;
+    ReconcileBatch roles;
+    ReconcileBatch tokens;
+    ReconcileBatch user_roles;
+    ReconcileBatch policies;
+    ReconcileBatch audit_events;
+    ReconcileBatch nodes;
+};
+
+ReconcileBatch* batch_for_replication_key(
+    ReplicationReconcileBatches& batches,
+    const std::string& key) {
+    if (key.starts_with(catalog::kDatabasePrefix) ||
+        key.starts_with(catalog::kTablePrefix) ||
+        key.starts_with(catalog::kRowPrefix) ||
+        key.starts_with(catalog::kLargeObjectPrefix) ||
+        key.starts_with(catalog::kManifestPrefix)) {
+        return &batches.data;
+    }
+    if (key.starts_with(catalog::kProjectPrefix)) {
+        return &batches.projects;
+    }
+    if (key.starts_with(catalog::kInputPrefix)) {
+        return &batches.inputs;
+    }
+    if (key.starts_with(catalog::kGraphPrefix)) {
+        return &batches.graphs;
+    }
+    if (key.starts_with(catalog::kDeploymentPrefix)) {
+        return &batches.deployments;
+    }
+    if (key.starts_with(catalog::kRunPrefix)) {
+        return &batches.runs;
+    }
+    if (key.starts_with(catalog::kModelPrefix)) {
+        return &batches.models;
+    }
+    if (key.starts_with(catalog::kWorkspaceProfilePrefix)) {
+        return &batches.profiles;
+    }
+    if (key.starts_with(catalog::kPlanPrefix)) {
+        return &batches.plans;
+    }
+    if (key.starts_with(catalog::kIndexPrefix)) {
+        return &batches.indexes;
+    }
+    if (key.starts_with(catalog::kJobPrefix)) {
+        return &batches.jobs;
+    }
+    if (key.starts_with(catalog::kPartitionPrefix)) {
+        return &batches.partitions;
+    }
+    if (key.starts_with(catalog::kPrincipalPrefix)) {
+        return &batches.principals;
+    }
+    if (key.starts_with(catalog::kAccessKeyPrefix)) {
+        return &batches.access_keys;
+    }
+    if (key.starts_with(catalog::kUserPrefix)) {
+        return &batches.users;
+    }
+    if (key.starts_with(catalog::kRolePrefix)) {
+        return &batches.roles;
+    }
+    if (key.starts_with(catalog::kTokenPrefix)) {
+        return &batches.tokens;
+    }
+    if (key.starts_with(catalog::kUserRolePrefix)) {
+        return &batches.user_roles;
+    }
+    if (key.starts_with(catalog::kPolicyPrefix)) {
+        return &batches.policies;
+    }
+    if (key.starts_with(catalog::kAuditPrefix)) {
+        return &batches.audit_events;
+    }
+    if (key.starts_with(catalog::kNodePrefix)) {
+        return &batches.nodes;
+    }
+    return nullptr;
+}
+
+void add_current_value(ReconcileBatch& batch,
+                       const nlohmann::json& snapshot,
+                       const std::string& key) {
+    batch.keys.push_back(key);
+    if (const auto value = snapshot.find(key); value != snapshot.end()) {
+        batch.values[key] = *value;
+    }
+}
+
+ReplicationReconcileBatches make_reconcile_batches(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>& changed_keys) {
+    ReplicationReconcileBatches batches;
+    for (const std::string& key : changed_keys) {
+        if (ReconcileBatch* batch = batch_for_replication_key(batches, key)) {
+            add_current_value(*batch, snapshot, key);
+        }
+    }
+    for (const std::string& key : batches.data.keys) {
+        std::string related_key;
+        if (const std::string table_id =
+                catalog::id_after(key, catalog::kTablePrefix);
+            !table_id.empty()) {
+            related_key = catalog::manifest_key(table_id);
+        } else if (const std::string table_id =
+                       catalog::id_after(key, catalog::kManifestPrefix);
+                   !table_id.empty()) {
+            related_key = catalog::table_key(table_id);
+        }
+        if (related_key.empty() || batches.data.values.contains(related_key)) {
+            continue;
+        }
+        if (const auto value = snapshot.find(related_key);
+            value != snapshot.end()) {
+            batches.data.values[related_key] = *value;
+        }
+    }
+    return batches;
+}
+
 }  // namespace
 
 Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
@@ -255,12 +404,14 @@ bool Node::start() {
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
-        const nlohmann::json snapshot = replication_->snapshot();
-        reconcile_from_replication(snapshot);  // materialize document-only state
+        const zetta::cluster::ReplicationChanges changes =
+            replication_->changes_since(0);
+        reconcile_from_replication(*changes.snapshot);
         // Establish the membership baseline so a later join/leave is a detectable
         // delta — but never rebalance on startup (the partitions just loaded
         // already reflect their recorded placement).
-        last_membership_ = membership_from_snapshot(snapshot);
+        last_membership_ = membership_from_snapshot(*changes.snapshot);
+        last_replication_change_token_ = changes.next_token;
         persist_replication();
         last_seen_version_ = replication_->version();
     }
@@ -362,12 +513,20 @@ void Node::tick() {
     const std::string version_at_pull =
         replication_ ? replication_->version() : std::string{};
     if (replication_ && version_at_pull != last_seen_version_) {
-        const nlohmann::json snapshot = replication_->snapshot();
-        reconcile_from_replication(snapshot);
-        // 1b. Between jobs: when the cluster membership (node:<id> keys) changed,
-        //     rebalance partition placement (#517). This DOES capture updated
-        //     part: owners; step 3 persists the moved document.
-        rebalance_partitions_on_membership_change(snapshot);
+        const zetta::cluster::ReplicationChanges changes =
+            replication_->changes_since(last_replication_change_token_);
+        const std::size_t full_reconcile_threshold =
+            std::max<std::size_t>(1, changes.snapshot->size() / 4);
+        const bool full_reconcile =
+            changes.full_resync ||
+            changes.keys.size() > full_reconcile_threshold;
+        if (full_reconcile) {
+            reconcile_from_replication(*changes.snapshot);
+            rebalance_partitions_on_membership_change(*changes.snapshot);
+        } else if (!changes.keys.empty()) {
+            reconcile_replication_changes(*changes.snapshot, changes.keys);
+        }
+        last_replication_change_token_ = changes.next_token;
         // 1c. Make the reconciled rows durable, ONCE. Reconcile issues an update
         //     per row and the storage engine defers the file write (#952), so the
         //     whole pass costs one rewrite per chunk it actually touched rather
@@ -395,8 +554,13 @@ void Node::tick() {
     //    the one read at the TOP of the tick, never the current one (see step 1).
     if (replication_) {
         if (replication_->version() != last_seen_version_) {
-            persist_replication();
+            replication_persist_pending_ = true;
             last_seen_version_ = version_at_pull;
+        }
+        constexpr auto kPersistInterval = std::chrono::seconds(1);
+        if (replication_persist_pending_ &&
+            Clock::now() - last_replication_persist_ >= kPersistInterval) {
+            persist_replication();
         }
     }
     // 4. Telemetry plane (#584): sample this node's live host utilization and
@@ -1100,7 +1264,7 @@ std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::Execut
     if (graph.empty()) return nullptr;
 
     // RULE-1: no deploy without a passing correctness gate. The gate runs at the
-    // deploy seam itself — so a *programmatic* deploy clears the same gate the GUI
+    // deploy boundary itself — so a *programmatic* deploy clears the same gate the GUI
     // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
     // failure is a governed decision: record a blocked (allowed=false) deploy event
     // and place nothing.
@@ -2110,7 +2274,9 @@ bool Node::materialize_drop_user(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_users(const nlohmann::json& snapshot) {
+void Node::reconcile_users(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     struct UserEntry {
         std::string name;
         governance::UserStatus status;
@@ -2130,7 +2296,10 @@ void Node::reconcile_users(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& user : users_) local_ids.push_back(user->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_user(id);
+        if (reconciliation_includes_key(changed_keys, catalog::user_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_user(id);
+        }
     }
     for (const auto& [id, entry] : desired) {
         auto user = find_user_by_id(id);
@@ -2421,7 +2590,9 @@ bool Node::materialize_drop_role(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_roles(const nlohmann::json& snapshot) {
+void Node::reconcile_roles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     struct RoleEntry {
         std::string name;
         governance::RolePermissions permissions;
@@ -2441,7 +2612,10 @@ void Node::reconcile_roles(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& role : roles_) local_ids.push_back(role->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_role(id);
+        if (reconciliation_includes_key(changed_keys, catalog::role_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_role(id);
+        }
     }
     for (auto& [id, entry] : desired) {
         auto role = find_role_by_id(id);
@@ -2566,7 +2740,9 @@ bool Node::materialize_drop_token(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_tokens(const nlohmann::json& snapshot) {
+void Node::reconcile_tokens(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     std::map<std::string, governance::TokenValue> desired;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kTokenPrefix);
@@ -2578,7 +2754,10 @@ void Node::reconcile_tokens(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& token : tokens_) local_ids.push_back(token->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_token(id);
+        if (reconciliation_includes_key(changed_keys, catalog::token_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_token(id);
+        }
     }
     for (auto& [id, value] : desired) {
         auto token = find_token_by_id(id);
@@ -2704,7 +2883,9 @@ bool Node::materialize_drop_user_role(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
+void Node::reconcile_user_roles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Assignments are immutable (like access keys): reconcile only adds new ones
     // and drops the ones a peer removed.
     struct AssignmentEntry {
@@ -2728,7 +2909,11 @@ void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
         local_ids.push_back(assignment->id());
     }
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_user_role(id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::user_role_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_user_role(id);
+        }
     }
     for (auto& [id, entry] : desired) {
         bool present = false;
@@ -2829,7 +3014,9 @@ bool Node::materialize_drop_policy(const std::string& id) {
     return true;
 }
 
-void Node::reconcile_policies(const nlohmann::json& snapshot) {
+void Node::reconcile_policies(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     std::map<std::string, governance::PolicyValue> desired;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kPolicyPrefix);
@@ -2841,7 +3028,10 @@ void Node::reconcile_policies(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& policy : policies_) local_ids.push_back(policy->id());
     for (const std::string& id : local_ids) {
-        if (!desired.contains(id)) materialize_drop_policy(id);
+        if (reconciliation_includes_key(changed_keys, catalog::policy_key(id)) &&
+            !desired.contains(id)) {
+            materialize_drop_policy(id);
+        }
     }
     for (auto& [id, value] : desired) {
         auto policy = find_policy_by_id(id);
@@ -3058,6 +3248,7 @@ fs::path Node::audit_dir() const {
 
 void Node::load_audit_events() {
     audit_events_.clear();
+    audit_events_by_id_.clear();
     const fs::path root = audit_dir();
     std::error_code ec;
     if (!fs::exists(root, ec)) return;
@@ -3083,8 +3274,10 @@ void Node::load_audit_events() {
                                             : error.c_str());
             continue;
         }
-        audit_events_.push_back(std::make_shared<zetta::governance::AuditEvent>(
-            entry.path().stem().string(), *value, root));
+        auto event = std::make_shared<zetta::governance::AuditEvent>(
+            entry.path().stem().string(), *value, root);
+        audit_events_by_id_.emplace(event->id(), event);
+        audit_events_.push_back(std::move(event));
     }
     // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
     // ties on identical stamps.
@@ -3109,8 +3302,9 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
 
 std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     std::string id, zetta::governance::AuditEventValue value) {
-    for (const auto& event : audit_events_) {
-        if (event->id() == id) return event;  // already present (append-only)
+    if (const auto known = audit_events_by_id_.find(id);
+        known != audit_events_by_id_.end()) {
+        return known->second;
     }
     const fs::path dir = audit_dir();
     std::error_code ec;
@@ -3119,7 +3313,13 @@ std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     auto event = std::make_shared<zetta::governance::AuditEvent>(std::move(id), std::move(value),
                                               dir);
     event->persist_meta();
-    audit_events_.push_back(event);
+    const auto place = std::upper_bound(
+        audit_events_.begin(), audit_events_.end(), event,
+        [](const auto& candidate, const auto& known) {
+            return candidate->time() < known->time();
+        });
+    audit_events_.insert(place, event);
+    audit_events_by_id_.emplace(event->id(), event);
     return event;
 }
 
@@ -3264,7 +3464,7 @@ void Node::load_replication() {
     replication_->merge(bytes);
 }
 
-void Node::persist_replication() const {
+void Node::persist_replication() {
     const std::vector<std::byte> bytes = replication_->save();
     const fs::path path = replication_path();
     const fs::path tmp = path.string() + ".tmp";
@@ -3275,6 +3475,8 @@ void Node::persist_replication() const {
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);  // atomic replace
+    last_replication_persist_ = Clock::now();
+    replication_persist_pending_ = false;
 }
 
 // ----- replication: capture local-only data ---------------------------------
@@ -3460,9 +3662,105 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_audit_events(snapshot);
 }
 
+void Node::reconcile_replication_changes(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>& changed_keys) {
+    ReplicationReconcileBatches batches =
+        make_reconcile_batches(snapshot, changed_keys);
+
+    if (!batches.data.keys.empty()) {
+        reconcile_databases(batches.data.values, &batches.data.keys);
+    }
+    if (!batches.projects.keys.empty()) {
+        reconcile_projects(batches.projects.values, &batches.projects.keys);
+    }
+    if (!batches.inputs.keys.empty()) {
+        reconcile_inputs(batches.inputs.values, &batches.inputs.keys);
+    }
+    if (!batches.graphs.keys.empty()) {
+        reconcile_graphs(batches.graphs.values, &batches.graphs.keys);
+    }
+    if (!batches.deployments.keys.empty()) {
+        reconcile_deployments(batches.deployments.values,
+                              &batches.deployments.keys);
+    }
+    if (!batches.runs.keys.empty()) {
+        reconcile_runs(batches.runs.values, &batches.runs.keys);
+    }
+    if (!batches.models.keys.empty()) {
+        reconcile_models(batches.models.values, &batches.models.keys);
+    }
+    if (!batches.profiles.keys.empty()) {
+        reconcile_workspace_profiles(batches.profiles.values,
+                                     &batches.profiles.keys);
+    }
+    if (!batches.plans.keys.empty()) {
+        reconcile_plans(batches.plans.values, &batches.plans.keys);
+    }
+    if (!batches.indexes.keys.empty()) {
+        reconcile_indexes(batches.indexes.values, &batches.indexes.keys);
+    }
+    if (!batches.jobs.keys.empty()) {
+        reconcile_jobs(batches.jobs.values, &batches.jobs.keys);
+    }
+    if (!batches.partitions.keys.empty()) {
+        reconcile_partitions(batches.partitions.values,
+                             &batches.partitions.keys);
+    }
+    if (!batches.principals.keys.empty()) {
+        reconcile_principals(batches.principals.values,
+                             &batches.principals.keys);
+    }
+    if (!batches.access_keys.keys.empty()) {
+        reconcile_access_keys(batches.access_keys.values,
+                              &batches.access_keys.keys);
+    }
+    if (!batches.users.keys.empty()) {
+        reconcile_users(batches.users.values, &batches.users.keys);
+    }
+    if (!batches.roles.keys.empty()) {
+        reconcile_roles(batches.roles.values, &batches.roles.keys);
+    }
+    if (!batches.tokens.keys.empty()) {
+        reconcile_tokens(batches.tokens.values, &batches.tokens.keys);
+    }
+    if (!batches.user_roles.keys.empty()) {
+        reconcile_user_roles(batches.user_roles.values,
+                             &batches.user_roles.keys);
+    }
+    if (!batches.policies.keys.empty()) {
+        reconcile_policies(batches.policies.values, &batches.policies.keys);
+    }
+    if (!batches.audit_events.keys.empty()) {
+        reconcile_audit_events(batches.audit_events.values,
+                               &batches.audit_events.keys);
+    }
+    if (!batches.nodes.keys.empty()) {
+        rebalance_partitions_on_membership_change(snapshot,
+                                                  &batches.nodes.keys);
+    }
+}
+
 void Node::rebalance_partitions_on_membership_change(
-    const nlohmann::json& snapshot) {
-    std::vector<std::string> members = membership_from_snapshot(snapshot);
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    std::vector<std::string> members;
+    if (!changed_keys) {
+        members = membership_from_snapshot(snapshot);
+    } else {
+        members = last_membership_;
+        for (const std::string& key : *changed_keys) {
+            const std::string id = catalog::id_after(key, catalog::kNodePrefix);
+            if (id.empty()) continue;
+            const auto member = std::ranges::find(members, id);
+            if (snapshot.contains(key)) {
+                if (member == members.end()) members.push_back(id);
+            } else if (member != members.end()) {
+                members.erase(member);
+            }
+        }
+        std::sort(members.begin(), members.end());
+    }
     if (members == last_membership_) return;  // no membership delta — nothing to do
     // The previous membership distinguishes replicate-to-all partitions (owned by
     // exactly the old member set) from sharded ones, so rebalance leaves the
@@ -3478,7 +3776,9 @@ void Node::rebalance_partitions_on_membership_change(
 // Databases, tables, rows, and large objects reconcile together: they decode in
 // one shared pass over the snapshot, and table/large-object removals nest under
 // each kept database, so they don't split into independent helpers cleanly.
-void Node::reconcile_databases(const nlohmann::json& snapshot) {
+void Node::reconcile_databases(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Decode the flat catalog keys into desired databases / tables / rows.
     struct DatabaseEntry { std::string name; zetta::data::ReplicationStrategy strategy; };
     std::map<std::string, DatabaseEntry> databases;           // id -> entry
@@ -3554,7 +3854,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     std::vector<std::string> local_db_ids;
     for (const auto& db : databases_) local_db_ids.push_back(db->id());
     for (const std::string& db_id : local_db_ids) {
-        if (!databases.contains(db_id)) {
+        const bool database_changed = reconciliation_includes_key(
+            changed_keys, catalog::database_key(db_id));
+        if (database_changed && !databases.contains(db_id)) {
             materialize_drop_database(db_id);
             continue;
         }
@@ -3565,7 +3867,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& table_id : local_table_ids) {
             const auto it = tables.find(table_id);
-            if (it == tables.end() || it->second.database_id != db_id) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::table_key(table_id)) &&
+                (it == tables.end() || it->second.database_id != db_id)) {
                 db->materialize_drop_table(table_id);
             }
         }
@@ -3575,7 +3879,10 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& lo_id : local_lo_ids) {
             const auto it = large_objects.find(lo_id);
-            if (it == large_objects.end() || it->second.database_id != db_id) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::large_object_key(lo_id)) &&
+                (it == large_objects.end() ||
+                 it->second.database_id != db_id)) {
                 db->large_objects().materialize_unlink(lo_id);
             }
         }
@@ -3641,7 +3948,9 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_projects(const nlohmann::json& snapshot) {
+void Node::reconcile_projects(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Projects (top-level, no parent): project:<id> -> { name, created,
     // updated, owner }. Decode the desired set, then drop / add / update the
     // local projection to match the document — no re-capture.
@@ -3670,7 +3979,11 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
         local_project_ids.push_back(project->id());
     }
     for (const std::string& project_id : local_project_ids) {
-        if (!projects.contains(project_id)) materialize_drop_project(project_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::project_key(project_id)) &&
+            !projects.contains(project_id)) {
+            materialize_drop_project(project_id);
+        }
     }
     for (const auto& [id, entry] : projects) {
         auto project = find_project_by_id(id);
@@ -3687,7 +4000,9 @@ void Node::reconcile_projects(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_inputs(const nlohmann::json& snapshot) {
+void Node::reconcile_inputs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Project inputs (owned by a project): input:<id> -> { project, kind,
     // source, filename, content_hash, size, created_by, created_at }. Inputs are
     // immutable provenance records (never renamed/edited), so reconcile only adds
@@ -3730,7 +4045,10 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
         }
         for (const std::string& input_id : local_input_ids) {
             const auto it = inputs.find(input_id);
-            if (it == inputs.end() || it->second.project_id != project->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::input_key(input_id)) &&
+                (it == inputs.end() ||
+                 it->second.project_id != project->id())) {
                 project->materialize_drop_input(input_id);
             }
         }
@@ -3747,7 +4065,9 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_graphs(const nlohmann::json& snapshot) {
+void Node::reconcile_graphs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Execution graphs (under a project): graph:<id> -> { project, name,
     // graph: {nodes, edges} }. Decode the desired set, parsing each graph
     // against the IR schema — a graph that doesn't parse is skipped, so a
@@ -3787,8 +4107,10 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
         }
         for (const std::string& graph_id : local_graph_ids) {
             const auto it = desired_graphs.find(graph_id);
-            if (it == desired_graphs.end() ||
-                it->second.project_id != project->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::graph_key(graph_id)) &&
+                (it == desired_graphs.end() ||
+                 it->second.project_id != project->id())) {
                 project->materialize_drop_graph(graph_id);
             }
         }
@@ -3813,7 +4135,9 @@ void Node::reconcile_graphs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_deployments(const nlohmann::json& snapshot) {
+void Node::reconcile_deployments(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
     // target, node, node_count, edge_count, created }. Decode the desired set,
     // then drop / add the local projection to match the document. Deployments
@@ -3850,7 +4174,9 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
         local_deployment_ids.push_back(deployment->id());
     }
     for (const std::string& deployment_id : local_deployment_ids) {
-        if (!deployments.contains(deployment_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::deployment_key(deployment_id)) &&
+            !deployments.contains(deployment_id)) {
             materialize_drop_deployment(deployment_id);
         }
     }
@@ -3863,7 +4189,9 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_runs(const nlohmann::json& snapshot) {
+void Node::reconcile_runs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Runs (top-level, no parent): run:<id> -> the run value. Decode + validate
     // the desired set at the boundary (a malformed CRDT value is ignored, not
     // trusted), then drop / add / update the local projection to match — with no
@@ -3879,7 +4207,10 @@ void Node::reconcile_runs(const nlohmann::json& snapshot) {
     std::vector<std::string> local_run_ids;
     for (const auto& run : runs_) local_run_ids.push_back(run->id());
     for (const std::string& run_id : local_run_ids) {
-        if (!runs.contains(run_id)) materialize_drop_run(run_id);
+        if (reconciliation_includes_key(changed_keys, catalog::run_key(run_id)) &&
+            !runs.contains(run_id)) {
+            materialize_drop_run(run_id);
+        }
     }
     for (auto& [id, value] : runs) {
         auto run = find_run(id);
@@ -3891,13 +4222,15 @@ void Node::reconcile_runs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_models(const nlohmann::json& snapshot) {
+void Node::reconcile_models(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Models (top-level, no parent): model:<id> -> the model value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is
     // ignored, not trusted), then drop / add / update the local projection to
     // match — with no re-capture. apply_value updates only the metadata; the
     // serialized weights body is NOT in the document and arrives separately over
-    // the large-object body seam (the blob store requests it when missing).
+    // the large-object body transfer path (the blob store requests it when missing).
     std::map<std::string, zetta::ml::ModelValue> models;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kModelPrefix);
@@ -3909,7 +4242,11 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     std::vector<std::string> local_model_ids;
     for (const auto& model : models_) local_model_ids.push_back(model->id());
     for (const std::string& model_id : local_model_ids) {
-        if (!models.contains(model_id)) materialize_drop_model(model_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::model_key(model_id)) &&
+            !models.contains(model_id)) {
+            materialize_drop_model(model_id);
+        }
     }
     for (auto& [id, value] : models) {
         auto model = find_model(id);
@@ -3921,7 +4258,9 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
+void Node::reconcile_workspace_profiles(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Workspace profiles (top-level, no parent): profile:<id> -> the value.
     // Decode + validate the desired set at the boundary (a malformed CRDT value
     // is ignored, not trusted), then drop / add / update the local projection to
@@ -3938,7 +4277,11 @@ void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& profile : workspace_profiles_) local_ids.push_back(profile->id());
     for (const std::string& id : local_ids) {
-        if (!profiles.contains(id)) materialize_drop_workspace_profile(id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::workspace_profile_key(id)) &&
+            !profiles.contains(id)) {
+            materialize_drop_workspace_profile(id);
+        }
     }
     for (auto& [id, value] : profiles) {
         auto profile = find_workspace_profile(id);
@@ -3950,7 +4293,9 @@ void Node::reconcile_workspace_profiles(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_plans(const nlohmann::json& snapshot) {
+void Node::reconcile_plans(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Plans (top-level, no parent): plan:<id> -> the value. Decode + validate at
     // the boundary (a malformed CRDT value is ignored), then drop / add / update
     // the local projection to match — with no re-capture.
@@ -3966,7 +4311,10 @@ void Node::reconcile_plans(const nlohmann::json& snapshot) {
     std::vector<std::string> local_ids;
     for (const auto& plan : plans_) local_ids.push_back(plan->id());
     for (const std::string& id : local_ids) {
-        if (!plans.contains(id)) materialize_drop_plan(id);
+        if (reconciliation_includes_key(changed_keys, catalog::plan_key(id)) &&
+            !plans.contains(id)) {
+            materialize_drop_plan(id);
+        }
     }
     for (auto& [id, value] : plans) {
         auto plan = find_plan(id);
@@ -3978,7 +4326,9 @@ void Node::reconcile_plans(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_indexes(const nlohmann::json& snapshot) {
+void Node::reconcile_indexes(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Indexes (top-level, no parent): index:<id> -> the index value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -3995,7 +4345,11 @@ void Node::reconcile_indexes(const nlohmann::json& snapshot) {
     std::vector<std::string> local_index_ids;
     for (const auto& index : indexes_) local_index_ids.push_back(index->id());
     for (const std::string& index_id : local_index_ids) {
-        if (!indexes.contains(index_id)) materialize_drop_index(index_id);
+        if (reconciliation_includes_key(
+                changed_keys, catalog::index_key(index_id)) &&
+            !indexes.contains(index_id)) {
+            materialize_drop_index(index_id);
+        }
     }
     for (auto& [id, value] : indexes) {
         auto index = find_index(id);
@@ -4007,7 +4361,9 @@ void Node::reconcile_indexes(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_jobs(const nlohmann::json& snapshot) {
+void Node::reconcile_jobs(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -4026,7 +4382,10 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     std::vector<std::string> local_job_ids;
     for (const auto& job : jobs_) local_job_ids.push_back(job->id());
     for (const std::string& job_id : local_job_ids) {
-        if (!compute_jobs.contains(job_id)) materialize_drop_job(job_id);
+        if (reconciliation_includes_key(changed_keys, catalog::job_key(job_id)) &&
+            !compute_jobs.contains(job_id)) {
+            materialize_drop_job(job_id);
+        }
     }
     for (auto& [id, value] : compute_jobs) {
         auto job = find_job(id);
@@ -4038,7 +4397,9 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_partitions(const nlohmann::json& snapshot) {
+void Node::reconcile_partitions(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Dataset partitions (top-level, no parent): part:<id> -> the partition value.
     // The catalog is replicate-to-all, so each node materializes the same set.
     // Decode + validate the desired set at the boundary (a malformed CRDT value is
@@ -4059,7 +4420,9 @@ void Node::reconcile_partitions(const nlohmann::json& snapshot) {
         local_partition_ids.push_back(partition->id());
     }
     for (const std::string& partition_id : local_partition_ids) {
-        if (!partitions.contains(partition_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::partition_key(partition_id)) &&
+            !partitions.contains(partition_id)) {
             materialize_drop_dataset_partition(partition_id);
         }
     }
@@ -4074,7 +4437,9 @@ void Node::reconcile_partitions(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_principals(const nlohmann::json& snapshot) {
+void Node::reconcile_principals(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Principals (top-level, no parent): principal:<id> -> { kind, name,
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
@@ -4101,7 +4466,9 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
         local_principal_ids.push_back(principal->id());
     }
     for (const std::string& principal_id : local_principal_ids) {
-        if (!principals.contains(principal_id)) {
+        if (reconciliation_includes_key(
+                changed_keys, catalog::principal_key(principal_id)) &&
+            !principals.contains(principal_id)) {
             materialize_drop_principal(principal_id);
         }
     }
@@ -4117,7 +4484,9 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
+void Node::reconcile_access_keys(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     // Access keys (owned by a principal): key:<id> -> { principal, scope,
     // created }. Keys are immutable credentials (never edited), so reconcile only
     // adds them under their owning principal and drops the ones a peer removed.
@@ -4158,8 +4527,10 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
         }
         for (const std::string& key_id : local_key_ids) {
             const auto it = access_keys.find(key_id);
-            if (it == access_keys.end() ||
-                it->second.principal_id != principal->id()) {
+            if (reconciliation_includes_key(
+                    changed_keys, catalog::access_key_key(key_id)) &&
+                (it == access_keys.end() ||
+                 it->second.principal_id != principal->id())) {
                 principal->materialize_drop_key(key_id);
             }
         }
@@ -4175,7 +4546,9 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
     }
 }
 
-void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
+void Node::reconcile_audit_events(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>*) {
     // Audit events (top-level, no parent): audit:<id> -> the event value. The
     // trail is immutable + append-only, so reconcile only *adds* events the
     // document has that we don't (a peer's, merged in via gossip) and never
@@ -4183,18 +4556,12 @@ void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
     // malformed CRDT value is ignored, not trusted into the trail.
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kAuditPrefix);
-        if (id.empty()) continue;
+        if (id.empty() || audit_events_by_id_.contains(id)) continue;
         if (std::optional<zetta::governance::AuditEventValue> parsed =
                 zetta::governance::parse_audit_event_value(value)) {
             materialize_audit_event(std::move(id), std::move(*parsed));
         }
     }
-    // Keep the trail in chronological order after merging peer events in.
-    std::sort(audit_events_.begin(), audit_events_.end(),
-              [](const auto& a, const auto& b) {
-                  if (a->time() != b->time()) return a->time() < b->time();
-                  return a->id() < b->id();
-              });
 }
 
 IntegrityReport Node::check_integrity() const {

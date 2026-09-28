@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "zetta/governance/access_key.hpp"
@@ -126,9 +127,9 @@ struct IntegrityReport {
 // Replication: when constructed with a ReplicationManager, the **CRDT document
 // is the source of truth** and the on-disk store + this in-memory tree are a
 // projection of it. Local DDL/row mutations are captured into the document; on
-// each tick the node reconciles the projection to match the document (applying
-// changes merged from peers) and persists the document to disk. With no
-// ReplicationManager (the default), a Node is a standalone local store.
+// each tick the node reconciles changed keys into the projection and marks the
+// document for at-most-once-per-second persistence; stop() forces a final save.
+// With no ReplicationManager (the default), a Node is a standalone local store.
 //
 // A Node is also the **audit sink** (FEAT-9): it owns the immutable, append-only
 // audit trail and records a governed action (graph change / deploy / data
@@ -177,7 +178,7 @@ public:
     // apps tick from their first loop pass, before any background action
     // exists, so interactive runs always gate). Once a loop HAS adopted the
     // node it must keep ticking (or drain) while gated workers run. The wait
-    // rides the runtime seam (async_event + block_on) — no caller-facing
+    // rides the runtime interface (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
 
@@ -288,7 +289,7 @@ public:
     }
 
     // This node's `run.launch` listener (#601) — the coordinated cross-process
-    // SPMD launch seam, wired by attach_cluster as the coordinator's signal
+    // SPMD launch path, wired by attach_cluster as the coordinator's signal
     // fallback and drained from tick(). An initiator fans a launch out through
     // it; each peer's copy co-runs the registered kind on its owner thread.
     // nullptr when no cluster is attached (like job_coordinator()). See
@@ -337,7 +338,7 @@ public:
     // ModelValue (name / feature_schema / metrics / project / run). Weights are
     // attached separately via the returned Model handle's set_weights (the body
     // is stored on disk + fingerprinted, then transfers peer-to-peer over the
-    // large-object body seam). models() is in a stable order (created, then id).
+    // large-object body transfer path). models() is in a stable order (created, then id).
     std::shared_ptr<zetta::ml::Model> create_model(zetta::ml::ModelValue value);
     std::shared_ptr<zetta::ml::Model> find_model(const std::string& id) const;
     bool drop_model(const std::string& id);
@@ -384,7 +385,7 @@ public:
     // `created` and requires a non-empty `table` / `backend` and at least one field
     // (empty handle otherwise — the IndexValue is validated at the schema boundary
     // on persist/reconcile). An index is metadata only: this records its
-    // definition; building it is the IndexBackend seam's job (index_backend.hpp).
+    // definition; building it is the IndexBackend implementation's job.
     // indexes() is in a stable order (created, then id).
     std::shared_ptr<zetta::index::Index> create_index(zetta::index::IndexValue value);
     std::shared_ptr<zetta::index::Index> find_index(const std::string& id) const;
@@ -441,7 +442,7 @@ public:
     // The IndexBackend the distributed fulltext machinery builds its
     // per-partition sub-indexes into. Set BEFORE attach_cluster to override the
     // default (OramaCoreFulltextIndex when compiled in, else the exact-match
-    // InMemoryIndexBackend) — the seam tests inject a reference scorer through.
+    // InMemoryIndexBackend) — tests inject a reference scorer through it.
     void set_search_backend(std::shared_ptr<zetta::index::IndexBackend> backend) {
         search_backend_ = std::move(backend);
     }
@@ -646,7 +647,7 @@ public:
     // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
     //
     // Every decision is recorded as a `data_access` AuditEvent (allow/deny + the
-    // reason), so authorize is the data-access seam of the audit trail (FEAT-9) —
+    // reason), so authorize is the data-access boundary of the audit trail (FEAT-9) —
     // which is why it is non-const (it appends to the immutable trail).
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Resource& resource);
@@ -654,7 +655,7 @@ public:
     // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
     // deploys, and data-access decisions each record an AuditEvent; the events
     // can be listed in chronological order. Events are never edited or removed.
-    // record_audit_event is the public append seam (also the AuditSink override):
+    // record_audit_event is the public append API (also the AuditSink override):
     // it stamps a fresh id + time, persists the event, captures it into the CRDT
     // when replicated, and appends it to the trail. The (future) request path
     // calls it to record data accesses at real read/write points.
@@ -876,7 +877,7 @@ public:
     // Resolve a bearer secret to the user it authenticates as, or an empty handle
     // when no live token matches (deny-by-default). Hashes + constant-time
     // compares against every non-revoked, unexpired token, and requires the
-    // owning user to exist and be active. This is the seam issue #2's gate calls.
+    // owning user to exist and be active. This is the boundary issue #2's gate calls.
     std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
 
     // The outcome of bootstrap_owner: whether an owner was minted this call, and
@@ -1004,10 +1005,13 @@ private:
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
-    void persist_replication() const;  // write the CRDT document to disk
+    void persist_replication();        // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
     // apply the CRDT document (the given snapshot) to the projection
     void reconcile_from_replication(const nlohmann::json& snapshot);
+    void reconcile_replication_changes(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>& changed_keys);
     // Between-jobs partition rebalance on a cluster membership change (#517):
     // membership lives in the document as node:<id> keys, so a join/leave shows
     // up here. When the set differs from the last observed membership, recompute
@@ -1015,33 +1019,62 @@ private:
     // which captures the new owner_nodes into the document so the bodies move to
     // their new owners. No-op on the first observation (it sets the baseline) and
     // when membership is unchanged.
-    void rebalance_partitions_on_membership_change(const nlohmann::json& snapshot);
-    // Per-entity reconcile passes, called by reconcile_from_replication() in the
-    // order parent entities precede their children. Each scans the same CRDT
-    // snapshot for its keys, drops local entries the document no longer has, and
-    // materializes new/changed ones. reconcile_databases also covers tables, rows,
-    // and large objects — they decode in one shared pass and their removals nest
-    // under their owning database, so they don't split cleanly.
-    void reconcile_databases(const nlohmann::json& snapshot);
-    void reconcile_projects(const nlohmann::json& snapshot);
-    void reconcile_inputs(const nlohmann::json& snapshot);
-    void reconcile_graphs(const nlohmann::json& snapshot);
-    void reconcile_deployments(const nlohmann::json& snapshot);
-    void reconcile_runs(const nlohmann::json& snapshot);
-    void reconcile_models(const nlohmann::json& snapshot);
-    void reconcile_workspace_profiles(const nlohmann::json& snapshot);
-    void reconcile_plans(const nlohmann::json& snapshot);
-    void reconcile_indexes(const nlohmann::json& snapshot);
-    void reconcile_jobs(const nlohmann::json& snapshot);
-    void reconcile_partitions(const nlohmann::json& snapshot);
-    void reconcile_principals(const nlohmann::json& snapshot);
-    void reconcile_access_keys(const nlohmann::json& snapshot);
-    void reconcile_audit_events(const nlohmann::json& snapshot);
-    void reconcile_users(const nlohmann::json& snapshot);
-    void reconcile_roles(const nlohmann::json& snapshot);
-    void reconcile_tokens(const nlohmann::json& snapshot);
-    void reconcile_user_roles(const nlohmann::json& snapshot);
-    void reconcile_policies(const nlohmann::json& snapshot);
+    void rebalance_partitions_on_membership_change(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    // Per-entity reconcile passes run in parent-before-child order. A null key
+    // list applies a complete snapshot; an incremental call receives only its
+    // prefix bucket and scopes removals to those keys. reconcile_databases also
+    // covers tables, rows, manifests, and large objects because their removals
+    // nest under their owning database.
+    void reconcile_databases(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_projects(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_inputs(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_graphs(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_deployments(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_runs(const nlohmann::json& snapshot,
+                        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_models(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_workspace_profiles(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_plans(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_indexes(const nlohmann::json& snapshot,
+                           const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_jobs(const nlohmann::json& snapshot,
+                        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_partitions(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_principals(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_access_keys(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_audit_events(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_users(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_roles(const nlohmann::json& snapshot,
+                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_tokens(const nlohmann::json& snapshot,
+                          const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_user_roles(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_policies(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -1106,7 +1139,10 @@ private:
     NodeConfig config_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
     std::string node_id_;              // this node's stable UUID (set by start())
-    std::string last_seen_version_;    // CRDT version last reconciled/persisted
+    std::string last_seen_version_;    // CRDT version last reconciled
+    std::uint64_t last_replication_change_token_ = 0;
+    Clock::time_point last_replication_persist_{};
+    bool replication_persist_pending_ = false;
     std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
@@ -1142,7 +1178,7 @@ private:
     // contained cross-thread handoff of the queue itself (the cluster-outbox
     // pattern the coroutines-first convention sanctions) — never exposed.
     // `signal_completed` type-erases the waiter's runtime::async_event so this
-    // header stays free of the runtime seam's backend headers.
+    // header stays free of the runtime adapter's backend headers.
     struct OwnerWork {
         std::function<void()> work;
         std::function<void()> signal_completed;
@@ -1152,6 +1188,8 @@ private:
     std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    std::unordered_map<std::string, std::shared_ptr<zetta::governance::AuditEvent>>
+        audit_events_by_id_;
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
@@ -1181,7 +1219,7 @@ private:
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
     // The coordinated cross-process launch listener (#601): the `run.launch`
-    // seam, wired as the coordinator's signal-handler fallback (delegating
+    // listener, wired as the coordinator's signal-handler fallback (delegating
     // everything else to telemetry_, which is why it is declared between the
     // two: it must outlive the coordinator that points at it and die before
     // the telemetry it points at). Created in start_coordinator() with the
