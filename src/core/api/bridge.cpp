@@ -57,7 +57,19 @@ void MainThreadBridge::wait_for_work(std::chrono::milliseconds max_idle) {
     // Returns immediately if work is already queued, wakes the moment
     // run_on_owner enqueues, and otherwise caps the idle wait at max_idle
     // (the background-bookkeeping heartbeat) — the #731 fix.
-    work_ready_.wait_for(lock, max_idle, [this] { return !queue_.empty(); });
+    work_ready_.wait_for(lock, max_idle, [this] { return !queue_.empty() || poked_; });
+    poked_ = false;
+}
+
+void MainThreadBridge::poke() {
+    std::function<void()> wakeup;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        poked_ = true;
+        wakeup = wakeup_;
+    }
+    work_ready_.notify_one();
+    if (wakeup) wakeup();
 }
 
 void MainThreadBridge::set_wakeup(std::function<void()> wakeup) {

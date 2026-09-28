@@ -3816,6 +3816,8 @@ void ApiServer::wait_for_work(std::chrono::milliseconds max_idle) {
 void ApiServer::set_wakeup(std::function<void()> wakeup) {
     impl_->bridge.set_wakeup(std::move(wakeup));
 }
+
+void ApiServer::wake() { impl_->bridge.poke(); }
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
     return impl_->node.span_recorder();

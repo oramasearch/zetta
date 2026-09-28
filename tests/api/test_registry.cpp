@@ -883,6 +883,49 @@ zetta::runtime::task<> await_bridge_work(zetta::api::MainThreadBridge& bridge,
 }
 }  // namespace
 
+// #1063: a poke releases the owning loop's idle wait at once, so work queued
+// outside the bridge (Node::run_on_owner) runs on the next tick instead of
+// after the idle interval.
+TEST(MainThreadBridge, APokeReleasesTheIdleWaitAtOnce) {
+    zetta::api::MainThreadBridge bridge;
+    std::thread poker([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        bridge.poke();
+    });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));
+    const auto waited = std::chrono::steady_clock::now() - started;
+    poker.join();
+    EXPECT_LT(waited, std::chrono::seconds(5)) << "the poke must end the idle wait";
+    // The poke is consumed: the next idle wait runs its full (short) interval.
+    const auto again = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::milliseconds(50));
+    EXPECT_GE(std::chrono::steady_clock::now() - again, std::chrono::milliseconds(40));
+}
+
+// Node::run_on_owner calls the owner wakeup when it queues work, so an idle
+// loop is woken rather than left to its next timed tick (#1063).
+TEST(NodeOwnerWakeup, QueuedOwnerWorkWakesTheLoop) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    node.tick();  // adopt this thread as the owner
+    zetta::api::MainThreadBridge bridge;
+    node.set_owner_wakeup([&bridge] { bridge.poke(); });
+    std::atomic<bool> ran{false};
+    std::thread worker([&] { node.run_on_owner([&] { ran = true; }); });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));  // the loop's idle wait
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5))
+        << "queued owner work must wake the idle loop";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!ran.load() && std::chrono::steady_clock::now() < deadline) node.tick();
+    worker.join();
+    EXPECT_TRUE(ran.load());
+    node.set_owner_wakeup({});
+    node.stop();
+}
+
 TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     zetta::api::MainThreadBridge bridge;
     std::atomic<bool> work_ran{false};

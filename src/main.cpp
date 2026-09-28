@@ -704,9 +704,16 @@ int main(int argc, char** argv) {
         // provisioners the headed control does (#621). The fleet + local
         // provisioner outlive the server (declared above).
         api_server->set_provisioner_resolver(provisioner_for);
+        // Work a pool worker queues on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) wakes the idle loop instead of waiting a tick (#1063).
+        node.set_owner_wakeup([server = api_server.get()] { server->wake(); });
     }
-    const auto drain_api = [&api_server] {
+    const auto drain_api = [&api_server, &node] {
         if (api_server) api_server->drain();
+        // Work pool workers queued on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) runs on this wake too, not only inside the 10 Hz
+        // tick: otherwise each such hop costs up to a full tick (#1063).
+        node.drain_owner_work();
     };
     // The owning loop's idle wait — wakes the instant a request is enqueued so
     // the drain above runs immediately instead of on the next 10 Hz tick (#731).
@@ -767,6 +774,7 @@ int main(int argc, char** argv) {
         if (api_server) api_server->set_activity_hook({});
     }
 
+    node.set_owner_wakeup({});  // before the API server can go away
     cluster.stop();
     node.stop();
     // Stop the outbound HTTP client's io_context + join its thread, after the

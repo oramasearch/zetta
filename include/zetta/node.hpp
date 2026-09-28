@@ -180,6 +180,12 @@ public:
     // rides the runtime seam (async_event + block_on) — no caller-facing
     // condition variables.
     void run_on_owner(const std::function<void()>& work);
+    // How run_on_owner wakes an idle owner loop so the queued work runs now,
+    // not after the loop's idle wait (#1063: every offloaded API call's gate
+    // and the pub/sub authorizer queue here). Called under the queue's lock, so
+    // clearing it ({}) guarantees no call is in flight afterwards. Unset = the
+    // work waits for the next tick.
+    void set_owner_wakeup(std::function<void()> wakeup);
 
     // True when the calling thread is the node's owner thread (adopted at
     // the first tick(), refreshed every tick so a node handed to another
@@ -1150,6 +1156,7 @@ private:
     std::atomic<std::thread::id> owner_thread_;
     mutable std::mutex owner_work_mutex_;
     std::deque<OwnerWork> owner_work_queue_;
+    std::function<void()> owner_wakeup_;  // guarded by owner_work_mutex_
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
