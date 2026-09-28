@@ -594,6 +594,7 @@ add_library(zetta-core STATIC
   src/core/ml/survival_methodology.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
+  src/core/solutions/experiment.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp

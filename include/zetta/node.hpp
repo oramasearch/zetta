@@ -49,6 +49,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/solutions/experiment.hpp"
 
 namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
@@ -371,6 +372,17 @@ public:
     bool drop_plan(const std::string& id);
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans() const { return plans_; }
     std::size_t plan_count() const { return plans_.size(); }
+
+    // The shared holdout / experiment manager (#1105): replicated experiment
+    // definitions and per-entity assignments, decide-before-action enforcement,
+    // balance checks, erosion, and uplift-training rows. The Node's owner-thread
+    // rule applies to every call.
+    zetta::solutions::ExperimentManager& experiment_manager() {
+        return experiment_manager_;
+    }
+    const zetta::solutions::ExperimentManager& experiment_manager() const {
+        return experiment_manager_;
+    }
 
     // The node's CRDT document manager (null when standalone/unreplicated). Exposed
     // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
@@ -1144,6 +1156,7 @@ private:
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
         workspace_profiles_;                                          // sorted (created, id)
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)
+    zetta::solutions::ExperimentManager experiment_manager_;
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>

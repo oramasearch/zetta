@@ -19,6 +19,9 @@
 //   get_trace        read    every span of one trace id (#640)
 //   submit_feedback  action  snapshot a feedback bundle as a large object (#640)
 //   create_project   action  the action template: mutates, audited, replicated
+//   create_experiment action create a seeded, replicated allocation definition
+//   assign           action  assign first, then protect a proposed action
+//   get_experiment   read    sizes, balance, erosion, and training rows
 //   list_specs       read    the spec index (#646): OpenAPI + every capability
 //                            and boundary schema as names, kinds, links
 //   get_spec         read    one spec document by its list_specs name

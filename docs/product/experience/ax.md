@@ -29,7 +29,7 @@ relay it to a person.
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
-  JSON Schema in the system (capability schemas + all 62 schema-as-code
+  JSON Schema in the system (capability schemas + all 86 schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
   same table the build enforces.
@@ -42,6 +42,11 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Experiments before actions**: `create_experiment` defines seeded allocation
+  tiers, `assign` records the entity before returning any proposed action and
+  suppresses model-driven action for protected tiers, and `get_experiment`
+  exposes balance, exemption erosion, and the assignment rows used by uplift
+  training ([experiments.md](../../solutions/experiments.md), #1105).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a

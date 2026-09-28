@@ -389,7 +389,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([api/llms-endpoints.md](api/llms-endpoints.md)).
 - **#646 spec index built** (and the #469 fold completed with it):
   `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
-  serve the OpenAPI document + every capability schema + all 62 boundary
+  serve the OpenAPI document + every capability schema + all 86 boundary
   schemas from their C++ accessors; the shared table is
   `zetta::schemas::boundary_schemas()`, drift-checked by `test_schemas`
   ([api/specs-index.md](api/specs-index.md)).

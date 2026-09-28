@@ -45,6 +45,13 @@
 //                          NOT in the document — like a large object it lives on
 //                          disk and transfers peer-to-peer, verified against
 //                          weights.size + weights.sha256; see model.hpp)
+//   experiment:<uuid> -> { name, seed, allocations, created }  (a holdout /
+//                          experiment definition; see solutions/experiment.hpp)
+//   experiment_assignment:<experiment-uuid>:<entity-digest>
+//                       -> { experiment, entity, allocation, tier, propensity,
+//                            bucket, exempt, exemption_reason, exemption_actor,
+//                            assigned_at }  (one independently convergent
+//                            assignment and uplift-training row per entity)
 //   job:<job_uuid>     -> { kind, status, project, graph, run, scaling_policy,
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
@@ -143,6 +150,9 @@ inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
 inline constexpr std::string_view kWorkspaceProfilePrefix = "profile:";
 inline constexpr std::string_view kPlanPrefix = "plan:";
+inline constexpr std::string_view kExperimentPrefix = "experiment:";
+inline constexpr std::string_view kExperimentAssignmentPrefix =
+    "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
@@ -199,6 +209,15 @@ inline std::string workspace_profile_key(const std::string& workspace_profile_id
 }
 inline std::string plan_key(const std::string& plan_id) {
     return std::string(kPlanPrefix) + plan_id;
+}
+inline std::string experiment_key(const std::string& experiment_id) {
+    return std::string(kExperimentPrefix) + experiment_id;
+}
+inline std::string experiment_assignment_key(
+    const std::string& experiment_id,
+    const std::string& assignment_id) {
+    return std::string(kExperimentAssignmentPrefix) + experiment_id + ":" +
+           assignment_id;
 }
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;

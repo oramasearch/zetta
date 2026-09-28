@@ -1382,6 +1382,213 @@
         ]
       }
     },
+    "/v1/assign": {
+      "post": {
+        "description": "Assign an entity deterministically before any proposed action, suppress model-driven actions in protected tiers, and durably log explicit exemptions. Mutates assignment state. Requires orchestration:assign.",
+        "operationId": "assign",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "entity": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "exempt": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "exemption_reason": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "experiment": {
+                    "description": "experiment uuid or unique name",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model_driven": {
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "proposed_action": {
+                    "description": "action to return only when the assignment permits it",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "experiment",
+                  "entity"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "action": {
+                          "type": "string"
+                        },
+                        "allowed": {
+                          "type": "boolean"
+                        },
+                        "assignment": {
+                          "$schema": "http://json-schema.org/draft-07/schema#",
+                          "additionalProperties": false,
+                          "properties": {
+                            "allocation": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "assigned_at": {
+                              "type": "string"
+                            },
+                            "bucket": {
+                              "exclusiveMaximum": 1,
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "entity": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "exempt": {
+                              "type": "boolean"
+                            },
+                            "exemption_actor": {
+                              "type": "string"
+                            },
+                            "exemption_reason": {
+                              "type": "string"
+                            },
+                            "experiment": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "description": "the entity's uuid",
+                              "type": "string"
+                            },
+                            "propensity": {
+                              "exclusiveMinimum": 0,
+                              "maximum": 1,
+                              "type": "number"
+                            },
+                            "tier": {
+                              "enum": [
+                                "holdout",
+                                "treatment",
+                                "exploration",
+                                "below_line"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "experiment",
+                            "entity",
+                            "allocation",
+                            "tier",
+                            "propensity",
+                            "bucket",
+                            "exempt",
+                            "exemption_reason",
+                            "exemption_actor",
+                            "assigned_at",
+                            "id"
+                          ],
+                          "title": "zetta.ExperimentAssignment",
+                          "type": "object"
+                        },
+                        "model_driven": {
+                          "type": "boolean"
+                        },
+                        "proposed_action": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "assignment",
+                        "proposed_action",
+                        "action",
+                        "model_driven",
+                        "allowed",
+                        "reason"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Assign an experiment entity",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/capture_intent": {
       "post": {
         "description": "Capture a natural-language intent as a replicated project input with provenance; compile it into a graph with compile_intent. Requires orchestration:capture_intent.",
@@ -3062,6 +3269,198 @@
           }
         },
         "summary": "Create a dataset from a connector query",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_experiment": {
+      "post": {
+        "description": "Create and replicate a seeded holdout experiment definition. Mutates experiment state and returns the durable record. Requires orchestration:create_experiment.",
+        "operationId": "create_experiment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false,
+                "properties": {
+                  "allocations": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "fraction": {
+                          "exclusiveMinimum": 0,
+                          "maximum": 1,
+                          "type": "number"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "tier": {
+                          "enum": [
+                            "holdout",
+                            "treatment",
+                            "exploration",
+                            "below_line"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "tier",
+                        "fraction"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "seed": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "name",
+                  "seed",
+                  "allocations"
+                ],
+                "title": "Create experiment input",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "properties": {
+                        "allocations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "fraction": {
+                                "exclusiveMinimum": 0,
+                                "maximum": 1,
+                                "type": "number"
+                              },
+                              "name": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "tier": {
+                                "enum": [
+                                  "holdout",
+                                  "treatment",
+                                  "exploration",
+                                  "below_line"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "tier",
+                              "fraction"
+                            ],
+                            "type": "object"
+                          },
+                          "minItems": 2,
+                          "type": "array"
+                        },
+                        "created": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "description": "the entity's uuid",
+                          "type": "string"
+                        },
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "seed": {
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "seed",
+                        "allocations",
+                        "created",
+                        "id"
+                      ],
+                      "title": "zetta.Experiment",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create an experiment",
         "tags": [
           "action"
         ]
@@ -6612,6 +7011,335 @@
           }
         },
         "summary": "Get one dataset",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_experiment": {
+      "get": {
+        "description": "Read an experiment's allocation sizes, balance checks, exemption erosion, and uplift-training assignment rows. No side effects. Requires api:query.",
+        "operationId": "get_experiment",
+        "parameters": [
+          {
+            "description": "experiment uuid or unique name",
+            "in": "query",
+            "name": "experiment",
+            "required": true,
+            "schema": {
+              "description": "experiment uuid or unique name",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "balance": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "allocations": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "assignments": {
+                                    "type": "integer"
+                                  },
+                                  "balanced": {
+                                    "type": "boolean"
+                                  },
+                                  "configured_fraction": {
+                                    "type": "number"
+                                  },
+                                  "deviation": {
+                                    "type": "number"
+                                  },
+                                  "expected": {
+                                    "type": "number"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "tier": {
+                                    "type": "string"
+                                  },
+                                  "tolerance": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "tier",
+                                  "configured_fraction",
+                                  "assignments",
+                                  "expected",
+                                  "deviation",
+                                  "tolerance",
+                                  "balanced"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "balanced": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "balanced",
+                            "allocations"
+                          ],
+                          "type": "object"
+                        },
+                        "erosion": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "exemption_rate": {
+                              "type": "number"
+                            },
+                            "holdout_erosion_rate": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "exemption_rate",
+                            "holdout_erosion_rate"
+                          ],
+                          "type": "object"
+                        },
+                        "experiment": {
+                          "$schema": "http://json-schema.org/draft-07/schema#",
+                          "additionalProperties": false,
+                          "properties": {
+                            "allocations": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "fraction": {
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 1,
+                                    "type": "number"
+                                  },
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "tier": {
+                                    "enum": [
+                                      "holdout",
+                                      "treatment",
+                                      "exploration",
+                                      "below_line"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "tier",
+                                  "fraction"
+                                ],
+                                "type": "object"
+                              },
+                              "minItems": 2,
+                              "type": "array"
+                            },
+                            "created": {
+                              "type": "string"
+                            },
+                            "id": {
+                              "description": "the entity's uuid",
+                              "type": "string"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "seed": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "seed",
+                            "allocations",
+                            "created",
+                            "id"
+                          ],
+                          "title": "zetta.Experiment",
+                          "type": "object"
+                        },
+                        "sizes": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "assignments": {
+                              "type": "integer"
+                            },
+                            "exemptions": {
+                              "type": "integer"
+                            },
+                            "holdout_assignments": {
+                              "type": "integer"
+                            },
+                            "holdout_exemptions": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "assignments",
+                            "exemptions",
+                            "holdout_assignments",
+                            "holdout_exemptions"
+                          ],
+                          "type": "object"
+                        },
+                        "training_rows": {
+                          "items": {
+                            "$schema": "http://json-schema.org/draft-07/schema#",
+                            "additionalProperties": false,
+                            "properties": {
+                              "allocation": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "assigned_at": {
+                                "type": "string"
+                              },
+                              "bucket": {
+                                "exclusiveMaximum": 1,
+                                "minimum": 0,
+                                "type": "number"
+                              },
+                              "entity": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "exempt": {
+                                "type": "boolean"
+                              },
+                              "exemption_actor": {
+                                "type": "string"
+                              },
+                              "exemption_reason": {
+                                "type": "string"
+                              },
+                              "experiment": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "id": {
+                                "description": "the entity's uuid",
+                                "type": "string"
+                              },
+                              "propensity": {
+                                "exclusiveMinimum": 0,
+                                "maximum": 1,
+                                "type": "number"
+                              },
+                              "tier": {
+                                "enum": [
+                                  "holdout",
+                                  "treatment",
+                                  "exploration",
+                                  "below_line"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "experiment",
+                              "entity",
+                              "allocation",
+                              "tier",
+                              "propensity",
+                              "bucket",
+                              "exempt",
+                              "exemption_reason",
+                              "exemption_actor",
+                              "assigned_at",
+                              "id"
+                            ],
+                            "title": "zetta.ExperimentAssignment",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "experiment",
+                        "sizes",
+                        "balance",
+                        "erosion",
+                        "training_rows"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get an experiment",
         "tags": [
           "read"
         ]
