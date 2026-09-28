@@ -103,17 +103,21 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // create/update_workspace_profile, #886; create/update_plan, Conflict D;
     // agent_training_status + set_training_schedule, #941;
     // list_source_tables, #994; delete_project, #1009;
-    // create_solution + run_solution, #1102; policy operations, #1104;
+    // create_solution + run_solution, #1102; snapshot, #1103; policy operations, #1104;
     // experiment creation and assignment, #1105).
     const std::vector<Operation> pipeline_operations =
         permission_operations("pipelines:manage");
-    EXPECT_EQ(pipeline_operations.size(), 41u);
+    EXPECT_EQ(pipeline_operations.size(), 42u);
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "create_solution"}));
     EXPECT_TRUE(std::ranges::contains(
         pipeline_operations,
         Operation{CapabilityDomain::Orchestration, "run_solution"}));
+    EXPECT_TRUE(zetta::governance::capabilities_for_permissions(
+                    {"pipelines:manage"})
+                    .permits({CapabilityDomain::Orchestration, "snapshot"},
+                             "2026-09-28T00:00:00.000Z"));
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 

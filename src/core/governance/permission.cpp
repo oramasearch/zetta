@@ -49,6 +49,7 @@ const std::vector<PermissionEntry>& vocabulary() {
          {{CapabilityDomain::Orchestration, "create_project"},
           {CapabilityDomain::Orchestration, "delete_project"},
           {CapabilityDomain::Orchestration, "add_dataset"},
+          {CapabilityDomain::Orchestration, "snapshot"},
           {CapabilityDomain::Orchestration, "create_dataset_from_query"},
           {CapabilityDomain::Orchestration, "promote_dataset"},
           {CapabilityDomain::Orchestration, "create_connection"},

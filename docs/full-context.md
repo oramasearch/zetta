@@ -69,6 +69,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   `topic:solution-events`; configured monitors also set a durable retrain
   request. See [solutions/monitor.md](solutions/monitor.md).
 
+- **Point-in-time solution foundation (#1103)** — `snapshot` materializes
+  replicated `(entity_id, as_of)` tables, the public row-level as-of join picks
+  only snapshots visible at each decision time, and `snapshot_lineage` blocks
+  live feature sources, future cutoffs, and feature/label windows that violate
+  their configured blackout. See
+  [solutions/point-in-time-snapshots.md](solutions/point-in-time-snapshots.md).
+
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
   intent compilation, and run dispatch. All 21 methodologies are runnable on the
   methodology integration branch (#1082), with all method-specific checks,

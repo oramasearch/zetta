@@ -14,6 +14,9 @@ and policy decisions to actions and measured outcomes.
   exploration, below-line sampling, exemptions, balance, and uplift rows
   (#1105).
 - [monitor.md](monitor.md) — replicated input/score PSI, calibration, closed-window cohort performance, bounded guardrails, breach events, and retrain requests (#1106).
+- [point-in-time-snapshots.md](point-in-time-snapshots.md) — replicated snapshot
+  tables, row-level as-of joins, and the feature-lineage/blackout gate (#1103).
+
 ## Solution registry
 
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the

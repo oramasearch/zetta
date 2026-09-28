@@ -1437,6 +1437,8 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
             out << nlohmann::json{{"entity", index},
                                   {"segment", segment},
                                   {"baseline", baseline},
+                                  {"feature_observed_at",
+                                   "2024-01-15T00:00:00Z"},
                                   {"treatment", treatment},
                                   {"outcome", draw < probability ? 1 : 0}}
                        .dump()
@@ -1449,6 +1451,15 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
                              {"table_name", "causal_population"},
                              {"partition_count", 4}});
     ASSERT_TRUE(landed.ok) << landed.error.message;
+    const ApiResult snapshot = call(
+        "snapshot",
+        {{"database", "experiments"},
+         {"source_table", "causal_population"},
+         {"target_table", "causal_population_snapshot"},
+         {"entity_column", "entity"},
+         {"time_column", "feature_observed_at"},
+         {"as_of", "2024-01-31T00:00:00Z"}});
+    ASSERT_TRUE(snapshot.ok) << snapshot.error.message;
 
     ASSERT_TRUE(call("create_project", {{"name", "causal targeting"}}).ok);
     const ApiResult captured =
@@ -1464,10 +1475,16 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
          {"name", "uplift policy"},
          {"hints",
           {{"source", "experiments"},
-           {"table", "causal_population"},
+           {"table", "causal_population_snapshot"},
            {"entity", "entity"},
            {"treatment", "treatment"},
            {"outcome", "outcome"},
+           {"as_of", "2024-02-01T00:00:00Z"},
+           {"snapshot_as_of", "2024-01-31T00:00:00Z"},
+           {"feature_window_end", "2024-01-31T00:00:00Z"},
+           {"label_window_start", "2024-02-07T00:00:00Z"},
+           {"blackout_gap_seconds", 604800},
+           {"treatment_time", "2024-02-07T00:00:00Z"},
            {"features", nlohmann::json::array({"segment", "baseline"})}}}});
     ASSERT_TRUE(compiled.ok) << compiled.error.message;
     EXPECT_EQ(compiled.value.at("methodology"), "M-6");
@@ -1499,7 +1516,7 @@ TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
     EXPECT_EQ(report.value.at("treatment_effects").size(), 12u);
     EXPECT_FALSE(report.value.at("qini_curve").empty());
     EXPECT_EQ(report.value.at("dataset").at("source"),
-              "experiments.causal_population");
+              "experiments.causal_population_snapshot");
 }
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a

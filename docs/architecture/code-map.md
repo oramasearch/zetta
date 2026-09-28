@@ -126,12 +126,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
-    graph_checks.hpp        zetta::pipeline shared and methodology-specific correctness checks, including label gold isolation and privacy budgets (#309/#1058/#1059)
+    graph_checks.hpp        zetta::pipeline shared and methodology-specific correctness checks, including snapshot lineage/blackout windows, label gold isolation and privacy budgets (#309/#1103/#1058/#1059)
     run.hpp                 zetta::pipeline::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
     deployment_target.hpp   zetta::pipeline::DeploymentTarget — a placement (ENT-6; R1 local)
     deployment.hpp          zetta::pipeline::Deployment — a graph placed onto a target
     deployment_controller.hpp  zetta::pipeline::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
     solution_catalog.hpp    zetta::pipeline::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
+  solutions/
+    snapshot.hpp            zetta::solutions SnapshotSpec/materialize_snapshot and AsOfJoinSpec/as_of_join — replicated point-in-time tables, row-level nearest-prior joins, time parsing and JSON boundaries (#1103)
   compute/                  zetta::compute — the accelerator interface (ADR-27/ARC-9; no SDL/CUDA in headers)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
@@ -428,7 +430,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     run_progress.cpp        project_run_progress — derive per-step run status from the GraphExecutor log grammar + attribute outputs to producing steps (#626)
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check
-    graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309), M-10 grounding/training-access checks (#1049), and annotation JSON-Schema validation
+    graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309), SnapshotLineageCheck (#1103), M-10 grounding/training-access checks (#1049), and annotation JSON-Schema validation
     forecast_graph_check.cpp
                             zetta::pipeline::ForecastGraphCheck — refuse invalid forecast shapes, non-temporal splits, future features, calibration and missing baselines (#1043)
     run.cpp                 zetta::pipeline::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
@@ -436,6 +438,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     deployment.cpp          zetta::pipeline::Deployment — persist deployment.json
     deployment_controller.cpp  zetta::pipeline::DeploymentController — reconcile pass: start/self-heal a deployment's run
     solution_catalog.cpp    zetta::pipeline::SolutionCatalog — built-in library + schema/IR boundary parse
+  solutions/
+    snapshot.cpp            point-in-time table materialization through the Node catalog, partition-aware source reads, row-level as-of joins and schema accessors (#1103)
   compute/
     device_buffer.cpp       DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
     host_stub_device.cpp    HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
@@ -728,6 +732,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
   data/test_featurize_plan.cpp semantic inference, entity/event/time-series/snapshot grain, key-overlap joins, leakage detection, methodology-specific plans, and required dataset corrections (#1062)
+  solutions/test_snapshot.cpp snapshot cutoff/idempotence/replication, as-of join future-row exclusion, and boundary refusal tests (#1103)
   ml/test_anomaly.cpp       tabular/KPI anomaly correctness: planted outliers, exact budgets, label-only evaluation, seasonal spike handling, and future-point invariance (#1046)
   ml/test_anomaly_partitions.cpp  real multi-member isolation-forest collectives compared row-for-row with the single-member partition oracle (#1046)
   ml/test_anomaly_table.cpp  resolved label-free table in, `anomaly` Model plus queryable anomaly/report tables and Run lineage out (#1046)

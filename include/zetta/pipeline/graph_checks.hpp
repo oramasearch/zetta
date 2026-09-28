@@ -225,6 +225,16 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// Point-in-time feature lineage (#1103): every feature-bearing model must trace
+// through data-flow edges to snapshot sources, each snapshot cutoff must be at
+// or before prediction time T, and the label window must start after the
+// feature window plus the declared blackout interval.
+class SnapshotLineageCheck final : public Check {
+public:
+    std::string name() const override { return "snapshot_lineage"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

@@ -642,6 +642,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/gate.cpp
   src/core/pipeline/graph_checks.cpp
   src/core/pipeline/next_best_action_graph_check.cpp
+  src/core/solutions/snapshot.cpp
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp

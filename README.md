@@ -72,6 +72,10 @@ What's inside, by domain (each links to that domain's docs):
   device-backed frames with local ops (scan/filter/project/sort) and
   distributed ops (sort, equi-join, group-by, as-of/point-in-time windows)
   composing into **leakage-free featurization**; single-node == multi-node.
+- **[Solution foundations](docs/solutions/README.md)** — replicated
+  point-in-time snapshot tables, row-level as-of joins, and a correctness-gate
+  check that refuses live feature sources, future snapshots, and label windows
+  inside the configured blackout gap.
 - **[Native ML](docs/ml/README.md)** — distributed **histogram GBDT** training
   (allreduced histograms), probability **calibration**, batch **scoring /
   rank-at-risk**, **exact TreeSHAP** explanation, label-free **anomaly detection**

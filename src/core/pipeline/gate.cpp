@@ -77,6 +77,7 @@ CorrectnessGate default_gate() {
     // annotations passes them), so they are safe to ship in the baseline gate.
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
+    gate.add_check(std::make_shared<SnapshotLineageCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());
