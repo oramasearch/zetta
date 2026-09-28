@@ -78,6 +78,10 @@ What's inside, by domain (each links to that domain's docs):
   correctness oracle** (no Python/XGBoost anywhere).
   The [segmentation trainer](docs/ml/segmentation.md) also produces entity assignments
   and segment profiles; registry and intent integration follow in Phase B of #1042.
+  The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
+  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
+  name their implementation issues. Intent compilation and run dispatch use
+  this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

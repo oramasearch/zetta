@@ -14,39 +14,36 @@
 #include <utility>
 #include <vector>
 
+#include "zetta/agent/agent_store.hpp"
+#include "zetta/agent/chat.hpp"
+#include "zetta/agent/corpus_io.hpp"
 #include "zetta/api/background.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
+#include "zetta/autograd/qwen.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/cpu_device.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
-#include "zetta/data/dataset_path.hpp"
-#include "zetta/compute/cpu_device.hpp"
-#include "zetta/ml/explain_row.hpp"
-#include "zetta/ml/score_table.hpp"
-#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/dataset_path.hpp"
+#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/table.hpp"
-#include "zetta/storage/engine.hpp"
+#include "zetta/dataset/dataset_generator_factory.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
+#include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
-#include "zetta/input/python_frontend.hpp"
+#include "zetta/ml/explain_row.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/ml/model.hpp"
-#include "zetta/agent/agent_store.hpp"
-#include "zetta/agent/chat.hpp"
-#include "zetta/agent/corpus_io.hpp"
-#include "zetta/dataset/dataset_generator_factory.hpp"
-#include "zetta/autograd/qwen.hpp"
-#include "zetta/tokenizer/bpe.hpp"
-#include "zetta/util/timestamp.hpp"
-#include "zetta/util/uuid.hpp"
+#include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -62,10 +59,12 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
-#include "zetta/usecases/churn/churn_dataset.hpp"
-#include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/tokenizer/bpe.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -363,7 +362,8 @@ const nlohmann::json& get_project_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required",
-         {"id", "name", "created", "updated", "owner", "description", "inputs", "graphs"}},
+         {"id", "name", "created", "updated", "owner", "description", "inputs",
+          "graphs"}},
         {"additionalProperties", false},
         {"properties",
          {{"id", {{"type", "string"}}},
@@ -392,8 +392,13 @@ const nlohmann::json& get_project_output_schema() {
                {{"id", {{"type", "string"}}},
                 {"name", {{"type", "string"}}},
                 {"approval",
-                 {{"type", "string"}, {"enum", {"proposed", "approved"}},
+                 {{"type", "string"},
+                  {"enum", {"proposed", "approved"}},
                   {"description", "plan-approval state (#885)"}}},
+                {"methodology",
+                 {{"type", {"string", "null"}},
+                  {"description", "the registry methodology id, when known"}}},
+                {"runnable", {{"type", "boolean"}}},
                 {"approved_by", {{"type", "string"}}},
                 {"approved_at", {{"type", "string"}}}}}}}}}}}};
     return schema;
@@ -428,11 +433,21 @@ ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
     output["inputs"] = std::move(inputs);
     nlohmann::json graphs = nlohmann::json::array();
     for (const auto& graph : project->graphs()) {
-        graphs.push_back({{"id", graph->id()},
-                          {"name", graph->name()},
-                          {"approval", graph->approval_status()},
-                          {"approved_by", graph->approved_by()},
-                          {"approved_at", graph->approved_at()}});
+        const zetta::ml::Methodology* methodology =
+            zetta::ml::methodology_for_graph(graph->graph());
+        const bool has_model =
+            !graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+        graphs.push_back(
+            {{"id", graph->id()},
+             {"name", graph->name()},
+             {"approval", graph->approval_status()},
+             {"approved_by", graph->approved_by()},
+             {"approved_at", graph->approved_at()},
+             {"methodology", methodology != nullptr
+                                 ? nlohmann::json(methodology->id)
+                                 : nlohmann::json(nullptr)},
+             {"runnable",
+              methodology != nullptr ? methodology->runnable : !has_model}});
     }
     output["graphs"] = std::move(graphs);
     return ApiResult::success(std::move(output));
@@ -1369,6 +1384,59 @@ ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+const nlohmann::json& list_methodologies_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_methodologies_output_schema() {
+    static const nlohmann::json input_schema = {
+        {"type", "object"},
+        {"required", {"role", "required", "description"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"role", {{"type", "string"}}},
+          {"required", {{"type", "boolean"}}},
+          {"description", {{"type", "string"}}}}}};
+    static const nlohmann::json string_array = {
+        {"type", "array"}, {"items", {{"type", "string"}}}};
+    static const nlohmann::json methodology_schema = {
+        {"type", "object"},
+        {"required",
+         {"id", "name", "family", "model_kinds", "solutions", "inputs",
+          "outputs", "metrics", "runnable", "partial", "issue"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"family", {{"type", "string"}}},
+          {"model_kinds", string_array},
+          {"solutions", string_array},
+          {"inputs", {{"type", "array"}, {"items", input_schema}}},
+          {"outputs", string_array},
+          {"metrics", string_array},
+          {"runnable", {{"type", "boolean"}}},
+          {"partial", {{"type", "boolean"}}},
+          {"issue", {{"type", "string"}}}}}};
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"methodologies"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"methodologies",
+           {{"type", "array"}, {"items", methodology_schema}}}}}};
+    return schema;
+}
+
+ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const zetta::ml::Methodology& methodology :
+         zetta::ml::methodologies()) {
+        entries.push_back(zetta::ml::methodology_json(methodology));
+    }
+    return ApiResult::success({{"methodologies", std::move(entries)}});
+}
+
 // --- create_project ----------------------------------------------------------
 
 const nlohmann::json& create_project_schema() {
@@ -2049,11 +2117,20 @@ nlohmann::json input_json(const zetta::pipeline::ProjectInput& input) {
 }
 
 nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
-    return nlohmann::json{{"graph_id", graph.id()},
-                          {"name", graph.name()},
-                          {"steps", graph.graph().node_count()},
-                          {"edges", graph.graph().edge_count()},
-                          {"approval", graph.approval_status()}};
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph.graph());
+    const bool has_model =
+        !graph.graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    return nlohmann::json{
+        {"graph_id", graph.id()},
+        {"name", graph.name()},
+        {"steps", graph.graph().node_count()},
+        {"edges", graph.graph().edge_count()},
+        {"approval", graph.approval_status()},
+        {"methodology", methodology != nullptr ? nlohmann::json(methodology->id)
+                                               : nlohmann::json(nullptr)},
+        {"runnable",
+         methodology != nullptr ? methodology->runnable : !has_model}};
 }
 
 // --- get_graph / save_graph: the visual graph workspace's read + write path ---
@@ -2083,10 +2160,13 @@ const nlohmann::json& graph_structure_output_schema() {
           {"name", {{"type", "string"}}},
           {"project", {{"type", "string"}}},
           {"approval",
-           {{"type", "string"}, {"enum", {"proposed", "approved"}},
+           {{"type", "string"},
+            {"enum", {"proposed", "approved"}},
             {"description", "plan-approval state (#885)"}}},
           {"approved_by", {{"type", "string"}}},
           {"approved_at", {{"type", "string"}}},
+          {"methodology", {{"type", {"string", "null"}}}},
+          {"runnable", {{"type", "boolean"}}},
           {"nodes",
            {{"type", "array"},
             {"items",
@@ -2123,6 +2203,15 @@ ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
     output["approval"] = graph->approval_status();
     output["approved_by"] = graph->approved_by();
     output["approved_at"] = graph->approved_at();
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph->graph());
+    output["methodology"] = methodology != nullptr
+                                ? nlohmann::json(methodology->id)
+                                : nlohmann::json(nullptr);
+    output["runnable"] =
+        methodology != nullptr
+            ? methodology->runnable
+            : graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
     return ApiResult::success(std::move(output));
 }
 
@@ -2277,8 +2366,12 @@ const nlohmann::json& project_graph_output_schema() {
           {"steps", {{"type", "integer"}}},
           {"edges", {{"type", "integer"}}},
           {"approval",
-           {{"type", "string"}, {"enum", {"proposed", "approved"}},
-            {"description", "plan-approval state (#885); a fresh plan is proposed"}}},
+           {{"type", "string"},
+            {"enum", {"proposed", "approved"}},
+            {"description",
+             "plan-approval state (#885); a fresh plan is proposed"}}},
+          {"methodology", {{"type", {"string", "null"}}}},
+          {"runnable", {{"type", "boolean"}}},
           {"project", {{"type", "string"}}}}}};
     return schema;
 }
@@ -2421,13 +2514,28 @@ const nlohmann::json& compile_intent_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description",
-             "the captured intent's uuid (capture_intent). Optional: omit it and the "
-             "project's most recently captured intent compiles, which is what you want "
+             "the captured intent's uuid (capture_intent). Optional: omit it "
+             "and the "
+             "project's most recently captured intent compiles, which is what "
+             "you want "
              "in the common case of describing a goal and building it"}}},
           {"name",
            {{"type", "string"},
             {"description",
-             "the stored graph's name (default '<shape> skeleton')"}}}}}};
+             "the stored graph's name (default '<shape> skeleton')"}}},
+          {"methodology",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "methodology id or model kind; takes precedence"}}},
+          {"solution",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "solution id resolved to its primary methodology"}}},
+          {"hints",
+           {{"type", "object"},
+            {"description",
+             "known dataset, label, time column, and other shape hints"}}}}}};
     return schema;
 }
 
@@ -2468,9 +2576,24 @@ ApiResult handle_compile_intent(const nlohmann::json& input, ApiContext& context
                                 "' is an artifact, not a captured intent — "
                                 "compile it with compile_n8n");
     }
-    auto graph =
-        project->compile_intent_to_graph(input_id, input.value("name", ""));
+    zetta::pipeline::IntentCompileOptions options;
+    options.project = project->name();
+    options.methodology = input.value("methodology", "");
+    options.solution = input.value("solution", "");
+    options.hints = input.value("hints", nlohmann::json::object());
+    std::string compile_error;
+    auto graph = project->compile_intent_to_graph(
+        input_id, input.value("name", ""), options, &compile_error);
     if (!graph) {
+        if (!compile_error.empty()) {
+            const bool unsupported =
+                compile_error.find("is not supported yet:") !=
+                    std::string::npos ||
+                compile_error.find("does not match a supported methodology") !=
+                    std::string::npos;
+            return ApiResult::failure(
+                unsupported ? "not_supported" : "invalid_input", compile_error);
+        }
         return ApiResult::failure(
             "engine_error",
             "compile_intent could not store a graph from input '" + input_id +
@@ -2802,13 +2925,15 @@ const nlohmann::json& run_output_schema() {
            {{"type", "string"},
             {"description",
              "the durable engine handle — poll get_run / system.runs"}}},
-          {"engine", {{"type", "string"}, {"enum", {"churn", "structural"}}}},
+          {"engine",
+           {{"type", "string"},
+            {"description", "the methodology runner, or structural"}}},
           {"status", {{"type", "string"}}},
           {"note",
            {{"type", "string"},
-            {"description",
-             "structural runs: that nothing was trained, and whether a given dataset was "
-             "read"}}},
+            {"description", "structural runs: that nothing was trained, and "
+                            "whether a given dataset was "
+                            "read"}}},
           {"failed_step",
            {{"type", "string"},
             {"description", "structural runs only, on failure"}}},
@@ -2820,15 +2945,15 @@ const nlohmann::json& run_output_schema() {
             {"description", "churn runs: where to read progress"}}},
           {"dataset",
            {{"type", "object"},
-            {"description",
-             "table datasets only: the resolved column contract the run trained "
-             "under"}}},
+            {"description", "table datasets only: the resolved column contract "
+                            "the run trained "
+                            "under"}}},
           {"dataset_notes",
            {{"type", "array"},
             {"items", {{"type", "string"}}},
-            {"description",
-             "what was inferred rather than given — read these before trusting the "
-             "model"}}}}}};
+            {"description", "what was inferred rather than given — read these "
+                            "before trusting the "
+                            "model"}}}}}};
     return schema;
 }
 
@@ -2847,9 +2972,6 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
                                                    project->name() + "'");
     }
 
-    // The gate, where the GUI's run paths have it (the governed console gates
-    // every run; the coordinated launch re-checks it on every member): RULE-1
-    // holds over MCP exactly as everywhere else.
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     if (report.block_deploy) {
@@ -2857,20 +2979,39 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
             "engine_error", "blocked by gate: " + first_gate_failure(report));
     }
 
-    // Non-churn graphs run structurally (DefaultStepExecutor) — quick, within
-    // the call, same as the governed console's fallback path.
-    if (!zetta::usecases::churn::is_churn_graph(graph->graph())) {
+    const bool has_model =
+        !graph->graph().nodes_of_kind(zetta::ir::StepKind::Model).empty();
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::methodology_for_graph(graph->graph());
+    if (has_model && methodology == nullptr) {
+        return ApiResult::failure(
+            "not_supported",
+            "this pipeline names a model_kind no registered methodology can "
+            "run. Runnable methodologies: " +
+                zetta::ml::runnable_methodologies());
+    }
+    if (methodology != nullptr && !methodology->runnable) {
+        return ApiResult::failure(
+            "not_supported",
+            zetta::ml::unsupported_methodology_message(*methodology));
+    }
+    if (methodology != nullptr && !methodology->run) {
+        return ApiResult::failure(
+            "not_supported",
+            methodology->name + " (" + methodology->id +
+                ") is marked runnable but has no run callback");
+    }
+
+    if (methodology == nullptr) {
         const zetta::pipeline::ExecutionResult executed =
             context.node.run_graph(graph->graph(), project->id(), graph->id());
         if (!executed.run) {
             return ApiResult::failure("engine_error",
                                       "the run record could not be created");
         }
-        // Said on the run itself (lake#251): a structural run trains nothing, and a person
-        // reading it must not take its succeeded steps for a trained model.
         std::string structural =
-            "structural: this pipeline is not churn-shaped, so its steps ran without training "
-            "or scoring anything; only churn-shaped pipelines train today";
+            "structural: this pipeline has no model step, so its steps ran "
+            "without training or scoring anything";
         if (input.contains("dataset_path")) {
             structural += ", and the dataset it was given was not read";
         }
@@ -2887,133 +3028,13 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::success(std::move(output));
     }
 
-    // Churn-shaped: THE canonical runner over the node's live coordinator
-    // (#637/#580, SPMD across the membership via the coordinated launch #601),
-    // driven off-thread (AsyncChurnRun, #624). kind: job — return the durable
-    // Run id as soon as the record exists; progress/outcome ride system.runs /
-    // system.jobs / get_run.
-    if (!context.background) {
-        return ApiResult::failure(
-            "engine_error",
-            "run is a job capability and this embedding wired no background "
-            "action owner");
-    }
-    // ONE dataset_path grammar (#947): a `database.table` landed by a connection
-    // or a query, or a dataset directory on the node's filesystem. Before this,
-    // only the directory form was accepted and a customer's own data — already
-    // partitioned and healthy — could not reach the pipeline that trains on it.
-    zetta::usecases::churn::ChurnDataset dataset;
-    zetta::usecases::churn::ChurnTableInput table;
-    nlohmann::json dataset_notes = nlohmann::json::array();
-    nlohmann::json dataset_contract;
-    if (const auto dataset_path = input.find("dataset_path");
-        dataset_path != input.end()) {
-        const zetta::data::DatasetPath path =
-            zetta::data::parse_dataset_path(dataset_path->get<std::string>());
-        if (path.kind == zetta::data::DatasetPathKind::Table) {
-            zetta::data::DatasetContract overrides;
-            if (const auto given = input.find("dataset"); given != input.end()) {
-                std::string reason;
-                const std::optional<zetta::data::DatasetContract> parsed =
-                    zetta::data::dataset_contract_from_json(*given, &reason);
-                if (!parsed) return ApiResult::failure("invalid_input", reason);
-                overrides = *parsed;
-            }
-            const zetta::data::ResolvedDataset resolved = zetta::data::resolve_dataset(
-                context.node, path, overrides,
-                zetta::data::default_dataset_sampler(context.node, context.cluster));
-            if (!resolved.ok()) {
-                return ApiResult::failure("engine_error", resolved.error);
-            }
-            table.table_id = resolved.table_id;
-            table.contract = resolved.contract;
-            table.dataset_name = dataset_path->get<std::string>();
-            table.notes = resolved.notes;
-            // What was INFERRED travels back with the run: an assumption the caller
-            // never sees is one they discover inside a trained model.
-            dataset_notes = resolved.notes;
-            dataset_contract = to_json(resolved.contract);
-        } else {
-            auto loaded = zetta::usecases::churn::load_churn_dataset(path.directory);
-            if (!loaded.ok()) {
-                return ApiResult::failure("engine_error", loaded.error);
-            }
-            dataset = std::move(loaded.dataset);
-        }
-    } else {
-        dataset = zetta::usecases::churn::demo_churn_dataset();
-    }
-    zetta::usecases::churn::ChurnSolutionOptions options;
-    options.project = project->id();
-    options.graph = graph->id();
-    options.model_name = input.value("model_name", options.model_name);
-    options.top_k = input.value("top_k", options.top_k);
-    options.coordinate = input.value("coordinate", true);
-    options.params.holdout_fraction =
-        input.value("holdout_fraction", options.params.holdout_fraction);
-
-    std::set<std::string> prior;
-    for (const auto& existing : context.node.runs()) {
-        if (existing) prior.insert(existing->id());
-    }
-    auto handle = table.empty()
-                      ? zetta::usecases::churn::AsyncChurnRun::start(
-                            context.node, graph->graph(), std::move(dataset), options)
-                      : zetta::usecases::churn::AsyncChurnRun::start(
-                            context.node, graph->graph(), std::move(table), options);
-    context.background->adopt(
-        handle, [worker = handle.get()] { return worker->done(); });
-
-    // The Run record is created by the worker through the owner gate; this
-    // handler IS on the owner thread (the bridge contract), so pump the gate
-    // until the durable handle exists — milliseconds for the demo dataset,
-    // bounded for a large custom one. An early-failing run (no live
-    // coordinator, empty dataset) surfaces its engine reason instead.
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    std::string run_id;
-    while (std::chrono::steady_clock::now() < deadline) {
-        context.node.drain_owner_work();
-        for (const auto& candidate : context.node.runs()) {
-            if (!candidate || prior.contains(candidate->id())) continue;
-            if (candidate->project() != project->id()) continue;
-            if (candidate->graph() != graph->id()) continue;
-            run_id = candidate->id();
-            break;
-        }
-        if (!run_id.empty()) break;
-        if (handle->done()) {
-            if (handle->result().execution.run) {
-                run_id = handle->result().execution.run->id();
-            }
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    if (run_id.empty()) {
-        if (handle->done() && !handle->result().ok()) {
-            return ApiResult::failure("engine_error",
-                                      handle->result().execution.error);
-        }
-        return ApiResult::failure(
-            "engine_error",
-            "the run was submitted but its Run record did not appear in time "
-            "— poll list_runs for a run labelled project '" + project->id() +
-                "'");
-    }
-    nlohmann::json output;
-    output["run_id"] = run_id;
-    output["engine"] = "churn";
-    output["status"] = "running";
-    output["poll"] = "get_run / system.runs for status+logs; system.jobs for "
-                     "the featurize/train/explain/score jobs";
-    if (!dataset_contract.is_null()) {
-        output["dataset"] = std::move(dataset_contract);
-        output["dataset_notes"] = std::move(dataset_notes);
-    }
-    return ApiResult::success(std::move(output));
+    zetta::ml::RunRequest request;
+    request.context = &context;
+    request.project = project.get();
+    request.graph = graph.get();
+    request.input = input;
+    return methodology->run(request);
 }
-
 // --- score ---------------------------------------------------------------------
 
 const nlohmann::json& score_schema() {
@@ -6524,6 +6545,16 @@ void register_core_capabilities(Registry& registry) {
         handle_list_datasets});
 
     registry.add(Capability{
+        "list_methodologies", "List methodologies",
+        "Read the complete methodology portfolio, including model kinds, "
+        "primary solutions, data roles, outputs, metrics, implementation "
+        "status, and tracking issues. No side effects.",
+        list_methodologies_schema(), list_methodologies_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false, handle_list_methodologies});
+
+    registry.add(Capability{
         "submit_feedback",
         "Submit feedback",
         "Snapshot a feedback bundle — your description plus the relevant "
@@ -6879,17 +6910,15 @@ void register_core_capabilities(Registry& registry) {
         handle_import_n8n});
 
     registry.add(Capability{
-        "compile_intent",
-        "Compile intent to graph",
-        "Compile a captured intent input into a named, editable execution "
-        "graph stored on the project (replicated; audited as a graph change).",
-        compile_intent_schema(),
-        project_graph_output_schema(),
+        "compile_intent", "Compile intent to graph",
+        "Resolve a methodology from an explicit methodology, primary solution, "
+        "or intent keywords, then compile its editable graph. Unavailable "
+        "methodologies are refused with their implementation issue.",
+        compile_intent_schema(), project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_intent"},
         /*mutates=*/true,
-        /*requires_consent=*/false,
-        handle_compile_intent});
+        /*requires_consent=*/false, handle_compile_intent});
 
     registry.add(Capability{
         "compile_n8n",
@@ -6948,19 +6977,14 @@ void register_core_capabilities(Registry& registry) {
         handle_deploy});
 
     registry.add(Capability{
-        "run",
-        "Run a graph",
-        "Execute a stored, gate-passing project graph: a churn-shaped graph "
-        "runs the real engine over the live cluster and returns its run id "
-        "immediately (poll get_run / system.runs); other graphs run "
-        "structurally within the call.",
-        run_schema(),
-        run_output_schema(),
-        CapabilityKind::Job,
+        "run", "Run a graph",
+        "Execute a stored, gate-passing project graph through its registered "
+        "methodology runner. Unknown and unavailable model kinds are refused; "
+        "a graph with no model step may run structurally.",
+        run_schema(), run_output_schema(), CapabilityKind::Job,
         Operation{CapabilityDomain::Orchestration, "run"},
         /*mutates=*/true,
-        /*requires_consent=*/false,
-        handle_run});
+        /*requires_consent=*/false, handle_run});
 
     registry.add(Capability{
         "add_dataset",

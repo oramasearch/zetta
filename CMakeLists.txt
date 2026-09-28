@@ -554,6 +554,8 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_provider.cpp
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
+  src/core/ml/methodology.cpp
+  src/core/ml/methodology_table.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp

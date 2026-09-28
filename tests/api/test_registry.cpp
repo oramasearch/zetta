@@ -62,12 +62,16 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 83u);  // +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
-                                      // +agent_training_status +set_training_schedule (#941), +score (#948),
-                                      // +get_run_report (#958), +explain (#960 item 5),
-                                      // +list_source_tables (#994), +upload_dataset (#1008),
-                                      // +delete_project (#1009)
-    // A remote caller can put data on the node without a file on its disk (#1008).
+    EXPECT_EQ(
+        registry.size(),
+        84u); // +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+              // (#886), +3 plan (Conflict D), +agent_training_status
+              // +set_training_schedule (#941), +score (#948), +get_run_report
+              // (#958), +explain (#960 item 5), +list_source_tables (#994),
+              // +upload_dataset (#1008), +delete_project (#1009),
+              // +list_methodologies (#1061)
+    // A remote caller can put data on the node without a file on its disk
+    // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
     // A mistaken project can be removed, not only created (#1009).
     EXPECT_TRUE(registry.find("delete_project"));
@@ -105,9 +109,15 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"get_project", "get_run", "get_model", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
-          "list_indexes", "list_datasets"}) {
+          "list_indexes", "list_datasets", "list_methodologies"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
+    const ApiResult methodologies =
+        call("list_methodologies", nlohmann::json::object());
+    ASSERT_TRUE(methodologies.ok);
+    ASSERT_EQ(methodologies.value.at("methodologies").size(), 21u);
+    EXPECT_EQ(methodologies.value.at("methodologies").front().at("id"), "M-1");
+    EXPECT_TRUE(methodologies.value.at("methodologies").front().at("runnable"));
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an

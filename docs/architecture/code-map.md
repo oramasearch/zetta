@@ -115,7 +115,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     project.hpp             zetta::pipeline::Project — an AI project; owns inputs + execution graphs
     project_input.hpp       zetta::pipeline::ProjectInput — raw intent/artifact input + provenance
     project_graph.hpp       zetta::pipeline::ProjectGraph — a named ExecutionGraph under a project
-    intent_compiler.hpp     zetta::pipeline::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
+    intent_compiler.hpp     zetta::pipeline::compile_intent — methodology/solution/keyword resolution → registered ExecutionGraph shape (FEAT-2; #1061)
     n8n_import.hpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
     n8n_compile.hpp         zetta::pipeline::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
     graph_plan.hpp          zetta::pipeline::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
@@ -168,6 +168,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     segmentation.hpp        zetta::ml — segmentation parameters, trainer, metrics and resolved-dataset runner (#1042 Phase A; docs/ml/segmentation.md)
+    methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
@@ -371,7 +372,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     project.cpp             zetta::pipeline::Project — persist/rename project.json + input/graph CRUD
     project_input.cpp       zetta::pipeline::ProjectInput — persist input.json + payload body
     project_graph.cpp       zetta::pipeline::ProjectGraph — persist a graph's json projection
-    intent_compiler.cpp     compile_intent — templated churn/generic skeleton (NL intent → IR)
+    intent_compiler.cpp     compile_intent — deterministic registry resolution, unsupported-methodology refusal, and shape callback dispatch (#1061)
     n8n_import.cpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
     n8n_compile.cpp         zetta::pipeline::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
     graph_plan.cpp          project_cluster_plan — per-step cluster placement projection (kind → placement; near-data owner propagation along DataFlow edges; drop stale owners) for the Graph Workspace plan view (#591)
@@ -420,6 +421,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   ml/
     segmentation.cpp        native k-means training, global transforms, deterministic sampling, collective Lloyd rounds, selection and profiles (#1042)
     segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
+    methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
+    methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
@@ -607,6 +610,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
+  ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 
