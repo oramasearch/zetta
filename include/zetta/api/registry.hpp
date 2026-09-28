@@ -188,7 +188,9 @@ struct Capability {
     // (runtime::offload), instead of marshaling it onto the owning loop. ONLY safe
     // for a handler that touches no main-thread-only Node state — just the
     // thread-safe ReplicationManager + pure compute (e.g. chat: model inference).
-    // Keeps a long CPU/GPU decode from pinning the tick loop (#731).
+    // Keeps a long CPU/GPU decode from pinning the tick loop (#731). Registry::call
+    // still runs its authorization + audit gate on the owner thread (#1063), and
+    // add() refuses an offloadable entry that mutates or requires consent.
     bool offloadable = false;
 };
 

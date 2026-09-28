@@ -67,6 +67,15 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
 - Everything routes through the bridge, including reads that could arguably
   go direct — uniformity beats cleverness here; the thread-safety table lives
   in one place.
+- **The one exception: an `offloadable` capability** (`chat`, `receive_events`'
+  long poll) runs its *handler* on a pool worker so it never pins the loop. The
+  call's authorization + audit gate still runs on the owner thread, through
+  `Node::run_on_owner`: the gate reads the access keys and appends to the audit
+  trail, which the tick reconciles and re-sorts. Running the gate on the worker
+  crashed lake's bus Zetta every few minutes (#1063). An offloadable handler may
+  touch only thread-safe state (the replication store, `PubSub`), and
+  `Registry::add` refuses an offloadable entry that mutates or requires consent,
+  because the activity hook and the consent ledger run after the gate.
 
 ## Auth, governance, audit — nothing new
 

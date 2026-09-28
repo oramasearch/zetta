@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
@@ -163,6 +164,74 @@ TEST_F(RegistryFixture, AThrowingHandlerAnswersWithAnEngineError) {
         << result.error.message;
     // Still a traced call, like every other failure.
     EXPECT_EQ(result.trace_id.size(), 32u);
+}
+
+// #1063: an offloadable capability (receive_events' long poll) runs on a pool
+// worker, but the call's authorization + audit gate touches owner-thread state —
+// the audit trail the tick re-sorts. The gate used to run on the worker, and the
+// lake bus's constant long polls crashed its Zetta every few minutes (a double
+// free, or a bad access inside the tick's sort). Workers hammer an offloadable
+// read while this thread ticks: every call completes, every call is audited,
+// and the handler itself still runs on the worker.
+TEST_F(RegistryFixture, OffloadedCallsRunTheirGateOnTheOwnerThread) {
+    node.tick();  // adopt this thread as the owner
+    ASSERT_TRUE(node.on_owner_thread());
+    const std::thread::id owner = std::this_thread::get_id();
+    std::atomic<int> handled_off_owner{0};
+    Capability poll{"offloaded_poll", "", "", nlohmann::json{{"type", "object"}}, {},
+                    CapabilityKind::Read,
+                    zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                    false, false,
+                    [&](const nlohmann::json&, ApiContext&) -> ApiResult {
+                        if (std::this_thread::get_id() != owner) ++handled_off_owner;
+                        return ApiResult::success({});
+                    }};
+    poll.offloadable = true;
+    ASSERT_TRUE(registry.add(std::move(poll)));
+
+    constexpr int kWorkers = 8;
+    constexpr int kCalls = 200;
+    const auto audit_before = node.audit_event_count();
+    std::atomic<int> done{0};
+    std::atomic<int> failed{0};
+    std::vector<std::thread> workers;
+    for (int w = 0; w < kWorkers; ++w) {
+        workers.emplace_back([&] {
+            for (int i = 0; i < kCalls; ++i) {
+                ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
+                if (!registry.call("offloaded_poll", nlohmann::json::object(), context).ok) {
+                    ++failed;
+                }
+            }
+            ++done;
+        });
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (done.load() < kWorkers && std::chrono::steady_clock::now() < deadline) {
+        node.tick();  // the tick re-sorts the audit trail while the gates queue
+    }
+    for (auto& worker : workers) worker.join();
+    ASSERT_EQ(done.load(), kWorkers);
+    EXPECT_EQ(failed.load(), 0);
+    EXPECT_EQ(handled_off_owner.load(), kWorkers * kCalls)
+        << "the handler itself stays on the worker";
+    EXPECT_EQ(node.audit_event_count(), audit_before + kWorkers * kCalls)
+        << "every offloaded call is audited, once";
+}
+
+// The consent path and the activity hook follow the gate on the calling thread,
+// so an offloadable entry may do neither (#1063).
+TEST_F(RegistryFixture, RefusesAnOffloadableEntryThatMutatesOrNeedsConsent) {
+    for (const bool mutates : {true, false}) {
+        Capability entry{mutates ? "offloaded_write" : "offloaded_consent", "", "",
+                         nlohmann::json{{"type", "object"}}, {}, CapabilityKind::Read,
+                         {}, mutates, !mutates,
+                         [](const nlohmann::json&, ApiContext&) {
+                             return ApiResult::success({});
+                         }};
+        entry.offloadable = true;
+        EXPECT_FALSE(registry.add(std::move(entry)));
+    }
 }
 
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
