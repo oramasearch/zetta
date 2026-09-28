@@ -16,6 +16,9 @@ and policy decisions to actions and measured outcomes.
 - [S-4.md](S-4.md) — runnable collections prioritization: regulatory and
   vulnerable-customer checks, treatment tiers, action delivery, holdout, and
   net-recovery readout (#1113).
+- [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
+  data, claim paths, A0-only denial, fairness and document checks, holdout, and
+  execution (#1121).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -178,9 +181,19 @@ S-4 is the complete collections default:
 | Guardrails | zero complaints, regulatory violations, and vulnerable-customer contacts; maximum contact frequency 1; minimum execution rate 0.95 |
 | Measurement | champion/challenger; named `net_recovery` outcome per receivable over 30 days |
 
+### S-12 executable defaults
+
+S-12 assigns `fast_track`, `adjuster_assignment`, or `siu_referral` using
+0.0/0.40/0.75 score floors. All three are governed A2 path tasks;
+`denial_recommendation` is A0 human-only and is never a default tier action.
+FNOL completeness, coverage, identity, document confidence, and
+fairness-review evidence are mandatory. Catastrophe and manual-only flags block
+delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
+10% tier holdout measures `referral_confirmed` over 45 days.
+
 ### Minimal defaults
 
-**S-5 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-5 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -197,7 +210,6 @@ require an owner-approved policy change before spending.
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
 | S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
-| S-12 | referral task / A0 | phased / referral_confirmed | automated denials: 0 |
 
 Minimal guardrails are registered but remain unobserved until their metric
 producer supplies evidence; absence of an observation is not a healthy reading.
@@ -223,6 +235,8 @@ once; level 2 also requires M-5.
 For S-4, it enforces regulatory contact limits, vulnerable-customer protection,
 and point-in-time promise-to-pay labels. All completed modules run these checks before
 the graph is persisted and again before execution.
+For S-12, it refuses automated denial, missing fairness review, weak document
+thresholds, missing claim-score bindings, and incomplete level composition.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

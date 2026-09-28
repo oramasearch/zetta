@@ -115,7 +115,11 @@ What's inside, by domain (each links to that domain's docs):
   three named domain refusals, and net-value ROI readout.
   S-4 is runnable at all four levels with regulatory contact-limit,
   vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
-  dialer delivery; a permanent holdout; and net-recovery readout. S-5 through S-12 have explicitly minimal editable defaults. Snapshot
+  dialer delivery; a permanent holdout; and net-recovery readout.
+  S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
+  SIU paths, A0-only denial, document-confidence and fairness refusals, action
+  tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
+  editable defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,

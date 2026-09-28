@@ -38,6 +38,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 
+| `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -111,6 +113,16 @@ label, then verifies that M-1 is a squared-error regression over that exact
 target and horizon. `s3_entity_accounting` requires the M-2 stage, a stable
 entity key, one-value-per-entity aggregation, and duplicate refusal. See
 [S-3](../solutions/S-3.md) for its data and operating contract.
+
+### S-12 composed solution checks
+
+The four S-12 checks engage only for a solution manifest bound to `S-12`.
+They require every denial outcome to remain A0, an owned fairness review with
+protected fields excluded from routing features, M-11 confidence evidence with
+low-confidence review routing, and exactly the methodology stages registered
+for the selected level. The policy constraints are checked again immediately
+before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
+operator contract and refusal list.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

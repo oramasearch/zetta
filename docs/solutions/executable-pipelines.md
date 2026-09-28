@@ -60,8 +60,10 @@ M-1's `Write lifetime value predictions` output with `entity` /
 directly.
 S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
-Inputs and score scales for remaining minimal modules remain their catalogue module's
-responsibility; their templates are deliberately minimal.
+S-12 binds the real claim output named `Publish claim referral
+scores`, with `claim_id` and `referral_score` columns in `claims_results`.
+Inputs and score scales for the remaining modules stay their catalogue module's
+responsibility while their templates are minimal.
 
 ## Run and read back
 
@@ -151,3 +153,10 @@ update, refuses contact for vulnerable and regulator-ineligible rows, delivers
 both digital treatments and dialer tasks through the action outbox, records a
 planted 0.15 net-recovery effect, and verifies that the readout recovers it
 inside the confidence interval.
+
+`SolutionJourney.ClaimsTriageProtectsHoldoutAndRecoversPlantedEffect` builds
+S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
+`claim_id`/`referral_score` table, delivers only fast-track, adjuster, or SIU
+tasks, observes all five claim guardrails, records synthetic outcomes, and
+recovers the planted effect inside the readout interval. The future claim and
+protected holdouts never reach the connector.

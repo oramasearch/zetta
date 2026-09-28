@@ -385,6 +385,37 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-12 claim-routing adaptations (#1121). These checks keep claim denial out
+// of automatic paths, require a documented cohort fairness review, enforce the
+// M-11 field-confidence boundary, and verify every selected capability level.
+class S12NoAutomatedDenialCheck final : public Check {
+public:
+    std::string name() const override { return "s12_no_automated_denial"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override { return "s12_fairness_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12DocumentConfidenceCheck final : public Check {
+public:
+    std::string name() const override { return "s12_document_confidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s12_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

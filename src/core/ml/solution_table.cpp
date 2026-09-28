@@ -72,7 +72,8 @@ Solution band_a(
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
-                                                    : 1102);
+                           : solution.id == "S-12" ? 1121
+                                                     : 1102);
     return solution;
 }
 

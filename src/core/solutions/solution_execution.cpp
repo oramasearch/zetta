@@ -137,6 +137,7 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
     std::vector<zetta::pipeline::RunOutput> outputs;
     std::vector<std::string> lineage_steps = {"snapshot"};
     std::vector<zetta::pipeline::RunOutput> scored_outputs;
+    std::vector<zetta::pipeline::RunOutput> supporting_outputs;
     ApiResult prepared;
     state->node->run_on_owner([&] {
         prepared = prepare_solution_snapshot(*state->node, state->binding);
@@ -175,6 +176,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                 if (stage.methodology->id == state->binding.at("decision_source").at("methodology").get<std::string>()) {
                     scored_outputs = snapshot.outputs;
                 }
+                if (state->binding.value("solution", std::string{}) ==
+                        "S-12" &&
+                    stage.methodology->id == "M-11") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "model") {
+                            supporting_outputs.push_back(output);
+                        }
+                    }
+                }
                 const std::string solution_id =
                     state->binding.value("solution", std::string{});
                 if ((solution_id == "S-1" || solution_id == "S-3" || solution_id == "S-4") &&
@@ -206,6 +217,8 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                          "solution stage succeeded: " + stage_name});
         });
     }
+    scored_outputs.insert(scored_outputs.end(), supporting_outputs.begin(),
+                          supporting_outputs.end());
     ApiResult finished;
     state->node->run_on_owner([&] {
         finished = finish_solution_run(*state->node, state->binding,

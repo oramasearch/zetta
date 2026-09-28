@@ -206,6 +206,58 @@ void collections_defaults(SolutionTemplates& result) {
         {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void claims_triage_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "siu_review"}, {"minimum_score", 0.75},
+         {"action", "siu_referral"},
+         {"allowed_actions", {"siu_referral", "denial_recommendation"}}},
+        {{"name", "adjuster_review"}, {"minimum_score", 0.40},
+         {"action", "adjuster_assignment"},
+         {"allowed_actions", {"adjuster_assignment", "denial_recommendation"}}},
+        {{"name", "straight_through"}, {"minimum_score", 0.0},
+         {"action", "fast_track"},
+         {"allowed_actions", {"fast_track", "denial_recommendation"}}}};
+    result.policy["actions"] = {
+        {"fast_track", {{"autonomy", "A2"}, {"approval_above", 5000.0},
+                         {"sla_seconds", 3600},
+                         {"frequency_cap", frequency(1)}}},
+        {"adjuster_assignment", {{"autonomy", "A2"},
+                                 {"sla_seconds", 14400},
+                                 {"frequency_cap", frequency(1)}}},
+        {"siu_referral", {{"autonomy", "A2"},
+                          {"sla_seconds", 86400},
+                          {"frequency_cap", frequency(1)}}},
+        {"denial_recommendation", {{"autonomy", "A0"},
+                                   {"sla_seconds", 86400}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["budget"] = {{"limit", 100000.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("fnol_complete", true),
+        predicate("coverage_confirmed", true),
+        predicate("identity_verified", true),
+        predicate("document_confidence_clear", true),
+        predicate("fairness_review_passed", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("catastrophe_override", true),
+        predicate("manual_only", true)};
+    result.experiment.holdouts = {
+        {"siu_review", 0.1},
+        {"adjuster_review", 0.1},
+        {"straight_through", 0.1}};
+    result.experiment.treatment_cells = {
+        "path_assignment", "referral_task"};
+    result.guardrails = {
+        {"automated_denials", 0.0, "maximum"},
+        {"low_confidence_path_assignments", 0.0, "maximum"},
+        {"fairness_review_failures", 0.0, "maximum"},
+        {"field_extraction_accuracy", 0.8, "minimum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "referral_confirmed", "claim", 45};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -220,6 +272,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 lifetime_value_defaults(result);
             } else if (solution_id == "S-4") {
                 collections_defaults(result);
+            } else if (solution_id == "S-12") {
+                claims_triage_defaults(result);
             }
             return result;
         }

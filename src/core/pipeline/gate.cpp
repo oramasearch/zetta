@@ -176,6 +176,10 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S4RegulatoryContactCheck>());
     gate.add_check(std::make_shared<S4VulnerableCustomerCheck>());
     gate.add_check(std::make_shared<S4PromiseToPayPointInTimeCheck>());
+    gate.add_check(std::make_shared<S12NoAutomatedDenialCheck>());
+    gate.add_check(std::make_shared<S12FairnessReviewCheck>());
+    gate.add_check(std::make_shared<S12DocumentConfidenceCheck>());
+    gate.add_check(std::make_shared<S12LevelCompositionCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

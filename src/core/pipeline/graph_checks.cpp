@@ -1505,6 +1505,264 @@ CheckResult S4PromiseToPayPointInTimeCheck::evaluate(
         "S-4 promise-to-pay labels are frozen at the prediction cutoff");
 }
 
+namespace {
+
+const json* s12_correctness_profile(const ir::ExecutionGraph& graph,
+                                    bool& applies, int& level,
+                                    std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-12") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-12 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s12_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-12 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s12_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-12 Pipeline to validate"};
+}
+
+CheckResult s12_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s12_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool adverse_action(std::string_view action) {
+    const std::string normalized = normalize_type(std::string(action));
+    return normalized.find("denial") != std::string::npos ||
+           normalized.find("deny") != std::string::npos ||
+           normalized.find("reject") != std::string::npos;
+}
+
+bool policy_requires(const json& policy, std::string_view field,
+                     const json& expected) {
+    const auto rules = policy.find("eligibility_rules");
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        return rule.is_object() &&
+               rule.value("field", std::string{}) == field &&
+               rule.contains("value") && rule.at("value") == expected;
+    });
+}
+
+} // namespace
+
+CheckResult S12NoAutomatedDenialCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s12_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s12_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s12_failure(name(), error);
+    }
+    const json* policy = object_field(*profile, "policy");
+    if (policy == nullptr) {
+        return s12_failure(name(), "S-12 must bind its claim-path policy");
+    }
+    const auto tiers = policy->find("tiers");
+    const auto actions = policy->find("actions");
+    if (tiers == policy->end() || !tiers->is_array() || tiers->empty() ||
+        actions == policy->end() || !actions->is_object()) {
+        return s12_failure(name(),
+                           "S-12 requires path tiers and action autonomy");
+    }
+    for (const json& tier : *tiers) {
+        if (!tier.is_object() || !tier.contains("action") ||
+            !tier.at("action").is_string()) {
+            return s12_failure(name(), "S-12 path tiers must name actions");
+        }
+        const std::string action = tier.at("action");
+        if (adverse_action(action)) {
+            return s12_failure(
+                name(), "S-12 may not select claim denial as a model-driven path");
+        }
+    }
+    bool has_manual_denial = false;
+    for (const auto& [action, settings] : actions->items()) {
+        if (!adverse_action(action)) {
+            continue;
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A0") {
+            return s12_failure(
+                name(), "every adverse claim outcome must remain A0 human-only");
+        }
+        has_manual_denial = true;
+    }
+    if (!has_manual_denial) {
+        return s12_failure(
+            name(), "S-12 must represent denial only as an A0 recommendation");
+    }
+    return s12_success(
+        name(), "claim paths exclude automated denial and retain A0 review");
+}
+
+CheckResult S12FairnessReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s12_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s12_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s12_failure(name(), error);
+    }
+    const json* fairness = object_field(*profile, "fairness_review");
+    if (fairness == nullptr ||
+        !fairness->value("cohort_review_required", false) ||
+        !fairness->value("referral_rate_review_required", false) ||
+        fairness->value("owner", std::string{}).empty()) {
+        return s12_failure(
+            name(), "S-12 requires an owned cohort and referral-rate fairness review");
+    }
+    const auto blocked = fairness->find("blocked_feature_names");
+    const auto features = fairness->find("feature_names");
+    if (blocked == fairness->end() || !blocked->is_array() ||
+        blocked->empty() || features == fairness->end() ||
+        !features->is_array()) {
+        return s12_failure(
+            name(), "S-12 fairness review needs protected-field exclusions and feature names");
+    }
+    std::unordered_set<std::string> protected_fields;
+    for (const json& field : *blocked) {
+        if (!field.is_string() || field.get_ref<const std::string&>().empty()) {
+            return s12_failure(
+                name(), "S-12 protected-field exclusions must be names");
+        }
+        protected_fields.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return s12_failure(name(), "S-12 feature names must be strings");
+        }
+        if (protected_fields.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return s12_failure(
+                name(), "S-12 protected attributes are evaluation-only, not model features");
+        }
+    }
+    return s12_success(
+        name(), "claim routing has an owned fairness review and protected-field exclusions");
+}
+
+CheckResult S12DocumentConfidenceCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s12_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s12_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s12_failure(name(), error);
+    }
+    const json* policy = object_field(*profile, "policy");
+    const json* confidence = object_field(*profile, "document_confidence");
+    if (policy == nullptr || confidence == nullptr ||
+        !confidence->value("low_confidence_routes_to_review", false) ||
+        !confidence->value("fast_track_requires_clear", false) ||
+        !policy_requires(*policy, "document_confidence_clear", true)) {
+        return s12_failure(
+            name(), "S-12 must block path delivery until document confidence clears review");
+    }
+    const double minimum = confidence->value("minimum_review_threshold", 1.1);
+    const ir::Node* extraction = model_kind(graph, "document_extraction");
+    if (!has_methodology(graph, "M-11") || extraction == nullptr) {
+        return s12_failure(name(), "S-12 requires the M-11 document stage");
+    }
+    const auto threshold = extraction->attributes.find("review_threshold");
+    if (threshold == extraction->attributes.end() ||
+        !threshold->is_number() ||
+        threshold->get<double>() < minimum ||
+        threshold->get<double>() > 1.0) {
+        return s12_failure(
+            name(), "S-12 document review threshold is below its governed minimum");
+    }
+    return s12_success(
+        name(), "M-11 confidence and review routing guard every claim path");
+}
+
+CheckResult S12LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s12_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s12_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s12_failure(name(), error);
+    }
+    for (const std::string_view required : {"M-2", "M-11", "M-1"}) {
+        if (!has_methodology(graph, required)) {
+            return s12_failure(
+                name(), "S-12 levels require M-2, M-11, and M-1");
+        }
+    }
+    if (level >= 3 && !has_methodology(graph, "M-3")) {
+        return s12_failure(
+            name(), "S-12 level 3 and above requires M-3 claim segmentation");
+    }
+    bool has_claim_scores = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node || !node->attributes.is_object()) {
+            continue;
+        }
+        if (node->attributes.value("entity_output_column", std::string{}) ==
+                "claim_id" &&
+            node->attributes.value("score_output_column", std::string{}) ==
+                "referral_score") {
+            has_claim_scores = true;
+            break;
+        }
+    }
+    if (!has_claim_scores) {
+        return s12_failure(
+            name(), "S-12 M-1 must publish claim_id and referral_score outputs");
+    }
+    return s12_success(
+        name(), "S-12 selected level has claim-specific runnable stages");
+}
+
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
     return model_kind == "forecast" || model_kind == "survival" || model_kind == "streaming";
 }
