@@ -44,7 +44,7 @@ requires a methodology string and accepts `label`, `time_column`, `group_column`
 }
 ```
 
-Methodology names use the registry's string IDs, M-1 through M-13, and their human
+Methodology names use the registry's string IDs, M-1 through M-16, and their human
 aliases. Their behavior lives in one rule table exposed through `methodology_rule`;
 trainers do not carry copies of these rules. M-2 is entity resolution, M-3
 segmentation, M-4 forecasting, M-5 survival, and M-6 uplift.
@@ -178,6 +178,9 @@ The execution contract describes what the trainer can actually consume:
 | M-8 recommendations | The pipeline's numeric propensity features, historical ALS affinity, and value/eligibility policy inputs; coordinated members retain the identical contract. |
 | M-10, M-11, M-13 | Native text embeddings, document extraction, and image embeddings from explicitly named sources. |
 | M-12 graph | Time-bounded weighted topology and embedding dimensions; endpoints remain structural keys, not scalar predictors. |
+| M-14 speech | Consented WAV decoding, 16 kHz resampling, energy segmentation, and log-mel input to native Whisper. Recording IDs and reference transcripts are excluded as predictors; consent is a guard, not an audio feature. |
+| M-15 bandits | Per-arm reward posterior statistics, plus the numeric context actually selected for LinUCB or linear Thompson. Context-free Thompson does not invent context features. Reward and decision ID remain excluded as predictors. |
+| M-16 optimization | Named variables, objective coefficients, integrality, and present bounds, baseline, scenario/quantile, and constraint fields are passed unchanged to the native solver. Row IDs are excluded; `integer` is domain metadata, not a supervised label. |
 
 M-1's native event specification also records aggregate names, source value/type
 columns and window bounds. M-5 records its native person-period `interval` feature
@@ -199,3 +202,11 @@ The action-journey tests verify reports across the runnable families, reject a
 long-measurement table in every runnable callback before any Run is created, reject
 event-grain M-1 inputs, and exercise selected leakage, clustering labels, and uplift
 post-treatment refusal. Run tests verify provenance persistence and schema rejection.
+
+Round 3 covers M-14–M-16 through their methodology-named pipelines as well as
+direct callbacks. The long-measurement refusal runs before speech checkpoint or
+audio access, bandit policy construction, and optimization solving. Contextual
+bandit tests exercise inferred and explicit context lists and reject reward-copy,
+raw reward, and decision-key context before a Run exists. Historical reward is a
+source only for the native per-arm posterior, never a decision-time context input.
+M-17–M-21 are outside this integration round.

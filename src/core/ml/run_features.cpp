@@ -15,7 +15,7 @@ namespace zetta::ml {
 namespace {
 
 void collect_features(const nlohmann::json& object, std::set<std::string>& names) {
-    for (const auto* key : {"features", "feature_columns"}) {
+    for (const auto* key : {"features", "feature_columns", "context_columns"}) {
         const auto found = object.find(key);
         if (found == object.end() || !found->is_array()) {
             continue;
@@ -33,6 +33,7 @@ void collect_features(const nlohmann::json& object, std::set<std::string>& names
 
 std::set<std::string> requested_features(const RunRequest& request) {
     std::set<std::string> names;
+    collect_features(request.input, names);
     if (const auto given = request.input.find("dataset"); given != request.input.end()) {
         collect_features(*given, names);
     }
@@ -187,11 +188,18 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     for (const auto& entry : plan.entries) {
         bool allowed = true;
         for (const auto& source : entry.source_columns) {
-            // Forecast history and graph endpoints are structural inputs to
-            // native transformations, not contemporaneous target features.
+            // Forecast/bandit history and graph endpoints are structural
+            // inputs, not contemporaneous target features. Only the bandit's
+            // native per-arm statistic may read reward, never its context.
             if ((methodology == "M-4" &&
                  (source == options.label_column || source == options.time_column)) ||
                 (methodology == "M-12" && source == options.time_column)) {
+                continue;
+            }
+            if (methodology == "M-15" && source == options.label_column &&
+                entry.features == std::vector<std::string>{"arm_policy_statistics"} &&
+                entry.source_columns == std::vector<std::string>{options.group_column,
+                                                                 options.label_column}) {
                 continue;
             }
             const std::string reason = unsafe_feature(request, analysis, source, options);
@@ -282,6 +290,12 @@ api::ApiResult run_dataset_failure(RunRequest& request, const std::string& metho
     if (!dataset.database.empty() && !dataset.table.empty()) {
         data::FeaturePlanOptions options;
         options.methodology = methodology;
+        options.entity_column = dataset.contract.entity_column;
+        options.label_column = dataset.contract.label_column;
+        options.time_column = dataset.contract.time_column;
+        if (!options.time_column.empty()) {
+            options.as_of = std::to_string(dataset.contract.as_of);
+        }
         const auto plan = data::plan_features(request.context->node,
             data::parse_dataset_path(dataset.database + "." + dataset.table), options,
             {}, request.context->cluster);

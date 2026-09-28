@@ -94,7 +94,8 @@ What's inside, by domain (each links to that domain's docs):
   issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
   Every runnable methodology checks the [data-first feature plan](docs/data/featurization.md)
-  before training; `get_run_report` lists actual features and exclusions with reasons.
+  before execution; `get_run_report` lists actual features and exclusions with reasons,
+  including speech preprocessing, bandit context, and optimization inputs.
   M-13 runs
   native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
   governed large-object reads.

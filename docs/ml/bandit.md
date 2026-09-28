@@ -98,6 +98,18 @@ Decision and reward delivery over pub/sub is deliberately outside this change;
 this implementation consumes tables. The lake opportunity-to-project path is
 also outside this repository slice.
 
+## Feature-plan precondition
+
+The registry callback checks the [feature plan](../data/featurization.md) before
+policy construction. Its native entries record per-arm posterior statistics and
+the effective numeric context list, whether explicitly supplied or inferred for
+LinUCB/linear Thompson. Context-free Thompson has no inferred context features.
+Reward and decision ID are excluded as predictors; selected leakage suspects are
+refused through the shared check. A required data transform returns `invalid_input`
+before any Run exists. `get_run_report.features` preserves used/excluded reasons.
+Fallback planning retains declared input roles, so a reserved reward/key requested
+as context is diagnosed as a role conflict, not as a missing label.
+
 ## Verification
 
 ```sh

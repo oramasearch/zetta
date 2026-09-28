@@ -47,6 +47,12 @@ const std::vector<MethodologyRuleEntry>& methodology_rules() {
          {"graph", "graph_ml", "m-12"}},
         {MethodologyRule{"M-13", MethodologyFamily::Native, true, false, false, false},
          {"vision", "computer_vision", "m-13"}},
+        {MethodologyRule{"M-14", MethodologyFamily::Native, false, false, false, false},
+         {"speech", "audio", "m-14"}},
+        {MethodologyRule{"M-15", MethodologyFamily::Native, true, false, false, true},
+         {"bandit", "bandits", "sequential_decisioning", "m-15"}},
+        {MethodologyRule{"M-16", MethodologyFamily::Native, false, false, false, false},
+         {"optimization", "operations_research", "m-16"}},
     };
     return rules;
 }

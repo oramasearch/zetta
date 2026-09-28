@@ -227,7 +227,12 @@ TEST_F(Uc1Journey, FeaturePlanRefusesLongMeasurementsInEveryRunnableMethodology)
             {"interaction_count", 1}, {"interaction_time", index}, {"logging_propensity", 0.5},
             {"source", "fixture"}, {"record_id", index + 1}, {"name", "Example Person"},
             {"document_id", "document-" + std::to_string(index)}, {"document", "Total: 12.00"},
-            {"labels", nlohmann::json::object()}, {"image", "unused-image"}});
+            {"labels", nlohmann::json::object()}, {"image", "unused-image"},
+            {"recording", "recording-" + std::to_string(index)},
+            {"audio", "unused-audio"}, {"consent", true}, {"reference_text", "hello"},
+            {"decision_id", index + 1}, {"arm", "control"}, {"reward", index % 2},
+            {"row_id", index + 1}, {"variable", "item"}, {"objective", index % 7},
+            {"integer", true}, {"scenario", "base"}});
     }
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
@@ -1921,6 +1926,15 @@ TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
       call("get_run_report", {{"run_id", run.value.at("run_id")}});
   ASSERT_TRUE(report.ok) << report.error.message;
   EXPECT_TRUE(report.value.at("model").contains("word_error_rate"));
+  const auto &features = report.value.at("features");
+  ASSERT_EQ(features.at("used").size(), 1u);
+  EXPECT_EQ(features.at("used").front().at("name"), "audio_log_mel");
+  EXPECT_EQ(features.at("used").front().at("source"), nlohmann::json::array({"audio"}));
+  for (const auto *column : {"recording", "reference_text", "consent"}) {
+    EXPECT_TRUE(std::ranges::any_of(features.at("excluded"), [&](const auto &entry) {
+      return entry.at("name") == column && !entry.at("why").template get<std::string>().empty();
+    })) << column;
+  }
   ASSERT_EQ(report.value.at("output_tables").size(), 1u);
   EXPECT_TRUE(report.value.at("output_tables")
                   .front()
@@ -1994,12 +2008,89 @@ TEST_F(Uc1Journey, JourneyM15CompilesRunsAndReportsItsOwnTable) {
                      journey::at_least("/metrics/cumulative_reward", 1),
                      journey::not_empty("/policy_table"),
                      journey::not_empty("/decisions_table"),
+                     journey::any_element("/features/used", {{"/name", "arm_policy_statistics"},
+                         {"/source", nlohmann::json::array({"arm", "reward"})}}),
+                     journey::any_element("/features/excluded", {{"/name", "reward"}}),
+                     journey::any_element("/features/excluded", {{"/name", "decision_id"}}),
+                     journey::any_element("/features/excluded", {{"/name", "context"}}),
                      journey::equals("/dataset/source",
                                      "experiments.decisions")}}},
     };
     const journey::JourneyReport report =
         journey::run_journey(bandit, caller(), pump());
     EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(Uc1Journey, FeaturePlanBanditContextMatchesTheNativePolicy) {
+    const auto database = node.create_database("bandit_features");
+    const auto table = database->create_table("decisions");
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"decision_id", index + 1}, {"arm", index % 2 ? "a" : "b"},
+                       {"reward", index % 3 == 0 ? 1 : 0}, {"context", index % 7}});
+    }
+    const auto project = node.create_project("bandit feature choices");
+    const auto *methodology = zetta::ml::find_methodology("M-15");
+    ASSERT_NE(methodology, nullptr);
+    for (const auto *algorithm : {"linucb", "linear_thompson"}) {
+        SCOPED_TRACE(algorithm);
+        zetta::ml::ShapeRequest shape;
+        shape.hints = {{"source", "bandit_features"}, {"table", "decisions"},
+                       {"algorithm", algorithm}};
+        const auto graph = project->create_graph(algorithm, methodology->build_shape(shape));
+        ASSERT_TRUE(graph);
+        ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+        zetta::ml::RunRequest request{&context, project.get(), graph.get(),
+                                     {{"model_name", algorithm}}};
+        if (std::string(algorithm) == "linear_thompson") {
+            request.input["context_columns"] = {"context"};
+        }
+        const auto run = methodology->run(request);
+        ASSERT_TRUE(run.ok) << run.error.message;
+        const auto report = call("get_run_report", {{"run_id", run.value.at("run_id")}});
+        ASSERT_TRUE(report.ok) << report.error.message;
+        const auto &features = report.value.at("features");
+        EXPECT_EQ(features.at("used").size(), 2u);
+        EXPECT_TRUE(std::ranges::any_of(features.at("used"), [](const auto &entry) {
+            return entry.at("name") == "context" &&
+                   entry.at("source") == nlohmann::json::array({"context"});
+        }));
+        for (const auto *column : {"decision_id", "reward"}) {
+            EXPECT_TRUE(std::ranges::any_of(features.at("excluded"), [&](const auto &entry) {
+                return entry.at("name") == column;
+            }));
+        }
+    }
+}
+
+TEST_F(Uc1Journey, FeaturePlanBanditRefusesLeakedContextBeforeCreatingRun) {
+    const auto database = node.create_database("unsafe_bandit");
+    const auto table = database->create_table("decisions");
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"decision_id", index + 1}, {"arm", index % 2 ? "a" : "b"},
+                       {"reward", index % 3 == 0 ? 1 : 0},
+                       {"reward_copy", index % 3 == 0 ? 1 : 0}, {"context", index % 7}});
+    }
+    const auto project = node.create_project("bandit leakage refusal");
+    const auto *methodology = zetta::ml::find_methodology("M-15");
+    ASSERT_NE(methodology, nullptr);
+    zetta::ml::ShapeRequest shape;
+    shape.hints = {{"source", "unsafe_bandit"}, {"table", "decisions"},
+                   {"algorithm", "linucb"}};
+    const auto graph = project->create_graph("policy", methodology->build_shape(shape));
+    ASSERT_TRUE(graph);
+    ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+    for (const auto *unsafe : {"reward_copy", "reward", "decision_id"}) {
+        SCOPED_TRACE(unsafe);
+        zetta::ml::RunRequest request{&context, project.get(), graph.get(),
+                                     {{"context_columns", {"context", unsafe}}}};
+        const auto result = methodology->run(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input");
+        EXPECT_NE(result.error.message.find(unsafe), std::string::npos)
+            << result.error.message;
+    }
+    EXPECT_TRUE(node.runs().empty());
+    EXPECT_TRUE(node.models().empty());
 }
 
 TEST_F(Uc1Journey, JourneyM16CompilesRunsAndReportsAFeasiblePlan) {
@@ -2065,6 +2156,11 @@ TEST_F(Uc1Journey, JourneyM16CompilesRunsAndReportsAFeasiblePlan) {
                    journey::equals("/model/feasible", 1.0),
                    journey::equals("/model/optimality_gap", 0.0),
                    journey::size_equals("/plan", 3),
+                   journey::any_element("/features/used", {{"/name", "integer"},
+                       {"/why", "integer is solver metadata, not a supervised label"}}),
+                   journey::any_element("/features/used", {{"/name", "objective"}}),
+                   journey::any_element("/features/used", {{"/name", "coefficient"}}),
+                   journey::any_element("/features/excluded", {{"/name", "row_id"}}),
                    journey::any_element("/constraints", {{"/satisfied", true}}),
                    journey::equals("/dataset/source", "operations.knapsack")}}},
   };

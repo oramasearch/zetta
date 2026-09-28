@@ -136,6 +136,16 @@ record using its fitted encoder's actual names, scaling, and exclusions. Other
 native featurizers record their own executed transforms, not generic suggestions
 that their trainers do not implement. See [featurization.md](../data/featurization.md).
 
+M-14 records `audio_log_mel` from the configured audio-reference column; recording
+IDs, consent metadata, and reference transcripts are not prediction features.
+M-15 records `arm_policy_statistics` sourced from arm and historical reward, plus
+the numeric context columns actually passed to the policy. Reward is not allowed
+as decision-time context, and decision ID remains a reserved role. M-16 records the
+solver's objective, variable domain, and available constraint/scenario inputs,
+with row ID excluded. Its `integer` column is used integrality metadata, not a
+classification label. All three reject a required data transform before creating
+the Run, so a rejected plan cannot produce a trained-model report.
+
 Older/direct-trainer Runs without provenance remain readable. Their report uses
 the fitted Model's feature-name list when present, explicitly saying detailed
 provenance was not recorded; it does not reconstruct historical exclusions from

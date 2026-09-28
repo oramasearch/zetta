@@ -92,6 +92,15 @@ contains `whisper_config`, checkpoint origin, and licence metadata. Then call
 Call `run` with that graph, poll `get_run`, then call `get_run_report`. A local
 checkpoint directory may be supplied as `checkpoint_directory` instead.
 
+## Feature-plan precondition
+
+Before checkpoint loading or audio access, the registry callback analyzes the
+landed table and checks the [feature plan](../data/featurization.md). A required
+shape correction returns `invalid_input` with the named transform; it creates no
+Run. Successful reports list the native `audio_log_mel` transform and explain why
+recording IDs, reference transcripts, and consent metadata are not predictors.
+Consent still gates audio processing in the native runner.
+
 ## Verification
 
 ```sh

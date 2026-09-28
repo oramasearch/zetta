@@ -228,6 +228,19 @@ TEST_F(FeaturizationFixture, FeaturePlansDifferForTreesSegmentationAndForecasts)
     }));
 }
 
+TEST(FeaturePlanRules, SpeechBanditAndOptimizationAliasesUseNativeRules) {
+    for (const auto *alias : {"M-14", "speech", "audio", "M-15", "bandit", "bandits",
+                              "sequential_decisioning", "M-16", "optimization",
+                              "operations_research"}) {
+        SCOPED_TRACE(alias);
+        const auto rule = zetta::data::methodology_rule(alias);
+        ASSERT_TRUE(rule);
+        EXPECT_EQ(rule->family, zetta::data::MethodologyFamily::Native);
+        EXPECT_FALSE(rule->prediction_per_entity);
+        EXPECT_EQ(rule->supervised, rule->canonical_name == "M-15");
+    }
+}
+
 TEST_F(FeaturizationFixture, FeaturePlanRequiresAnApprovedEventAggregation) {
     land("events", event_rows());
     FeaturePlanOptions options;
