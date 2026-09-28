@@ -65,7 +65,8 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
   intent compilation, and run dispatch. M-1 wraps the existing churn runner;
-  M-10 is partial; unsupported methodologies name their tracking issues.
+  M-10 runs the native language embedding, retrieval, grounded-answer, and
+  classifier-head path; unsupported methodologies name their tracking issues.
   [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
   [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
 

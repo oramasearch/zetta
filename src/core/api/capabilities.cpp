@@ -527,9 +527,14 @@ const nlohmann::json& get_run_report_output_schema() {
           {"model",
            {{"type", "object"},
             {"description",
-             "id, name, and the metrics. `held_out_*` is present only when the run "
-             "asked for a holdout; when it is absent the only figures available are "
-             "in-sample and they flatter (#953)"}}},
+             "id, name, and methodology metrics. Tabular `held_out_*` is present "
+             "only when the run asked for a holdout. Language reports expose "
+             "recall_at_k, MRR, groundedness, and embedder_version"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"description",
+             "language methodology output table names and fully qualified refs; "
+             "absent for tabular reports"}}},
           {"drivers",
            {{"type", "array"},
             {"description", "feature -> weight, strongest first. A weight is what "
@@ -634,6 +639,62 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "language") {
+        nlohmann::json language_model = {
+            {"id", model->id()}, {"name", model->name()}};
+        for (const char* key : {"recall_at_k", "mrr", "groundedness",
+                                "queries", "answers", "train_rows"}) {
+            if (const std::optional<double> value = number(key)) {
+                language_model[key] = *value;
+            }
+        }
+        if (const auto version =
+                model->feature_schema().find("embedder_version");
+            version != model->feature_schema().end() && version->is_string()) {
+            language_model["embedder_version"] = *version;
+        }
+        report["model"] = std::move(language_model);
+
+        nlohmann::json language_dataset = nlohmann::json::object();
+        if (const std::optional<double> value = number("dataset_rows")) {
+            language_dataset["rows_read"] = *value;
+        }
+        if (const std::optional<double> value = number("excluded_rows")) {
+            language_dataset["rows_excluded"] = *value;
+        }
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                language_dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: ")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            language_dataset["notes"] = std::move(notes);
+        }
+        report["dataset"] = std::move(language_dataset);
+
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                outputs.push_back(
+                    {{"name", output.name}, {"table", output.ref}});
+            }
+        }
+        report["outputs"] = std::move(outputs);
+        if (const std::optional<double> value = number("groundedness");
+            !value.has_value() || *value < 1.0) {
+            report["caveats"] = nlohmann::json::array(
+                {{{"field", "groundedness"},
+                  {"why", "not every non-refused answer sentence cites a retrieved chunk"}}});
+        }
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2907,6 +2968,55 @@ const nlohmann::json& run_schema() {
              "hold this fraction of rows OUT of training and measure the model "
              "on them separately (e.g. 0.3). Without it the run's only metrics "
              "are in-sample — scored on the rows it trained on — and flatter"}}},
+          {"embedder_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: local directory containing the pinned MiniLM config, "
+             "vocab.txt, and model.safetensors (tests never download it)"}}},
+          {"qwen_directory",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: optional local native-Qwen checkpoint used to compose "
+             "answers; without it the grounded path returns an extractive answer"}}},
+          {"text_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: text column (default the dataset contract's first feature)"}}},
+          {"query_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-10 only: labelled evaluation query column"}}},
+          {"relevant_id_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "M-10 only: integer id of the planted relevant chunk"}}},
+          {"max_tokens",
+           {{"type", "integer"},
+            {"minimum", 2},
+            {"description", "M-10 only: WordPiece token limit per text"}}},
+          {"answer_tokens",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "M-10 only: native-Qwen completion token limit"}}},
+          {"minimum_relevance",
+           {{"type", "number"},
+            {"minimum", -1},
+            {"maximum", 1},
+            {"description",
+             "M-10 only: refuse an answer below this cosine score"}}},
+          {"classifier_regularization",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"description",
+             "M-10 only: non-negative regularization for the linear classifier head"}}},
+          {"seed",
+           {{"type", "integer"},
+            {"minimum", 0},
+            {"description", "M-10 only: deterministic generation seed"}}},
           {"coordinate",
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "

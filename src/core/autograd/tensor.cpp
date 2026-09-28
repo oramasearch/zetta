@@ -577,6 +577,88 @@ Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps) {
     return Tensor{node};
 }
 
+Tensor layer_norm(const Tensor& a, const Tensor& weight, const Tensor& bias,
+                  float eps) {
+    const int rows = a.shape()[0];
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(rows) * cols, 0.0F);
+    std::vector<float> means(rows, 0.0F);
+    std::vector<float> inverse_standard_deviations(rows, 0.0F);
+
+    for (int row = 0; row < rows; ++row) {
+        const std::size_t base = static_cast<std::size_t>(row) * cols;
+        float mean = 0.0F;
+        for (int col = 0; col < cols; ++col) {
+            mean += a.data()[base + col];
+        }
+        mean /= static_cast<float>(cols);
+
+        float variance = 0.0F;
+        for (int col = 0; col < cols; ++col) {
+            const float centered = a.data()[base + col] - mean;
+            variance += centered * centered;
+        }
+        variance /= static_cast<float>(cols);
+        const float inverse_standard_deviation =
+            1.0F / std::sqrt(variance + eps);
+        means[row] = mean;
+        inverse_standard_deviations[row] = inverse_standard_deviation;
+
+        for (int col = 0; col < cols; ++col) {
+            const float normalized =
+                (a.data()[base + col] - mean) * inverse_standard_deviation;
+            out[base + col] =
+                normalized * weight.data()[col] + bias.data()[col];
+        }
+    }
+
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node(), weight.node(), bias.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> weight_node = weight.node();
+    const std::shared_ptr<Node> bias_node = bias.node();
+    node->backward = [a_node, weight_node, bias_node, means,
+                      inverse_standard_deviations, rows,
+                      cols](const std::vector<float>& gradient) {
+        for (int row = 0; row < rows; ++row) {
+            const std::size_t base = static_cast<std::size_t>(row) * cols;
+            const float mean = means[row];
+            const float inverse_standard_deviation =
+                inverse_standard_deviations[row];
+            float weighted_gradient_sum = 0.0F;
+            float weighted_normalized_gradient_sum = 0.0F;
+
+            for (int col = 0; col < cols; ++col) {
+                const float normalized =
+                    (a_node->data[base + col] - mean) *
+                    inverse_standard_deviation;
+                const float weighted_gradient =
+                    gradient[base + col] * weight_node->data[col];
+                weighted_gradient_sum += weighted_gradient;
+                weighted_normalized_gradient_sum +=
+                    weighted_gradient * normalized;
+                weight_node->grad[col] +=
+                    gradient[base + col] * normalized;
+                bias_node->grad[col] += gradient[base + col];
+            }
+
+            for (int col = 0; col < cols; ++col) {
+                const float normalized =
+                    (a_node->data[base + col] - mean) *
+                    inverse_standard_deviation;
+                const float weighted_gradient =
+                    gradient[base + col] * weight_node->data[col];
+                a_node->grad[base + col] +=
+                    inverse_standard_deviation / static_cast<float>(cols) *
+                    (static_cast<float>(cols) * weighted_gradient -
+                     weighted_gradient_sum -
+                     normalized * weighted_normalized_gradient_sum);
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor transpose(const Tensor& a) {
     const int m = a.shape()[0];
     const int n = a.shape()[1];

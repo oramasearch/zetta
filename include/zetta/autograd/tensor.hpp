@@ -122,6 +122,12 @@ Tensor row_softmax(const Tensor& a);
 // depends on all of them).
 Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps = 1e-5F);
 
+// LayerNorm: center and normalize each row of `a` [rows, cols], then apply
+// `weight` and `bias` [cols]. This is the normalization used by BERT-family
+// encoders. Its backward includes the row mean and variance dependencies.
+Tensor layer_norm(const Tensor& a, const Tensor& weight, const Tensor& bias,
+                  float eps = 1e-12F);
+
 // Transpose a 2-D tensor: [m, n] -> [n, m]. Needed for K^T in attention. Backward:
 // dA = dOut^T.
 Tensor transpose(const Tensor& a);

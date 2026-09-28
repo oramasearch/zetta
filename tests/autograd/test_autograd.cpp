@@ -17,6 +17,7 @@ using zetta::autograd::concat_cols;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::embedding;
 using zetta::autograd::gelu;
+using zetta::autograd::layer_norm;
 using zetta::autograd::matmul;
 using zetta::autograd::matmul_transposed_b;
 using zetta::autograd::mul;
@@ -201,6 +202,43 @@ TEST(Autograd, RmsNormGradientWrtWeight) {
         Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F}, {2, 3}, false);
     check_gradient({0.5F, 1.2F, 0.8F}, {3}, [&](const Tensor& weight) {
         return sum(mul(rms_norm(x, weight), target));
+    });
+}
+
+TEST(Autograd, LayerNormCentersAndScalesRows) {
+    const Tensor x = Tensor::leaf({1, 2, 3, 4, 6, 8}, {2, 3}, false);
+    const Tensor weight = Tensor::leaf({1, 1, 1}, {3}, false);
+    const Tensor bias = Tensor::leaf({0, 0, 0}, {3}, false);
+    const Tensor y = layer_norm(x, weight, bias);
+    for (int row = 0; row < 2; ++row) {
+        float mean = 0.0F;
+        float variance = 0.0F;
+        for (int col = 0; col < 3; ++col) {
+            mean += y.data()[row * 3 + col];
+            variance += y.data()[row * 3 + col] * y.data()[row * 3 + col];
+        }
+        EXPECT_NEAR(mean / 3.0F, 0.0F, 1e-5F);
+        EXPECT_NEAR(variance / 3.0F, 1.0F, 1e-5F);
+    }
+}
+
+TEST(Autograd, LayerNormGradientsMatchFiniteDifference) {
+    const std::vector<float> inputs = {0.5F, -1.0F, 2.0F, 1.0F, 0.25F, -0.5F};
+    const std::vector<float> target_values = {0.3F, -0.2F, 0.7F,
+                                               -0.4F, 0.9F, 0.1F};
+    const Tensor target = Tensor::leaf(target_values, {2, 3}, false);
+    const Tensor fixed_weight = Tensor::leaf({0.8F, 1.2F, -0.7F}, {3}, false);
+    const Tensor fixed_bias = Tensor::leaf({0.1F, -0.3F, 0.2F}, {3}, false);
+    check_gradient(inputs, {2, 3}, [&](const Tensor& x) {
+        return sum(mul(layer_norm(x, fixed_weight, fixed_bias), target));
+    });
+
+    const Tensor fixed_input = Tensor::leaf(inputs, {2, 3}, false);
+    check_gradient({0.8F, 1.2F, -0.7F}, {3}, [&](const Tensor& weight) {
+        return sum(mul(layer_norm(fixed_input, weight, fixed_bias), target));
+    });
+    check_gradient({0.1F, -0.3F, 0.2F}, {3}, [&](const Tensor& bias) {
+        return sum(mul(layer_norm(fixed_input, fixed_weight, bias), target));
     });
 }
 

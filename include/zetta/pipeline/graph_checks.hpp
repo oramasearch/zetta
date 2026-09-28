@@ -11,8 +11,8 @@
 #include "zetta/pipeline/validation.hpp"
 
 // The concrete correctness checks for #309 — the first real semantic checks that
-// plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
-// gate itself. They read a small, documented set of **annotations** from each
+// plug into the CorrectnessGate's `Check` interface (gate.hpp). They read a
+// small, documented set of **annotations** from each
 // step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
 // gate failure (RULE-1 — no deploy without a passing gate).
@@ -70,6 +70,24 @@ public:
     // The methodologies the engine can execute today. Widened by #984, never by a caller —
     // a per-call override is how "the engine supports it" becomes unfalsifiable.
     static const std::vector<std::string>& implemented();
+};
+
+// M-10 language outputs may never answer without retrieved evidence, and every
+// answer sentence must carry a citation. The executable graph records both
+// invariants explicitly so an edited plan cannot silently weaken them.
+class LanguageGroundingCheck final : public Check {
+public:
+    std::string name() const override { return "language_grounding"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 may not train on text outside the caller's read scope. This graph-level
+// check requires the model and its source to opt into the runtime authorization
+// check; the methodology runner then performs that check before reading rows.
+class LanguageTrainingAccessCheck final : public Check {
+public:
+    std::string name() const override { return "language_training_access"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
 class SchemaTypeCheck final : public Check {

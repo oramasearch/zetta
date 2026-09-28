@@ -26,6 +26,7 @@
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/ml/language.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -70,6 +71,15 @@ struct ActionJourneys : ::testing::Test {
         ApiContext context{node,  nullptr,
                            key,   trace,
                            &node.span_recorder(), &background};
+        return registry.call(name, input, context);
+    }
+
+    ApiResult call_as_user(const std::string& user_id,
+                           const std::string& name,
+                           nlohmann::json input) {
+        ApiContext context{node, nullptr, user_id, trace,
+                           &node.span_recorder(), &background};
+        context.acting_is_user = true;
         return registry.call(name, input, context);
     }
 
@@ -245,6 +255,108 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneyLanguageMethodologyCompilesRunsAndReports) {
+    const std::string content =
+        "{\"id\":1,\"text\":\"Cats are good pets.\",\"label\":1,"
+        "\"query\":\"Cats are good pets.\",\"relevant_id\":1}\n"
+        "{\"id\":2,\"text\":\"Dogs are good pets.\",\"label\":0,"
+        "\"query\":\"Dogs are good pets.\",\"relevant_id\":2}\n";
+    const ApiResult uploaded =
+        call("upload_dataset", {{"database", "knowledge"},
+                                {"table_name", "chunks"},
+                                {"format", "jsonl"},
+                                {"content", content},
+                                {"replication_factor", 1}});
+    ASSERT_TRUE(uploaded.ok) << uploaded.error.message;
+
+    std::string checkpoint_error;
+    const std::optional<zetta::ml::WordPieceTokenizer> tokenizer =
+        zetta::ml::WordPieceTokenizer::from_vocabulary(
+            {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "cats", "dogs", "are",
+             "good", "pet", "##s", "."},
+            true, &checkpoint_error);
+    ASSERT_TRUE(tokenizer.has_value()) << checkpoint_error;
+    zetta::ml::BertConfig config;
+    config.vocab_size = 11;
+    zetta::ml::BertTextEmbedder embedder(config, *tokenizer, 1049);
+    const std::string checkpoint = (dir.path() / "minilm").string();
+    ASSERT_TRUE(embedder.save_checkpoint(checkpoint, &checkpoint_error))
+        << checkpoint_error;
+
+    ASSERT_TRUE(call("create_project", {{"name", "language"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "language"},
+         {"text", "Answer questions from our documents with citations"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "language"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-10"},
+         {"name", "grounded answers"},
+         {"hints", {{"dataset_path", "knowledge.chunks"}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-10");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+    ASSERT_TRUE(call("approve_plan", {{"project", "language"},
+                                      {"graph", "grounded answers"}})
+                    .ok);
+
+    const ApiResult executed = call(
+        "run",
+        {{"project", "language"},
+         {"graph", "grounded answers"},
+         {"embedder_directory", checkpoint},
+         {"top_k", 1},
+         {"minimum_relevance", -1.0},
+         {"dataset",
+          {{"entity_column", "id"},
+           {"label_column", "label"},
+           {"feature_columns", {"text"}}}}});
+    ASSERT_TRUE(executed.ok) << executed.error.message;
+    EXPECT_EQ(executed.value.at("engine"), "language");
+    EXPECT_EQ(executed.value.at("status"), "succeeded");
+    const std::string run_id = executed.value.at("run_id");
+
+    const ApiResult run = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+    EXPECT_EQ(run.value.at("outputs").size(), 5U);
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("model").at("recall_at_k"), 1.0);
+    EXPECT_EQ(report.value.at("model").at("groundedness"), 1.0);
+    EXPECT_EQ(report.value.at("dataset").at("rows_read"), 2.0);
+    EXPECT_EQ(report.value.at("outputs").size(), 3U);
+
+    ASSERT_TRUE(node.create_role("language-reader"));
+    ASSERT_TRUE(node.grant_permissions(
+        "language-reader", {"mcp:call", "pipelines:manage"}));
+    ASSERT_TRUE(node.grant_scoped_permissions(
+        "language-reader", {"sql:read"},
+        zetta::governance::Resource::column(
+            "knowledge", "chunks", {"id", "text", "label", "relevant_id"})));
+    const auto restricted = node.create_user("restricted-language-reader");
+    ASSERT_TRUE(restricted);
+    ASSERT_TRUE(node.assign_role(
+        restricted->id(), node.find_role("language-reader")->id()));
+    const ApiResult denied = call_as_user(
+        restricted->id(), "run",
+        {{"project", "language"},
+         {"graph", "grounded answers"},
+         {"embedder_directory", checkpoint},
+         {"dataset",
+          {{"entity_column", "id"},
+           {"label_column", "label"},
+           {"feature_columns", {"text"}}}}});
+    EXPECT_FALSE(denied.ok);
+    EXPECT_EQ(denied.error.code, "unauthorized");
+    EXPECT_NE(denied.error.message.find("every requested training column"),
+              std::string::npos);
 }
 
 // =====================================================================

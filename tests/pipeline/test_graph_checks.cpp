@@ -15,6 +15,8 @@ using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
+using zetta::pipeline::LanguageGroundingCheck;
+using zetta::pipeline::LanguageTrainingAccessCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::ValidationReport;
 using zetta::ir::EdgeKind;
@@ -272,15 +274,69 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutCitationPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("citations"), std::string::npos);
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutEmptyRetrievalPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("refuse"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUncheckedTrainingText) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text",
+                   {{"caller_read_required", true}}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("authorize"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUnguardedTextSource) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text", {}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"governance_check", true},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("caller-read"), std::string::npos);
+}
+
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 6u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[4]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

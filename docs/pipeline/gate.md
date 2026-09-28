@@ -13,10 +13,10 @@ The IR is *what* it validates; the report is *what it returns*; this is the part
 that does the running.
 
 The gate ships the trivial `NonEmptyGraphCheck` so the path works end to end,
-plus the concrete schema/type and data-leakage / point-in-time checks (`#309` —
-see [gate-checks.md](gate-checks.md)) and the
+plus the concrete schema/type, data-leakage, M-10 grounding, and M-10 training
+access checks (see [gate-checks.md](gate-checks.md)) and the
 [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). They all
-implement the same `Check` seam and plug in without touching the gate;
+implement the same `Check` interface;
 `default_gate()` registers each.
 
 ## The shape
@@ -78,10 +78,10 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free — `NonEmptyGraphCheck`, then the concrete `#309` checks (`SchemaTypeCheck`,
-`DataLeakageCheck` — see [gate-checks.md](gate-checks.md)), then the
-[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). The `#309`
-and entity-resolution checks are opt-in per step, so a graph that carries none of
+for free — `NonEmptyGraphCheck`, then `SchemaTypeCheck`, `DataLeakageCheck`,
+`LanguageGroundingCheck`, `LanguageTrainingAccessCheck`, and
+[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). These
+checks are opt-in per step, so a graph that carries none of
 their annotations still passes. As further concrete checks land they are
 registered there too.
 
@@ -156,10 +156,10 @@ The gate sits between **compile** and **deploy**: a graph is compiled from inten
 run through the gate, and deployed only if the report allows it. The events the
 rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
-`#309` schema/type and data-leakage / point-in-time checks
+schema/type, data-leakage, and M-10 correctness checks
 ([gate-checks.md](gate-checks.md)) and the
 [entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) already plug into
-this seam; the gate's wiring into deploy lands on top of it as separate work.
+this interface; the gate's wiring into deploy lands on top of it as separate work.
 
 See also [gate-checks.md](gate-checks.md) (the concrete checks),
 [validation.md](validation.md) (the result type), the

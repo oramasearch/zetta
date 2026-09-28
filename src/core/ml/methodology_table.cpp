@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m10_methodology();
 
 namespace {
 
@@ -125,15 +126,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", true, "relevance or outcome")},
                 {"ranked list", "priority scores"},
                 {"NDCG", "precision at k", "queue yield"}, 1048),
-        planned("M-10", "NLP / embeddings / RAG / fine-tuning",
-                "Language, documents & perception",
-                {"nlp", "embedding", "embeddings", "rag", "fine_tuning",
-                 "retrieval"},
-                {}, {"text", "semantic search", "retrieve", "rag", "language"},
-                {input("text", true, "documents or utterances"),
-                 input("label", false, "task labels or golden answers")},
-                {"embeddings", "search results", "generated text"},
-                {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
+        make_m10_methodology(),
         planned("M-11", "Document intelligence",
                 "Language, documents & perception",
                 {"document_intelligence", "ocr", "document"}, {},

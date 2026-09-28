@@ -6526,8 +6526,12 @@
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "description": "id, name, and methodology metrics. Tabular `held_out_*` is present only when the run asked for a holdout. Language reports expose recall_at_k, MRR, groundedness, and embedder_version",
                           "type": "object"
+                        },
+                        "outputs": {
+                          "description": "language methodology output table names and fully qualified refs; absent for tabular reports",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
@@ -10370,6 +10374,16 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "answer_tokens": {
+                    "description": "M-10 only: native-Qwen completion token limit",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "classifier_regularization": {
+                    "description": "M-10 only: non-negative regularization for the linear classifier head",
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10409,6 +10423,11 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "embedder_directory": {
+                    "description": "M-10 only: local directory containing the pinned MiniLM config, vocab.txt, and model.safetensors (tests never download it)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10424,6 +10443,17 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "max_tokens": {
+                    "description": "M-10 only: WordPiece token limit per text",
+                    "minimum": 2,
+                    "type": "integer"
+                  },
+                  "minimum_relevance": {
+                    "description": "M-10 only: refuse an answer below this cosine score",
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
                     "minLength": 1,
@@ -10431,6 +10461,31 @@
                   },
                   "project": {
                     "description": "the owning project's name, or its uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "query_column": {
+                    "description": "M-10 only: labelled evaluation query column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "qwen_directory": {
+                    "description": "M-10 only: optional local native-Qwen checkpoint used to compose answers; without it the grounded path returns an extractive answer",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "relevant_id_column": {
+                    "description": "M-10 only: integer id of the planted relevant chunk",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "seed": {
+                    "description": "M-10 only: deterministic generation seed",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "text_column": {
+                    "description": "M-10 only: text column (default the dataset contract's first feature)",
                     "minLength": 1,
                     "type": "string"
                   },
