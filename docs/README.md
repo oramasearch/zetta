@@ -31,7 +31,7 @@ run / test.
 | [compute/](compute/README.md) | The `ComputeDevice` accelerator interface and backends, work-stealing scheduler, job coordinator, compute jobs, autoscaling, checkpoints, compute-near-data. |
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
 | [ml/](ml/README.md) | Native ML: histogram GBDT, document extraction, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, and the native correctness oracle. |
-| [solutions/](solutions/README.md) | Runtime foundations shared by solutions, including the replicated score → decision → action → outcome audit ledger. |
+| [solutions/](solutions/README.md) | Cross-solution runtime foundations: audit, decision policy, experiments, drift, realized-performance, guardrail, and lifecycle monitoring. |
 | [agent/](agent/README.md) | The native RLVR agent (#555 base, #853 per-customer): the deterministic reward grader, and — as they ship — rollouts and the training loop. The model Orama post-trains and ships. Its data + model [cards](agent/cards/README.md). |
 | [dataset/](dataset/README.md) | Native, in-Zetta training-dataset generation (#873): the `DatasetGenerator` interface + factory (base-agent + Auto-Suggest), plan-grounded + admission-gated — the native replacement for the offline Python corpus generators, and what a per-customer fork grows its own corpus with. |
 | [autograd/](autograd/README.md) | zetta's own reverse-mode autodiff engine (native C++26, no foreign runtime): the `Tensor` value graph + `backward()`, the Qwen3-parity model, checkpoint I/O, and the RLVR training math the agent is built on. |

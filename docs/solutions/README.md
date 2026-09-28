@@ -13,3 +13,4 @@ and policy decisions to actions and measured outcomes.
 - [experiments.md](experiments.md) — deterministic holdouts, treatment cells,
   exploration, below-line sampling, exemptions, balance, and uplift rows
   (#1105).
+- [monitor.md](monitor.md) — replicated input/score PSI, calibration, closed-window cohort performance, bounded guardrails, breach events, and retrain requests (#1106).

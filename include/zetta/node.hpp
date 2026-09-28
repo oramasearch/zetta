@@ -32,6 +32,7 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/solutions/monitor.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
 #include "zetta/cluster/node_metrics.hpp"
@@ -345,6 +346,22 @@ public:
     bool drop_model(const std::string& id);
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
+
+    // One replicated drift and guardrail monitor per solution (#1106). create
+    // validates histogram baselines and declared bounds, stamps its timestamps,
+    // and refuses a duplicate solution. find accepts either the monitor uuid or
+    // the solution name. Monitor mutations publish new breach transitions to
+    // the node's internal solution-events topic.
+    std::shared_ptr<zetta::solutions::Monitor> create_monitor(
+        zetta::solutions::MonitorSpec spec,
+        std::string* error = nullptr);
+    std::shared_ptr<zetta::solutions::Monitor> find_monitor(
+        const std::string& id_or_solution) const;
+    bool drop_monitor(const std::string& id);
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors() const {
+        return monitors_;
+    }
+    std::size_t monitor_count() const { return monitors_.size(); }
 
     // CRUD for Workspace Profiles (the "Discover Opportunities" input — see
     // workspace_profile.hpp / docs/workspace/; #886). A top-level replicated
@@ -994,6 +1011,9 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild monitors_ by scanning config_.data_dir. Called from start().
+    void load_monitors();
+
     // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
     void load_workspace_profiles();
 
@@ -1062,6 +1082,7 @@ private:
     void reconcile_deployments(const nlohmann::json& snapshot);
     void reconcile_runs(const nlohmann::json& snapshot);
     void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_monitors(const nlohmann::json& snapshot);
     void reconcile_workspace_profiles(const nlohmann::json& snapshot);
     void reconcile_plans(const nlohmann::json& snapshot);
     void reconcile_indexes(const nlohmann::json& snapshot);
@@ -1096,6 +1117,11 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<zetta::solutions::Monitor> materialize_monitor(
+        std::string id,
+        zetta::solutions::MonitorValue value);
+    bool materialize_drop_monitor(const std::string& id);
+    void publish_monitor_breach(const zetta::solutions::MonitorBreach& breach);
     std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
         std::string id, zetta::workspace::WorkspaceProfileValue value);
     bool materialize_drop_workspace_profile(const std::string& id);
@@ -1153,6 +1179,7 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors_; // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
         workspace_profiles_;                                          // sorted (created, id)
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)

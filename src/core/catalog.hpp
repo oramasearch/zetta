@@ -52,6 +52,10 @@
 //                            bucket, exempt, exemption_reason, exemption_actor,
 //                            assigned_at }  (one independently convergent
 //                            assignment and uplift-training row per entity)
+//   monitor:<monitor_uuid> -> { solution, inputs, scores?, calibration, cohorts,
+//                          guardrails, breaches, retrain_requested, created,
+//                          updated }  (one drift and guardrail monitor per
+//                          solution; see solutions/monitor.hpp)
 //   job:<job_uuid>     -> { kind, status, project, graph, run, scaling_policy,
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
@@ -148,6 +152,7 @@ inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
+inline constexpr std::string_view kMonitorPrefix = "monitor:";
 inline constexpr std::string_view kWorkspaceProfilePrefix = "profile:";
 inline constexpr std::string_view kPlanPrefix = "plan:";
 inline constexpr std::string_view kExperimentPrefix = "experiment:";
@@ -203,6 +208,9 @@ inline std::string run_key(const std::string& run_id) {
 }
 inline std::string model_key(const std::string& model_id) {
     return std::string(kModelPrefix) + model_id;
+}
+inline std::string monitor_key(const std::string& monitor_id) {
+    return std::string(kMonitorPrefix) + monitor_id;
 }
 inline std::string workspace_profile_key(const std::string& workspace_profile_id) {
     return std::string(kWorkspaceProfilePrefix) + workspace_profile_id;

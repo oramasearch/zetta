@@ -38,6 +38,11 @@ relay it to a person.
   shape including per-node spans of distributed work — an agent can always
   answer "what actually happened?"
   ([../architecture/observability.md](../../architecture/observability.md)).
+- **Solution health is queryable**: `get_monitor` reads current input and score
+  drift, calibration, realized cohort performance, declared guardrails, active
+  breaches, and the durable retrain request by solution name or monitor UUID.
+  MCP and REST return the same schema-validated record, and the agent tool is
+  read-only ([monitor.md](../../solutions/monitor.md), #1106).
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key

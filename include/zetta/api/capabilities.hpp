@@ -25,6 +25,7 @@
 //   list_specs       read    the spec index (#646): OpenAPI + every capability
 //                            and boundary schema as names, kinds, links
 //   get_spec         read    one spec document by its list_specs name
+//   get_monitor      read    one solution's current monitoring state (#1106)
 //
 // The #616 slice adds the typed detail reads + list_* siblings; the #617 slice
 // adds governed action parity — the rest of the product loop as thin callers

@@ -1960,6 +1960,34 @@ ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+const nlohmann::json& get_monitor_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "solution",
+        "the solution name or monitor uuid");
+    return schema;
+}
+
+const nlohmann::json& get_monitor_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(
+            zetta::solutions::monitor_value_schema());
+    return schema;
+}
+
+ApiResult handle_get_monitor(const nlohmann::json& input,
+                             ApiContext& context) {
+    const std::string solution = input.at("solution").get<std::string>();
+    const auto monitor = context.node.find_monitor(solution);
+    if (!monitor) {
+        return ApiResult::failure(
+            "not_found",
+            "no monitor for solution or id '" + solution + "'");
+    }
+    nlohmann::json output = monitor->metadata();
+    output["id"] = monitor->id();
+    return ApiResult::success(std::move(output));
+}
+
 // --- model_health (Monitor, #983) -------------------------------------------------------------
 //
 // The first Monitor capability. The agent is meant to watch a deployed model and say whether it
@@ -7456,6 +7484,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"get_model", "read one model: its measures, its feature columns, and "
                       "its ranked churn "
                       "drivers: {\"model\": \"<id or name>\"}"},
+        {"get_monitor",
+         "read one solution's current drift, calibration, cohort performance, "
+         "guardrails, active breaches, and retrain request: "
+         "{\"solution\": \"<solution name or monitor uuid>\"}"},
         {"score",
          "run a trained model and get accounts ranked by risk plus what drives "
          "it — "
@@ -8430,6 +8462,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_model});
+
+    registry.add(Capability{
+        "get_monitor",
+        "Get one solution monitor",
+        "Read one solution's current input and score drift, calibration, "
+        "closed-window cohort performance, guardrails, active breaches, and "
+        "retrain request by solution name or monitor uuid. No side effects.",
+        get_monitor_schema(),
+        get_monitor_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_monitor});
 
     registry.add(Capability{
         "get_workspace_profile",
