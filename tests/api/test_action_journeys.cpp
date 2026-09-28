@@ -247,6 +247,150 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
 }
 
+TEST_F(Uc1Journey,
+       JourneyNextBestActionReadsItsPipelineTableAndReportsRecommendations) {
+    const fs::path file = dir.path() / "recommendation_candidates.jsonl";
+    {
+        std::ofstream output(file);
+        for (int entity = 0; entity < 48; ++entity) {
+            for (int action = 0; action < 3; ++action) {
+                const double signal =
+                    static_cast<double>((entity * 5 + action * 7) % 17) / 16.0;
+                const int response = (entity + action) % 2;
+                const bool preferred = action == entity % 3;
+                output
+                    << nlohmann::json{
+                           {"entity_id", entity},
+                           {"action_id", action},
+                           {"response", response},
+                           {"signal", signal},
+                           {"action_value", 8.0 + action},
+                           {"action_cost", 1.0 + action * 0.25},
+                           {"eligible", entity == 2 && action == 2 ? 0 : 1},
+                           {"contacts", entity == 3 && action == 1 ? 2 : 0},
+                           {"contact_cap", 2},
+                           {"interaction_count", preferred ? 3 : 0},
+                           {"interaction_time", 1},
+                           {"logging_propensity", 1.0 / 3.0},
+                           {"unused_note", "excluded"}}
+                           .dump()
+                    << '\n';
+                if (preferred) {
+                    output << nlohmann::json{
+                                  {"entity_id", entity},
+                                  {"action_id", action},
+                                  {"response", response},
+                                  {"signal", signal},
+                                  {"action_value", 8.0 + action},
+                                  {"action_cost", 1.0 + action * 0.25},
+                                  {"eligible", 1},
+                                  {"contacts", 0},
+                                  {"contact_cap", 2},
+                                  {"interaction_count", 2},
+                                  {"interaction_time", 2},
+                                  {"logging_propensity", 1.0 / 3.0},
+                                  {"unused_note", "excluded"}}
+                                  .dump()
+                           << '\n';
+                }
+            }
+        }
+    }
+    const nlohmann::json hints = {
+        {"source", "offers"},
+        {"table", "candidates"},
+        {"entity_column", "entity_id"},
+        {"action_column", "action_id"},
+        {"label_column", "response"},
+        {"feature_columns", {"signal"}},
+        {"num_trees", 8},
+        {"max_depth", 2},
+        {"factors", 3},
+        {"als_iterations", 4},
+        {"budget", 1000.0},
+        {"seed", 41}};
+    journey::Journey recommendation{"next-best-action-table-to-report", {}};
+    recommendation.steps = {
+        {"land candidate actions",
+         "add_dataset",
+         {{"path", file.string()},
+          {"database", "offers"},
+          {"table_name", "candidates"},
+          {"partition_count", 2}},
+         {.checks = {journey::equals("/rows", 192)}}},
+        {"create recommendation project",
+         "create_project",
+         {{"name", "offer-plan"}}},
+        {"capture recommendation intent",
+         "capture_intent",
+         {{"project", "offer-plan"},
+          {"text", "Recommend the next best action for each customer"}},
+         {},
+         {{"input", "/input_id"}}},
+        {"discover runnable M-8",
+         "list_methodologies",
+         nlohmann::json::object(),
+         {.checks = {journey::any_element(
+              "/methodologies", {{"/id", "M-8"}, {"/runnable", true}})}}},
+        {"compile next-best-action methodology",
+         "compile_intent",
+         {{"project", "offer-plan"},
+          {"input_id", "$input"},
+          {"methodology", "M-8"},
+          {"hints", hints},
+          {"name", "offer recommendations"}},
+         {.checks = {journey::equals("/methodology", "M-8"),
+                     journey::equals("/runnable", true)}},
+         {{"graph", "/name"}}},
+        {"compile primary solution",
+         "compile_intent",
+         {{"project", "offer-plan"},
+          {"input_id", "$input"},
+          {"solution", "S-11"},
+          {"hints", hints},
+          {"name", "solution recommendations"}},
+         {.checks = {journey::equals("/methodology", "M-8"),
+                     journey::equals("/runnable", true)}}},
+        {"run pipeline table",
+         "run",
+         {{"project", "offer-plan"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/engine", "next_best_action"),
+                     journey::equals("/dataset/source", "offers.candidates")}},
+         {{"run", "/run_id"}}},
+        {"wait for recommendation outputs",
+         "get_run",
+         {{"run_id", "$run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::contains_element("/lineage/sources",
+                                               "dataset:offers.candidates"),
+                     journey::any_element("/outputs", {{"/kind", "dataset"}}),
+                     journey::any_element("/outputs", {{"/kind", "model"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read recommendation report",
+         "get_run_report",
+         {{"run_id", "$run"}, {"limit", 20}},
+         {.checks = {journey::equals("/model/kind", "next_best_action"),
+                     journey::exists("/model/metrics/hit_rate_at_k"),
+                     journey::exists(
+                         "/model/metrics/inverse_propensity_value"),
+                     journey::equals("/dataset/catalog_rows", 192),
+                     journey::any_element("/dataset/not_used",
+                                          {{"/column", "unused_note"}}),
+                     journey::exists("/policy/effective_sample_size"),
+                     journey::exists("/recommendations/0/expected_value"),
+                     journey::exists("/recommendations/0/why"),
+                     journey::size_equals("/outputs", 4)}}}};
+    const auto result = journey::run_journey(recommendation, caller(), pump());
+    std::string run_diagnostics;
+    for (const auto& run : node.runs()) {
+        if (run) {
+            run_diagnostics += "\n" + run->metadata().dump();
+        }
+    }
+    EXPECT_TRUE(result.ok) << result.summary() << run_diagnostics;
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

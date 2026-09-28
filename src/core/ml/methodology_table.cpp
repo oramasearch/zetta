@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m8_methodology();
 
 namespace {
 
@@ -109,14 +110,7 @@ const std::vector<Methodology>& methodologies() {
                  input("feature", true, "signals to monitor")},
                 {"anomaly scores", "alerts"},
                 {"precision", "recall", "false alerts"}, 1046),
-        planned("M-8", "Recommendation / next-best-action", "Action & decision",
-                {"recommendation", "recommender", "next_best_action"}, {"S-11"},
-                {"recommend", "next best action", "next-best-action"},
-                {input("entity", true, "recipient of the action"),
-                 input("treatment", true, "candidate actions or items"),
-                 input("label", false, "interaction or reward")},
-                {"ranked actions", "recommendations"},
-                {"NDCG", "recall at k", "policy value"}, 1047),
+        make_m8_methodology(),
         planned("M-9", "Learning-to-rank", "Action & decision",
                 {"ranking", "learning_to_rank", "rank"}, {"S-12"},
                 {"rank", "prioritise", "prioritize", "queue"},

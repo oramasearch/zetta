@@ -85,8 +85,38 @@ The Run records both tables and the model as outputs and records the source tabl
 
 ## Running it
 
-Phase A exposes the resolved-table runner in `zetta/ml/next_best_action_table.hpp`. Registry-driven
-compile and run are described here when M-8 is connected to the methodology table.
+Land the numeric candidate table with `add_dataset` or a connector. Then call `create_project`,
+`capture_intent`, and `compile_intent` with `methodology: "M-8"` or `solution: "S-11"`. The compile
+hints name the graph-owned source, roles, and policy:
+
+```json
+{
+  "project": "offer-plan",
+  "input_id": "<captured input id>",
+  "methodology": "M-8",
+  "hints": {
+    "source": "offers",
+    "table": "candidates",
+    "entity_column": "customer_id",
+    "action_column": "action_id",
+    "label_column": "converted",
+    "feature_columns": ["tenure", "recent_orders"],
+    "interaction_time_column": "interaction_time",
+    "budget": 5000,
+    "seed": 41
+  }
+}
+```
+
+Call `run` with the project and returned graph name. Dataset overrides and uncoordinated execution
+are refused: M-8 reads its stored pipeline table and launches every native collective participant.
+Poll `get_run`, then call `get_run_report`. The report carries the Model metrics, selected/excluded
+columns, output references, policy facts, ranked actions, chosen flags, reasons, and causal caveat.
+
+Column-role defaults are listed above. Optional training hints are `num_trees`, `max_depth`,
+`max_bins`, `learning_rate`, `factors`, `als_iterations`, `hit_rate_k`, `implicit_alpha`,
+`als_regularization`, `als_weight`, `minimum_logging_propensity`, and
+`maximum_importance_weight`. Unknown hints fail the graph check instead of being ignored.
 
 ## Verification
 

@@ -98,11 +98,14 @@ bool read_column(const ddf::DataFrame &frame, std::string_view name,
 
 } // namespace
 
+namespace {
+
 NextBestActionTableResult
-run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
-                              const NextBestActionTableParams &params,
-                              pipeline::Run &run,
-                              std::chrono::milliseconds timeout) {
+run_table(Node &node, const data::ResolvedDataset &dataset,
+          const NextBestActionTableParams &params, pipeline::Run *run,
+          const std::string &project_id, const std::string &graph_id,
+          const std::string &run_id, bool materialize_outputs,
+          std::chrono::milliseconds timeout) {
   NextBestActionTableResult output;
   if (!dataset.ok() || dataset.table_id.empty()) {
     output.error = dataset.error.empty()
@@ -204,7 +207,8 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
 
   std::shared_ptr<compute::ComputeJob> job;
   node.run_on_owner([&] {
-    job = node.create_job(compute::JobKind::Train, run.project(), run.graph());
+    job =
+        node.create_job(compute::JobKind::Train, project_id, graph_id, run_id);
   });
   if (!job) {
     output.error = "next best action: could not create train job";
@@ -214,7 +218,12 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
       *coordinator, *job, observations, dataset.contract.feature_columns,
       params.model, params.round_tag, timeout);
   static_cast<DistributedNextBestActionResult &>(output) = std::move(trained);
-  if (!output.ok() || !output.is_root) {
+  if (!output.ok() || !materialize_outputs) {
+    return output;
+  }
+  if (run == nullptr) {
+    output.error = "next best action: output materialization requires a Run";
+    output.status = compute::JobStatus::Failed;
     return output;
   }
 
@@ -228,7 +237,7 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
       output.error = "next best action: could not create results database";
       return;
     }
-    const std::string suffix = run.id().substr(0, 8);
+    const std::string suffix = run->id().substr(0, 8);
     const std::string recommendations_name = "recommendations_" + suffix;
     const std::string report_name = "policy_report_" + suffix;
     std::shared_ptr<data::Table> recommendations =
@@ -275,17 +284,21 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
     ml::ModelValue model;
     model.name = params.model_name;
     model.kind = "next_best_action";
-    model.project = run.project();
-    model.run = run.id();
+    model.project = run->project();
+    model.run = run->id();
     model.created = util::now_iso8601();
+    nlohmann::json dataset_facts = params.dataset_facts;
+    if (!dataset_facts.is_object() || dataset_facts.empty()) {
+      dataset_facts = {{"source", dataset.database + "." + dataset.table},
+                       {"catalog_rows", dataset.rows}};
+    }
+    dataset_facts["rows_read"] = output.rows;
+    dataset_facts["local_partitions_read"] = output.partitions_read;
+    dataset_facts["local_bytes_read"] = output.bytes_read;
     model.feature_schema = {
         {"features", dataset.contract.feature_columns},
         {"action_column", params.action_column},
-        {"dataset",
-         {{"source", dataset.database + "." + dataset.table},
-          {"rows", dataset.rows},
-          {"partitions_read", output.partitions_read},
-          {"bytes_read", output.bytes_read}}},
+        {"dataset", std::move(dataset_facts)},
         {"offline_evaluation_refusal", output.offline.refusal},
         {"causal_caveat",
          "propensity is not causal lift; use M-6 to decide whether to treat"}};
@@ -311,12 +324,12 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
         std::string(kResultsDatabase) + "." + recommendations_name;
     output.policy_report_table =
         std::string(kResultsDatabase) + "." + report_name;
-    run.set_outputs(
+    run->set_outputs(
         {{"dataset", "recommendation table", output.recommendation_table},
          {"dataset", "policy report", output.policy_report_table},
          {"model", params.model_name, output.model_id},
-         {"report", "next-best-action report", run.id()}});
-    run.set_lineage(
+         {"report", "next-best-action report", run->id()}});
+    run->set_lineage(
         {.sources = {"dataset:" + dataset.database + "." + dataset.table},
          .steps = {"propensity GBDT", "implicit ALS",
                    "eligibility/contact-cap policy", "budget"},
@@ -327,6 +340,26 @@ run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
     output.status = compute::JobStatus::Failed;
   }
   return output;
+}
+
+} // namespace
+
+NextBestActionTableResult
+run_next_best_action_on_table(Node &node, const data::ResolvedDataset &dataset,
+                              const NextBestActionTableParams &params,
+                              pipeline::Run &run,
+                              std::chrono::milliseconds timeout) {
+  return run_table(node, dataset, params, &run, run.project(), run.graph(),
+                   run.id(), true, timeout);
+}
+
+NextBestActionTableResult run_next_best_action_table_participant(
+    Node &node, const data::ResolvedDataset &dataset,
+    const NextBestActionTableParams &params, const std::string &project_id,
+    const std::string &graph_id, const std::string &run_id,
+    std::chrono::milliseconds timeout) {
+  return run_table(node, dataset, params, nullptr, project_id, graph_id, run_id,
+                   false, timeout);
 }
 
 } // namespace zetta::ml

@@ -72,6 +72,16 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-8 policy correctness (#1047): only the validated next-best-action graph is
+// accepted. It must retain chronological interaction holdout, explicit logging
+// propensity handling, eligibility/contact-cap constraints and budgeted
+// best-action selection.
+class NextBestActionGraphCheck final : public Check {
+public:
+    std::string name() const override { return "next_best_action_correctness"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

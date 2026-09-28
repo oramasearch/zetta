@@ -6,9 +6,9 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
-because retrieval and indexes ship, but it does not yet provide a methodology
-runner. The other entries link to their implementation issues.
+callbacks for runnable implementations. M-1 and M-8 are runnable. M-10 is
+marked partial because retrieval and indexes ship, but it does not yet provide
+a methodology runner. The other entries link to their implementation issues.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -66,6 +66,19 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-8 recommendation implementation
+
+M-8 owns graphs whose model step names `next_best_action`, `recommendation`, or
+`recommender`. Its shape is source → candidate features → propensity/ALS model →
+hard policy → recommendation outputs. The runner reads the source table recorded
+on the graph, launches every collective participant, and writes a recommendation
+table, policy report, Model, and report reference with source lineage.
+
+The graph check refuses altered shapes, non-chronological interaction evaluation,
+inferred logging propensities, causal claims for predictive propensity, or a
+policy that can bypass eligibility and contact caps. See
+[next_best_action.md](next_best_action.md) for the table contract and metrics.
 
 ## Adding a methodology
 

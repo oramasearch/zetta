@@ -6526,8 +6526,20 @@
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Next-best-action models return hit rate, IPS/DR and importance-weight diagnostics",
                           "type": "object"
+                        },
+                        "outputs": {
+                          "description": "the run's dataset, model and report references",
+                          "type": "array"
+                        },
+                        "policy": {
+                          "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
+                          "type": "object"
+                        },
+                        "recommendations": {
+                          "description": "M-8 entity-action rows ordered by entity then rank, including expected value, chosen action and why",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",

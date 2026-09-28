@@ -601,6 +601,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/validation.cpp
   src/core/pipeline/gate.cpp
   src/core/pipeline/graph_checks.cpp
+  src/core/pipeline/next_best_action_graph_check.cpp
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp
@@ -654,7 +655,9 @@ add_library(zetta-core STATIC
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
   src/core/ml/next_best_action.cpp
+  src/core/ml/next_best_action_execution.cpp
   src/core/ml/next_best_action_job.cpp
+  src/core/ml/next_best_action_methodology.cpp
   src/core/ml/next_best_action_table.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp

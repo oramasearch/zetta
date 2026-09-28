@@ -76,10 +76,13 @@ What's inside, by domain (each links to that domain's docs):
   rank-at-risk**, **exact TreeSHAP** explanation, a registered **Model** entity
   (weights as verified large-object bodies), all proven by a **native
   correctness oracle** (no Python/XGBoost anywhere).
+  M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
+  hard eligibility/contact-cap policy selection, recommendation tables, and
+  IPS/DR policy reporting through `get_run_report`.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
-  name their implementation issues. Intent compilation and run dispatch use
-  this registry and refuse unsupported model work.
+  approaches: M-1 and M-8 run today, M-10 has partial retrieval support, and
+  the others name their implementation issues. Intent compilation and run
+  dispatch use this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/next_best_action_job.hpp"
 
@@ -28,6 +30,7 @@ struct NextBestActionTableParams {
   std::string logging_propensity_column = "logging_propensity";
   std::string model_name = "next_best_action_model";
   std::string round_tag = "ml.next_best_action";
+  nlohmann::json dataset_facts = nlohmann::json::object();
 };
 
 struct NextBestActionTableResult : DistributedNextBestActionResult {
@@ -39,12 +42,20 @@ struct NextBestActionTableResult : DistributedNextBestActionResult {
 };
 
 // Load only this member's owned partitions from a resolved dataset, run the
-// distributed trainer, and have the collective root materialize queryable
-// recommendation/policy tables plus a Model. The supplied Run receives output
+// distributed trainer, and materialize queryable recommendation/policy tables
+// plus a Model on the initiating member. The supplied Run receives output
 // references and source lineage. Participants must call concurrently.
 NextBestActionTableResult run_next_best_action_on_table(
     Node &node, const data::ResolvedDataset &dataset,
     const NextBestActionTableParams &params, pipeline::Run &run,
+    std::chrono::milliseconds timeout = kDefaultNextBestActionTimeout);
+
+// Peer half of a coordinated registry run. It reads this member's owned
+// partitions and enters every collective but creates no model or output table.
+NextBestActionTableResult run_next_best_action_table_participant(
+    Node &node, const data::ResolvedDataset &dataset,
+    const NextBestActionTableParams &params, const std::string &project_id,
+    const std::string &graph_id, const std::string &run_id,
     std::chrono::milliseconds timeout = kDefaultNextBestActionTimeout);
 
 } // namespace zetta::ml

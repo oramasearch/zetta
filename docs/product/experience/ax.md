@@ -49,6 +49,9 @@ relay it to a person.
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).
+  M-8 and primary solution S-11 compile to a runnable recommendation graph;
+  `run` reads that graph's table and `get_run_report` returns queryable output
+  references, ranked actions, policy metrics, exclusions, and causal caveats.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.
