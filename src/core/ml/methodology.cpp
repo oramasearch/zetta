@@ -62,6 +62,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool lead_scoring = request.solution == "S-2";
     const bool automated_outbound = request.solution == "S-9";
     const bool collections = request.solution == "S-4";
+    const bool fraud_decisioning = request.solution == "S-10";
 
     if (request.solution == "S-3") {
         const int value_horizon_days =
@@ -153,16 +154,19 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
 
     graph.add_node(
         ir::StepKind::Connect,
-        lead_scoring ? "Load lead and opportunity records"
+        fraud_decisioning ? "Load authorization requests"
+        : lead_scoring ? "Load lead and opportunity records"
                          : collections ? "Load receivables"
                                        : automated_outbound ? "Load consented outbound candidates"
                              : "Load customer accounts",
         nlohmann::json{
             {"source", "warehouse"},
-            {"table", lead_scoring ? "leads"
+            {"table", fraud_decisioning ? "authorizations"
+                         : lead_scoring ? "leads"
                          : collections ? "receivables"
                                        : "customers"},
-            {"note", lead_scoring ? "open leads and opportunities to score for conversion"
+            {"note", fraud_decisioning ? "authorization requests to score before a response"
+                         : lead_scoring ? "open leads and opportunities to score for conversion"
                          : collections ? "eligible receivables to score for recovery priority"
                                        : automated_outbound
                          ? "resolved customers eligible for outbound audience selection"
@@ -170,16 +174,19 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "load_customers");
     graph.add_node(
         ir::StepKind::Connect,
-        lead_scoring ? "Load pre-qualification engagement"
+        fraud_decisioning ? "Load request-time and graph signals"
+        : lead_scoring ? "Load pre-qualification engagement"
                          : collections ? "Load payment and contact history"
                                        : automated_outbound ? "Load pre-send engagement and contact history"
                              : "Load usage & billing activity",
         nlohmann::json{
             {"source", "warehouse"},
-            {"table", lead_scoring ? "lead_events"
+            {"table", fraud_decisioning ? "authorization_signals"
+                         : lead_scoring ? "lead_events"
                          : collections ? "collections_events"
                                        : "events"},
-            {"note", lead_scoring ? "point-in-time engagement signals per lead"
+            {"note", fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
+                         : lead_scoring ? "point-in-time engagement signals per lead"
                          : collections ? "point-in-time payment, delinquency, and contact signals"
                                        : automated_outbound
                          ? "point-in-time engagement, consent, suppression, and contact evidence"
@@ -187,30 +194,38 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "load_activity");
     graph.add_node(
         ir::StepKind::Clean,
-        lead_scoring ? "Build conversion features"
+        fraud_decisioning ? "Build request-time fraud features"
+        : lead_scoring ? "Build conversion features"
                          : collections ? "Build recovery features"
                                        : automated_outbound ? "Build outbound response features"
                              : "Build churn features",
         nlohmann::json{
-            {"note", lead_scoring
+            {"note", fraud_decisioning
+                         ? "training and request-time features must have exact parity"
+                     : lead_scoring
                          ? "point-in-time features; exclude post-qualification fields"
+                     : collections
+                         ? "point-in-time features; exclude post-contact outcomes"
                      : automated_outbound
                          ? "point-in-time response features; keep policy evidence out of model features"
                          : "point-in-time features; keep out post-cutoff leakage"}},
         "build_features");
     graph.add_node(
         ir::StepKind::Model,
-        lead_scoring ? "Train conversion-propensity model"
+        fraud_decisioning ? "Train fraud-risk model"
+        : lead_scoring ? "Train conversion-propensity model"
                          : collections ? "Train recovery-priority model"
                                        : automated_outbound ? "Train outbound response-propensity model"
                              : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", lead_scoring ? "converted"
+                       {"target", fraud_decisioning ? "fraud_label"
+                         : lead_scoring ? "converted"
                          : collections ? "promise_to_pay"
                                        : automated_outbound ? "response"
                                                        : "churned"},
-                       {"note", lead_scoring ? "predict probability each lead converts"
+                       {"note", fraud_decisioning ? "predict matured fraud risk for each authorization"
+                         : lead_scoring ? "predict probability each lead converts"
                          : collections ? "predict point-in-time recovery propensity"
                                        : automated_outbound
                                     ? "predict response propensity before incremental targeting"
@@ -218,7 +233,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "train_churn_model");
     graph.add_node(
         ir::StepKind::Index,
-        lead_scoring ? "Index conversion scores"
+        fraud_decisioning ? "Index authorization scores"
+        : lead_scoring ? "Index conversion scores"
                          : collections ? "Index recovery scores"
                                        : automated_outbound ? "Index outbound response scores"
                              : "Index churn scores",
@@ -227,12 +243,14 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "index_scores");
     graph.add_node(
         ir::StepKind::Serve,
-        lead_scoring ? "Serve conversion scores and reasons"
+        fraud_decisioning ? "Serve authorization scores and reasons"
+        : lead_scoring ? "Serve conversion scores and reasons"
                          : collections ? "Serve recovery scores and reasons"
                                        : automated_outbound ? "Serve outbound response scores and reasons"
                              : "Serve churn scores & reasons",
         nlohmann::json{
-            {"note", lead_scoring ? "expose per-lead conversion score and top drivers"
+            {"note", fraud_decisioning ? "expose per-request fraud score and graph evidence"
+                         : lead_scoring ? "expose per-lead conversion score and top drivers"
                          : collections ? "expose per-receivable recovery priority and drivers"
                                        : automated_outbound
                          ? "expose per-entity response propensity and top drivers"
@@ -240,23 +258,29 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "serve_scores");
     graph.add_node(
         ir::StepKind::Act,
-        lead_scoring ? "Route sales queue tasks"
+        fraud_decisioning ? "Write fraud authorization scores"
+        : lead_scoring ? "Route sales queue tasks"
                          : collections ? "Prioritize collections treatments"
                                        : automated_outbound ? "outbound response scores"
                              : "Trigger retention outreach",
         nlohmann::json{
-            {"note", lead_scoring ? "route capacity-aware CRM tasks with SLAs"
+            {"note", fraud_decisioning ? "write request-time decisions and case-review candidates"
+                         : lead_scoring ? "route capacity-aware CRM tasks with SLAs"
                          : collections ? "publish the governed recovery-priority table"
                                        : automated_outbound
                          ? "publish the outbound-specific decision score artifact"
                          : "notify retention on high-risk accounts"},
-             {"result_database", collections ? "collections_results"
+             {"result_database", fraud_decisioning ? "fraud_results"
+                  : collections ? "collections_results"
                   : automated_outbound ? "solution_methodology_results" : "churn_results"},
-             {"result_table_prefix", collections ? "recovery_priority_"
+             {"result_table_prefix", fraud_decisioning ? "authorization_scores_"
+                  : collections ? "recovery_priority_"
                   : automated_outbound ? "outbound_response_" : "at_risk_"},
-             {"entity_output_column", collections ? "receivable"
+             {"entity_output_column", fraud_decisioning ? "transaction"
+                  : collections ? "receivable"
                   : automated_outbound ? "entity" : "account"},
-             {"score_output_column", collections ? "recovery_score"
+             {"score_output_column", fraud_decisioning ? "fraud_score"
+                  : collections ? "recovery_score"
                   : automated_outbound ? "response_propensity" : "risk"}},
         "notify_retention");
 

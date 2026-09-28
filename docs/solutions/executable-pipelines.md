@@ -79,8 +79,19 @@ M-1 churn table.
 S-9 binds the real M-1 `outbound response scores` output in
 `solution_methodology_results`, with `entity` and `response_propensity`.
 At levels 2–4, M-6 treatment effects supply positive-uplift targeting.
-Inputs and score scales for the remaining modules stay their catalogue module's
-responsibility while their templates are minimal.
+S-10's M-1 stage writes `fraud_results.authorization_scores_*` with
+`transaction` and `fraud_score` columns. The module binds that real output,
+not the retention table, and crosses its authorization band with graph and
+case-owner evidence.
+
+S-11 is the other bound primary-output case. It automatically selects the M-8
+recommendation table's `entity` and `policy_score`. Its snapshot may retain
+multiple candidate rows per customer by using a unique candidate key while
+`M-8.entity_column` names the shared customer. M-15 accepts an explicit
+`decision_column` so its chosen arm and actual probability join to that same
+customer. The S-11 foundation groups M-8 candidates, applies the experiment's
+exploit or explore choice, resolves the chosen action's channel, and refuses an
+arm that is absent, ineligible, or capped.
 
 ## Run and read back
 
@@ -118,6 +129,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    actionable audience syncs with predicted value and horizon, retain budget
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
+   S-11 rows carry the policy tier, channel, exploit/explore mode, selected
+   action, predictive propensity, and actual selection probability. Its five
+   guardrails are observed from the same execution.
 
    S-7 routes only flagged rows within its exact alert budget, publishes one
    candidate-driver report with a causal caveat, and includes the durable forum
@@ -130,6 +144,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-9 rows carry audience tier, segment, journey, channel, consent and
    suppression evidence, and contact counts. Its monitor observes unsubscribe,
    complaint, consent-violation, contact-frequency, and execution rates.
+
+S-10 uses the same execution order with M-2 → M-12 → M-1 at levels 1 and 2;
+levels 3 and 4 append M-5. Its action payload includes the request-time
+authorization decision and graph evidence. Critical decisions also create an
+owned case task. Holdout requests produce ledger evidence but no connector
+delivery.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -234,3 +254,19 @@ future observation, protects permanent holdouts, refuses ineligible and capped
 contacts, inspects delivered journey evidence, observes all five guardrails,
 records response outcomes with a 0.12 treatment effect, and checks that the
 estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.FraudDecisioningActsAtRequestTimeAndRecoversPlantedEffect`
+builds and runs S-10 over a partitioned authorization and relationship fixture.
+It excludes a future request, reads a fraud-specific M-1 score table, verifies
+request-time and case-management payloads, proves permanent holdout
+suppression, observes all five guardrails, records centered fraud-loss outcomes
+with a `-0.12` treatment effect, and checks that the champion/challenger
+readout's estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.NextBestActionArbitratesChannelsAndRecoversPlantedEffect`
+builds and runs S-11 over two candidate channels per synthetic customer. It
+executes all five methodology callbacks, verifies exploit and explore
+deliveries and channel selection, reads positive M-15 propensity logs, proves
+holdout/consent/contact-cap suppression, records centered net-value outcomes
+with a 0.18 effect, and checks that the estimate and 95% confidence interval
+recover the planted effect.

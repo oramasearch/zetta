@@ -5,11 +5,13 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, and S-12. S-10 and S-11 retain minimal defaults. This is the scope of
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
 and their separate static proof.
+The [pass-three integration](integration-pass-3.md) records the final module
+merges and their static proof.
 
 The workspace integration routes projected solution records through the engine's
 [incremental reconciliation](../cluster/solution-reconciliation.md), with
@@ -45,6 +47,12 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
   data, claim paths, A0-only denial, fairness and document checks, holdout, and
   execution (#1121).
+- [S-10.md](S-10.md) — runnable request-time fraud decisioning module: graph
+  features, case tasks, champion/challenger exploration, and delayed-label
+  checks (#1119).
+- [S-11.md](S-11.md) — runnable next-best-action module: cross-channel
+  arbitration, constrained exploration, logged propensities, consent/contact
+  limits, and planted-effect proof (#1120).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -296,23 +304,45 @@ S-9 is the complete automated-outbound default:
 S-9 action payloads carry journey, channel, consent/suppression evidence,
 contact counts, SLA, and audience decision cell through the shared action path.
 
-### Minimal defaults
+S-10 is the complete fraud-decisioning default:
 
-**S-10 and S-11 are minimal**, marked `minimal_template: true`. Their module
-issues refine the business settings; none is presented as a completed
-industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
-an explicit `eligible == true` predicate, `excluded == true` suppression,
-12 lifetime contacts, one action per 30 days, zero default spend, a 10% holdout,
-and the kill switch off. Task SLAs default to one day. Monetary actions therefore
-require an owner-approved policy change before spending.
+| Setting | Executable default |
+|---|---|
+| Critical | score ≥ 0.9; A2 fraud-review task, 15-minute SLA |
+| Elevated | score ≥ 0.65; A2 request-time challenge |
+| Standard | score ≥ 0; A2 approve |
+| Approval | optional block action; A1 |
+| Caps | one decision per transaction in a one-day window |
+| Eligibility | explicit current request-time and graph features, open account, and eligibility evidence |
+| Exclusions | named exclusion or manual-authorization-only evidence suppresses model action |
+| Budget / stop | zero monetary spend; kill switch off |
+| Experiment | independent 10% holdout in each band; champion, challenger, and exploration cells |
+| Guardrails | fraud loss, false declines, challenge rate, review load, and action execution |
+| Measurement | champion/challenger; named `fraud_loss` outcome over 45 days |
 
-| Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
-|---|---|---|---|
-| S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
-| S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
+S-10 sends authorization decisions and case tasks through the shared action
+outbox. The primary M-1 stage writes and binds a fraud-specific score table;
+M-12 supplies the time-bounded graph context.
 
-Minimal guardrails are registered but remain unobserved until their metric
-producer supplies evidence; absence of an observation is not a healthy reading.
+S-11 is the complete next-best-action default:
+
+| Setting | Executable default |
+|---|---|
+| Recommended | policy score ≥ 0; request-time decision response, A2, one-second SLA |
+| No positive value | explicit no-action recommendation, A0 |
+| Approval | optional high-stakes review, A1, one-hour SLA |
+| Contact limits | four lifetime contacts and one action per seven-day window |
+| Eligibility | `eligible`, `consent`, and `within_contact_cap` must explicitly pass |
+| Exclusions | `excluded`, `do_not_contact`, or denied consent suppress delivery |
+| Budget / stop | 1,000 currency units per policy version; kill switch off |
+| Experiment | permanent 10% holdout; remaining entities split equally between `exploit` and M-15 `explore` |
+| Guardrails | zero consent, cap, missing-propensity, and margin-floor violations; minimum execution rate 0.95 |
+| Measurement | uplift cells; named `net_value` outcome per decision over 30 days |
+
+S-11 action payloads carry the selected action and channel, exploit/explore
+mode, actual selection probability, predictive propensity, and the explicit
+non-causal interpretation through the shared action integration path.
+
 The readout refuses causal/ROI claims for FVA and phased designs until their
 module-specific estimators exist.
 
@@ -320,7 +350,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, and S-12 journeys.
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -354,6 +384,12 @@ and post-failure maintenance leakage. M-5 supplies the decision table; levels
 For S-9, it refuses missing consent/suppression eligibility, absent or disabled
 contact caps, a churn-table decision binding, and propensity-only selection
 where M-6 uplift is available. Levels 2–4 add M-6, M-8, and M-10 respectively.
+For S-10, it refuses immature labels, training populations that erase declined
+requests, missing exploration/audit evidence, and request-time feature drift.
+All levels require M-1, M-2, and M-12; levels 3 and 4 also require M-5.
+For S-11, it refuses missing propensity logs, unenforced consent or
+cross-channel contact caps, and any causal claim derived from predictive
+response propensity. M-8 and M-15 outputs feed its request-time arbitration.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

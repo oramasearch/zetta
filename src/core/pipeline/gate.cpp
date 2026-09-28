@@ -204,6 +204,13 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S9ConsentSuppressionCheck>());
     gate.add_check(std::make_shared<S9ContactCapsCheck>());
     gate.add_check(std::make_shared<S9UpliftOverPropensityCheck>());
+    gate.add_check(std::make_shared<S10LabelDelayCheck>());
+    gate.add_check(std::make_shared<S10DeclinedSelectionBiasCheck>());
+    gate.add_check(std::make_shared<S10RequestTimeFeatureParityCheck>());
+    gate.add_check(std::make_shared<S10LevelCompositionCheck>());
+    gate.add_check(std::make_shared<S11LoggedPropensityCheck>());
+    gate.add_check(std::make_shared<S11ContactConsentCheck>());
+    gate.add_check(std::make_shared<S11PropensityInterpretationCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

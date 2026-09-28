@@ -77,6 +77,8 @@ Solution band_a(
                            : solution.id == "S-7" ? 1116
                            : solution.id == "S-8" ? 1117
                            : solution.id == "S-9" ? 1118
+                           : solution.id == "S-10" ? 1119
+                           : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
                                                    : 1102);
     return solution;
@@ -437,13 +439,18 @@ const std::vector<Solution>& solutions() {
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-12", "foundation", 1}, {"M-5", "attachable", 3}},
             {"M-2", "M-12", "M-1", "M-5"},
-            {"request-time authorization decision", "case tasks"}, {"L4", "L1"},
-            {{"in-band decisions", "A2"}, {"emergency rules and promotions", "A1"},
+            {"request-time authorization decisions", "case-management tasks"},
+            {"L4 authorization decision", "L1 case triage"},
+            {{"approve, challenge, and review decisions", "A2"},
+             {"blocks, emergency rules, and promotions", "A1"},
              {"thresholds inside approved bands", "A3"}},
-            {{"entity", true, "account, device, merchant, and counterparty graph"},
+            {{"entity", true, "transaction or authorization request"},
              {"label", true, "matured fraud, dispute, or case disposition"},
              {"time", true, "request-time and label-maturation chronology"},
-             {"group", true, "relationship edges and investigation groups"}},
+             {"feature", true, "request-time transaction, device, and behavioral signals"},
+             {"group", true, "account, device, merchant, and counterparty edges"},
+             {"propensity", true, "logged authorization or exploration propensity"},
+             {"owner", true, "case queue or investigation owner"}},
             "Approve, challenge, review, and block bands with friction budgets, fallback rules, approvals, and expiry.",
             "Continuous champion/challenger with a protected exploration slice and below-the-line audits.",
             {"fraud loss", "approval rate", "challenge rate", "review load", "fairness"},
@@ -456,16 +463,26 @@ const std::vector<Solution>& solutions() {
             {{"M-8", "primary", 1}, {"M-1", "foundation", 1},
              {"M-6", "foundation", 1}, {"M-2", "foundation", 1},
              {"M-15", "foundation", 1}},
-            {"M-2", "M-1", "M-6", "M-8", "M-15"}, {"decision API across channels"}, {"L4"},
-            {{"arbitration inside policy", "A2"}, {"action catalog and high-stakes offers", "A1"},
+            {"M-2", "M-1", "M-6", "M-8", "M-15"},
+            {"request-time decision API across channels",
+             "approval task for high-stakes actions"},
+            {"L4 request-time decisions", "L1 approval tasks"},
+            {{"arbitration inside policy", "A2"},
+             {"action catalog and high-stakes offers", "A1"},
              {"exploration inside bounds", "A3"}},
             {{"entity", true, "one customer identity across channels"},
              {"treatment", true, "eligible actions and no-action arm"},
              {"label", true, "per-decision and long-horizon outcomes"},
-             {"time", true, "decision chronology and propensity log"}},
+             {"time", true, "decision chronology and outcome maturity"},
+             {"feature", true, "decision-time context available in every channel"},
+             {"consent", true, "channel consent and suppression evidence"},
+             {"contact", true, "cross-channel contact counts and caps"},
+             {"propensity", true, "actual logged action-selection probability"},
+             {"channel", true, "channel and delivery destination"}},
             "Eligibility, consent, cross-channel caps, budgets, margin floors, business overrides, and exploration floor.",
-            "Global holdout plus per-arm propensity logging, off-policy evaluation, and long-horizon value.",
-            {"complaints", "unsubscribe", "margin", "offer fairness", "exploration floor"},
+            "Global holdout plus uplift cells, per-arm propensity logging, off-policy evaluation, and long-horizon value.",
+            {"consent violations", "contact-cap violations", "missing propensity logs",
+             "margin floor", "action-execution rate"},
             levels("single-channel batch lists", "real-time single channel",
                    "omnichannel arbitration", "add long-horizon objectives")),
         band_a(

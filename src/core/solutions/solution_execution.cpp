@@ -111,6 +111,10 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
             request.input.contains("dataset")) {
             request.input["dataset"].erase("as_of");
         }
+        if (stage.methodology->id == "M-8") {
+            request.input.erase("dataset");
+            request.input.erase("dataset_path");
+        }
         result = stage.methodology->run(request);
     });
     return result;
@@ -215,6 +219,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                          snapshot.outputs) {
                         if (output.kind == "dataset" &&
                             output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
+                if (state->binding.value("solution", std::string{}) == "S-11" &&
+                    stage.methodology->id == "M-15") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "decision propensities") {
                             scored_outputs.push_back(output);
                         }
                     }

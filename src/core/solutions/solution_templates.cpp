@@ -464,6 +464,90 @@ void automated_outbound_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "response", "response", 30};
 }
 
+void fraud_decisioning_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.9},
+         {"action", "fraud_review_task"},
+         {"allowed_actions", {"fraud_review_task", "challenge", "block"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.65},
+         {"action", "challenge"},
+         {"allowed_actions", {"challenge", "fraud_review_task"}}},
+        {{"name", "standard"}, {"minimum_score", 0.0},
+         {"action", "approve"}}};
+    result.policy["actions"] = {
+        {"fraud_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 900},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"challenge",
+         {{"autonomy", "A2"}, {"sla_seconds", 2},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"approve",
+         {{"autonomy", "A2"}, {"sla_seconds", 2},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"block",
+         {{"autonomy", "A1"}, {"sla_seconds", 900},
+          {"frequency_cap", frequency(1, 1)}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1, 1);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true),
+        predicate("account_open", true),
+        predicate("request_time_features_current", true),
+        predicate("graph_features_current", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true),
+        predicate("manual_authorization_only", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"elevated", 0.1}, {"standard", 0.1}};
+    result.experiment.treatment_cells = {
+        "champion", "challenger", "exploration"};
+    result.guardrails = {
+        {"fraud_loss_rate", 0.02, "maximum"},
+        {"false_decline_rate", 0.01, "maximum"},
+        {"challenge_rate", 0.15, "maximum"},
+        {"review_queue_rate", 0.2, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement.window_days = 45;
+}
+
+void next_best_action_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "recommended"}, {"minimum_score", 0.0},
+         {"action", "decision_api_response"},
+         {"allowed_actions", {"decision_api_response", "high_stakes_review",
+                              "no_action"}}},
+        {{"name", "no_positive_value"}, {"minimum_score", -1000000000.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"decision_api_response",
+         {{"autonomy", "A2"}, {"sla_seconds", 1},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"high_stakes_review",
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("consent", true),
+        predicate("within_contact_cap", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true), predicate("do_not_contact", true),
+        predicate("consent", false)};
+    result.policy["budget"] = {{"limit", 1000.0}};
+    result.experiment.holdouts = {{"recommended", 0.1},
+                                  {"no_positive_value", 0.1}};
+    result.experiment.treatment_cells = {"exploit", "explore"};
+    result.guardrails = {{"consent_violation_rate", 0.0, "maximum"},
+                         {"contact_cap_violation_rate", 0.0, "maximum"},
+                         {"missing_propensity_rate", 0.0, "maximum"},
+                         {"margin_floor_violation_rate", 0.0, "maximum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -488,8 +572,12 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 predictive_maintenance_defaults(result);
             } else if (solution_id == "S-9") {
                 automated_outbound_defaults(result);
+            } else if (solution_id == "S-11") {
+                next_best_action_defaults(result);
             } else if (solution_id == "S-12") {
                 claims_triage_defaults(result);
+            } else if (solution_id == "S-10") {
+                fraud_decisioning_defaults(result);
             }
             return result;
         }

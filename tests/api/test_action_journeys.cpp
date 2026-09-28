@@ -1466,6 +1466,692 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_next_best_action_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("next_best_action");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int customer = 0; customer < 240; ++customer) {
+        const bool consent = customer % 20 != 0;
+        const int contacts = customer % 25 == 0 ? 4 : customer % 3;
+        for (int action = 0; action < 2; ++action) {
+            const int candidate = customer * 2 + action + 1;
+            const bool response = (customer + action) % 3 == 0;
+            table->add_row(
+                {{"candidate_id", candidate},
+                 {"customer", customer + 1},
+                 {"record_id", candidate},
+                 {"source", "decision_fixture"},
+                 {"name", "Customer " + std::to_string(customer + 1)},
+                 {"response", response ? 1 : 0},
+                 {"signal", customer % 17 + action * 0.5 + 0.25},
+                 {"action", action},
+                 {"action_value", action == 0 ? 80.0 : 100.0},
+                 {"action_cost", 1.0},
+                 {"eligible", 1.0},
+                 {"excluded", false},
+                 {"do_not_contact", false},
+                 {"consent", consent},
+                 {"contacts", contacts},
+                 {"contact_cap", 4},
+                 {"interaction_count", 1.0},
+                 {"interaction_time",
+                  static_cast<double>(customer * 2 + action)},
+                 {"logging_propensity", 0.5},
+                 {"arm", action},
+                 {"reward", response ? 1.0 : 0.0},
+                 {"treatment", action},
+                 {"outcome", response ? 1 : 0},
+                 {"feature_time",
+                  static_cast<double>(customer * 2 + action)},
+                 {"time", "2026-08-01T00:00:00.000Z"},
+                 {"channel", action == 0 ? "email" : "sms"},
+                 {"margin_floor", 0.0},
+                 {"customer_value", 100.0 + customer}});
+        }
+    }
+    for (int action = 0; action < 2; ++action) {
+        table->add_row(
+            {{"candidate_id", 9998 + action},
+             {"customer", 9999},
+             {"record_id", 9998 + action},
+             {"source", "decision_fixture"},
+             {"name", "Future customer"},
+             {"response", 1},
+             {"signal", 999.0 + action},
+             {"action", action},
+             {"action_value", 100.0},
+             {"action_cost", 1.0},
+             {"eligible", 1.0},
+             {"excluded", false},
+             {"do_not_contact", false},
+             {"consent", true},
+             {"contacts", 0},
+             {"contact_cap", 4},
+             {"interaction_count", 1.0},
+             {"interaction_time", 480.0 + action},
+             {"logging_propensity", 0.5},
+             {"arm", action},
+             {"reward", 1.0},
+             {"treatment", action},
+             {"outcome", 1},
+             {"feature_time", 480.0 + action},
+             {"time", "2026-10-01T00:00:00.000Z"},
+             {"channel", action == 0 ? "email" : "sms"},
+             {"margin_floor", 0.0},
+             {"customer_value", 999.0}});
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json next_best_action_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "next_best_action"},
+          {"target_table", "next_best_action_snapshot"},
+          {"entity_column", "candidate_id"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "response"},
+          {"time_column", "interaction_time"},
+          {"as_of", 479.0},
+          {"feature_columns", {"signal"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://decision.example.test/next-action"},
+          {"owner", "customer-decisioning"}}},
+        {"roi_model",
+         {{"value_per_outcome", 100.0},
+          {"investment", 200.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_next_action_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"next-best-action-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double value =
+            0.35 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record observed next-action value",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_value"},
+              {"value", value},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {}});
+    }
+    outcomes.steps.push_back(
+        {"read measured next-action effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted next-action effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       NextBestActionArbitratesChannelsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_next_best_action_data(node);
+    journey::Journey flow{"next-best-action-solution", {}};
+    flow.steps = {
+        {"read S-11 defaults",
+         "get_solution",
+         {{"solution", "S-11"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/design", "uplift_cells"),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "net_value")}}},
+        {"create next-best-action project",
+         "create_project",
+         {{"name", "next best action"}}},
+        {"create S-11 Pipeline",
+         "create_solution",
+         {{"project", "next best action"},
+          {"solution", "S-11"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "next_best_action"},
+            {"M-1",
+             {{"entity_column", "entity_id"},
+              {"label_column", "response"},
+              {"feature_columns", {"signal"}}}},
+            {"M-6",
+             {{"entity", "entity_id"},
+              {"treatment", "treatment"},
+              {"outcome", "outcome"},
+              {"features", {"signal"}},
+              {"as_of", "2026-09-01T00:00:00Z"},
+              {"feature_window_end", "2026-09-01T00:00:00Z"},
+              {"label_window_start", "2026-09-08T00:00:00Z"},
+              {"blackout_gap_seconds", 604800},
+              {"treatment_time", "2026-09-08T00:00:00Z"}}},
+            {"M-8",
+             {{"entity_column", "customer"},
+              {"action_column", "action"},
+              {"label_column", "response"},
+              {"feature_columns", {"signal"}},
+              {"value_column", "action_value"},
+              {"cost_column", "action_cost"},
+              {"eligibility_column", "eligible"},
+              {"contacts_column", "contacts"},
+              {"contact_cap_column", "contact_cap"},
+              {"interaction_count_column", "interaction_count"},
+              {"interaction_time_column", "interaction_time"},
+              {"logging_propensity_column", "logging_propensity"}}},
+            {"M-15",
+             {{"decision_column", "customer"},
+              {"arms", {"0", "1"}}}}}},
+          {"foundation", next_best_action_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 5),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"next_action_graph", "/graph"},
+          {"next_action_experiment", "/experiment_id"},
+          {"next_action_readout", "/readout_id"}}},
+        {"run S-11 Pipeline",
+         "run_solution",
+         {{"project", "next best action"},
+          {"graph", "$next_action_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"next_action_run", "/run_id"}}},
+        {"read completed next-best-action Run",
+         "get_run",
+         {{"run_id", "$next_action_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 11)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected arbitration assignments",
+         "get_experiment",
+         {{"experiment", "$next_action_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read next-action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("next best action");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-11 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t explored_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        ASSERT_TRUE(decision.evidence.contains("selection_propensity"));
+        EXPECT_GT(decision.evidence.at("selection_propensity").get<double>(),
+                  0.0);
+        if (decision.evidence.at("selection_mode") == "explore") {
+            ++explored_rows;
+        }
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        if (!decision.evidence.at("consent").get<bool>() ||
+            decision.evidence.at("contacts").get<int>() >=
+                decision.evidence.at("contact_cap").get<int>()) {
+            EXPECT_FALSE(decision.actionable);
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(explored_rows, 0u);
+
+    ASSERT_FALSE(delivery.requests.empty());
+    std::size_t explored_deliveries = 0;
+    std::size_t exploited_deliveries = 0;
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(request.at("action"), "decision_api_response");
+        EXPECT_TRUE(payload.contains("selected_action"));
+        EXPECT_TRUE(payload.contains("channel"));
+        EXPECT_EQ(payload.at("channel"),
+                  payload.at("selected_action") == "0" ? "email" : "sms");
+        EXPECT_GT(payload.at("selection_propensity").get<double>(), 0.0);
+        EXPECT_EQ(payload.at("propensity_interpretation"),
+                  "predictive_not_causal");
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        if (payload.at("selection_mode") == "explore") {
+            ++explored_deliveries;
+        } else {
+            ++exploited_deliveries;
+        }
+    }
+    EXPECT_GT(explored_deliveries, 0u);
+    EXPECT_GT(exploited_deliveries, 0u);
+
+    const auto bandit_results = node.find_database("bandit_results");
+    ASSERT_TRUE(bandit_results);
+    const auto propensity_log =
+        bandit_results->find_table("bandit_policy_decisions");
+    ASSERT_TRUE(propensity_log);
+    EXPECT_EQ(propensity_log->store().size(), 480u);
+    for (std::size_t index = 0; index < propensity_log->store().size();
+         ++index) {
+        const auto row = propensity_log->store().at(index);
+        ASSERT_TRUE(row) << row.error();
+        EXPECT_GT(row->at("propensity").get<double>(), 0.0);
+    }
+
+    const auto snapshot = node.find_database("datasets")->find_table(
+        "next_best_action_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 480u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_next_action_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+void land_fraud_decisioning_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("authorizations");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool fraudulent = index % 5 == 0;
+        const int transaction = index + 1;
+        const int counterparty = 1000 + index % 24;
+        table->add_row(
+            {{"entity", transaction},
+             {"record_id", "authorization-" + std::to_string(transaction)},
+             {"source", "authorization_fixture"},
+             {"name", "Authorization " + std::to_string(transaction)},
+             {"label", fraudulent ? 1 : 0},
+             {"counterparty_id", counterparty},
+             {"amount", 25.0 + (index * 37) % 1000},
+             {"device_velocity",
+              fraudulent ? 5.0 + index % 8 : 1.0 + index % 7},
+             {"decision_propensity", 0.5 + (index % 5) * 0.1},
+             {"graph_page_rank",
+              fraudulent ? 0.45 + (index % 10) * 0.04
+                         : 0.05 + (index % 15) * 0.04},
+             {"graph_component", index % 8},
+             {"edge_time", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"account_id", 5000 + index % 40},
+             {"merchant_id", 7000 + index % 30},
+             {"eligible", true},
+             {"excluded", false},
+             {"account_open", true},
+             {"request_time_features_current", true},
+             {"graph_features_current", true},
+             {"manual_authorization_only", false},
+             {"owner", "fraud-operations"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", "authorization-9999"},
+         {"source", "authorization_fixture"},
+         {"name", "Future authorization"},
+         {"label", 1},
+         {"counterparty_id", 1099},
+         {"amount", 5000.0},
+         {"device_velocity", 99.0},
+         {"decision_propensity", 0.5},
+         {"graph_page_rank", 0.99},
+         {"graph_component", 99},
+         {"edge_time", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"account_id", 5999},
+         {"merchant_id", 7999},
+         {"eligible", true},
+         {"excluded", false},
+         {"account_open", true},
+         {"request_time_features_current", true},
+         {"graph_features_current", true},
+         {"manual_authorization_only", false},
+         {"owner", "fraud-operations"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json fraud_decisioning_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "authorizations"},
+          {"target_table", "fraud_decisioning_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "edge_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"counterparty_id", "amount", "device_velocity",
+            "decision_propensity", "graph_page_rank",
+            "graph_component"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://fraud.example.test/authorization-decisions"},
+          {"owner", "fraud-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", -100.0},
+          {"investment", 400.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_fraud_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"fraud-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double fraud_loss =
+            0.3 + 0.1 * centered / counts[cell] -
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed fraud loss",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "fraud_loss"},
+              {"value", fraud_loss},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured fraud-loss effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted fraud-loss effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() +
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= -0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= -0.12;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       FraudDecisioningActsAtRequestTimeAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_fraud_decisioning_data(node);
+    journey::Journey flow{"fraud-decisioning-solution", {}};
+    flow.steps = {
+        {"read S-10 defaults",
+         "get_solution",
+         {{"solution", "S-10"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/design", "champion_challenger"),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "fraud_loss")}}},
+        {"create fraud decisioning project",
+         "create_project",
+         {{"name", "fraud decisioning"}}},
+        {"create S-10 Pipeline",
+         "create_solution",
+         {{"project", "fraud decisioning"},
+          {"solution", "S-10"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "authorizations"},
+            {"M-12",
+             {{"source_column", "entity_id"},
+              {"destination_column", "counterparty_id"},
+              {"weight_column", "amount"},
+              {"time_column", "edge_time"},
+              {"label_column", "label"},
+              {"prediction_time", 239.0}}}}},
+          {"foundation", fraud_decisioning_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"fraud_graph", "/graph"},
+          {"fraud_experiment", "/experiment_id"},
+          {"fraud_readout", "/readout_id"}}},
+        {"run S-10 Pipeline",
+         "run_solution",
+         {{"project", "fraud decisioning"},
+          {"graph", "$fraud_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"fraud_run", "/run_id"}}},
+        {"read completed fraud decisioning Run",
+         "get_run",
+         {{"run_id", "$fraud_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected authorization assignments",
+         "get_experiment",
+         {{"experiment", "$fraud_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read fraud action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("fraud decisioning");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-10 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "transaction");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "fraud_score");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    std::size_t case_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        EXPECT_TRUE(request.at("payload").contains("authorization_decision"));
+        EXPECT_TRUE(request.at("payload").contains("transaction_id"));
+        EXPECT_TRUE(request.at("payload").contains("graph_page_rank"));
+        EXPECT_TRUE(request.at("payload").contains("decision_cell"));
+        if (request.at("payload").at("case_task").get<bool>()) {
+            ++case_tasks;
+            EXPECT_EQ(request.at("payload").at("authorization_decision"),
+                      "review");
+            EXPECT_EQ(request.at("payload").at("case_queue"),
+                      "fraud-operations");
+        }
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_GT(case_tasks, 0u);
+
+    const auto fraud_results = node.find_database("fraud_results");
+    ASSERT_TRUE(fraud_results);
+    ASSERT_EQ(fraud_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement", "SELECT * FROM fraud_results." +
+                           fraud_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("transaction"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("fraud_score"));
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("fraud_decisioning_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_fraud_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
 void land_replenishment_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);

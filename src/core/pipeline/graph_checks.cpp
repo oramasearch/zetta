@@ -593,6 +593,92 @@ const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s11_correctness_profile(const ir::ExecutionGraph& graph,
+                                    bool& applies, int& level,
+                                    std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-11") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-11 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s11_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-11 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s11_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-11 Pipeline to validate"};
+}
+
+CheckResult s11_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s11_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+const json* s10_correctness_profile(const ir::ExecutionGraph& graph,
+                                    bool& applies, int& level,
+                                    std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-10") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-10 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s10_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-10 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s10_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-10 Pipeline to validate"};
+}
+
+CheckResult s10_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s10_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* s5_correctness_profile(const ir::ExecutionGraph& graph,
                                    bool& applies, int& level,
                                    std::string& error) {
@@ -2132,6 +2218,321 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+CheckResult S11LoggedPropensityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const std::string propensity_column =
+        profile->value("logging_propensity_column", std::string{});
+    if (propensity_column.empty() ||
+        profile->value("bandit_propensity_output", std::string{}) !=
+            "decision propensities" ||
+        !has_methodology(graph, "M-8") ||
+        !has_methodology(graph, "M-15")) {
+        return s11_failure(
+            name(), "S-11 requires M-8 and M-15 with an actual logged "
+                    "selection-probability column and decision output");
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (recommendation == nullptr ||
+        recommendation->attributes.value("logging_propensity_column",
+                                         std::string{}) !=
+            propensity_column ||
+        recommendation->attributes.value("offline_evaluation",
+                                         std::string{}) !=
+            "logging_propensities_required") {
+        return s11_failure(
+            name(), "S-11 recommendation training and off-policy evaluation "
+                    "must read the declared logged propensity");
+    }
+    const bool logs_propensities = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("methodology", std::string{}) ==
+                       "M-15" &&
+                   node->attributes.value("output", std::string{}) ==
+                       "decision_log";
+        });
+    if (!logs_propensities) {
+        return s11_failure(
+            name(), "S-11 bandit stage must write the decision propensity log");
+    }
+    return s11_success(
+        name(), "S-11 records actual bandit selection probabilities");
+}
+
+CheckResult S11ContactConsentCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const json* constraints = object_field(*profile, "constraints");
+    if (constraints == nullptr ||
+        !constraints->value("require_consent", false) ||
+        constraints->value("consent_column", std::string{}).empty() ||
+        constraints->value("eligibility_column", std::string{}).empty() ||
+        constraints->value("contacts_column", std::string{}).empty() ||
+        constraints->value("contact_cap_column", std::string{}).empty() ||
+        constraints->value("cross_channel", false) != true) {
+        return s11_failure(
+            name(), "S-11 must name consent, eligibility, contact-count, and "
+                    "cross-channel cap evidence");
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (recommendation == nullptr ||
+        recommendation->attributes.value("eligibility_column",
+                                         std::string{}) !=
+            constraints->at("eligibility_column").get<std::string>() ||
+        recommendation->attributes.value("contacts_column", std::string{}) !=
+            constraints->at("contacts_column").get<std::string>() ||
+        recommendation->attributes.value("contact_cap_column",
+                                         std::string{}) !=
+            constraints->at("contact_cap_column").get<std::string>()) {
+        return s11_failure(
+            name(), "S-11 M-8 columns must match the declared hard constraints");
+    }
+    const bool bounded_selection = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("methodology", std::string{}) ==
+                       "M-8" &&
+                   node->attributes.value("hard_constraints", false) &&
+                   node->attributes.value("apply_eligibility", false) &&
+                   node->attributes.value("apply_contact_caps", false);
+        });
+    if (!bounded_selection) {
+        return s11_failure(
+            name(), "S-11 must apply eligibility and contact caps before action selection");
+    }
+    return s11_success(
+        name(), "S-11 consent and cross-channel contact limits are mandatory");
+}
+
+CheckResult S11PropensityInterpretationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s11_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s11_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s11_failure(name(), error);
+    }
+    const ir::Node* recommendation = model_kind(graph, "next_best_action");
+    if (profile->value("propensity_interpretation", std::string{}) !=
+            "predictive_not_causal" ||
+        profile->value("causal_claim_from_propensity", true) ||
+        recommendation == nullptr ||
+        recommendation->attributes.value("propensity_interpretation",
+                                         std::string{}) !=
+            "predictive_not_causal" ||
+        !has_methodology(graph, "M-6")) {
+        return s11_failure(
+            name(), "S-11 predictive propensity may rank actions but only "
+                    "randomized M-6 uplift evidence supports causal claims");
+    }
+    return s11_success(
+        name(), "S-11 separates predictive ranking from causal uplift evidence");
+}
+
+CheckResult S10LabelDelayCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s10_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s10_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s10_failure(name(), error);
+    }
+    const json* labels = object_field(*profile, "labels");
+    if (labels == nullptr ||
+        labels->value("label_column", std::string{}).empty() ||
+        !labels->value("fully_matured", false)) {
+        return s10_failure(
+            name(), "S-10 requires a named, fully matured fraud or case label");
+    }
+    const auto minimum = labels->find("minimum_delay_seconds");
+    const auto observed = labels->find("observed_delay_seconds");
+    if (minimum == labels->end() || !minimum->is_number() ||
+        observed == labels->end() || !observed->is_number()) {
+        return s10_failure(
+            name(), "S-10 label delay must name numeric minimum and observed delays");
+    }
+    const double minimum_delay = minimum->get<double>();
+    const double observed_delay = observed->get<double>();
+    if (!std::isfinite(minimum_delay) || !std::isfinite(observed_delay) ||
+        minimum_delay <= 0.0 || observed_delay < minimum_delay) {
+        return s10_failure(
+            name(), "S-10 labels have not matured beyond the configured delay");
+    }
+    return s10_success(
+        name(), "S-10 labels are named and mature beyond the delay window");
+}
+
+CheckResult S10DeclinedSelectionBiasCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s10_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s10_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s10_failure(name(), error);
+    }
+    const json* selection = object_field(*profile, "selection_bias");
+    if (selection == nullptr ||
+        !selection->value("declined_transactions_included", false) ||
+        !selection->value("exploration_logged", false) ||
+        !selection->value("below_line_audit", false)) {
+        return s10_failure(
+            name(), "S-10 must retain declined requests, logged exploration, "
+                    "and below-the-line audit evidence");
+    }
+    const std::string propensity =
+        selection->value("decision_propensity_column", std::string{});
+    const json* parity = object_field(*profile, "feature_parity");
+    if (propensity.empty() || parity == nullptr) {
+        return s10_failure(
+            name(), "S-10 selection-bias correction requires a logged decision propensity");
+    }
+    const auto training = parity->find("training_features");
+    if (training == parity->end() || !training->is_array() ||
+        !std::ranges::any_of(*training, [&](const json& feature) {
+            return feature.is_string() &&
+                   feature.get_ref<const std::string&>() == propensity;
+        })) {
+        return s10_failure(
+            name(), "S-10 decision propensity must be part of the training contract");
+    }
+    return s10_success(
+        name(), "S-10 corrects declined-request selection with logged exploration");
+}
+
+CheckResult S10RequestTimeFeatureParityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s10_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s10_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s10_failure(name(), error);
+    }
+    const json* parity = object_field(*profile, "feature_parity");
+    if (parity == nullptr) {
+        return s10_failure(name(), "S-10 has no request-time feature contract");
+    }
+    const auto training = parity->find("training_features");
+    const auto request_time = parity->find("request_time_features");
+    const auto graph_features = parity->find("graph_features");
+    if (training == parity->end() || !training->is_array() ||
+        training->empty() || request_time == parity->end() ||
+        !request_time->is_array() || request_time->empty() ||
+        graph_features == parity->end() || !graph_features->is_array() ||
+        graph_features->empty()) {
+        return s10_failure(
+            name(), "S-10 must name nonempty training, request-time, and graph feature sets");
+    }
+    const auto feature_set = [](const json& features) {
+        std::unordered_set<std::string> result;
+        for (const json& feature : features) {
+            if (feature.is_string() &&
+                !feature.get_ref<const std::string&>().empty()) {
+                result.insert(feature.get_ref<const std::string&>());
+            }
+        }
+        return result;
+    };
+    const std::unordered_set<std::string> training_set = feature_set(*training);
+    const std::unordered_set<std::string> request_time_set =
+        feature_set(*request_time);
+    if (training_set.size() != training->size() ||
+        request_time_set.size() != request_time->size() ||
+        training_set != request_time_set) {
+        return s10_failure(
+            name(), "S-10 training and authorization feature sets must match exactly");
+    }
+    for (const json& feature : *graph_features) {
+        if (!feature.is_string() ||
+            !training_set.contains(feature.get_ref<const std::string&>())) {
+            return s10_failure(
+                name(), "S-10 graph features must be present in both feature sets");
+        }
+    }
+    const auto maximum_age = parity->find("maximum_age_seconds");
+    const auto observed_age = parity->find("observed_age_seconds");
+    if (maximum_age == parity->end() || !maximum_age->is_number() ||
+        observed_age == parity->end() || !observed_age->is_number() ||
+        maximum_age->get<double>() < 0.0 ||
+        observed_age->get<double>() < 0.0 ||
+        observed_age->get<double>() > maximum_age->get<double>() ||
+        !parity->value("graph_cutoff_at_or_before_decision", false)) {
+        return s10_failure(
+            name(), "S-10 request-time and graph features must be current at decision time");
+    }
+    return s10_success(
+        name(), "S-10 training and request-time graph features have exact parity");
+}
+
+CheckResult S10LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s10_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s10_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s10_failure(name(), error);
+    }
+    if (!has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-2") ||
+        !has_methodology(graph, "M-12")) {
+        return s10_failure(
+            name(), "S-10 requires M-1 scoring, M-2 identity, and M-12 graph features");
+    }
+    if (level >= 3 && !has_methodology(graph, "M-5")) {
+        return s10_failure(
+            name(), "S-10 levels 3 and 4 require M-5 time-to-event context");
+    }
+    return s10_success(
+        name(), "S-10 selected level has every required methodology");
 }
 
 CheckResult S5RollingOriginCheck::evaluate(

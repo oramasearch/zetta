@@ -116,7 +116,10 @@ relay it to a person.
   defaults, censoring/sensor/leakage refusals, governed CMMS tasks, and holdout
   ROI. S-9 has full outbound defaults, consent/suppression and contact-limit
   refusals, positive-uplift targeting, capped journeys, and holdout ROI.
-  S-10 and S-11 are marked minimal.
+  S-10 has full request-time fraud policy, graph and case payloads,
+  delayed-label and selection-bias refusals, and champion/challenger ROI.
+  S-11 has complete cross-channel arbitration defaults, logged exploration,
+  consent/contact refusals, request-time action payloads, and uplift-cell ROI.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
@@ -134,6 +137,10 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+  `create_solution` composes M-8 with M-15 and the shared foundation;
+  `run_solution` arbitrates exploit/explore cells, records actual selection
+  probabilities, enforces consent and cross-channel contact limits, delivers
+  the decision response, and updates the S-11 readout and guardrails.
 - **Versioned decision policy** (#1104): `create_policy`, `get_policy`, and
   `update_policy` manage immutable policy versions; `decide` applies hard
   thresholds, tiers, budgets, caps, eligibility/exclusions, autonomy, and the
