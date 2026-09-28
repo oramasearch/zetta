@@ -1,6 +1,7 @@
 # The run report — what a run found
 
-**Issue:** [#958](https://github.com/oramasearch/zetta/issues/958)
+**Issues:** [#958](https://github.com/oramasearch/zetta/issues/958),
+[#1055](https://github.com/oramasearch/zetta/issues/1055)
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
 **Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp`,
@@ -40,13 +41,14 @@ state, and `get_run_report` puts them together at query time:
 
 | Part | Source |
 |---|---|
-| model quality, dataset facts | the **Model record's** `metrics` |
+| model quality or solver facts, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
 | the ranked rows | the run's result table in `churn_results` or `rank_results` |
 | survival quality | the survival Model's concordance and IPCW Brier metrics |
 | survival outputs | the run's survival and interval-calibration table refs |
 | M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
 | used features and exclusions with reasons | the Run's accepted feature plan, plus fitted segmentation encoding metadata |
+| decisions + constraint checks | an optimization run's plan and constraint-trace tables in `optimization_results` |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -67,6 +69,28 @@ metrics, the selected and excluded input columns, every output reference, ranked
 entity-action rows with expected value and `why`, and the policy report's clipping
 diagnostics. It always includes the warning that response propensity is predictive,
 not causal lift, and directs treat/no-treat decisions to M-6.
+
+M-15 bandit reports use the same on-read rule. Their Model record supplies
+`cumulative_reward`, fixed-baseline reward, regret, exploration share, decision
+count, and rows read/excluded. Run lineage supplies the source table, while Run
+outputs name the allocation-policy and propensity-log tables. The report exposes
+those as `metrics`, `dataset`, `policy_table`, and `decisions_table`; it does not
+manufacture churn drivers or an at-risk ranking for a policy run.
+
+## Optimization reports
+
+For an M-16 run, `model` carries `solver_status`, objective value, current-plan
+objective, objective delta, feasibility, MIP optimality gap, constraint
+violations, simplex iterations, and explored branch nodes. `dataset` names the
+table actually read, the row count, and excluded fields recorded by dataset
+resolution. `plan` contains one row per decision variable and `constraints`
+contains the independently recomputed activity, bounds, residual, and satisfied
+flag for every constraint.
+
+Infeasible or unbounded problems still return status and report metrics, but
+the run has no plan output. A feasible plan is published only after the
+independent verifier confirms every variable bound, integrality requirement,
+and constraint within the declared tolerance.
 
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.

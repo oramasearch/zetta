@@ -22,6 +22,9 @@ Methodology make_m10_methodology();
 Methodology make_m11_methodology();
 Methodology make_graph_methodology();
 Methodology make_m13_methodology();
+Methodology make_m14_methodology();
+Methodology make_m15_methodology();
+Methodology make_m16_methodology();
 
 namespace {
 
@@ -87,28 +90,9 @@ const std::vector<Methodology>& methodologies() {
         make_m11_methodology(),
         make_graph_methodology(),
         make_m13_methodology(),
-        planned("M-14", "Speech & audio analytics",
-                "Language, documents & perception", {"speech", "audio"}, {},
-                {"speech", "audio", "transcribe", "diarize"},
-                {input("audio", true, "audio recordings"),
-                 input("label", false, "transcripts or task labels")},
-                {"transcripts", "speaker segments", "audio scores"},
-                {"word error rate", "F1"}, 1053),
-        planned("M-15", "Bandits & sequential decisioning", "Action & decision",
-                {"bandit", "bandits", "sequential_decisioning"}, {},
-                {"bandit", "explore", "sequential decision"},
-                {input("entity", true, "decision context"),
-                 input("treatment", true, "available actions"),
-                 input("label", true, "observed reward")},
-                {"action policy", "propensities"},
-                {"cumulative reward", "regret", "policy value"}, 1054),
-        planned("M-16", "Optimization / operations research",
-                "Action & decision", {"optimization", "operations_research"},
-                {}, {"optimize", "schedule", "allocate", "constraints"},
-                {input("feature", true, "objective inputs"),
-                 input("group", true, "constraints and resources")},
-                {"plan", "allocation", "constraint trace"},
-                {"objective value", "constraint violations"}, 1055),
+        make_m14_methodology(),
+        make_m15_methodology(),
+        make_m16_methodology(),
         planned(
             "M-17",
             "Bayesian / probabilistic modeling & uncertainty quantification",

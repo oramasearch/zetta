@@ -44,7 +44,8 @@ What's inside, by domain (each links to that domain's docs):
   `connect→clean→model→index→serve→act` step graph, persisted + replicated as
   JSON). Three compilers produce graphs — NL intent, n8n workflow JSON, and a
   simulated-Python frontend — every graph passes the **correctness gate**
-  (schema/type, data-leakage/point-in-time, entity-resolution checks) before it
+  (schema/type, data-leakage/point-in-time, optimization-contract,
+  entity-resolution checks) before it
   can deploy, and a **deployment controller** reconciles desired→actual and
   self-heals failed runs. Runs record status, logs, outputs, and lineage. The
   **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
@@ -89,7 +90,7 @@ What's inside, by domain (each links to that domain's docs):
   Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
   and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 through M-13 run today; the others name their implementation
+  approaches: M-1 through M-16 run today; the others name their implementation
   issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
   Every runnable methodology checks the [data-first feature plan](docs/data/featurization.md)

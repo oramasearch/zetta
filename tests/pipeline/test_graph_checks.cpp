@@ -14,6 +14,7 @@
 using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CausalUpliftCheck;
+using zetta::pipeline::BanditPolicyCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::GraphEdgeTimeCheck;
@@ -21,6 +22,9 @@ using zetta::pipeline::LanguageGroundingCheck;
 using zetta::pipeline::LanguageTrainingAccessCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
+using zetta::pipeline::SpeechConsentCheck;
+using zetta::pipeline::SpeechLocalAudioCheck;
+using zetta::pipeline::SpeechPiiRedactionCheck;
 using zetta::pipeline::ValidationReport;
 using zetta::pipeline::VisionSourceSplitCheck;
 using zetta::ir::EdgeKind;
@@ -593,11 +597,63 @@ TEST(LanguageTrainingAccessGraphCheck, RefusesUnguardedTextSource) {
     EXPECT_EQ(result.status, CheckStatus::Fail);
     EXPECT_NE(result.reason.find("caller-read"), std::string::npos);
 }
+// ---- bandit_policy ----------------------------------------------------------
+
+TEST(BanditPolicyCheck, RefusesMissingExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"default_arm_cap", 1.0}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exploration_floor"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesAnArmCapBelowTheExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 1.0},
+                        {"arm_caps", {{"guardrail", 0.05}}}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("guardrail"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesCapsThatCannotCarryTotalProbability) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"a", "b"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.4},
+                        {"arm_caps", json::object()}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("total probability"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "best", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.8},
+                        {"arm_caps", {{"guardrail", 0.2}}}},
+                   "policy");
+    EXPECT_EQ(BanditPolicyCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 18u);
+    ASSERT_EQ(gate.check_count(), 23u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -615,7 +671,12 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[14]->name(), "document_review");
     EXPECT_EQ(gate.checks()[15]->name(), "graph_edge_time");
     EXPECT_EQ(gate.checks()[16]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[17]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[17]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[18]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[22]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -736,6 +797,38 @@ TEST(DocumentReviewCheck, RefusesInvalidReviewThreshold) {
     EXPECT_NE(result.reason.find("between 0 and 1"), std::string::npos);
 }
 
+TEST(SpeechGraphCheck, RefusesMissingConsentContract) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"redact_pii", true},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechConsentCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesDisabledPiiRedaction) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", false},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechPiiRedactionCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", true},
+                        {"audio_local_only", false}});
+    EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
     const ValidationReport report = zetta::pipeline::default_gate().run(clean_graph());
     EXPECT_TRUE(report.passed()) << report.checks.size();
@@ -832,11 +925,74 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         << "M-5 survival ships today";
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"),
               implemented.end()) << "M-12 graph ML ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
+              implemented.end())
+        << "M-16 optimization ships today";
+    for (const char* shipped : {"speech", "audio", "bandit"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
+}
+
+namespace {
+
+zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
+  zetta::ir::ExecutionGraph graph;
+  graph.add_node(zetta::ir::StepKind::Connect, "scenario table", {}, "source");
+  graph.add_node(zetta::ir::StepKind::Model, "optimization",
+                 std::move(attributes), "model");
+  graph.add_edge("source", "model");
+  return graph;
+}
+
+} // namespace
+
+TEST(OptimizationGraphCheck, CompleteContractPasses) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(OptimizationGraphCheck, PointForecastShapeIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("scenario or quantile"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, UnverifiedPlanIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("independently verify"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("solver status"), std::string::npos)
+      << result.reason;
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
@@ -1055,6 +1211,12 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
               implemented.end());
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bandit"),
+              implemented.end());
+    for (const char* shipped : {"speech", "audio", "optimization"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())

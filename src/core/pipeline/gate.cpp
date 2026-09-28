@@ -91,6 +91,13 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<DocumentReviewCheck>());
     gate.add_check(std::make_shared<GraphEdgeTimeCheck>());
     gate.add_check(std::make_shared<VisionSourceSplitCheck>());
+    gate.add_check(std::make_shared<SpeechConsentCheck>());
+    gate.add_check(std::make_shared<SpeechPiiRedactionCheck>());
+    gate.add_check(std::make_shared<SpeechLocalAudioCheck>());
+    // M-15 requires a feasible positive exploration floor and effective caps
+    // before any decision can be made.
+    gate.add_check(std::make_shared<BanditPolicyCheck>());
+    gate.add_check(std::make_shared<OptimizationContractCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.

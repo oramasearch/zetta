@@ -74,7 +74,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
     const ValidationReport report = gate.run(empty_graph);
 
     // Only the non-empty check fails; the other checks have no matching steps.
-    ASSERT_EQ(report.checks.size(), 18u);
+    ASSERT_EQ(report.checks.size(), 23u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -88,7 +88,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
     const ValidationReport report = gate.run(one_step_graph());
 
     // All default checks pass an unannotated single-step graph.
-    ASSERT_EQ(report.checks.size(), 18u);
+    ASSERT_EQ(report.checks.size(), 23u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -96,7 +96,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 18u);
+    ASSERT_EQ(gate.check_count(), 23u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -114,7 +114,12 @@ TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     EXPECT_EQ(gate.checks()[14]->name(), "document_review");
     EXPECT_EQ(gate.checks()[15]->name(), "graph_edge_time");
     EXPECT_EQ(gate.checks()[16]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[17]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[17]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[18]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[22]->name(), "entity_resolution");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

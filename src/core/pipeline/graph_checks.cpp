@@ -84,6 +84,23 @@ const nlohmann::json& graph_step_annotations_schema() {
       "minimum": 0.05,
       "maximum": 0.95
     },
+    "consent_required": {
+      "description": "Speech transcription must require explicit source consent.",
+      "type": "boolean"
+    },
+    "consent_column": {
+      "description": "The boolean source field that records speech-processing consent.",
+      "type": "string",
+      "minLength": 1
+    },
+    "redact_pii": {
+      "description": "Speech transcript text is privacy-filtered before durable storage.",
+      "type": "boolean"
+    },
+    "audio_local_only": {
+      "description": "Audio samples remain on their owner node.",
+      "type": "boolean"
+    },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "type": "array",
@@ -326,6 +343,35 @@ bool upstream_requires_caller_read(const ir::ExecutionGraph& graph,
     return false;
 }
 
+bool speech_step(const ir::Node& node) {
+    if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+        return false;
+    }
+    const auto kind = node.attributes.find("model_kind");
+    if (kind == node.attributes.end() || !kind->is_string()) {
+        return false;
+    }
+    const std::string value = normalize_type(kind->get<std::string>());
+    return value == "speech" || value == "audio";
+}
+
+CheckResult require_speech_flag(const ir::ExecutionGraph& graph,
+                                std::string name, const char* flag,
+                                std::string failure, std::string success) {
+    for (const auto& node : graph.nodes()) {
+        if (!node || !speech_step(*node)) {
+            continue;
+        }
+        const auto value = node->attributes.find(flag);
+        if (value == node->attributes.end() || !value->is_boolean() ||
+            !value->get<bool>()) {
+            return {std::move(name), CheckStatus::Fail,
+                    node_label(*node) + ": " + std::move(failure)};
+        }
+    }
+    return {std::move(name), CheckStatus::Pass, std::move(success)};
+}
+
 }  // namespace
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
@@ -542,6 +588,55 @@ CheckResult SurvivalCensoringCheck::evaluate(
     }
     return {name(), CheckStatus::Pass,
             "survival steps preserve censoring and point-in-time boundaries"};
+}
+
+CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "optimization" && model_kind != "operations_research") {
+            continue;
+        }
+        const auto requires_true = [&](std::string_view attribute,
+                                       std::string reason) {
+            const auto found = node->attributes.find(attribute);
+            if (found == node->attributes.end() || !found->is_boolean() ||
+                !found->get<bool>()) {
+                return CheckResult{name(), CheckStatus::Fail,
+                                   node_label(*node) + ": " + reason};
+            }
+            return CheckResult{name(), CheckStatus::Pass, {}};
+        };
+        CheckResult result = requires_true(
+            "scenario_input",
+            "optimization requires scenario or quantile inputs; a point "
+            "forecast cannot represent plan risk");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "verify_constraints",
+            "optimization must independently verify every bound and "
+            "constraint before returning a plan");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "report_solver_status",
+            "optimization must report solver status and the MIP optimality gap");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "optimization plans require scenarios, independent "
+                       "verification, and status"};
 }
 
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
@@ -1018,6 +1113,127 @@ CheckResult VisionSourceSplitCheck::evaluate(
     }
     return {name(), CheckStatus::Pass,
             "every vision model holds out complete source groups"};
+}
+
+CheckResult SpeechConsentCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!node || !speech_step(*node)) {
+            continue;
+        }
+        const auto required = node->attributes.find("consent_required");
+        const auto column = node->attributes.find("consent_column");
+        if (required == node->attributes.end() || !required->is_boolean() ||
+            !required->get<bool>() || column == node->attributes.end() ||
+            !column->is_string() || column->empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": speech requires explicit consent and a consent_column"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every speech model requires an explicit consent field"};
+}
+
+CheckResult SpeechPiiRedactionCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    return require_speech_flag(
+        graph, name(), "redact_pii",
+        "speech transcript PII redaction must be enabled",
+        "every speech model redacts transcript PII before storage");
+}
+
+CheckResult SpeechLocalAudioCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    return require_speech_flag(
+        graph, name(), "audio_local_only",
+        "speech audio must remain on its owner node",
+        "every speech model keeps audio on its owner node");
+}
+
+CheckResult BanditPolicyCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](const ir::Node& node, std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail,
+                           node_label(node) + ": " + std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!node || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", "");
+        if (kind != "bandit" && kind != "bandits" &&
+            kind != "sequential_decisioning") {
+            continue;
+        }
+        ++checked;
+        const auto floor_value = attributes.find("exploration_floor");
+        if (floor_value == attributes.end() || !floor_value->is_number()) {
+            return fail(*node, "exploration_floor must be declared");
+        }
+        const double floor = floor_value->get<double>();
+        if (!std::isfinite(floor) || !(floor > 0.0) || floor > 1.0) {
+            return fail(*node,
+                        "exploration_floor must be finite and in (0, 1]");
+        }
+        const auto default_cap_value = attributes.find("default_arm_cap");
+        if (default_cap_value == attributes.end() ||
+            !default_cap_value->is_number()) {
+            return fail(*node, "default_arm_cap must be declared");
+        }
+        const double default_cap = default_cap_value->get<double>();
+        if (!std::isfinite(default_cap) || default_cap < floor ||
+            default_cap > 1.0) {
+            return fail(*node,
+                        "default_arm_cap must be finite and no lower than "
+                        "exploration_floor");
+        }
+
+        const json caps = attributes.value("arm_caps", json::object());
+        if (!caps.is_object()) {
+            return fail(*node, "arm_caps must be an object");
+        }
+        for (const auto& [arm, value] : caps.items()) {
+            if (!value.is_number()) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be numeric");
+            }
+            const double cap = value.get<double>();
+            if (!std::isfinite(cap) || cap < floor || cap > 1.0) {
+                return fail(*node, "cap for arm '" + arm +
+                                       "' must be in [exploration_floor, 1]");
+            }
+        }
+
+        const auto arms_value = attributes.find("arms");
+        if (arms_value == attributes.end()) {
+            continue;
+        }
+        if (!arms_value->is_array() || arms_value->size() < 2) {
+            return fail(*node, "arms must declare at least two values");
+        }
+        if (floor * static_cast<double>(arms_value->size()) > 1.0) {
+            return fail(*node,
+                        "exploration floors exceed the available probability");
+        }
+        double total_cap = 0.0;
+        for (const json& arm_value : *arms_value) {
+            if (!arm_value.is_string()) {
+                return fail(*node, "every declared arm must be a string");
+            }
+            const std::string arm = arm_value.get<std::string>();
+            const auto cap = caps.find(arm);
+            total_cap += cap == caps.end() ? default_cap : cap->get<double>();
+        }
+        if (total_cap < 1.0) {
+            return fail(*node,
+                        "arm caps cannot carry total probability 1");
+        }
+    }
+    if (checked == 0) {
+        return CheckResult{name(), CheckStatus::Pass,
+                           "no bandit policy requires allocation checks"};
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every bandit policy has feasible floors and caps"};
 }
 
 } // namespace zetta::pipeline
