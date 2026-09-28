@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 16;
+        const bool runnable = index <= 17;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
@@ -228,6 +228,7 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("stacking")->id, "M-18");
     EXPECT_EQ(zetta::ml::find_methodology("bayesian")->id, "M-17");
     EXPECT_EQ(zetta::ml::find_methodology("S-4")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("optimization")->id, "M-16");
@@ -313,6 +314,18 @@ TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
     ASSERT_NE(methodology, nullptr);
     EXPECT_EQ(methodology->id, "M-17");
     EXPECT_TRUE(methodology->runnable);
+
+    zetta::ir::ExecutionGraph ensemble;
+    ensemble.add_node(zetta::ir::StepKind::Connect, "source", {}, "ensemble-source");
+    ensemble.add_node(zetta::ir::StepKind::Model, "stack",
+                      nlohmann::json{{"model_kind", "ensemble"}},
+                      "ensemble-model");
+    ensemble.add_edge("ensemble-source", "ensemble-model");
+    const zetta::ml::Methodology* ensemble_methodology =
+        zetta::ml::methodology_for_graph(ensemble);
+    ASSERT_NE(ensemble_methodology, nullptr);
+    EXPECT_EQ(ensemble_methodology->id, "M-18");
+    EXPECT_TRUE(ensemble_methodology->runnable);
 
     zetta::ir::ExecutionGraph unknown;
     unknown.add_node(zetta::ir::StepKind::Model, "unknown model",

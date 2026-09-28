@@ -198,6 +198,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     language.hpp            zetta::ml — native WordPiece/BERT text encoder, cosine retrieval, citation-enforced grounded answers, and versioned linear classifier head (M-10; #1049)
     language_train_job.hpp  zetta::ml::run_language_classifier_job — allreduce per-partition classifier sufficient statistics through JobRound (#1049)
     language_runner.hpp     zetta::ml::run_language_dataset — resolved-dataset M-10 runner that writes versioned embedding, retrieval, and answer tables with lineage and metrics (#1049)
+    ensemble.hpp            zetta::ml::train_ensemble/fit_stacker — deterministic out-of-fold stacking of native GBDT variants with a regularized logistic meta-model, time-ordered folds, refit bases, blended scores, and external holdout lift (#1057)
+    ensemble_train_job.hpp  zetta::ml::run_ensemble_train_job — distributed M-18 training over member-owned frames; allreduces base statistics, stacker gradients, counts, and time bounds, then gathers exact metric pairs (#1057)
+    ensemble_runner.hpp     zetta::ml::run_ensemble_on_dataset — ResolvedDataset-to-Run adapter that registers the ensemble Model and writes blended-score and meta-weight tables (#1057)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -499,6 +502,10 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     rank_train_job.cpp      zetta::ml — distributed group-ownership check, all-reduced LambdaMART training, metrics, ranking, and rank Model registration (#1048)
     rank_runner.cpp         zetta::ml — resolved-table near-data load, durable Run, ranked-queue table, outputs, and lineage (#1048)
     rank_methodology.cpp    zetta::ml — M-9 build_shape/owns/run registry adapter (#1048)
+    ensemble.cpp            native M-18 fold planning, out-of-fold base fitting, regularized logistic stacker, full-training refit, blended scoring, and holdout comparison (#1057)
+    ensemble_train_job.cpp  M-18 ComputeJob adapter from a device-backed member-owned frame to distributed training through JobRound collectives (#1057)
+    ensemble_methodology.cpp  M-18 registry shape, ownership, table resolution, and run callback (#1057)
+    ensemble_runner.cpp     M-18 GraphExecutor adapter, Model registration, output tables, and Run lineage over a resolved table (#1057)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), binary/squared/LambdaMART objective support + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -717,6 +724,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_bandit.cpp        M-15 convergence, normalized/capped propensity, restart-state, contextual-policy, and multi-member allreduce tests (#1054)
   ml/test_optimization.cpp  revised-simplex LP, branch-and-bound MIP, table-contract, and independent-feasibility correctness tests (#1055)
   ml/test_bayesian.cpp      conformal coverage/disjointness, hierarchical shrinkage, and two-member posterior equivalence (#1056)
+  ml/test_ensemble.cpp      planted lift, in-sample refusal, determinism, and time-ordered-fold correctness for M-18 (#1057)
+  ml/test_ensemble_train_partitions.cpp  two-member owned-partition convergence for the M-18 ComputeJob adapter (#1057)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

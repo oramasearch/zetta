@@ -20,6 +20,7 @@ using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::GraphEdgeTimeCheck;
 using zetta::pipeline::LanguageGroundingCheck;
 using zetta::pipeline::LanguageTrainingAccessCheck;
+using zetta::pipeline::EnsembleOutOfFoldCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::SpeechConsentCheck;
@@ -653,7 +654,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 24u);
+    ASSERT_EQ(gate.check_count(), 25u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -677,7 +678,8 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
     EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
     EXPECT_EQ(gate.checks()[22]->name(), "uncertainty_validation");
-    EXPECT_EQ(gate.checks()[23]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[23]->name(), "ensemble_out_of_fold");
+    EXPECT_EQ(gate.checks()[24]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -936,6 +938,9 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bayesian"),
               implemented.end())
         << "M-17 Bayesian uncertainty ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "ensemble"),
+              implemented.end())
+        << "M-18 out-of-fold stacking ships today";
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
@@ -1072,6 +1077,68 @@ TEST(UncertaintyValidationCheck, UnknownUncertaintyShapeFailsForAnAlias) {
         zetta::pipeline::UncertaintyValidationCheck{}.evaluate(graph);
     EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
     EXPECT_NE(result.reason.find("uncertainty_kind"), std::string::npos);
+}
+
+// --- EnsembleOutOfFoldCheck (#1057) -----------------------------------------
+
+namespace {
+
+ExecutionGraph ensemble_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    const auto source = graph.add_node(StepKind::Connect, "source");
+    const auto model =
+        graph.add_node(StepKind::Model, "ensemble", std::move(attributes));
+    graph.add_edge(source->id, model->id);
+    return graph;
+}
+
+}  // namespace
+
+TEST(EnsembleOutOfFoldCheck, CorrectProfilePasses) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "time_ordered"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(EnsembleOutOfFoldCheck, InSampleStackingFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "in_sample"},
+         {"folds", 5},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("out_of_fold"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TooFewFoldsFail) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 1},
+         {"base_refit", "all_training"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("at least 2"), std::string::npos);
+}
+
+TEST(EnsembleOutOfFoldCheck, TimeDataWithContentFoldsFails) {
+    const auto graph = ensemble_graph(
+        {{"model_kind", "ensemble"},
+         {"stacking_predictions", "out_of_fold"},
+         {"folds", 5},
+         {"base_refit", "all_training"},
+         {"time_column", "observed_at"},
+         {"fold_strategy", "entity_hash"}});
+    const CheckResult result = EnsembleOutOfFoldCheck{}.evaluate(graph);
+    ASSERT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("time_ordered"), std::string::npos);
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------

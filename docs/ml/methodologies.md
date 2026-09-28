@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-17 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-18 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -243,6 +243,19 @@ The pipeline carries `coverage_checked`, `nominal_coverage`, and an explicit
 exchangeability statement. `UncertaintyValidationCheck` refuses a Bayesian
 shape that omits those facts; split-conformal shapes must also declare that
 calibration rows are disjoint from fitting rows.
+## M-18 ensembling and stacking
+
+`src/core/ml/ensemble_methodology.cpp` owns the M-18 callbacks:
+
+- `build_shape` creates a table connect, numeric-role validation, out-of-fold
+  ensemble model step, and blended-score/meta-weight output step;
+- `owns` recognizes only the registered ensemble model kinds; and
+- `run` resolves the connect step's `source` and `table`, applies the model
+  step's column roles, calls the native runner, and returns the durable Run.
+
+The runner in `src/core/ml/ensemble_runner.cpp` registers an `ensemble` Model and
+writes queryable blended-score and meta-weight tables with lineage. S-10 stays with M-1; select M-18 by ID or model kind. See [ensemble.md](ensemble.md) for its split guarantees and current
+multi-member adapter boundary.
 
 ## Adding a methodology
 

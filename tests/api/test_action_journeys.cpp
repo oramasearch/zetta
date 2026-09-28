@@ -292,7 +292,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("list_methodologies", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
-    for (std::size_t index = 0; index < 17; ++index) {
+    for (std::size_t index = 0; index < 18; ++index) {
         const auto& methodology = listed.value.at("methodologies")[index];
         EXPECT_EQ(methodology.at("id"), "M-" + std::to_string(index + 1));
         EXPECT_TRUE(methodology.at("runnable"));
@@ -1947,6 +1947,76 @@ TEST_F(ActionJourneys, JourneyBayesianMethodologyCompilesRunsAndReports) {
     ASSERT_EQ(report.value.at("output_tables").size(), 1u);
     EXPECT_EQ(report.value.at("dataset").at("source"),
               "datasets.store_demand");
+}
+
+TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
+    std::string content = "entity,first,second,label\n";
+    for (int index = 0; index < 240; ++index) {
+        const double first = static_cast<double>((index * 17) % 101) / 100.0;
+        const double second = static_cast<double>((index * 43) % 103) / 102.0;
+        const bool first_region = index % 2 == 0;
+        const bool positive = first_region ? first > 0.48 : second > 0.52;
+        content += std::to_string(index) + "," + std::to_string(first) + "," +
+                   std::to_string(second) + "," +
+                   std::to_string(positive ? 1 : 0) + "\n";
+    }
+
+    journey::Journey ensemble{"m18-ensemble-registry-run", {}};
+    ensemble.steps = {
+        {"land the training table", "upload_dataset",
+         {{"table_name", "ensemble_training"},
+          {"format", "csv"},
+          {"content", content},
+          {"replication_factor", 1}},
+         {.checks = {journey::equals("/database", "datasets"),
+                     journey::equals("/table", "ensemble_training"),
+                     journey::equals("/rows", 240)}}},
+        {"create the project", "create_project", {{"name", "ensemble journey"}}},
+        {"capture the stacking goal", "capture_intent",
+         {{"project", "ensemble journey"},
+          {"text", "Blend complementary models for better decisions"}},
+         {.checks = {journey::not_empty("/input_id")}},
+         {{"input_id", "/input_id"}}},
+        {"compile M-18 over the landed table", "compile_intent",
+         {{"project", "ensemble journey"},
+          {"input_id", "$input_id"},
+          {"methodology", "M-18"},
+          {"name", "ensemble pipeline"},
+          {"hints",
+           {{"dataset_path", "datasets.ensemble_training"},
+            {"entity_column", "entity"},
+            {"label_column", "label"},
+            {"feature_columns", {"first", "second"}},
+            {"folds", 4}}}},
+         {.checks = {journey::equals("/methodology", "M-18"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/steps", 4)}},
+         {{"graph", "/name"}}},
+        {"approve the ensemble plan", "approve_plan",
+         {{"project", "ensemble journey"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"run the pipeline's own table", "run",
+         {{"project", "ensemble journey"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/engine", "ensemble"),
+                     journey::not_empty("/run_id")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the durable run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 5)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read lift, weights, lineage, and result tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {
+             journey::exists("/model/held_out_auc_lift_over_best_single"),
+             journey::exists("/model/best_single_held_out_auc"),
+             journey::size_equals("/meta_model_weights", 2),
+             journey::size_equals("/output_tables", 2),
+             journey::equals("/dataset/source", "datasets.ensemble_training")}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(ensemble, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

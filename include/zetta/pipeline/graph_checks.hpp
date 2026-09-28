@@ -167,6 +167,17 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// M-18 correctness profile (#1057): the meta-model may only learn from
+// out-of-fold predictions, bases must be refit over all non-holdout training
+// rows, and time-dependent folds must validate strictly forward in time.
+class EnsembleOutOfFoldCheck final : public Check {
+public:
+    std::string name() const override {
+        return "ensemble_out_of_fold";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

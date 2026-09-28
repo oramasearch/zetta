@@ -26,6 +26,7 @@ Methodology make_m14_methodology();
 Methodology make_m15_methodology();
 Methodology make_m16_methodology();
 Methodology make_m17_methodology();
+Methodology make_m18_methodology();
 
 namespace {
 
@@ -95,13 +96,7 @@ const std::vector<Methodology>& methodologies() {
         make_m15_methodology(),
         make_m16_methodology(),
         make_m17_methodology(),
-        planned("M-18", "Ensembling & stacking", "The tabular decision core",
-                {"ensemble", "ensembling", "stacking"}, {},
-                {"ensemble", "stack", "blend models"},
-                {input("feature", true, "base-model predictions"),
-                 input("label", true, "evaluation outcome")},
-                {"ensemble model", "blended predictions"},
-                {"delta over best model", "stability"}, 1057),
+        make_m18_methodology(),
         planned("M-19", "Label efficiency", "The data supply chain",
                 {"label_efficiency", "active_learning", "weak_supervision"}, {},
                 {"active learning", "weak supervision", "label efficiency"},

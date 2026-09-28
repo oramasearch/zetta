@@ -64,7 +64,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 ## Current state (refresh me when it changes)
 
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
-  intent compilation, and run dispatch. M-1 through M-17 are runnable on the
+  intent compilation, and run dispatch. M-1 through M-18 are runnable on the
   methodology integration branch (#1082), with all method-specific checks,
   runners and reports retained. S-11 resolves to M-8; M-6 remains selectable
   by methodology ID and model kind. M-10 through M-13 add language, document, graph, and vision runners. Unsupported methodologies

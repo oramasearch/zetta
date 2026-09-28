@@ -35,6 +35,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
+| `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -75,6 +77,14 @@ or another M-10 alias. `language_grounding` requires boolean
 every effective entity, label, feature, text, query, and relevant-id column
 before it reads rows. These graph flags do not replace runtime authorization;
 they make an edited plan that omits it fail verification.
+### `ensemble_out_of_fold` — honest stacking
+
+This check engages only for `ensemble`, `ensembling`, and `stacking` model
+kinds. It requires `stacking_predictions: "out_of_fold"`, `folds >= 2`, and
+`base_refit: "all_training"`. When `time_column` is non-empty it also requires
+`fold_strategy: "time_ordered"`. Each refusal names the required attribute, so
+an edited M-18 graph cannot silently turn its meta-model training into an
+in-sample fit or validate earlier observations from later data.
 
 ## How a check reads a step
 

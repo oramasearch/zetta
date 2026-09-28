@@ -50,6 +50,8 @@ state, and `get_run_report` puts them together at query time:
 | decisions + constraint checks | an optimization run's plan and constraint-trace tables in `optimization_results` |
 | M-17 uncertainty metrics | the Bayesian Model's numeric `metrics` |
 | M-17 source and output tables | the Run's lineage and dataset outputs |
+| M-18 lift and base weights | the ensemble Model's metrics and drivers |
+| queryable result tables | the Run's dataset outputs |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -184,6 +186,13 @@ For a model whose kind is `rank`, `get_run_report` reports `ndcg_at_k`,
 table is returned as `ranked_queue` rows with group, entity, score, rank, and
 relevance. Classification-only AUC fields and at-risk wording are not applied
 to these runs.
+
+M-18 reports add `best_single_held_out_auc`,
+`held_out_auc_lift_over_best_single`, `meta_model_weights`, and `output_tables`.
+Its blended-score table uses the same `rank` / `account` / `risk` columns, so the
+ranked rows remain available through the common report shape. The dataset section
+names the pipeline table from lineage and lists columns excluded during contract
+resolution.
 
 ## Later slices
 
