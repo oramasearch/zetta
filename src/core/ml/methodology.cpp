@@ -61,6 +61,50 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
     const bool lead_scoring = request.solution == "S-2";
 
+    if (request.solution == "S-3") {
+        const int value_horizon_days =
+            request.hints.value("value_horizon_days", 365);
+        graph.add_node(
+            ir::StepKind::Connect, "Load customer value cohort",
+            nlohmann::json{{"source", request.hints.value("source", "datasets")},
+                           {"table", request.hints.value("table", "customers")},
+                           {"note", "one point-in-time row per customer"}},
+            "load_customers");
+        graph.add_node(
+            ir::StepKind::Clean, "Build lifetime value features",
+            nlohmann::json{{"note", "pre-cutoff value, cost, engagement, and tenure inputs"}},
+            "build_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train lifetime value model",
+            nlohmann::json{{"model_kind", "regression"},
+                           {"algo", "gradient_boosting"},
+                           {"objective", "squared_error"},
+                           {"target", request.hints.value("label_column", "future_value")},
+                           {"value_horizon_days", value_horizon_days},
+                           {"note", "predict net customer value over the declared horizon"}},
+            "train_churn_model");
+        graph.add_node(
+            ir::StepKind::Index, "Rank predicted lifetime value",
+            nlohmann::json{{"kind", "feature"},
+                           {"note", "order customers by predicted future value"}},
+            "index_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Explain lifetime value predictions",
+            nlohmann::json{{"note", "expose predicted value and top drivers"}},
+            "serve_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Write lifetime value predictions",
+            nlohmann::json{{"output", "lifetime_value_predictions"},
+                           {"note", "one predicted-value row per customer"}},
+            "notify_retention");
+        graph.add_edge("load_customers", "build_features");
+        graph.add_edge("build_features", "train_churn_model");
+        graph.add_edge("train_churn_model", "index_scores");
+        graph.add_edge("index_scores", "serve_scores");
+        graph.add_edge("serve_scores", "notify_retention");
+        return graph;
+    }
+
     graph.add_node(
         ir::StepKind::Connect,
         lead_scoring ? "Load lead and opportunity records"
@@ -269,6 +313,18 @@ api::ApiResult run_m1(RunRequest& request) {
     options.coordinate = request.input.value("coordinate", true);
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
+    for (const auto& model :
+         request.graph->graph().nodes_of_kind(ir::StepKind::Model)) {
+        if (model->attributes.value("objective", std::string{}) ==
+            "squared_error") {
+            options.params.objective = "squared_error";
+            options.calibration.enabled = false;
+            if (!request.input.contains("model_name")) {
+                options.model_name = "customer_lifetime_value";
+            }
+            break;
+        }
+    }
 
     std::set<std::string> prior_runs;
     for (const auto& existing : context.node.runs()) {
@@ -356,7 +412,8 @@ Methodology make_m1_methodology() {
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",
-        "win-back", "predict whether", "classify",   "score"};
+        "win-back", "predict whether", "classify",   "score",
+        "customer lifetime value", "lifetime value", "clv"};
     methodology.inputs = {
         {"entity", true, "entity identifier"},
         {"label", true, "outcome column"},
@@ -364,7 +421,7 @@ Methodology make_m1_methodology() {
     };
     methodology.outputs = {"model", "scores", "drivers", "ranked entities"};
     methodology.metrics = {"ROC-AUC", "PR-AUC", "log loss", "Brier score",
-                           "lift"};
+                           "lift", "RMSE", "MAE"};
     methodology.runnable = true;
     methodology.build_shape = build_m1_shape;
     methodology.owns = m1_owns;

@@ -847,6 +847,60 @@ TEST(GbdtHoldout, HoldoutIsShardingInvariant) {
     EXPECT_NEAR(single.held_out.log_loss, multi.held_out.log_loss, 1e-9);
 }
 
+TEST(GbdtRegressionJob, RegistersRegressorWithContinuousMetrics) {
+    Synthetic data = make_synthetic(120);
+    for (std::size_t index = 0; index < data.labels.size(); ++index) {
+        data.labels[index] = 250.0 + 900.0 * data.columns[0][index] +
+                             50.0 * data.columns[1][index];
+    }
+    GbdtParams params;
+    params.objective = "squared_error";
+    params.num_trees = 20;
+    params.holdout_fraction = 0.2;
+
+    ComputeNode cn("node-regression", 22450, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(synthetic_rows(data, "future_value")),
+                                 training_schema(data.names, "future_value"),
+                                 device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    const auto result = run_train_job(
+        cn.coordinator, *job, frame.frame, data.names, "future_value", params,
+        &cn.node, "lifetime-value-regressor");
+    ASSERT_TRUE(result.ok());
+    ASSERT_TRUE(result.regression);
+    EXPECT_GT(result.rmse, 0.0);
+    EXPECT_GT(result.mae, 0.0);
+    EXPECT_TRUE(result.has_held_out);
+    EXPECT_GT(result.held_out_rmse, 0.0);
+    EXPECT_GT(result.held_out_mae, 0.0);
+
+    const std::shared_ptr<Model> registered =
+        cn.node.find_model(result.model_id);
+    ASSERT_TRUE(registered);
+    EXPECT_EQ(registered->kind(), "regressor");
+    EXPECT_EQ(registered->feature_schema().at("objective"),
+              "squared_error");
+    EXPECT_DOUBLE_EQ(registered->metrics().at("rmse").get<double>(),
+                     result.rmse);
+    EXPECT_DOUBLE_EQ(registered->metrics().at("mae").get<double>(),
+                     result.mae);
+    EXPECT_DOUBLE_EQ(registered->metrics()
+                         .at("held_out_rmse")
+                         .get<double>(),
+                     result.held_out_rmse);
+    EXPECT_DOUBLE_EQ(registered->metrics()
+                         .at("held_out_mae")
+                         .get<double>(),
+                     result.held_out_mae);
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+}
+
 }  // namespace
 
 // --- squared-error objective (#984, M-4) ---------------------------------------------------

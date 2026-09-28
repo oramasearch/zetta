@@ -10,6 +10,9 @@ and policy decisions to actions and measured outcomes.
 - [S-2.md](S-2.md) — runnable lead and opportunity scoring module: conversion
   labels, capacity-aware CRM queues, SLAs, holdout, and planted-effect proof
   (#1111).
+- [S-3.md](S-3.md) — runnable customer lifetime value module: continuous-value
+  prediction, value-band audience and budget policy, holdouts, actions, and
+  domain refusals (#1112).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -114,6 +117,23 @@ cutoffs, business recommendations, prices, or ROI promises. Currency and the
 value/investment used in ROI always come from the caller. Owners use
 `update_policy` to create later policy versions.
 
+S-3 is the complete customer-lifetime-value default:
+
+| Setting | Executable default |
+|---|---|
+| Strategic value | predicted value ≥ 1,000; budget reallocation, A1 approval |
+| Growth value | predicted value ≥ 500; audience sync, A2 |
+| Standard value | predicted value ≥ 0; deliberate no contact, A0 |
+| Eligibility | explicit consent and channel eligibility; margin ≥ 0.2 |
+| Exclusions | `do_not_target` and `account_closed` suppress action |
+| Limits | 12 lifetime contacts, one action per 30 days, 10,000 currency-unit budget |
+| Experiment | independent 10% holdout probability in every value band |
+| Guardrails | consent, margin, discount fairness, budget utilization, and cohort calibration |
+| Measurement | holdout; named `net_value` outcome per entity over 365 days |
+
+Its thresholds are also editable starter settings. The caller owns the value
+definition, horizon, currency, and approval policy.
+
 The experiment seed is the low 63 bits of FNV-1a-64 over
 `<project UUID>/<solution graph name>` (`project_solution_v1`).
 The manager hashes each entity with that fixed seed, independently of its score.
@@ -142,7 +162,7 @@ and decision cell through the shared action outbox and connector path.
 
 ### Minimal defaults
 
-**S-3 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-4 through S-12 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -152,7 +172,6 @@ require an owner-approved policy change before spending.
 
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
-| S-3 | audience sync / A2 | holdout / net_value | consent violations: 0 |
 | S-4 | collections queue / A2 | champion_challenger / net_recovery | complaints: 0 |
 | S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
@@ -171,7 +190,7 @@ module-specific estimators exist.
 ## Composition and execution
 
 See [executable solution pipelines](executable-pipelines.md) for the input
-contract, example, read-backs, failure behavior, and the S-1 and S-2 journeys.
+contract, example, read-backs, failure behavior, and the S-1, S-2, and S-3 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -181,6 +200,9 @@ level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
 For S-2, it refuses non-point-in-time conversion labels, post-qualification
 predictors, and routing without current owner, territory, and rep-capacity
 evidence. Levels 3 and 4 require M-6.
+For S-3, it refuses incomplete short-tenure censoring, an unstated or mismatched
+value horizon, and entity accounting that can count one customer more than
+once; level 2 also requires M-5.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

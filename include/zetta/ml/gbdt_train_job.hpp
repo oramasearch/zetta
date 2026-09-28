@@ -127,6 +127,13 @@ struct DistributedTrainResult {
     // a held-out AUC over 4,500 rows from one over 12.
     std::uint64_t train_rows = 0;
     std::uint64_t held_out_rows = 0;
+    // Squared-error jobs report continuous-target quality instead of placing
+    // those values in the binary-classification metric fields above.
+    bool regression = false;
+    double rmse = 0.0;
+    double mae = 0.0;
+    double held_out_rmse = 0.0;
+    double held_out_mae = 0.0;
 
     bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };

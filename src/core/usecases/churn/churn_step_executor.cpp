@@ -36,6 +36,7 @@ namespace {
 // read it (#915). One database for every churn pipeline's results; the per-pipeline
 // table inside it is replaced on each run.
 constexpr const char* kChurnResultsDatabase = "churn_results";
+constexpr const char* kLifetimeValueResultsDatabase = "clv_results";
 }  // namespace
 
 namespace {
@@ -438,7 +439,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
             nlohmann::json metrics = model->metrics();
             metrics["dataset_accounts"] = accounts;
             metrics["dataset_events"] = state.dataset_events;
-            if (!labels.empty()) {
+            if (!labels.empty() &&
+                config_.params.objective != "squared_error") {
                 std::size_t positives = 0;
                 for (const double label : labels) {
                     if (label > 0.5) ++positives;
@@ -612,14 +614,21 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
     // Studio Results tab, and the agent could not read it back. It is now a table in
     // `churn_results`, named per pipeline and replaced on each run (a run supersedes
     // its predecessor; keeping every run's copy would just accumulate stale lists).
+    const bool lifetime_value =
+        config_.params.objective == "squared_error";
     std::string at_risk_table;
     node_.run_on_owner([&] {
-        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
-        if (!database) database = node_.create_database(kChurnResultsDatabase);
+        const std::string database_name =
+            lifetime_value ? kLifetimeValueResultsDatabase
+                           : kChurnResultsDatabase;
+        std::shared_ptr<data::Database> database =
+            node_.find_database(database_name);
+        if (!database) database = node_.create_database(database_name);
         if (!database) return;
         const std::string name =
-            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
-                                                : config_.graph.substr(0, 8));
+            (lifetime_value ? "lifetime_value_" : "at_risk_") +
+            (config_.graph.empty() ? std::string("pipeline")
+                                   : config_.graph.substr(0, 8));
         database->drop_table(name);  // replace the previous run's list
         std::shared_ptr<data::Table> table = database->create_table(name);
         if (!table) return;
@@ -633,12 +642,18 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         std::size_t position = 0;
         for (const RetentionAction& action : state.playbook) {
             ++position;
-            std::vector<std::pair<std::string, nlohmann::json>> cells = {
-                {"rank", position},
-                {"account", action.entity},
-                {"risk", action.risk},
-                {"dominant_driver", action.dominant_driver},
-                {"driver_effect", action.dominant_value}};
+            std::vector<std::pair<std::string, nlohmann::json>> cells;
+            cells.emplace_back("rank", position);
+            if (lifetime_value) {
+                cells.emplace_back("entity", action.entity);
+                cells.emplace_back("predicted_value", action.risk);
+            } else {
+                cells.emplace_back("account", action.entity);
+                cells.emplace_back("risk", action.risk);
+            }
+            cells.emplace_back("dominant_driver",
+                               action.dominant_driver);
+            cells.emplace_back("driver_effect", action.dominant_value);
             for (const std::string& column : evidence) {
                 if (const std::optional<double> value =
                         entity_feature(state.global_table, action.entity, column)) {
@@ -654,7 +669,7 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             }
             table->add_row(std::move(row));
         }
-        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+        at_risk_table = database_name + "." + name;
     });
 
     zetta::pipeline::StepOutcome outcome;

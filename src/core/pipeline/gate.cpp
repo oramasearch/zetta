@@ -170,6 +170,9 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S2PointInTimeConversionCheck>());
     gate.add_check(std::make_shared<S2PostQualificationLeakageCheck>());
     gate.add_check(std::make_shared<S2CapacityRoutingCheck>());
+    gate.add_check(std::make_shared<S3ShortTenureCensoringCheck>());
+    gate.add_check(std::make_shared<S3ValueHorizonCheck>());
+    gate.add_check(std::make_shared<S3EntityAccountingCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

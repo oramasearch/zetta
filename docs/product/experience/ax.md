@@ -94,8 +94,11 @@ relay it to a person.
   table. S-1 has full retention defaults, named correctness refusals, reasoned
   CRM tasks, driver reports, and level-3 no-contact uplift targeting. S-2 has
   full lead-routing defaults, conversion-label and leakage refusals,
-  capacity-aware CRM queues, SLA payloads, and holdout ROI. S-3 through S-12
-  are marked minimal.
+  capacity-aware CRM queues, SLA payloads, and holdout ROI.
+  S-3 has
+  continuous-value prediction, named tenure/horizon/entity refusals, governed
+  audience syncs and budget approvals, value-band holdouts, allocation reports,
+  and a measured net-value readout. S-4 through S-12 are marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,

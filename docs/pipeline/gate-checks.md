@@ -36,6 +36,8 @@ The reusable annotation and methodology-specific checks are:
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
 
+| `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -93,6 +95,22 @@ M-6 at levels 3 and 4.
 optional `sources.correctness` overrides. `run_solution` checks the stored
 profile again. See [S-2](../solutions/S-2.md) for its data, policy, action, and
 measurement contract.
+
+### S-3 composed solution checks
+
+The S-3 checks engage only when the solution manifest names `S-3`. They read a
+bound profile produced from the caller's dataset roles, M-1 horizon, and
+optional `sources.correctness` overrides. The profile is stored with the graph,
+and the same checks run during creation and execution.
+
+`s3_short_tenure_censoring` requires a named tenure column, a positive minimum
+observed tenure, `right_censor` handling, and explicit application to training
+labels. Level 2 and above must also contain the M-5 survival stage.
+`s3_value_horizon` requires a positive value horizon and nonempty net-value
+label, then verifies that M-1 is a squared-error regression over that exact
+target and horizon. `s3_entity_accounting` requires the M-2 stage, a stable
+entity key, one-value-per-entity aggregation, and duplicate refusal. See
+[S-3](../solutions/S-3.md) for its data and operating contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

@@ -322,6 +322,39 @@ class S2CapacityRoutingCheck final : public Check {
 public:
     std::string name() const override { return "s2_capacity_routing"; }
     bool evaluates_composed_graph() const noexcept override { return true; }
+// S-3's customer-value correctness adaptations (#1112). The module refuses
+// immature value labels, an unstated prediction horizon, and entity accounting
+// that can count one customer more than once.
+class S3ShortTenureCensoringCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_short_tenure_censoring";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3ValueHorizonCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_value_horizon";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3EntityAccountingCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_entity_accounting";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
