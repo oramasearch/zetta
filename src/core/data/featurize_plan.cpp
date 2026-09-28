@@ -53,6 +53,16 @@ const std::vector<MethodologyRuleEntry>& methodology_rules() {
          {"bandit", "bandits", "sequential_decisioning", "m-15"}},
         {MethodologyRule{"M-16", MethodologyFamily::Native, false, false, false, false},
          {"optimization", "operations_research", "m-16"}},
+        {MethodologyRule{"M-17", MethodologyFamily::Native, true, false, false, false},
+         {"bayesian", "probabilistic", "uncertainty", "m-17"}},
+        {MethodologyRule{"M-18", MethodologyFamily::Tree, true, true, false, true},
+         {"ensemble", "ensembling", "stacking", "m-18"}},
+        {MethodologyRule{"M-19", MethodologyFamily::Native, true, true, true, false},
+         {"label_efficiency", "active_learning", "weak_supervision", "m-19"}},
+        {MethodologyRule{"M-20", MethodologyFamily::Native, true, true, false, false},
+         {"synthetic_private", "privacy_preserving", "synthetic_data", "m-20"}},
+        {MethodologyRule{"M-21", MethodologyFamily::Native, false, false, false, true},
+         {"online_learning", "streaming", "m-21"}},
     };
     return rules;
 }

@@ -68,13 +68,20 @@ the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 
 The methodology registry journey in `test_action_journeys.cpp` discovers all
 21 entries, compiles S-1 through M-1 and M-3 through explicit selection or keywords,
-verifies issue-bearing refusals for M-21, rejects an unmatched non-predictive intent,
+verifies that all 21 methodologies are runnable, rejects an unmatched non-predictive intent,
 and refuses an incomplete segmentation graph at the correctness gate. Graph and
 project views expose `methodology` plus `runnable` (#1061).
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset
 override, polls the Run and reads separation metrics, input/exclusion facts and
 assignment/profile tables back through `get_run_report` (#1042).
+
+Feature-plan journeys read used/excluded names, sources, transforms and reasons
+back for every runnable family. M-17–M-21 cover grouped observations, fitted
+out-of-fold bases, weak labelling votes, clipped private-model inputs and streaming
+window features. Selected label copies are refused before Run creation; the
+long-measurement fixture asserts all 21 callbacks require an explicit pivot and
+leave no Run or Model behind (#1062).
 
 The M-7 journey lands a label-free table, creates and reads back a project,
 captures intent, compiles the anomaly methodology, runs without a dataset

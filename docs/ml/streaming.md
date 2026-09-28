@@ -9,6 +9,16 @@ available. It uses Zetta pub/sub topics for input and scores, maintains
 event-time window features per entity, periodically persists the model, and
 writes a queryable score table and run report.
 
+Registry runs enforce the [feature plan](../data/featurization.md) before creating
+the Run or starting a subscription. Reports list native `window_count` and
+`window_sum_<column>` inputs, their entity/time/value sources, configured duration
+and lateness in the input clock's units, and reasons. Windows include the current
+accepted event and score before its label update. Entity, outcome, raw event time and label-availability
+time are excluded as scalar predictors. Inferred timing metadata is removed from
+numeric inputs; explicit selection is refused, and the outcome cannot double as
+event time. Streaming uses watermarks, not an invented batch `as_of`. Required data
+transforms and selected leakage are refused.
+
 The implementation is C++26 with no third-party ML runtime, embedded language,
 or hosted model API. It uses no pretrained weights, tokenizer, vocabulary, or
 external checkpoint, so there is no weights licence or checkpoint revision to

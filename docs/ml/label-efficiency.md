@@ -5,6 +5,14 @@ rows for human review, learns probabilistic labels from declared rules, and
 writes both results as queryable tables. The implementation is deterministic
 under `seed` and uses no Python, hosted service, or foreign ML runtime.
 
+Registry runs enforce the [feature plan](../data/featurization.md) before launching
+the worker. Reports name the numeric inputs' native mean/standard-deviation
+normalization and each `weak_vote_<function-name>` raw-value threshold, emitted
+label and fallback vote or abstention, with reasons. Entity and gold-label roles
+remain excluded as predictors. Required data transforms and selected leakage are
+refused before a Run exists; a labelling function must reference a selected
+numeric input.
+
 The public implementation is split into:
 
 - `include/zetta/ml/label_efficiency.hpp` and

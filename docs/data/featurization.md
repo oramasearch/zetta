@@ -44,7 +44,7 @@ requires a methodology string and accepts `label`, `time_column`, `group_column`
 }
 ```
 
-Methodology names use the registry's string IDs, M-1 through M-16, and their human
+Methodology names use the registry's string IDs, M-1 through M-21, and their human
 aliases. Their behavior lives in one rule table exposed through `methodology_rule`;
 trainers do not carry copies of these rules. M-2 is entity resolution, M-3
 segmentation, M-4 forecasting, M-5 survival, and M-6 uplift.
@@ -181,6 +181,11 @@ The execution contract describes what the trainer can actually consume:
 | M-14 speech | Consented WAV decoding, 16 kHz resampling, energy segmentation, and log-mel input to native Whisper. Recording IDs and reference transcripts are excluded as predictors; consent is a guard, not an audio feature. |
 | M-15 bandits | Per-arm reward posterior statistics, plus the numeric context actually selected for LinUCB or linear Thompson. Context-free Thompson does not invent context features. Reward and decision ID remain excluded as predictors. |
 | M-16 optimization | Named variables, objective coefficients, integrality, and present bounds, baseline, scenario/quantile, and constraint fields are passed unchanged to the native solver. Row IDs are excluded; `integer` is domain metadata, not a supervised label. |
+| M-17 Bayesian | Fit-row group counts, sums and sums of squares feed native Gibbs partial pooling. Group and observation are structural sources; the observation target is excluded as a direct predictor, and disjoint holdout rows measure coverage. |
+| M-18 ensemble | The accepted numeric source list replaces the base-model contract. Reports also name the fitted bases' out-of-fold prediction inputs to the regularized logistic stacker; temporal folds are retained when configured. |
+| M-19 label efficiency | Native global mean/standard-deviation normalization for active-learning logistic scores and k-center diversity, plus named raw-value threshold votes for the weak-supervision label model. Gold labels and entity keys remain excluded as predictors. |
+| M-20 privacy/synthetic | Native empirical marginals and normal-score copula inputs, numeric or ordered-category model values, and the configured clipping bounds for DP GBDT. The utility label remains a target, never a predictor; privacy accounting and publication checks are unchanged. |
+| M-21 streaming | Per-entity `window_count` and `window_sum_<column>` include the current accepted event, use the configured event-time window and lateness, and score before the label update. Entity and event time are structural sources; raw timestamps, delayed-label availability and outcome are not predictors. No batch snapshot cutoff is invented. |
 
 M-1's native event specification also records aggregate names, source value/type
 columns and window bounds. M-5 records its native person-period `interval` feature
@@ -209,4 +214,9 @@ audio access, bandit policy construction, and optimization solving. Contextual
 bandit tests exercise inferred and explicit context lists and reject reward-copy,
 raw reward, and decision-key context before a Run exists. Historical reward is a
 source only for the native per-arm posterior, never a decision-time context input.
-M-17–M-21 are outside this integration round.
+
+Round 4 completes all 21 runnable callbacks. Its journey tests read the native
+features and exclusions back for M-17–M-21 and reject selected target copies in
+each new callback. The all-methodology long-measurement test asserts all 21 entries
+are runnable and refuses their pivot requirement before any Run or Model exists.
+Streaming also reserves delayed-label timing for scheduling, not feature selection.

@@ -8,7 +8,7 @@ the **correctness gate** (RULE-1: no deploy without a passing gate) before it is
 project/input/run entities, a compiler or language frontend, the gate, or deploy/execution;
 governance of who may run what is [../governance/](../governance/access-control.md).
 
-- [run-report.md](run-report.md) — each methodology's run facts, assembled from Model metrics, lineage and output tables, including streaming prequential metrics.
+- [run-report.md](run-report.md) — all 21 methodologies' used/excluded features with reasons, alongside Model metrics, lineage and output tables, including streaming prequential metrics.
 - [run-report-prompt.md](run-report-prompt.md) — the run report artifact and the prompt that writes it: the engine computes every number, the narrator may only arrange them (#948 step 4).
 - [projects.md](projects.md) — the AI project (`zetta::pipeline::Project`) data model, lifecycle CRUD (incl. `delete_project`: inputs + graphs go, runs + models stay, #1009), and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::pipeline::ProjectInput`): raw intent/artifact ingestion + provenance, replicated.

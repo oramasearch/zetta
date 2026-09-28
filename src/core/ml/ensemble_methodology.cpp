@@ -11,6 +11,8 @@
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -268,11 +270,17 @@ api::ApiResult run_m18(RunRequest& request) {
         return api::ApiResult::failure("invalid_input", contract_error);
     }
     api::ApiContext& context = *request.context;
-    const data::ResolvedDataset dataset = data::resolve_dataset(
+    data::ResolvedDataset dataset = data::resolve_dataset(
         context.node, graph_path, contract,
         data::default_dataset_sampler(context.node, context.cluster));
     if (!dataset.ok()) {
-        return api::ApiResult::failure("engine_error", dataset.error);
+        dataset.contract = contract;
+        return run_dataset_failure(request, "M-18", dataset);
+    }
+
+    auto feature_plan = plan_run_features(request, "M-18", dataset);
+    if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+        return api::ApiResult::failure("invalid_input", reason);
     }
 
     EnsembleRunOptions options;
@@ -288,6 +296,16 @@ api::ApiResult run_m18(RunRequest& request) {
         return api::ApiResult::failure(
             "engine_error", "M-18 could not create its Run record");
     }
+
+    if (const auto model = context.node.find_model(result.model_id)) {
+        for (const auto& base : model->feature_schema().at("base_models")) {
+            feature_plan.entries.push_back({dataset.contract.feature_columns,
+                {"oof_" + base.get<std::string>()},
+                "native out-of-fold base prediction; regularized logistic stacking",
+                "meta-model inputs are held out from each base fit, respecting temporal folds when configured"});
+        }
+    }
+    record_run_features(context.node, result.execution.run->id(), feature_plan);
 
     nlohmann::json output;
     output["run_id"] = result.execution.run->id();

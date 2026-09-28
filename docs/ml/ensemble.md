@@ -4,6 +4,12 @@ M-18 trains several native base models and blends their probabilities with a
 regularized logistic regression meta-model. The trainer is deterministic under
 its seed, uses no foreign ML runtime, and operates over each member's owned rows.
 
+Registry runs enforce the [feature plan](../data/featurization.md) before creating
+a Run. The accepted numeric columns become the base-model contract. Reports list
+those inputs and the fitted bases' `oof_<base-name>` stacker inputs, with label,
+entity and rejected-source reasons. Transform-first data and selected leakage are
+refused; no inferred encoding is claimed as an executed transform.
+
 - Public API: [`include/zetta/ml/ensemble.hpp`](../../include/zetta/ml/ensemble.hpp)
 - Distributed job: [`include/zetta/ml/ensemble_train_job.hpp`](../../include/zetta/ml/ensemble_train_job.hpp)
 - Implementation: [`src/core/ml/ensemble.cpp`](../../src/core/ml/ensemble.cpp) and

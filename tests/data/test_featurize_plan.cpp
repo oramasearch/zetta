@@ -241,6 +241,28 @@ TEST(FeaturePlanRules, SpeechBanditAndOptimizationAliasesUseNativeRules) {
     }
 }
 
+TEST(FeaturePlanRules, RoundFourAliasesResolveToTheirExecutionFamilies) {
+    const std::vector<std::pair<std::string, std::vector<std::string>>> aliases = {
+        {"M-17", {"M-17", "bayesian", "probabilistic", "uncertainty"}},
+        {"M-18", {"M-18", "ensemble", "ensembling", "stacking"}},
+        {"M-19", {"M-19", "label_efficiency", "active_learning", "weak_supervision"}},
+        {"M-20", {"M-20", "synthetic_private", "privacy_preserving", "synthetic_data"}},
+        {"M-21", {"M-21", "online_learning", "streaming"}},
+    };
+    for (const auto& [id, names] : aliases) {
+        for (const auto& name : names) {
+            SCOPED_TRACE(name);
+            const auto rule = zetta::data::methodology_rule(name);
+            ASSERT_TRUE(rule);
+            EXPECT_EQ(rule->canonical_name, id);
+            EXPECT_EQ(rule->family, id == "M-18" ? zetta::data::MethodologyFamily::Tree
+                                                : zetta::data::MethodologyFamily::Native);
+            EXPECT_EQ(rule->supervised, id != "M-21");
+            EXPECT_EQ(rule->prediction_per_entity, id == "M-18" || id == "M-19" || id == "M-20");
+        }
+    }
+}
+
 TEST_F(FeaturizationFixture, FeaturePlanRequiresAnApprovedEventAggregation) {
     land("events", event_rows());
     FeaturePlanOptions options;

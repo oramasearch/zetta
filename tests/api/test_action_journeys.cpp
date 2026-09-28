@@ -232,17 +232,17 @@ TEST_F(Uc1Journey, FeaturePlanRefusesLongMeasurementsInEveryRunnableMethodology)
             {"audio", "unused-audio"}, {"consent", true}, {"reference_text", "hello"},
             {"decision_id", index + 1}, {"arm", "control"}, {"reward", index % 2},
             {"row_id", index + 1}, {"variable", "item"}, {"objective", index % 7},
-            {"integer", true}, {"scenario", "base"}});
+            {"integer", true}, {"scenario", "base"}, {"group", "observations"},
+            {"event_time", index}, {"label_time", index + 0.5}});
     }
     const auto written = zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
     const auto project = node.create_project("feature refusals");
     ASSERT_TRUE(project);
+    ASSERT_EQ(zetta::ml::methodologies().size(), 21u);
     for (const auto& methodology : zetta::ml::methodologies()) {
-        if (!methodology.runnable) {
-            continue;
-        }
         SCOPED_TRACE(methodology.id);
+        ASSERT_TRUE(methodology.runnable);
         zetta::ml::ShapeRequest shape;
         shape.hints = {{"source", "feature_plan"}, {"table", "long_measurements"}};
         if (methodology.id == "M-6") {
@@ -315,6 +315,92 @@ TEST_F(Uc1Journey, FeaturePlanRefusesSelectedLeakageAndPostTreatmentAtRun) {
         EXPECT_NE(result.error.message.find(unsafe), std::string::npos) << result.error.message;
     }
     EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, FeaturePlanRoundFourRefusesSelectedLeakageBeforeCreatingRun) {
+    const auto database = node.create_database("round_four_safety");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("entities");
+    ASSERT_TRUE(table);
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"entity", index + 1}, {"label", index % 2},
+                       {"label_copy", index % 2}, {"signal", index % 7},
+                       {"event_time", index}, {"label_time", index + 0.5}});
+    }
+    const auto project = node.create_project("round four safety");
+    ASSERT_TRUE(project);
+    for (const auto* id : {"M-17", "M-18", "M-19", "M-20", "M-21"}) {
+        SCOPED_TRACE(id);
+        const auto* methodology = zetta::ml::find_methodology(id);
+        ASSERT_NE(methodology, nullptr);
+        zetta::ml::ShapeRequest shape;
+        shape.hints = {{"source", "round_four_safety"}, {"database", "round_four_safety"},
+                       {"table", "entities"}, {"entity_column", "entity"},
+                       {"label_column", "label"}, {"group_column", "label_copy"},
+                       {"time_column", "event_time"}, {"feature_columns", {"label_copy"}}};
+        if (std::string(id) != "M-21") {
+            shape.hints.erase("time_column");
+        }
+        const auto graph = project->create_graph(id, methodology->build_shape(shape));
+        ASSERT_TRUE(graph);
+        nlohmann::json input = {{"dataset", {{"entity_column", "entity"},
+            {"label_column", "label"}, {"feature_columns", {"label_copy"}}}}};
+        if (std::string(id) == "M-19") {
+            input["label_efficiency"] = {{"labelling_functions", nlohmann::json::array({
+                {{"name", "unsafe"}, {"column", "label_copy"}, {"operator", "greater_equal"},
+                 {"value", 0.5}, {"label", 1}}})}};
+        }
+        if (std::string(id) == "M-21") {
+            input.erase("dataset");
+        }
+        ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+        zetta::ml::RunRequest request{&context, project.get(), graph.get(), input};
+        const auto result = methodology->run(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input");
+        EXPECT_NE(result.error.message.find("label_copy"), std::string::npos)
+            << result.error.message;
+    }
+    EXPECT_TRUE(node.runs().empty());
+    EXPECT_TRUE(node.models().empty());
+}
+
+TEST_F(ActionJourneys, FeaturePlanStreamingReservesClocksBeforeCreatingRun) {
+    const auto database = node.create_database("stream_clock_safety");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    for (int index = 0; index < 80; ++index) {
+        table->add_row({{"entity", index + 1}, {"label", index % 2},
+                       {"amount", index % 7}, {"event_time", index},
+                       {"label_time", index + 0.5}});
+    }
+    const auto project = node.create_project("stream clock safety");
+    ASSERT_TRUE(project);
+    const auto* methodology = zetta::ml::find_methodology("M-21");
+    ASSERT_NE(methodology, nullptr);
+    for (const auto* clock : {"event_time", "label_time", "label"}) {
+        SCOPED_TRACE(clock);
+        zetta::ml::ShapeRequest shape;
+        shape.hints = {{"source", "stream_clock_safety"}, {"table", "events"},
+                       {"entity_column", "entity"}, {"label_column", "label"},
+                       {"time_column", "event_time"}, {"feature_columns", {"amount", clock}}};
+        if (std::string(clock) == "label") {
+            shape.hints["time_column"] = "label";
+            shape.hints["feature_columns"] = {"amount"};
+        }
+        const auto graph = project->create_graph(clock, methodology->build_shape(shape));
+        ASSERT_TRUE(graph);
+        ApiContext context{node, nullptr, "", trace, &node.span_recorder(), &background};
+        zetta::ml::RunRequest request{&context, project.get(), graph.get(), nlohmann::json::object()};
+        const auto result = methodology->run(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input");
+        EXPECT_NE(result.error.message.find(clock), std::string::npos)
+            << result.error.message;
+    }
+    EXPECT_TRUE(node.runs().empty());
+    EXPECT_TRUE(node.models().empty());
 }
 
 TEST_F(Uc1Journey, FeaturePlanRefusesEventGrainBeforeStartingM1) {
@@ -2253,6 +2339,15 @@ TEST_F(ActionJourneys, JourneyBayesianMethodologyCompilesRunsAndReports) {
     ASSERT_EQ(report.value.at("output_tables").size(), 1u);
     EXPECT_EQ(report.value.at("dataset").at("source"),
               "datasets.store_demand");
+    const auto& features = report.value.at("features");
+    ASSERT_EQ(features.at("used").size(), 1u);
+    EXPECT_EQ(features.at("used").front().at("name"), "hierarchical_group_statistics");
+    EXPECT_EQ(features.at("used").front().at("source"), nlohmann::json({"store", "value"}));
+    for (const auto* role : {"id", "value"}) {
+        EXPECT_TRUE(std::ranges::any_of(features.at("excluded"), [&](const auto& item) {
+            return item.at("name") == role;
+        }));
+    }
 }
 
 TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
@@ -2317,6 +2412,13 @@ TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
              journey::exists("/model/held_out_auc_lift_over_best_single"),
              journey::exists("/model/best_single_held_out_auc"),
              journey::size_equals("/meta_model_weights", 2),
+             journey::size_equals("/features/used", 4),
+             journey::any_element("/features/used", {{"/name", "first"}, {"/source", {"first"}}}),
+             journey::any_element("/features/used", {{"/name", "second"}, {"/source", {"second"}}}),
+             journey::any_element("/features/used", {{"/name", "oof_shallow_gbdt"},
+                                                       {"/source", {"first", "second"}}}),
+             journey::any_element("/features/excluded", {{"/name", "entity"}}),
+             journey::any_element("/features/excluded", {{"/name", "label"}}),
              journey::size_equals("/output_tables", 2),
              journey::size_at_least("/at_risk", 1),
              journey::exists("/at_risk/0/risk"),
@@ -2420,6 +2522,13 @@ TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
                   journey::size_equals("/output_tables", 2),
                   journey::equals("/correctness/weak_labels_are_gold", false),
                   journey::equals("/correctness/gold_split", "disjoint"),
+                  journey::any_element("/features/used", {{"/name", "signal"}, {"/source", {"signal"}}}),
+                  journey::any_element("/features/used", {{"/name", "weak_vote_strong"},
+                                                           {"/source", {"strong_vote"}}}),
+                  journey::any_element("/features/used", {{"/name", "weak_vote_medium"},
+                                                           {"/source", {"medium_vote"}}}),
+                  journey::any_element("/features/excluded", {{"/name", "entity"}}),
+                  journey::any_element("/features/excluded", {{"/name", "label"}}),
                   journey::predicate(
                       "the report includes active and label-model accuracy",
                       [](const nlohmann::json& metrics) {
@@ -2499,6 +2608,19 @@ TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
               "privacy_source.records");
     ASSERT_EQ(report.value.at("outputs").size(), 3u);
     EXPECT_EQ(report.value.at("outputs").front().at("kind"), "dataset");
+    const auto& features = report.value.at("features");
+    ASSERT_EQ(features.at("used").size(), 2u);
+    for (const auto* source : {"first", "second"}) {
+        EXPECT_TRUE(std::ranges::any_of(features.at("used"), [&](const auto& item) {
+            return item.at("name") == source && item.at("source") == nlohmann::json({source}) &&
+                   item.at("transform").template get<std::string>().find("clipped to [0.000000, 1.000000]") != std::string::npos;
+        }));
+    }
+    for (const auto* role : {"entity", "label"}) {
+        EXPECT_TRUE(std::ranges::any_of(features.at("excluded"), [&](const auto& item) {
+            return item.at("name") == role;
+        }));
+    }
 }
 
 TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
@@ -2511,7 +2633,7 @@ TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
         table->add_row({{"event_id", "journey-" + std::to_string(index)},
                         {"account_id", static_cast<std::int64_t>(index)},
                         {"event_time", static_cast<double>(index)},
-                        {"amount", signal},
+                        {"amount", static_cast<double>(index % 7)},
                         {"fraud", signal},
                         {"label_time", static_cast<double>(index) + 0.5},
                         {"comment", "excluded text"}});
@@ -2563,6 +2685,15 @@ TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
              journey::at_least("/model/evaluated_labels", 80),
              journey::size_at_least("/outputs", 3),
              journey::equals("/dataset/source", "stream_journey.events"),
+             journey::size_equals("/features/used", 2),
+             journey::any_element("/features/used", {{"/name", "window_count"},
+                                                       {"/source", {"account_id", "event_time"}}}),
+             journey::any_element("/features/used", {{"/name", "window_sum_amount"},
+                                                       {"/source", {"account_id", "event_time", "amount"}}}),
+             journey::any_element("/features/excluded", {{"/name", "fraud"}}),
+             journey::any_element("/features/excluded", {{"/name", "account_id"}}),
+             journey::any_element("/features/excluded", {{"/name", "label_time"}}),
+             journey::any_element("/features/excluded", {{"/name", "event_time"}}),
              journey::contains("/dataset/not_used/0", "comment")}}},
         {"read scores back from the output topic", "receive_events",
          {{"topic", "journey.scores"}, {"max", 100}},

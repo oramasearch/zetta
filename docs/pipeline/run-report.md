@@ -110,7 +110,7 @@ covered end to end over REST in `tests/api/test_rest_server.cpp`.
 
 ### Features used and excluded (#1062)
 
-Every methodology report includes the same provenance shape:
+All 21 runnable methodologies include the same provenance shape:
 
 ```json
 {
@@ -151,6 +151,22 @@ solver's objective, variable domain, and available constraint/scenario inputs,
 with row ID excluded. Its `integer` column is used integrality metadata, not a
 classification label. All three reject a required data transform before creating
 the Run, so a rejected plan cannot produce a trained-model report.
+
+M-17 records `hierarchical_group_statistics` with group and observation sources;
+the observation label is excluded as a direct predictor. M-18 records accepted
+numeric base inputs and `oof_<base-name>` predictions for the native stacker, using
+the fitted model's base names. M-19 records normalized numeric inputs and named
+`weak_vote_<function-name>` threshold votes. M-20 records empirical-marginal/copula
+inputs and the configured clipping bounds used for the private model. Their label
+and entity roles are excluded with reasons.
+
+M-21 records `window_count` and `window_sum_<source>` with entity, event-time and
+numeric-value provenance. The transform states the configured window duration and
+allowed lateness, including the current accepted event; prediction precedes its
+label update. Raw event time and delayed-label availability are excluded as scalar
+predictors. All five callbacks reject transform-first data and selected leakage
+before creating a Run or launching work. Provenance uses the existing replicated
+Run field and report schema; it adds no new report format.
 
 Older/direct-trainer Runs without provenance remain readable. Their report uses
 the fitted Model's feature-name list when present, explicitly saying detailed

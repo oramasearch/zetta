@@ -9,6 +9,7 @@
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/bayesian.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 
@@ -203,11 +204,24 @@ api::ApiResult run_bayesian_methodology(RunRequest& request) {
         return api::ApiResult::failure(
             "invalid_input", "M-17 requires a database.table dataset");
     }
-    const data::ResolvedDataset resolved = data::resolve_dataset(
+    data::ResolvedDataset resolved = data::resolve_dataset(
         context.node, parsed_path, overrides,
         data::default_dataset_sampler(context.node, context.cluster));
     if (!resolved.ok()) {
-        return api::ApiResult::failure("engine_error", resolved.error);
+        resolved.contract = overrides;
+        return run_dataset_failure(request, "M-17", resolved);
+    }
+
+    data::FeaturePlanOptions feature_options;
+    feature_options.group_column = params.group_column;
+    feature_options.native_entries.push_back({
+        {params.group_column, resolved.contract.label_column},
+        {"hierarchical_group_statistics"},
+        "fit-row group count, sum and sum of squares; native Gibbs partial pooling",
+        "grouped observations fit posterior estimates; separate holdout rows measure coverage"});
+    const auto feature_plan = plan_run_features(request, "M-17", resolved, feature_options);
+    if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+        return api::ApiResult::failure("invalid_input", reason);
     }
 
     BayesianRunResult run_result = run_bayesian(
@@ -218,6 +232,7 @@ api::ApiResult run_bayesian_methodology(RunRequest& request) {
     if (!run_result.ok()) {
         return api::ApiResult::failure("engine_error", run_result.error);
     }
+    record_run_features(context.node, run_result.run_id, feature_plan);
     return api::ApiResult::success(
         {{"run_id", run_result.run_id},
          {"engine", "bayesian"},

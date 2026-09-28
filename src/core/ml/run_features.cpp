@@ -157,7 +157,7 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     if (options.entity_column.empty()) {
         options.entity_column = dataset.contract.entity_column;
     }
-    if (!options.as_of && !dataset.contract.time_column.empty()) {
+    if (!options.as_of && !dataset.contract.time_column.empty() && methodology != "M-21") {
         options.as_of = std::to_string(dataset.contract.as_of);
     }
     const auto path = data::parse_dataset_path(dataset.database + "." + dataset.table);
@@ -200,6 +200,29 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
                 entry.features == std::vector<std::string>{"arm_policy_statistics"} &&
                 entry.source_columns == std::vector<std::string>{options.group_column,
                                                                  options.label_column}) {
+                continue;
+            }
+            // Grouped observations fit a posterior, not a contemporaneous
+            // predictor of themselves. No other Bayesian feature may read label.
+            if (methodology == "M-17" && source == options.label_column &&
+                options.group_column != options.label_column &&
+                entry.features == std::vector<std::string>{"hierarchical_group_statistics"} &&
+                entry.source_columns == std::vector<std::string>{options.group_column,
+                                                                 options.label_column}) {
+                continue;
+            }
+            // Streaming uses event time to bound windows and advance watermarks,
+            // not as a scalar predictor or a batch snapshot cutoff.
+            if (methodology == "M-21" && source == options.time_column &&
+                options.time_column != options.label_column &&
+                ((entry.features == std::vector<std::string>{"window_count"} &&
+                  entry.source_columns == std::vector<std::string>{options.entity_column,
+                                                                   options.time_column}) ||
+                 (entry.source_columns.size() == 3 &&
+                  entry.source_columns[0] == options.entity_column &&
+                  entry.source_columns[1] == options.time_column &&
+                  entry.features == std::vector<std::string>{"window_sum_" +
+                                                              entry.source_columns[2]}))) {
                 continue;
             }
             const std::string reason = unsafe_feature(request, analysis, source, options);
