@@ -1,6 +1,7 @@
 #include "zetta/ml/gbdt.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -685,6 +686,7 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     const bool regression = params.objective == "squared_error";
     for (int tree_index = start_tree; tree_index < params.num_trees;
          ++tree_index) {
+        const auto round_started = std::chrono::steady_clock::now();
         // Gradients + Hessians at the current predictions.
         // The objective decides the gradient and Hessian, and nothing else in the tree-growing
         // machinery changes — histogram building, split finding and the allreduce are identical.
@@ -834,6 +836,49 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
             raw[row] += predict_local_row(tree.nodes, columns, row);
         }
         model.trees.push_back(std::move(tree));
+
+        if (hooks.on_metrics && !hooks.suppress_metrics) {
+            double local_loss = 0.0;
+            for (std::size_t row = 0; row < local_rows; ++row) {
+                if (regression) {
+                    const double residual = raw[row] - labels[row];
+                    local_loss += residual * residual;
+                } else {
+                    const double probability =
+                        std::clamp(sigmoid(raw[row]), kProbEpsilon,
+                                   1.0 - kProbEpsilon);
+                    local_loss -= labels[row] * std::log(probability) +
+                                  (1.0 - labels[row]) *
+                                      std::log(1.0 - probability);
+                }
+            }
+            const std::vector<double> global_loss = reduce(
+                "t" + std::to_string(tree_index) + ".metrics",
+                {local_loss, static_cast<double>(local_rows)}, GbdtReduce::Sum);
+            if (collective_failed || global_loss.size() != 2 ||
+                global_loss[1] <= 0.0) {
+                result.status = ComputeStatus::backend_error(
+                    "train_gbdt: a metric allreduce failed");
+                return result;
+            }
+            const std::string metric = regression ? "train.mean_squared_error"
+                                                  : "train.log_loss";
+            const double elapsed = std::chrono::duration<double>(
+                                       std::chrono::steady_clock::now() -
+                                       round_started)
+                                       .count();
+            const std::map<std::string, double> values{
+                {metric, global_loss[0] / global_loss[1]},
+                {"train.rows", global_loss[1]},
+                {"train.rows_per_second",
+                 global_loss[1] /
+                     std::max(elapsed, std::numeric_limits<double>::min())}};
+            if (!hooks.on_metrics(static_cast<int>(model.trees.size()), values)) {
+                result.status = ComputeStatus::backend_error(
+                    "train_gbdt: run metric logging failed");
+                return result;
+            }
+        }
 
         // Checkpoint hook (RULE-5 / #468): record the partial model after this tree.
         // Returning false stops early with the partial model (a graceful drain).

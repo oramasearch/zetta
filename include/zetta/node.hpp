@@ -33,6 +33,7 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/solutions/monitor.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
@@ -249,6 +250,9 @@ public:
                                             std::string owner = {},
                                             std::string description = {});
     std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
+    std::vector<std::shared_ptr<zetta::pipeline::Project>> projects() const {
+        return projects_;
+    }
     // drop removes the project with its inputs and graphs — from the replicated
     // document (so every peer drops them) and from disk. Runs and models are
     // NOT touched: they are records of what happened, keep the project's id as
@@ -338,6 +342,29 @@ public:
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
+
+    // AutoML studies (#1138). The Study is replicated configuration and
+    // lifecycle state; each StudyTrial names exactly one Run.
+    std::shared_ptr<zetta::ml::Study> create_study(
+        zetta::ml::StudySpec spec, std::string* error = nullptr);
+    std::shared_ptr<zetta::ml::Study> find_study(
+        const std::string& id_or_name) const;
+    bool drop_study(const std::string& id);
+    std::vector<std::shared_ptr<zetta::ml::Study>> studies() const {
+        return studies_;
+    }
+    std::size_t study_count() const { return studies_.size(); }
+
+    // Run experiment tracking (#1137). These owner-thread entry points update
+    // the replicated Run record. Metric batches also sample available host
+    // gauges and publish JSON to exposed topic run-metrics.<run>.
+    bool log_run_metrics(const std::string& run, std::uint64_t step,
+                         std::map<std::string, double> values,
+                         std::string time = {}, std::string* error = nullptr);
+    bool log_run_params(const std::string& run, nlohmann::json params,
+                        std::string* error = nullptr);
+    bool log_run_artifact(const std::string& run, nlohmann::json artifact,
+                          std::string* error = nullptr);
 
     // CRUD for models (a trained model registered on the node — see model.hpp /
     // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
@@ -1015,6 +1042,9 @@ private:
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
+    // Rebuild studies_ by scanning config_.data_dir. Called from start().
+    void load_studies();
+
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
@@ -1100,6 +1130,9 @@ private:
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_runs(const nlohmann::json& snapshot,
                         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_studies(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_models(const nlohmann::json& snapshot,
                           const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_monitors(const nlohmann::json& snapshot,
@@ -1157,6 +1190,9 @@ private:
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<zetta::pipeline::Run> materialize_run(std::string id, zetta::pipeline::RunValue value);
     bool materialize_drop_run(const std::string& id);
+    std::shared_ptr<zetta::ml::Study> materialize_study(
+        std::string id, zetta::ml::StudyValue value);
+    bool materialize_drop_study(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
     std::shared_ptr<zetta::solutions::Monitor> materialize_monitor(
@@ -1223,6 +1259,7 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::ml::Study>> studies_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors_; // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>

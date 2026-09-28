@@ -12,7 +12,7 @@ describe what is built.
 partitions, thread-based subscribers (every queue has its own mutex and condition
 variables), no durability guarantee (restart survival is best effort and logged), no
 rate limits. REST and MCP long polls are the exception: they suspend a coroutine on a topic
-event without holding a thread (#1076). New JSON formats: the on-disk event frame
+event without holding a thread (#1076, #1136, #1137). New JSON formats: the on-disk event frame
 header only ([events.md](events.md)).
 
 - [events.md](events.md) — addresses (`kind:name`, prefix-glob wildcards), the
@@ -41,4 +41,6 @@ header only ([events.md](events.md)).
 - [node.md](node.md) — the node owns pub/sub: start and stop, the governance-backed
   authorizer, the `table:` drain, `system.pubsub_topics`, spans (#1029, #1031, #1032, #1034).
 - [exposure.md](exposure.md) — `create_topic`, `drop_topic`, `list_topics`,
-  `publish_event`, `receive_events`; coroutine long polls, independent accepts and explicit capacity (#1033, #1076).
+  `publish_event`, `receive_events`; exposed topics, coroutine long polls,
+  independent accepts with explicit capacity, and trainer-owned
+  `run-metrics.<run>` topics (#1033, #1076, #1137).

@@ -4249,11 +4249,28 @@ TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
     EXPECT_EQ(record.value.at("status"), "succeeded");
     EXPECT_EQ(record.value.at("outputs").size(), 3u);
 
+    EXPECT_EQ(record.value.at("metrics_suppressed"), "differential_privacy");
+    const ApiResult metrics = call("get_run_metrics", {{"run", run_id}});
+    ASSERT_TRUE(metrics.ok) << metrics.error.message;
+    EXPECT_EQ(metrics.value.at("metrics_suppressed"), "differential_privacy");
+    EXPECT_EQ(metrics.value.at("params").at("trainer"), "synthetic_private");
+    EXPECT_FALSE(metrics.value.at("params").contains("seed"));
+
     const ApiResult report = call("get_run_report", {{"run_id", run_id}});
     ASSERT_TRUE(report.ok) << report.error.message;
     EXPECT_EQ(report.value.at("run").at("status"), "succeeded");
     EXPECT_TRUE(report.value.at("privacy").contains("membership_auc"));
     EXPECT_TRUE(report.value.at("privacy").contains("epsilon_spent"));
+    EXPECT_EQ(metrics.value.at("series").size(), report.value.at("privacy").size());
+    for (const auto& series : metrics.value.at("series")) {
+        const std::string name = series.at("name");
+        ASSERT_TRUE(report.value.at("privacy").contains(name)) << name;
+        ASSERT_EQ(series.at("points").size(), 1u) << name;
+        EXPECT_EQ(series.at("points").front().at("value"),
+                  report.value.at("privacy").at(name));
+        EXPECT_EQ(metrics.value.at("summary").at(name).at("final"),
+                  report.value.at("privacy").at(name));
+    }
     EXPECT_EQ(report.value.at("dataset").at("source"),
               "privacy_source.records");
     ASSERT_EQ(report.value.at("outputs").size(), 3u);

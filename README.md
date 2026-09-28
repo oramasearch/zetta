@@ -51,7 +51,9 @@ What's inside, by domain (each links to that domain's docs):
   (schema/type, data-leakage/point-in-time, optimization-contract,
   entity-resolution checks) before it
   can deploy, and a **deployment controller** reconciles desired→actual and
-  self-heals failed runs. Runs record status, logs, outputs, and lineage. The
+  self-heals failed runs. Runs record status, logs, outputs, lineage, and
+  live per-step [training metrics](docs/ml/run-metrics.md) with parameters,
+  summaries, and typed chart data. The
   **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
   Deploy panel.
 - **[Data + storage](docs/data/README.md)** — databases → tables → JSON rows on
@@ -104,6 +106,9 @@ What's inside, by domain (each links to that domain's docs):
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
   approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
+  [AutoML studies](docs/ml/studies.md) search those native learners with typed
+  conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
+  tracked Run trials; analysis and governed model promotion have REST/MCP parity.
   The [solution registry](docs/solutions/README.md) lists the 12 catalogue
   modules and eight Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action

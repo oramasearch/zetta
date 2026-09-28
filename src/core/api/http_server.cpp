@@ -864,7 +864,9 @@ struct ApiServer::Impl {
             // bridge-aware wrapper below, so here `work` has already been
             // marshaled; see handle_mcp(). This branch never runs off-loop.
             work();
-            if (observed_result) *observed_result = call_result;
+            if (observed_result) {
+                *observed_result = call_result;
+            }
 
             nlohmann::json payload;
             payload["ok"] = call_result.ok;
@@ -3874,22 +3876,34 @@ bool ApiServer::start() {
             if (request.is_discarded()) {
                 response_body = jsonrpc_error({}, -32700, "parse error");
             } else {
-                auto wait_event = std::make_shared<zetta::runtime::async_event>();
+                auto wait_event =
+                    std::make_shared<zetta::runtime::async_event>();
                 ApiResult observed;
+                // Marshal the whole dispatch onto the loop that owns the
+                // Node; this coroutine suspends until drain() has run it.
                 co_await impl.bridge.run_on_owner([&] {
                     response_body = impl.dispatch(
                         request, identity.acting_key, identity.is_user,
                         traceparent, wait_event, &observed);
                 });
-                if (observed.ok && request.value("method", "") == "tools/call") {
+                if (observed.ok && request.is_object() &&
+                    request.value("method", std::string{}) == "tools/call") {
                     const auto& params = request.at("params");
-                    const auto capability = impl.capability_registry.find(params.at("name").get<std::string>());
-                    if (capability && capability->awaitable_read && capability->awaitable_read->should_wait(observed)) {
-                        const auto wait_for = capability->awaitable_read->wait_for(params.value("arguments", nlohmann::json::object()));
+                    const auto capability = impl.capability_registry.find(
+                        params.at("name").get<std::string>());
+                    if (capability && capability->awaitable_read &&
+                        capability->awaitable_read->should_wait(observed)) {
+                        const auto wait_for =
+                            capability->awaitable_read->wait_for(params.value(
+                                "arguments", nlohmann::json::object()));
                         if (wait_for.count() > 0) {
-                            [[maybe_unused]] auto waited = co_await zetta::runtime::timeout(wait_event->wait(), wait_for);
+                            [[maybe_unused]] auto wait_result =
+                                co_await zetta::runtime::timeout(
+                                    wait_event->wait(), wait_for);
                             co_await impl.bridge.run_on_owner([&] {
-                                response_body = impl.dispatch(request, identity.acting_key, identity.is_user, traceparent);
+                                response_body = impl.dispatch(
+                                    request, identity.acting_key,
+                                    identity.is_user, traceparent);
                             });
                         }
                     }

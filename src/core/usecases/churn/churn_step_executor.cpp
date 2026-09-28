@@ -165,6 +165,8 @@ std::optional<double> entity_feature(const ddf::FeatureTable& table,
 // The cross-step pipeline state (pImpl). One ChurnStepExecutor drives one execution,
 // so this accumulates each step's artifact for the steps downstream of it.
 struct ChurnStepExecutor::State {
+    std::string run_id;
+
     // A table-backed run reads its one dataset once; the first connect step records it.
     bool dataset_recorded = false;
     bool events_loaded = false;
@@ -209,6 +211,12 @@ ChurnStepExecutor::ChurnStepExecutor(Node& node,
       device_(device),
       config_(std::move(config)),
       state_(std::make_unique<State>()) {}
+
+void ChurnStepExecutor::bind_run(Node& node, const std::string& run_id) {
+    if (&node == &node_) {
+        state_->run_id = run_id;
+    }
+}
 
 ChurnStepExecutor::~ChurnStepExecutor() = default;
 
@@ -414,7 +422,7 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
         coordinator_, *job, state.feature_frame,
         state.feature_table.feature_names, state.feature_table.label_name,
         config_.params, &node_, config_.model_name, /*round_tag=*/{},
-        config_.calibration);
+        config_.calibration, ml::kDefaultGbdtTimeout, {}, state.run_id);
     if (!result.ok()) {
         std::string detail;
         node_.run_on_owner([&] { detail = job->detail(); });

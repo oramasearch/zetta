@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -28,6 +29,7 @@
 #include "zetta/ml/gbdt_train_job.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/storage/json_store.hpp"
 
 // Distributed histogram GBDT training (binary log-loss) -> Model (#390): the unit
@@ -251,6 +253,46 @@ TEST(GbdtTrain, RejectsSingleClass) {
     EXPECT_FALSE(trained.ok());
 }
 
+TEST(GbdtTrain, MetricHookPreservesModelBytesAndTrainingReductions) {
+    const Synthetic data = make_synthetic(60);
+    GbdtParams params;
+    params.num_trees = 8;
+    std::vector<std::string> training_rounds;
+    std::vector<std::string> metric_rounds;
+    const zetta::ml::AllReduce reduce = [&](const std::string& tag,
+                                            const std::vector<double>& local,
+                                            zetta::ml::GbdtReduce) {
+        if (tag.ends_with(".metrics")) {
+            metric_rounds.push_back(tag);
+        } else {
+            training_rounds.push_back(tag);
+        }
+        return local;
+    };
+    const auto baseline = train_gbdt(data.columns, data.names, data.labels,
+                                      params, reduce, "metrics-equivalence");
+    ASSERT_TRUE(baseline.ok()) << baseline.status.message;
+    EXPECT_TRUE(metric_rounds.empty());
+    const auto baseline_rounds = training_rounds;
+    training_rounds.clear();
+    int reported = 0;
+    zetta::ml::TrainHooks hooks;
+    hooks.on_metrics = [&](int step, const auto& values) {
+        EXPECT_EQ(step, ++reported);
+        EXPECT_TRUE(values.contains("train.log_loss"));
+        EXPECT_TRUE(std::isfinite(values.at("train.log_loss")));
+        return true;
+    };
+    const auto tracked = train_gbdt(data.columns, data.names, data.labels,
+                                     params, reduce, "metrics-equivalence", hooks);
+    ASSERT_TRUE(tracked.ok()) << tracked.status.message;
+    EXPECT_EQ(tracked.model.to_json().dump(), baseline.model.to_json().dump());
+    EXPECT_EQ(tracked.feature_importances, baseline.feature_importances);
+    EXPECT_EQ(training_rounds, baseline_rounds);
+    EXPECT_EQ(reported, params.num_trees);
+    EXPECT_EQ(metric_rounds.size(), static_cast<std::size_t>(params.num_trees));
+}
+
 // =====================================================================
 // Distributed `train` ComputeJob — the loopback cluster harness
 // =====================================================================
@@ -342,7 +384,7 @@ zetta::ml::DistributedTrainResult run_distributed_train(
     const std::vector<Json>& rows, const std::vector<std::string>& features,
     const std::string& label, const GbdtParams& params, std::size_t node_count,
     std::uint16_t base_port, bool register_model,
-    zetta::ml::CalibrationConfig calibration = {}) {
+    zetta::ml::CalibrationConfig calibration = {}, bool track_metrics = false) {
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
     std::vector<std::unique_ptr<ComputeNode>> nodes;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -375,6 +417,7 @@ zetta::ml::DistributedTrainResult run_distributed_train(
     }
 
     std::vector<zetta::ml::DistributedTrainResult> results(node_count);
+    const auto metric_run = track_metrics ? nodes[0]->node.create_run() : nullptr;
     std::vector<std::shared_ptr<ComputeJob>> jobs(node_count);
     std::vector<std::thread> threads;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -382,8 +425,10 @@ zetta::ml::DistributedTrainResult run_distributed_train(
         threads.emplace_back([&, index] {
             results[index] = run_train_job(
                 nodes[index]->coordinator, *jobs[index], frames[index], features,
-                label, params, register_model ? &nodes[index]->node : nullptr, {},
-                {}, calibration);
+                label, params,
+                register_model || track_metrics ? &nodes[index]->node : nullptr, {},
+                {}, calibration, zetta::ml::kDefaultGbdtTimeout, {},
+                index == 0 && metric_run ? metric_run->id() : std::string{});
         });
     }
     for (auto& thread : threads) thread.join();
@@ -400,6 +445,14 @@ zetta::ml::DistributedTrainResult run_distributed_train(
             << "node " << index;
     }
     EXPECT_TRUE(results[0].is_root);
+    if (metric_run) {
+        const auto metrics = metric_run->get_metrics({"train.log_loss"});
+        EXPECT_EQ(metrics.at("series").size(), 1u);
+        if (!metrics.at("series").empty()) {
+            EXPECT_EQ(metrics.at("series").front().at("points").size(),
+                      static_cast<std::size_t>(params.num_trees));
+        }
+    }
 
     auto out = std::move(results[0]);
     // Keep the root node alive long enough to read its registered model.
@@ -450,6 +503,23 @@ TEST(GbdtDistributed, SingleNodeMatchesMultiNode) {
             << "row " << r;
     }
     EXPECT_NEAR(single.metrics.auc, multi.metrics.auc, 1e-9);
+}
+
+TEST(GbdtDistributed, RootMetricHookPreservesTheDistributedModel) {
+    const Synthetic data = make_synthetic(60);
+    const auto rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 4;
+    params.max_depth = 2;
+    const auto baseline =
+        run_distributed_train(rows, data.names, "y", params, 2, 22280, false);
+    const auto tracked =
+        run_distributed_train(rows, data.names, "y", params, 2, 22290, false,
+                              {}, true);
+    ASSERT_TRUE(baseline.ok());
+    ASSERT_TRUE(tracked.ok());
+    EXPECT_EQ(tracked.model.to_json().dump(), baseline.model.to_json().dump());
+    EXPECT_EQ(tracked.feature_importances, baseline.feature_importances);
 }
 
 TEST(GbdtDistributed, CalibratesProducedModel) {

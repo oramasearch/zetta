@@ -29,7 +29,7 @@ relay it to a person.
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
-  JSON Schema in the system (capability schemas + all 92 schema-as-code
+  JSON Schema in the system (capability schemas + all 98 schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
   same table the build enforces.
@@ -58,6 +58,11 @@ relay it to a person.
   suppresses model-driven action for protected tiers, and `get_experiment`
   exposes balance, exemption erosion, and the assignment rows used by uplift
   training ([experiments.md](../../solutions/experiments.md), #1105).
+- **Studies before promotion**: an agent can create, inspect, stop, analyze, and
+  follow a native AutoML study through the same REST/MCP capabilities. Every
+  trial is a Run with recorded parameters and seed; promotion is isolated behind
+  `studies:promote`, so ordinary Pipeline management cannot replace the project
+  model ([studies.md](../../ml/studies.md), #1138).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a

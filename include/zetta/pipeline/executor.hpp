@@ -51,6 +51,10 @@ class StepExecutor {
 public:
     virtual ~StepExecutor() = default;
 
+    // Attach the durable Run before the first step. Executors that train models
+    // use this identifier to publish per-step metrics to that same Run.
+    virtual void bind_run(Node&, const std::string&) {}
+
     // Execute `step` and report what it produced (or why it failed).
     virtual StepOutcome run_step(const ir::Node& step) const = 0;
 };

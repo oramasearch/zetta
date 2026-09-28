@@ -30,9 +30,18 @@ initial no-wait read. If that read is empty, the route suspends on the event, bo
 `wait_ms` through `runtime::timeout`; publish or topic close signals every registered
 waiter. The route then reads once more. Both reads use the normal authorization + audit
 path on the owner loop, so a long poll makes at most two governed calls. MCP
-`tools/call` uses the same async event and bounded wait for awaitable reads.
+`tools/call` uses the same event-based bounded suspension and final governed
+read; neither rendering holds a thread while waiting (#1076, #1136, #1137).
+Non-object MCP request bodies retain the JSON-RPC invalid-request response.
 The same mechanism serves `browse_topic`; it never creates or advances a
 subscription. See [crud.md](crud.md) for schemas, examples, revisions and D39.
+
+Trainer-owned `run-metrics.<run>` topics use this same exposed-topic surface.
+Clients can tail batches with `receive_events` or inspect them without consuming
+with `browse_topic`, through REST or MCP. The transport uses the first registry
+call's `ApiResult` to decide whether to wait, preserving authorization failures
+and avoiding a second JSON parse. Durable history remains on the Run and is read
+through `get_run_metrics`; see [run metrics](../ml/run-metrics.md).
 
 The runtime event adapter serializes registration, publish and cancellation cleanup
 across threads. Its lock is held only while updating the event's waiter list; suspended
