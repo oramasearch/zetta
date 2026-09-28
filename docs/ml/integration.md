@@ -25,6 +25,11 @@ M-13 are runnable; later methodologies retain their unsupported status and issue
   runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
   including the graph-check refusal test; forecasting is now runnable and is
   no longer a valid unsupported-method fixture.
+- The round-two test audit checks all test files for stale unsupported or
+  non-runnable assertions about M-2 through M-13. Both implemented-set tests
+  now require graph ML and use M-21's `online_learning` as their unsupported
+  example. Refusals for invalid graphs, unsafe parameters, unauthorized input,
+  and unmatched intent remain unchanged.
 - GBDT retains binary-logistic and squared-error behavior alongside the
   LambdaMART gradient callback. Forecasting and uplift retain regression.
 - Reports retain every method's metrics, tables and dataset facts. Survival

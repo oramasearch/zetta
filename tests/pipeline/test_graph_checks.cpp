@@ -830,8 +830,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
               implemented.end())
         << "M-5 survival ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"),
+              implemented.end()) << "M-12 graph ML ships today";
     for (const char* unshipped :
-         {"graph"}) {
+         {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
