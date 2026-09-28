@@ -613,6 +613,49 @@ const ir::Node* model_kind(const ir::ExecutionGraph& graph,
     return nullptr;
 }
 
+const json* s3_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-3") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-3 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s3_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-3 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s3_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-3 Pipeline to validate"};
+}
+
+CheckResult s3_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s3_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 }  // namespace
 
 CheckResult S1PointInTimeCheck::evaluate(
@@ -961,6 +1004,107 @@ CheckResult S1LevelCompositionCheck::evaluate(
     }
     return s1_success(name(),
                       "S-1 selected level has every required methodology");
+}
+
+CheckResult S3ShortTenureCensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s3_failure(name(), error);
+    }
+    const json* censoring = object_field(*profile, "short_tenure");
+    if (censoring == nullptr ||
+        censoring->value("tenure_column", std::string{}).empty() ||
+        censoring->value("minimum_observed_days", 0) <= 0 ||
+        censoring->value("handling", std::string{}) != "right_censor" ||
+        !censoring->value("applied_to_training_labels", false)) {
+        return s3_failure(
+            name(), "S-3 must right-censor short-tenure customers before "
+                    "training and name the positive minimum-tenure rule");
+    }
+    if (level >= 2) {
+        const ir::Node* survival = model_kind(graph, "survival");
+        if (!has_methodology(graph, "M-5") || survival == nullptr ||
+            !survival->attributes.value("censoring_handled", false) ||
+            !survival->attributes.value("stop_after_event", false)) {
+            return s3_failure(
+                name(), "S-3 level 2 and above requires the censoring-aware "
+                        "M-5 survival stage");
+        }
+    }
+    return s3_success(
+        name(), level >= 2
+                    ? "short-tenure labels are censored and M-5 models tenure"
+                    : "short-tenure labels are right-censored before regression");
+}
+
+CheckResult S3ValueHorizonCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s3_failure(name(), error);
+    }
+    const auto horizon = profile->find("value_horizon_days");
+    const std::string value_label =
+        profile->value("value_label", std::string{});
+    if (horizon == profile->end() || !horizon->is_number_integer() ||
+        horizon->get<int>() <= 0 || value_label.empty()) {
+        return s3_failure(
+            name(), "S-3 must state a positive value horizon and its net-value label");
+    }
+    const ir::Node* regression = model_kind(graph, "regression");
+    if (regression == nullptr ||
+        regression->attributes.value("objective", std::string{}) !=
+            "squared_error" ||
+        regression->attributes.value("target", std::string{}) != value_label ||
+        regression->attributes.value("value_horizon_days", 0) !=
+            horizon->get<int>()) {
+        return s3_failure(
+            name(), "S-3 lifetime-value regression must use the declared label and horizon");
+    }
+    return s3_success(name(), "S-3 predicts net value over its declared horizon");
+}
+
+CheckResult S3EntityAccountingCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s3_failure(name(), error);
+    }
+    const json* accounting = object_field(*profile, "entity_accounting");
+    if (accounting == nullptr ||
+        accounting->value("entity_column", std::string{}).empty() ||
+        accounting->value("aggregation", std::string{}) !=
+            "one_value_per_entity" ||
+        accounting->value("duplicate_policy", std::string{}) != "refuse" ||
+        accounting->value("methodology", std::string{}) != "M-2" ||
+        model_kind(graph, "entity_resolution") == nullptr) {
+        return s3_failure(
+            name(), "S-3 requires M-2 and one value row per stable entity; "
+                    "cross-entity or duplicate value counting is refused");
+    }
+    return s3_success(name(), "S-3 counts each resolved entity exactly once");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

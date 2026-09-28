@@ -409,7 +409,9 @@ ChurnNumericShards encode_churn_dataset(const ChurnDataset& dataset) {
     return shards;
 }
 
-DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contract) {
+DataFrameSchema table_accounts_schema(
+    const zetta::data::DatasetContract& contract,
+    bool continuous_label) {
     DataFrameSchema schema;
     // `field` is the JSON key read from the row, `name` the column in the frame.
     // The entity is renamed to the canonical `entity` on the way in: everything
@@ -426,7 +428,9 @@ DataFrameSchema table_accounts_schema(const zetta::data::DatasetContract& contra
     if (!contract.label_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.label_column,
                                               .field = contract.label_column,
-                                              .dtype = DataType::Int64});
+                                              .dtype = continuous_label
+                                                           ? DataType::Float64
+                                                           : DataType::Int64});
     }
     if (!contract.time_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.time_column,
@@ -492,7 +496,8 @@ ChurnSolutionResult run_churn_solution_on_table(
     pipeline.accounts_table = input.table_id;
     pipeline.accounts_dataset = input.dataset_name;
     pipeline.dataset_notes = input.notes;
-    pipeline.accounts_schema = table_accounts_schema(input.contract);
+    pipeline.accounts_schema = table_accounts_schema(
+        input.contract, options.params.objective == "squared_error");
     pipeline.events_schema = churn_events_schema();  // empty frame; static mode
     pipeline.featurize = table_featurize_spec(input.contract);
     pipeline.params = options.params;

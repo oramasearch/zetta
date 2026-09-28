@@ -67,6 +67,45 @@ zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s3_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-3");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"M-1", {{"label_column", "future_value"},
+                   {"value_horizon_days", 365}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s3_correctness"] = {
+        {"value_horizon_days", 365},
+        {"value_label", "future_value"},
+        {"short_tenure",
+         {{"tenure_column", "tenure_days"},
+          {"minimum_observed_days", 90},
+          {"handling", "right_censor"},
+          {"applied_to_training_labels", true}}},
+        {"entity_accounting",
+         {{"methodology", "M-2"},
+          {"entity_column", "entity_id"},
+          {"aggregation", "one_value_per_entity"},
+          {"duplicate_policy", "refuse"}}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -79,6 +118,15 @@ const zetta::pipeline::CheckResult* check_result(
 }
 
 void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s3_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -109,7 +157,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
                 zetta::solutions::decision_policy_config_schema());
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
-            EXPECT_EQ(solution.templates.minimal, solution.id != "S-1");
+            EXPECT_EQ(solution.templates.minimal,
+                      solution.id != "S-1" && solution.id != "S-3");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -307,6 +356,60 @@ TEST(SolutionRegistry, S1EveryLevelBuildsAndLevelThreeProtectsSleepingDogs) {
         }
     }
     expect_s1_failure(graph, "s1_level_composition");
+}
+
+TEST(SolutionRegistry, S3EntryCarriesExecutableValuePolicyAndHoldout) {
+    const zetta::ml::Solution* lifetime_value =
+        zetta::ml::find_solution("S-3");
+    ASSERT_NE(lifetime_value, nullptr);
+    EXPECT_TRUE(lifetime_value->runnable);
+    EXPECT_EQ(lifetime_value->issue,
+              "https://github.com/oramasearch/zetta/issues/1112");
+    EXPECT_FALSE(lifetime_value->templates.minimal);
+    ASSERT_EQ(lifetime_value->action_patterns.size(), 3u);
+    ASSERT_EQ(lifetime_value->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(lifetime_value->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"audience_sync",
+                                        "budget_reallocation"}));
+    ASSERT_EQ(lifetime_value->templates.guardrails.size(), 5u);
+    EXPECT_EQ(lifetime_value->templates.measurement.outcome, "net_value");
+    EXPECT_EQ(lifetime_value->templates.measurement.window_days, 365);
+
+    const nlohmann::json& policy = lifetime_value->templates.policy;
+    EXPECT_EQ(policy.at("tiers").at(0).at("action"),
+              "budget_reallocation");
+    EXPECT_EQ(policy.at("actions").at("budget_reallocation").at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("actions").at("audience_sync").at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("budget").at("limit"), 10000.0);
+}
+
+TEST(SolutionRegistry, S3CorrectnessChecksRefuseEveryWrongCase) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto report =
+            zetta::pipeline::default_gate().run(bound_s3_graph(level));
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n'
+            << nlohmann::json(report).dump(2);
+    }
+
+    auto tenure = bound_s3_graph();
+    tenure.find_node("solution_manifest")
+        ->attributes["s3_correctness"]["short_tenure"]
+                   ["applied_to_training_labels"] = false;
+    expect_s3_failure(tenure, "s3_short_tenure_censoring");
+
+    auto horizon = bound_s3_graph();
+    horizon.find_node("solution_manifest")
+        ->attributes["s3_correctness"]["value_horizon_days"] = 0;
+    expect_s3_failure(horizon, "s3_value_horizon");
+
+    auto entities = bound_s3_graph();
+    entities.find_node("solution_manifest")
+        ->attributes["s3_correctness"]["entity_accounting"]
+                   ["duplicate_policy"] = "sum";
+    expect_s3_failure(entities, "s3_entity_accounting");
 }
 
 } // namespace

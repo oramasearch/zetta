@@ -68,7 +68,9 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(solution.id == "S-1" ? 1110 : 1102);
+    solution.issue = issue(solution.id == "S-1" ? 1110
+                           : solution.id == "S-3" ? 1112
+                                                   : 1102);
     return solution;
 }
 
@@ -229,23 +231,33 @@ const std::vector<Solution>& solutions() {
                    "add worked-lead incrementality", "add value-weighted routing")),
         band_a(
             "S-3", "Customer Lifetime Value",
-            "Forecast customer value and govern audience and budget choices around it.",
-            "Allocate acquisition, service, and retention spend against future value rather than recent revenue.",
+            "Predict customer value and govern audience and budget choices around it.",
+            "Allocate acquisition, service, and retention spend against a stated future-value horizon rather than recent revenue.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-5", "attachable", 2},
              {"M-6", "attachable", 3}},
             {"M-2", "M-1", "M-3", "M-5", "M-6"},
-            {"policy engine", "audience and budget report"}, {"L1"},
-            {{"audience sync", "A2"}, {"budget and discount changes", "A1"},
+            {"audience sync", "budget allocation", "audience and budget report"},
+            {"L1 audience sync", "L1 allocation report"},
+            {{"audience sync", "A2"}, {"budget allocation changes", "A1"},
              {"threshold tuning inside bounds", "A3"}},
-            {{"entity", true, "customer or account"}, {"label", true, "future value components"},
-             {"time", true, "cohort and observation cutoff"},
-             {"treatment", false, "campaign or service intervention"}},
-            "Value bands with channel eligibility, budget ceilings, margin floors, consent, and discount approvals.",
-            "Geographic or audience holdouts with cohort calibration and incremental value read-back.",
-            {"margin", "consent", "discount fairness", "budget adherence", "cohort calibration"},
-            levels("value scoring and reporting", "add survival horizon",
-                   "add causal allocation", "add cross-channel budget policy")),
+            {{"entity", true, "stable customer or account counted once"},
+             {"label", true, "net future value over the declared horizon"},
+             {"time", true, "cohort and point-in-time observation cutoff"},
+             {"feature", true, "pre-cutoff value, engagement, cost, and tenure inputs"},
+             {"tenure", true, "customer age used to censor immature outcomes"},
+             {"margin", true, "margin evidence for the policy floor"},
+             {"consent", true, "audience consent and channel eligibility"},
+             {"treatment", false, "campaign, service, or budget intervention"},
+             {"owner", false, "audience or budget owner for routed actions"}},
+            "Predicted-value bands with consent and channel eligibility, a margin floor, frequency and lifetime caps, a budget ceiling, and owner approval for budget changes.",
+            "Permanent holdout in every value band with net value measured over the same stated horizon and compared against treated entities.",
+            {"margin violations", "consent violations", "discount fairness",
+             "budget utilization", "cohort calibration"},
+            levels("value regression, segments, audience sync, holdout and report",
+                   "add censoring-aware survival horizon",
+                   "add causal audience and budget allocation",
+                   "add governed cross-channel budget policy")),
         band_a(
             "S-4", "Collections Prioritization",
             "Prioritize fair, compliant collections work by expected net recovery.",

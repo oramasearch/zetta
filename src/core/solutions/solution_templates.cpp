@@ -92,6 +92,47 @@ void retention_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void lifetime_value_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "strategic"}, {"minimum_score", 1000.0},
+         {"action", "budget_reallocation"},
+         {"allowed_actions", {"budget_reallocation", "audience_sync",
+                              "no_contact"}}},
+        {{"name", "growth"}, {"minimum_score", 500.0},
+         {"action", "audience_sync"},
+         {"allowed_actions", {"audience_sync", "no_contact"}}},
+        {{"name", "standard"}, {"minimum_score", 0.0},
+         {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"audience_sync", {{"autonomy", "A2"}, {"sla_seconds", 86400},
+                           {"frequency_cap", frequency(1)}}},
+        {"budget_reallocation", {{"autonomy", "A1"},
+                                  {"approval_above", 0.0},
+                                  {"sla_seconds", 86400},
+                                  {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["budget"] = {{"limit", 10000.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("consent", true), predicate("channel_eligible", true),
+        {{"name", "margin_floor"}, {"role", "entity"},
+         {"field", "margin"}, {"operator", "gte"}, {"value", 0.2}}};
+    result.policy["exclusion_rules"] = {
+        predicate("do_not_target", true),
+        predicate("account_closed", true)};
+    result.experiment.holdouts = {
+        {"strategic", 0.1}, {"growth", 0.1}, {"standard", 0.1}};
+    result.experiment.treatment_cells = {
+        "audience_sync", "budget_reallocation"};
+    result.guardrails = {
+        {"consent_violations", 0.0, "maximum"},
+        {"margin_violations", 0.0, "maximum"},
+        {"discount_fairness_gap", 0.1, "maximum"},
+        {"budget_utilization", 1.0, "maximum"},
+        {"cohort_calibration_error", 0.1, "maximum"}};
+    result.measurement = {"holdout", "net_value", "currency", 365};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -100,6 +141,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
             SolutionTemplates result = defaults_for(action);
             if (solution_id == "S-1") {
                 retention_defaults(result);
+            } else if (solution_id == "S-3") {
+                lifetime_value_defaults(result);
             }
             return result;
         }

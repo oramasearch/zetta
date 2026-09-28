@@ -223,6 +223,47 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_s3_correctness(ir::ExecutionGraph& graph,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-3") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json m1 =
+        sources.contains("M-1") && sources.at("M-1").is_object()
+            ? sources.at("M-1")
+            : Json::object();
+    const int horizon = m1.value(
+        "value_horizon_days", common.value("value_horizon_days", 365));
+    manifest->attributes["s3_correctness"] = {
+        {"value_horizon_days", horizon},
+        {"value_label",
+         settings.at("dataset").value("label_column", std::string{})},
+        {"short_tenure",
+         {{"tenure_column", common.value("tenure_column", "tenure_days")},
+          {"minimum_observed_days",
+           common.value("minimum_observed_days", 90)},
+          {"handling", common.value("short_tenure_handling", "right_censor")},
+          {"applied_to_training_labels",
+           common.value("short_tenure_censored", true)}}},
+        {"entity_accounting",
+         {{"methodology", "M-2"},
+          {"entity_column",
+           settings.at("dataset").value("entity_column", std::string{})},
+          {"aggregation",
+           common.value("entity_value_aggregation",
+                        "one_value_per_entity")},
+          {"duplicate_policy",
+           common.value("duplicate_entity_policy", "refuse")}}}};
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -297,6 +338,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["level"] = {
         {"type", "integer"}, {"minimum", 1}, {"maximum", 4}};
     schema["properties"]["s1_correctness"] = {{"type", "object"}};
+    schema["properties"]["s3_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -334,6 +376,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_sources(composed.graph, *snapshot);
     bind_s1_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
+    bind_s3_correctness(composed.graph, settings, input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -366,7 +409,13 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("engine_error", error);
     }
     binding["level"] = level;
-    if (!binding.contains("decision_source")) {
+    if (!binding.contains("decision_source") && solution->id == "S-3") {
+        binding["decision_source"] = {
+            {"methodology", "M-1"},
+            {"entity_column", "entity"},
+            {"score_column", "predicted_value"},
+            {"output_name", "Write lifetime value predictions"}};
+    } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
     }
@@ -376,6 +425,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         if (level >= 3) {
             binding["measurement"]["design"] = "uplift_cells";
         }
+    } else if (solution->id == "S-3") {
+        binding["s3_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("s3_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -503,7 +556,9 @@ std::optional<std::map<std::string, Json>> uplift_rows(
     Node& node, const Json& binding,
     const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
     std::map<std::string, Json> targeting;
-    if (binding.value("solution", std::string{}) != "S-1" ||
+    const std::string solution_id =
+        binding.value("solution", std::string{});
+    if ((solution_id != "S-1" && solution_id != "S-3") ||
         binding.value("level", 1) < 3) {
         return targeting;
     }
@@ -526,14 +581,15 @@ std::optional<std::map<std::string, Json>> uplift_rows(
                 !row.at("estimated_uplift").is_number() ||
                 !row.contains("recommended") ||
                 !row.at("recommended").is_boolean()) {
-                error = "S-1 level 3 treatment effects have an invalid row";
+                error = solution_id +
+                        " level 3 treatment effects have an invalid row";
                 return std::nullopt;
             }
             targeting[entity_key(row.at("entity"))] = row;
         }
         return targeting;
     }
-    error = "S-1 level 3 produced no treatment-effects table";
+    error = solution_id + " level 3 produced no treatment-effects table";
     return std::nullopt;
 }
 
@@ -580,7 +636,13 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
     spec.connector.endpoint = destination.at("endpoint");
     spec.payload = {{"solution", binding.at("scope")}, {"tier", decision.tier},
                     {"action", decision.action}, {"decision_id", decision.id},
-                    {"cost", decision.cost}, {"currency", binding.at("roi_model").at("currency")}};
+                    {"cost", decision.cost},
+                    {"currency", binding.at("roi_model").at("currency")}};
+    if (binding.value("solution", std::string{}) == "S-3") {
+        spec.payload["predicted_value"] = decision.score;
+        spec.payload["value_horizon_days"] =
+            binding.at("s3_correctness").at("value_horizon_days");
+    }
     spec.payload["reason_codes"] =
         entity.value("reason_codes", Json::array());
     spec.payload["decision_cell"] =
@@ -689,7 +751,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             if (treatment == targeting->end()) {
                 return ApiResult::failure(
                     "invalid_input",
-                    "S-1 level 3 treatment output must join exactly once to "
+                    binding.at("solution").get<std::string>() +
+                    " level 3 treatment output must join exactly once to "
                     "decision entity " + key);
             }
             entity["estimated_uplift"] =
@@ -737,6 +800,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     }
     double complaints = 0.0;
     double maximum_contacts = 0.0;
+    double consent_violations = 0.0;
+    double margin_violations = 0.0;
+    double discount_fairness_gap = 0.0;
+    double cohort_calibration_error = 0.0;
+    double predicted_value_total = 0.0;
     std::size_t actionable = 0;
     std::size_t delivered = 0;
     std::map<std::string, std::size_t> driver_counts;
@@ -775,9 +843,16 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
         const std::string driver =
             entity.value("dominant_driver", "unclassified");
-        entity["decision_cell"] = {{"risk", decision->tier},
-                                   {"value", value_tier},
-                                   {"driver", driver}};
+        if (binding.value("solution", std::string{}) == "S-3") {
+            entity["decision_cell"] = {
+                {"value_band", decision->tier},
+                {"segment", entity.value("segment", "unclassified")},
+                {"driver", driver}};
+        } else {
+            entity["decision_cell"] = {{"risk", decision->tier},
+                                       {"value", value_tier},
+                                       {"driver", driver}};
+        }
         Json decision_row = to_json(*decision);
         decision_row["decision_cell"] = entity.at("decision_cell");
         decision_row["reason_codes"] =
@@ -807,6 +882,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                                                : decision->action},
                                 {"cell", entity.at("decision_cell")}});
         complaints += entity.value("open_complaint", Json(false)) == Json(true) ? 1.0 : 0.0;
+        predicted_value_total += entity.value("score", 0.0);
+        if (decision->actionable && !entity.value("consent", false)) {
+            consent_violations += 1.0;
+        }
+        if (decision->actionable && entity.value("margin", 0.0) < 0.2) {
+            margin_violations += 1.0;
+        }
+        discount_fairness_gap = std::max(
+            discount_fairness_gap,
+            std::abs(entity.value("discount_fairness_gap", 0.0)));
+        cohort_calibration_error = std::max(
+            cohort_calibration_error,
+            std::abs(entity.value("cohort_calibration_error", 0.0)));
         maximum_contacts = std::max(maximum_contacts,
             entity.value("recent_actions", 0.0) + (decision->actionable ? 1.0 : 0.0));
     }
@@ -828,18 +916,38 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
     }
     if (const auto monitor = node.find_monitor(binding.at("monitor_id"))) {
-        monitor->observe_guardrail("complaints", complaints / entities.size());
-        monitor->observe_guardrail("discount_budget", cost);
-        monitor->observe_guardrail("contact_fatigue", maximum_contacts);
-        monitor->observe_guardrail(
-            "action_execution_rate",
-            actionable == 0
-                ? 1.0
-                : static_cast<double>(delivered) /
-                      static_cast<double>(actionable));
+        if (binding.value("solution", std::string{}) == "S-3") {
+            const double policy_budget =
+                policy->current()->config.at("budget").at("limit");
+            monitor->observe_guardrail("consent_violations",
+                                       consent_violations);
+            monitor->observe_guardrail("margin_violations",
+                                       margin_violations);
+            monitor->observe_guardrail("discount_fairness_gap",
+                                       discount_fairness_gap);
+            monitor->observe_guardrail(
+                "budget_utilization",
+                policy_budget == 0.0 ? 0.0 : cost / policy_budget);
+            monitor->observe_guardrail("cohort_calibration_error",
+                                       cohort_calibration_error);
+        } else {
+            monitor->observe_guardrail("complaints",
+                                       complaints / entities.size());
+            monitor->observe_guardrail("discount_budget", cost);
+            monitor->observe_guardrail("contact_fatigue",
+                                       maximum_contacts);
+            monitor->observe_guardrail(
+                "action_execution_rate",
+                actionable == 0
+                    ? 1.0
+                    : static_cast<double>(delivered) /
+                          static_cast<double>(actionable));
+        }
     }
     std::string publication_id;
-    if (binding.value("solution", std::string{}) == "S-1" &&
+    const std::string solution_id =
+        binding.value("solution", std::string{});
+    if ((solution_id == "S-1" || solution_id == "S-3") &&
         binding.at("delivery").value("kind", "webhook") == "webhook") {
         Json drivers = Json::array();
         for (const auto& [driver, count] : driver_counts) {
@@ -847,13 +955,23 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
         ReportPublicationSpec report;
         report.run_id = run_id;
-        report.title = "Churn and retention driver report";
+        report.title = solution_id == "S-3"
+                           ? "Customer lifetime value allocation report"
+                           : "Churn and retention driver report";
         report.driver_report = {{"drivers", std::move(drivers)}};
+        if (solution_id == "S-3") {
+            report.driver_report["predicted_value_total"] =
+                predicted_value_total;
+            report.driver_report["value_horizon_days"] =
+                binding.at("s3_correctness").at("value_horizon_days");
+        }
         report.decision_log = std::move(decision_log);
         report.connector.kind = ActionConnectorKind::Webhook;
         report.connector.endpoint = binding.at("delivery").at("endpoint");
         report.connector.token = binding.value("delivery_token", "");
-        report.idempotency_key = run_id + "/driver-report";
+        report.idempotency_key = run_id +
+            (solution_id == "S-3" ? "/allocation-report"
+                                   : "/driver-report");
         report.model_version = model_version;
         report.policy_version =
             std::to_string(policy->current()->version);

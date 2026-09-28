@@ -301,6 +301,42 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-3's customer-value correctness adaptations (#1112). The module refuses
+// immature value labels, an unstated prediction horizon, and entity accounting
+// that can count one customer more than once.
+class S3ShortTenureCensoringCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_short_tenure_censoring";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3ValueHorizonCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_value_horizon";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3EntityAccountingCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_entity_accounting";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

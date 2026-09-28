@@ -53,9 +53,11 @@ project UUID and graph name.
 Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name`.
 It selects a real output table from that child Run, never a fabricated score or
-a substitute classifier. M-1 defaults to its `account` / `risk` score table.
-Inputs and score scales for other modules remain their catalogue module's
-responsibility; their templates are deliberately minimal.
+a substitute classifier. S-1's M-1 source defaults to `account` / `risk`. S-3's
+M-1 source defaults to the `Write lifetime value predictions` output with
+`entity` / `predicted_value`; its squared-error model and result table therefore
+drive policy directly. Inputs and score scales for remaining minimal modules
+stay their catalogue module's responsibility.
 
 ## Run and read back
 
@@ -85,6 +87,11 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    reason codes and risk × value × driver cells. Observe complaint fraction,
    committed action cost, monthly contact count, and action-execution rate in
    its monitor. Publish the S-1 driver report through the report action pattern.
+   S-3 rows carry value-band × segment × driver cells; its monitor observes
+   consent, margin, fairness, budget, and calibration guardrails. Deliver
+   actionable audience syncs with predicted value and horizon, retain budget
+   changes for A1 approval, and publish the allocation report through the same
+   action integration layer.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -118,3 +125,10 @@ The registry test validates every S policy template against the engine schema.
 builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
 proves positive-uplift recommendations can reach policy execution and every
 non-positive effect remains non-actionable, including protected holdouts.
+
+`SolutionJourney.CustomerLifetimeValueDrivesActionsAndRecoversPlantedEffect`
+builds and runs S-3 over a partitioned continuous-value cohort. It verifies the
+real M-1 value table is the decision source, checks audience delivery and A1
+budget approvals, proves holdouts never reach the connector, records a planted
+75-unit net-value effect, and requires `get_roi_readout` to recover it inside
+the 95% confidence interval.

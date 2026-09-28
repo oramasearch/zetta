@@ -382,6 +382,215 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+void land_lifetime_value_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("customer_value");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const double value_signal =
+            static_cast<double>(index % 16) + 1.0;
+        const double engagement =
+            static_cast<double>((index * 7) % 11) / 10.0;
+        const double future_value =
+            200.25 + value_signal * 100.0 + engagement * 50.0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "fixture"},
+             {"name", "Customer " + std::to_string(index + 1)},
+             {"future_value", future_value},
+             {"value_signal", value_signal},
+             {"engagement", engagement},
+             {"tenure_days", 180 + index % 90},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"consent", true},
+             {"channel_eligible", true},
+             {"margin", 0.4},
+             {"do_not_target", false},
+             {"account_closed", false},
+             {"cost", 10.0},
+             {"discount_fairness_gap", 0.0},
+             {"cohort_calibration_error", 0.0}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future customer"},
+         {"future_value", 5000.0},
+         {"value_signal", 50.0},
+         {"engagement", 1.0},
+         {"tenure_days", 365},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"consent", true},
+         {"channel_eligible", true},
+         {"margin", 0.4},
+         {"do_not_target", false},
+         {"account_closed", false},
+         {"cost", 10.0},
+         {"discount_fairness_gap", 0.0},
+         {"cohort_calibration_error", 0.0}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json lifetime_value_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "customer_value"},
+          {"target_table", "lifetime_value_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "future_value"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"value_signal", "engagement", "tenure_days"}}}},
+        {"delivery",
+         {{"endpoint", "https://activation.example.test/audiences"},
+          {"owner", "growth-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey lifetime_value_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"s3-customer-lifetime-value", {}};
+    flow.steps = {
+        {"read S-3 executable defaults", "get_solution",
+         {{"solution", "S-3"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/outcome/name",
+                              "net_value"),
+              journey::equals("/solution/measurement/outcome/window_days",
+                              365),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the lifetime value project", "create_project",
+         {{"name", "customer lifetime value"}}},
+        {"create the S-3 Pipeline", "create_solution",
+         {{"project", "customer lifetime value"},
+          {"solution", "S-3"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "customer_value"},
+            {"M-1",
+             {{"label_column", "future_value"},
+              {"value_horizon_days", 365}}},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "future_value"},
+              {"feature_columns",
+               {"value_signal", "engagement", "tenure_days"}}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"solution_graph", "/graph"},
+          {"experiment", "/experiment_id"},
+          {"monitor", "/monitor_id"},
+          {"readout", "/readout_id"}}},
+        {"run S-3", "run_solution",
+         {{"project", "customer lifetime value"},
+          {"graph", "$solution_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"solution_run", "/run_id"}}},
+        {"read the completed S-3 Run", "get_run",
+         {{"run_id", "$solution_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected S-3 assignments", "get_experiment",
+         {{"experiment", "$experiment"}},
+         {.checks = {journey::at_least("/sizes/assignments", 100),
+                     journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read S-3 action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_lifetime_value_outcomes(
+    const nlohmann::json& entries, const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        if (cell.ends_with("/holdout") ||
+            cell.ends_with("/audience_sync") ||
+            cell.ends_with("/budget_reallocation")) {
+            ++counts[cell];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"s3-planted-net-value", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        if (!counts.contains(cell)) {
+            continue;
+        }
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double net_value =
+            400.0 + centered / counts[cell] + (holdout ? 0.0 : 75.0);
+        outcomes.steps.push_back(
+            {"record planted net value", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_value"},
+              {"value", net_value},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured net-value effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-value effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 75.0) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 75.0 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 75.0;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -458,6 +667,118 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       CustomerLifetimeValueDrivesActionsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_lifetime_value_data(node);
+    const journey::Journey flow =
+        lifetime_value_journey(lifetime_value_configuration());
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("customer lifetime value");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-3 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "predicted_value");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Write lifetime value predictions");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t audience_decisions = 0;
+    std::size_t budget_approvals = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.action == "audience_sync" &&
+                   decision.actionable) {
+            ++audience_decisions;
+        } else if (decision.action == "budget_reallocation") {
+            ++budget_approvals;
+            EXPECT_EQ(decision.status, "pending_approval");
+            EXPECT_FALSE(decision.actionable);
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(audience_decisions, 0u);
+    EXPECT_GT(budget_approvals, 0u);
+
+    std::size_t delivered_audiences = 0;
+    std::size_t reports = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++reports;
+            EXPECT_EQ(request.at("payload").at("title"),
+                      "Customer lifetime value allocation report");
+            EXPECT_EQ(request.at("payload")
+                          .at("driver_report")
+                          .at("value_horizon_days"),
+                      365);
+            continue;
+        }
+        EXPECT_EQ(request.at("payload").at("action"), "audience_sync");
+        EXPECT_TRUE(request.at("payload").contains("predicted_value"));
+        EXPECT_EQ(request.at("payload").at("value_horizon_days"), 365);
+        ++delivered_audiences;
+    }
+    EXPECT_EQ(delivered_audiences, audience_decisions);
+    EXPECT_EQ(reports, 1u);
+
+    const auto results = node.find_database("solution_results");
+    ASSERT_TRUE(results);
+    ASSERT_EQ(results->tables().size(), 1u);
+    const ApiResult decisions_read = call(
+        "sql", {{"statement", "SELECT * FROM solution_results." +
+                                  results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decisions_read.ok) << decisions_read.error.message;
+    EXPECT_EQ(decisions_read.value.at("rows").size(), 240u);
+    for (const auto& row : decisions_read.value.at("rows")) {
+        EXPECT_TRUE(row.at("decision_cell").contains("value_band"));
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_lifetime_value_outcomes(
+        ledger.value.at("entries"), binding);
+    const journey::JourneyReport measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

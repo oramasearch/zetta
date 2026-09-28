@@ -70,6 +70,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   tier holdouts and no-contact decisions, publish a driver report, and feed the
   retention ROI readout. See [solutions/S-1.md](solutions/S-1.md).
 
+- **S-3 Customer Lifetime Value (#1112)** — runnable at levels 1–4 with native
+  continuous-value M-1 prediction, M-2 stable-entity accounting, M-3 segments,
+  optional M-5 tenure survival, and M-6 causal allocation. Three bound checks
+  refuse immature uncensored labels, an unstated or mismatched value horizon,
+  and duplicate entity value. Governed audience syncs, A1 budget approvals,
+  permanent value-band holdouts, allocation reports, and net-value outcome
+  evidence feed the ROI readout. See [solutions/S-3.md](solutions/S-3.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

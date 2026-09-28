@@ -34,6 +34,7 @@ The reusable annotation and methodology-specific checks are:
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
+| `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -75,6 +76,22 @@ The profile is created from the snapshot, dataset roles, and optional
 `sources.correctness` settings during `create_solution`. The same bound graph is
 checked again by `run_solution`. See [S-1](../solutions/S-1.md) for the operator
 contract and refusal list.
+
+### S-3 composed solution checks
+
+The S-3 checks engage only when the solution manifest names `S-3`. They read a
+bound profile produced from the caller's dataset roles, M-1 horizon, and
+optional `sources.correctness` overrides. The profile is stored with the graph,
+and the same checks run during creation and execution.
+
+`s3_short_tenure_censoring` requires a named tenure column, a positive minimum
+observed tenure, `right_censor` handling, and explicit application to training
+labels. Level 2 and above must also contain the M-5 survival stage.
+`s3_value_horizon` requires a positive value horizon and nonempty net-value
+label, then verifies that M-1 is a squared-error regression over that exact
+target and horizon. `s3_entity_accounting` requires the M-2 stage, a stable
+entity key, one-value-per-entity aggregation, and duplicate refusal. See
+[S-3](../solutions/S-3.md) for its data and operating contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`
