@@ -593,6 +593,36 @@ const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s5_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-5") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-5 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s5_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-5 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -616,6 +646,19 @@ CheckResult s2_failure(std::string name, std::string reason) {
 }
 
 CheckResult s2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s5_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-5 Pipeline to validate"};
+}
+
+CheckResult s5_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s5_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
@@ -1761,6 +1804,139 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+CheckResult S5RollingOriginCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation");
+    const ir::Node* forecast = model_kind(graph, "forecast");
+    if (validation == nullptr ||
+        validation->value("split", std::string{}) != "rolling_origin" ||
+        validation->value("backtest_folds", 0) < 2 ||
+        forecast == nullptr ||
+        forecast->attributes.value("split", std::string{}) !=
+            "rolling_origin" ||
+        !forecast->attributes.value("temporal_validation", false)) {
+        return s5_failure(
+            name(), "S-5 requires at least two rolling-origin backtest folds; "
+                    "random or row holdouts are refused");
+    }
+    return s5_success(name(),
+                      "S-5 uses rolling-origin backtests only");
+}
+
+CheckResult S5FutureCovariateCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const auto covariates = profile->find("future_covariates");
+    if (covariates == profile->end() || !covariates->is_array() ||
+        !covariates->empty()) {
+        return s5_failure(
+            name(), "S-5 refuses future covariates; forecast features must be "
+                    "strictly past target lags and rolling summaries");
+    }
+    bool found_past_lags = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Clean)) {
+        if (!node ||
+            node->attributes.value("transform", std::string{}) !=
+                "past_lags") {
+            continue;
+        }
+        found_past_lags = true;
+        if (!node->attributes.value("strictly_past", false)) {
+            return s5_failure(
+                name(), "S-5 forecast features must end strictly before each "
+                        "forecast origin");
+        }
+    }
+    if (!found_past_lags) {
+        return s5_failure(
+            name(), "S-5 forecast features must end strictly before each "
+                    "forecast origin");
+    }
+    return s5_success(name(),
+                      "S-5 uses only strictly past target history");
+}
+
+CheckResult S5HierarchyConsistencyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const std::string series_column =
+        profile->value("series_column", std::string{});
+    const auto hierarchy = profile->find("hierarchy_columns");
+    if (series_column.empty() || hierarchy == profile->end() ||
+        !hierarchy->is_array() || hierarchy->empty() ||
+        !hierarchy->back().is_string() ||
+        hierarchy->back().get_ref<const std::string&>() != series_column ||
+        profile->value("hierarchy_mode", std::string{}) !=
+            "bottom_level_only" ||
+        !profile->value("hierarchy_consistent", false)) {
+        return s5_failure(
+            name(), "S-5 requires a named leaf series as the last hierarchy "
+                    "column and bottom-level-only forecasts so parent totals "
+                    "are derived by summing leaves");
+    }
+    return s5_success(
+        name(), "S-5 forecasts hierarchy leaves and derives parent totals");
+}
+
+CheckResult S5LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    for (const std::string_view methodology : {"M-2", "M-4", "M-3"}) {
+        if (!has_methodology(graph, methodology)) {
+            return s5_failure(
+                name(), "S-5 requires M-2, M-4, and M-3 at every level");
+        }
+    }
+    if (level >= 3 && !has_methodology(graph, "M-5")) {
+        return s5_failure(
+            name(), "S-5 level 3 and above requires M-5 event timing");
+    }
+    return s5_success(name(),
+                      "S-5 selected level has every required methodology");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

@@ -39,6 +39,8 @@ The reusable annotation and methodology-specific checks are:
 | `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
 
+| `S5*Check` family | `s5_rolling_origin`, `s5_future_covariates`, `s5_hierarchy_consistency`, `s5_level_composition` | an S-5 graph with non-temporal validation, future covariates, a hierarchy that does not end at the forecast leaf, or a missing required methodology stage |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -129,6 +131,21 @@ low-confidence review routing, and exactly the methodology stages registered
 for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
+
+### S-5 composed solution checks
+
+The S-5 checks engage only for a bound S-5 manifest and evaluate the composed
+graph once. `s5_rolling_origin` requires M-4 rolling-origin validation and at
+least two backtest folds. `s5_future_covariates` refuses any declared future
+covariate and requires strictly past lag generation. `s5_hierarchy_consistency`
+requires a named hierarchy ending in the leaf series and bottom-level-only
+forecasts so parent totals are sums of leaves. `s5_level_composition` requires
+M-2, M-4, and M-3 at every level and M-5 at levels 3 and 4.
+
+`create_solution` binds this profile from the M-4 graph and optional
+`sources.correctness` hierarchy settings. `run_solution` checks the stored
+profile again. See [S-5](../solutions/S-5.md) for its data, policy, actions,
+measurement, and readout boundary.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

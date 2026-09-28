@@ -50,7 +50,7 @@ economics with `get_roi_readout`. `update_policy` creates owner-edited versions.
 Graph names are unique within a project; foundation record names include the
 project UUID and graph name.
 
-Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
+Non-M-1 primary methodologies without a module default require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. S-1 and S-2 use M-1's `account` / `risk` score table.
@@ -62,6 +62,8 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+S-5 defaults to the real M-4 `forecast` output, with `series` as the
+entity and relative interval width in `exception_score` as the policy score.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
@@ -78,8 +80,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. All stage Connect nodes read this snapshot. An ISO cutoff is
-   carried into feature planning from the snapshot annotation, not inferred.
+   each child Run. All stage Connect nodes read this snapshot. Wrapper stage
+   annotations are removed while reconstructing the child graph, so they are
+   never interpreted as methodology parameters. An ISO cutoff is carried into
+   feature planning from the snapshot annotation, not inferred.
 3. Join the chosen model output to snapshot evidence, exactly once per entity.
    `DecisionPolicyStore::decide` selects the tier/action and enforces policy,
    then calls the experiment manager in the same path. Protected cells clear
@@ -111,6 +115,12 @@ Outcome producers call `record_outcome` against the emitted ledger action IDs.
 outcome/window and configured design, and returns a confidence interval plus
 customer-supplied economics. No missing outcomes are invented. FVA/phased
 measurement remains non-claimable pending a design-specific estimator.
+
+S-5 publishes its planner report through action integration after holdout
+assignment and routes actionable critical/review rows through the same action
+outbox. Its report contains only non-held-out series. The FVA readout preserves
+the methodology metrics but refuses causal incrementality and ROI claims until
+the design-specific estimator exists.
 
 ## Proof
 
@@ -160,3 +170,9 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
+S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
+checks protected-series suppression in both task and report actions, records
+planted forecast errors, observes all five guardrails, and verifies the FVA
+readout reports its current claim boundary.

@@ -53,7 +53,15 @@ customer. It caps lifetime contacts at six and rolling contacts at one per
 seven days. Its champion/challenger design protects a 10% holdout and splits
 treatment between dialer and digital cells.
 
-S-5 through S-11 intentionally provide minimal starter policies derived from
+S-5 defines critical/review/routine interval-uncertainty floors of
+0.20/0.05/0.0. Critical and review series create A2 exception tasks with a
+one-day SLA; routine series record A0 no-contact. Planner ownership, forecast
+freshness and hierarchy consistency are required, while stockout-censored and
+locked-override rows are suppressed. The lifetime cap is 52, the rolling
+seven-day cap is one, and the default budget is zero. Every tier keeps a 10%
+permanent holdout; planner reports omit protected series.
+
+S-6 through S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -63,6 +71,8 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-5 uses the `planner_report` treatment cell and observes FVA, interval
+coverage, freshness, stockout censoring, and override auditability.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

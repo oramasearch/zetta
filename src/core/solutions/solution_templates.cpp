@@ -258,6 +258,43 @@ void claims_triage_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "referral_confirmed", "claim", 45};
 }
 
+void demand_forecast_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.2},
+         {"action", "exception_queue"}},
+        {{"name", "review"}, {"minimum_score", 0.05},
+         {"action", "exception_queue"}},
+        {{"name", "routine"}, {"minimum_score", 0.0},
+         {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"exception_queue",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"planner_report", {{"autonomy", "A2"}, {"sla_seconds", 86400}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = {
+        {"max_actions", 1}, {"window_seconds", 7 * 86400}};
+    result.policy["eligibility_rules"] = {
+        predicate("planner_owned", true),
+        predicate("forecast_fresh", true),
+        predicate("hierarchy_consistent", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("stockout_censored", true),
+        predicate("override_locked", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"review", 0.1}, {"routine", 0.1}};
+    result.experiment.treatment_cells = {"planner_report"};
+    result.guardrails = {
+        {"forecast_value_added", 0.0, "minimum"},
+        {"interval_coverage", 0.75, "minimum"},
+        {"stale_forecast_fraction", 0.0, "maximum"},
+        {"stockout_censored_fraction", 0.1, "maximum"},
+        {"unaudited_override_fraction", 0.0, "maximum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -274,6 +311,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 collections_defaults(result);
             } else if (solution_id == "S-12") {
                 claims_triage_defaults(result);
+            } else if (solution_id == "S-5") {
+                demand_forecast_defaults(result);
             }
             return result;
         }

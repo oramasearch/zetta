@@ -276,6 +276,251 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_demand_forecast_data(Node& node) {
+    const auto database = node.create_database("demand");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int series = 1; series <= 60; ++series) {
+        for (int day = 0; day < 42; ++day) {
+            const int observation = series * 1000 + day;
+            const double alternating = day % 2 == 0 ? -45.0 : 75.0;
+            const double weekly =
+                12.0 * std::sin(day * 2.0 * std::numbers::pi / 7.0);
+            const double demand = 180.0 + series + alternating + weekly;
+            table->add_row(
+                {{"observation_id", observation},
+                 {"record_id", observation},
+                 {"source", "fixture"},
+                 {"name", "record-" + std::to_string(observation)},
+                 {"series", series},
+                 {"item", "sku-" + std::to_string(series)},
+                 {"location", "west"},
+                 {"day", day},
+                 {"demand", demand},
+                 {"history_feature", static_cast<double>(day % 7)},
+                 {"planner_owned", true},
+                 {"forecast_fresh", true},
+                 {"hierarchy_consistent", true},
+                 {"stockout_censored", false},
+                 {"override_locked", false},
+                 {"manual_override", false},
+                 {"override_reason", ""},
+                 {"owner", "planner-west"}});
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+TEST_F(SolutionJourney,
+       DemandForecastBuildsActsAndReportsFvaLimitsHonestly) {
+    SolutionDeliveryBoundary delivery;
+    land_demand_forecast_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "demand planning"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "demand planning"},
+         {"solution", "S-5"},
+         {"level", 1},
+         {"sources",
+          {{"source", "demand"},
+           {"table", "history"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "demand"},
+             {"feature_columns", {"history_feature"}}}},
+           {"M-4",
+            {{"time_column", "day"},
+             {"target_column", "demand"},
+             {"series_column", "series"},
+             {"horizon", 7},
+             {"seasonal_period", 7},
+             {"lags", {1, 7, 14}},
+             {"rolling_window", 7},
+             {"backtest_folds", 3},
+             {"num_trees", 8},
+             {"max_depth", 3},
+             {"seed", 1114}}},
+           {"correctness",
+            {{"hierarchy_columns", {"item", "location", "series"}}}}}},
+         {"foundation",
+          {{"snapshot",
+            {{"database", "demand"},
+             {"source_table", "history"},
+             {"target_table", "planning_snapshot"},
+             {"entity_column", "observation_id"},
+             {"time_column", "day"},
+             {"as_of", 41}}},
+           {"dataset",
+            {{"entity_column", "entity_id"},
+             {"label_column", "demand"},
+             {"time_column", "day"},
+             {"as_of", 41},
+             {"feature_columns", {"history_feature"}}}},
+           {"delivery",
+            {{"kind", "webhook"},
+             {"endpoint", "https://planning.example.test/forecast"},
+             {"owner", "planner-west"}}},
+           {"roi_model",
+            {{"value_per_outcome", 1.0},
+             {"investment", 0.0},
+             {"currency", "USD"}}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies"),
+              (nlohmann::json{"M-2", "M-4", "M-3"}));
+
+    const auto project = node.find_project("demand planning");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-4");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"), "forecast");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "exception_score");
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "demand planning"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::map<std::string, bool> protected_by_series;
+    std::size_t exception_decisions = 0;
+    const std::string policy_id = binding.at("policy_id");
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id != policy_id) {
+            continue;
+        }
+        protected_by_series[decision.entity_id] = decision.holdout;
+        if (decision.holdout) {
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.actionable) {
+            ++exception_decisions;
+            EXPECT_EQ(decision.action, "exception_queue");
+        }
+    }
+    ASSERT_EQ(protected_by_series.size(), 60u);
+    EXPECT_TRUE(std::ranges::any_of(
+        protected_by_series,
+        [](const auto& entry) { return entry.second; }));
+    EXPECT_GT(exception_decisions, 0u);
+
+    std::size_t planner_reports = 0;
+    std::size_t exception_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++planner_reports;
+            EXPECT_EQ(request.at("payload").at("title"),
+                      "Demand forecast planner report");
+            for (const auto& row : request.at("payload")
+                                       .at("driver_report")
+                                       .at("forecast_rows")) {
+                const std::string series =
+                    std::to_string(row.at("series").get<int>());
+                ASSERT_TRUE(protected_by_series.contains(series));
+                EXPECT_FALSE(protected_by_series.at(series));
+            }
+            continue;
+        }
+        ++exception_tasks;
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id").get<std::string>());
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(request.at("owner"), "planner-west");
+        EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        EXPECT_TRUE(request.at("payload").contains("point_forecast"));
+        EXPECT_TRUE(request.at("payload").contains("lower"));
+        EXPECT_TRUE(request.at("payload").contains("upper"));
+        EXPECT_TRUE(request.at("payload").contains("exception_score"));
+    }
+    EXPECT_EQ(planner_reports, 1u);
+    EXPECT_EQ(exception_tasks, exception_decisions);
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    std::size_t holdout_outcomes = 0;
+    std::size_t treatment_outcomes = 0;
+    for (const auto& entry : ledger.value.at("entries")) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string subject = entry.at("subject");
+        if (!protected_by_series.contains(subject)) {
+            continue;
+        }
+        const bool holdout = protected_by_series.at(subject);
+        const double planted_error = holdout ? 0.4 : 0.2;
+        const ApiResult recorded = call(
+            "record_outcome",
+            {{"action_id", entry.at("id")},
+             {"outcome", "forecast_error"},
+             {"value", planted_error},
+             {"currency", "USD"},
+             {"source", "connector"},
+             {"occurred_at", entry.at("action_at")}});
+        ASSERT_TRUE(recorded.ok) << recorded.error.message;
+        if (holdout) {
+            ++holdout_outcomes;
+        } else {
+            ++treatment_outcomes;
+        }
+    }
+    EXPECT_GT(holdout_outcomes, 0u);
+    EXPECT_GT(treatment_outcomes, 0u);
+
+    const ApiResult readout = call(
+        "get_roi_readout", {{"solution", binding.at("scope")}});
+    ASSERT_TRUE(readout.ok) << readout.error.message;
+    EXPECT_EQ(readout.value.at("measurement").at("design"), "fva");
+    EXPECT_FALSE(readout.value.at("incrementality").at("claimable"));
+    EXPECT_NE(readout.value.at("incrementality")
+                  .at("reason")
+                  .get<std::string>()
+                  .find("module-specific estimator"),
+              std::string::npos);
+    EXPECT_FALSE(readout.value.at("roi_statement").at("claimable"));
+
+    const auto monitor = node.find_monitor(
+        binding.at("monitor_id").get<std::string>());
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+}
+
 void land_lead_scoring_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);

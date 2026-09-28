@@ -698,7 +698,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 51u);
+    ASSERT_EQ(gate.check_count(), 55u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");

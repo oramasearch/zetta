@@ -201,12 +201,26 @@ parse_forecast_pipeline(const ir::ExecutionGraph &graph, std::string &error) {
     return std::nullopt;
   }
   const Json &source = steps[0]->attributes;
-  if (!source.is_object() || source.size() != 2 || !source.contains("source") ||
+  const std::set<std::string> permitted_source_fields = {
+      "source", "table", "source_kind", "snapshot_as_of",
+      "solution_snapshot_as_of"};
+  if (!source.is_object() || !source.contains("source") ||
       !source.contains("table") || !source["source"].is_string() ||
       !source["table"].is_string() ||
       source["source"].get<std::string>().empty() ||
       source["table"].get<std::string>().empty()) {
     error = "forecast connect must name its source database and table";
+    return std::nullopt;
+  }
+  for (const auto &[key, value] : source.items()) {
+    (void)value;
+    if (!permitted_source_fields.contains(key)) {
+      error = "forecast connect contains unsupported attribute '" + key + "'";
+      return std::nullopt;
+    }
+  }
+  if (source.contains("source_kind") && source["source_kind"] != "snapshot") {
+    error = "forecast solution sources must be materialized snapshots";
     return std::nullopt;
   }
   ForecastPipeline pipeline;

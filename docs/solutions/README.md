@@ -5,9 +5,11 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-and S-12. S-5 through S-11 retain minimal defaults. This is the scope of
+S-5, and S-12. S-6 through S-11 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
+The [pass-two integration](integration-pass-2.md) records subsequent modules
+and their separate static proof.
 
 The workspace integration routes projected solution records through the engine's
 [incremental reconciliation](../cluster/solution-reconciliation.md), with
@@ -28,6 +30,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
   data, claim paths, A0-only denial, fairness and document checks, holdout, and
   execution (#1121).
+- [S-5.md](S-5.md) — runnable demand forecasting module: prediction intervals,
+  planner reports, exception queues, FVA, hierarchy checks, and protected
+  holdouts (#1114).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -200,9 +205,18 @@ fairness-review evidence are mandatory. Catastrophe and manual-only flags block
 delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
 10% tier holdout measures `referral_confirmed` over 45 days.
 
+S-5 is the complete demand-planning default. Its critical/review/routine tiers
+use relative interval uncertainty floors of 0.20/0.05/0.0. Critical and review
+series create an A2 exception task with a one-day SLA; routine series record
+no contact. Named freshness, ownership, hierarchy, stockout and override rules
+control eligibility. The cap is one task per seven days and 52 lifetime tasks.
+Each tier has a 10% protected holdout, and the planner report omits held-out
+series. Its five observed guardrails cover FVA, interval coverage, freshness,
+stockout censoring, and override auditability.
+
 ### Minimal defaults
 
-**S-5 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-6 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -212,7 +226,6 @@ require an owner-approved policy change before spending.
 
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
-| S-5 | planner report / A2 | fva / forecast_error | stale forecasts: 0 |
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
 | S-7 | decision-forum report / A2 | phased / decision_adopted | false escalations: 0 |
 | S-8 | draft work order / A0 | phased / asset_failure | unsafe actions: 0 |
