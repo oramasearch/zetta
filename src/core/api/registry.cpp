@@ -24,6 +24,12 @@ std::string_view to_string(CapabilityKind kind) {
 bool Registry::add(Capability capability) {
     if (capability.name.empty() || !capability.handler) return false;
     if (find(capability.name)) return false;
+    // An offloadable handler runs on a pool worker; the consent path and the
+    // activity hook touch owner-thread state after the gate, so neither may
+    // follow one (#1063).
+    if (capability.offloadable && (capability.requires_consent || capability.mutates)) {
+        return false;
+    }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
     return true;
 }
@@ -199,36 +205,48 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // MORE-specific right than the bare invoke (the orchestration actions) also
     // requires that right; capabilities gated on {api,query} need only the
     // per-tool invoke right (may_call_tool subsumes the coarse check).
-    const zetta::governance::Operation kInvokeRight{
-        zetta::governance::CapabilityDomain::Api, "query"};
-    if (context.acting_is_user) {
-        if (!context.node.may_call_tool(context.acting_key,
-                                        /*acting_is_user=*/true, name)) {
-            const std::string reason = "no mcp:call grant for tool '" + name + "'";
-            audit_call(context.node, *capability, context.acting_key,
-                       /*allowed=*/false, reason);
-            return finish(ApiResult::failure("unauthorized", reason));
-        }
-        if (!(capability->required_operation == kInvokeRight)) {
-            auto decision = context.node.authorize_user(
-                context.acting_key, capability->required_operation);
+    //
+    // The gate reads the Node's keys and grants and appends to its audit trail,
+    // both owner-thread state that the tick reconciles. An offloadable
+    // capability (receive_events' long poll, #1063) reaches here on a pool
+    // worker, so the gate runs on the owner thread: without that, a worker's
+    // audit append raced the tick's sort of the trail and crashed the node.
+    // run_on_owner runs inline when already on the owner thread.
+    std::optional<ApiResult> refused;
+    context.node.run_on_owner([&] { refused = [&]() -> std::optional<ApiResult> {
+        const zetta::governance::Operation kInvokeRight{
+            zetta::governance::CapabilityDomain::Api, "query"};
+        if (context.acting_is_user) {
+            if (!context.node.may_call_tool(context.acting_key,
+                                            /*acting_is_user=*/true, name)) {
+                const std::string reason = "no mcp:call grant for tool '" + name + "'";
+                audit_call(context.node, *capability, context.acting_key,
+                           /*allowed=*/false, reason);
+                return ApiResult::failure("unauthorized", reason);
+            }
+            if (!(capability->required_operation == kInvokeRight)) {
+                auto decision = context.node.authorize_user(
+                    context.acting_key, capability->required_operation);
+                if (!decision) {
+                    audit_call(context.node, *capability, context.acting_key,
+                               /*allowed=*/false, decision.reason);
+                    return ApiResult::failure("unauthorized", decision.reason);
+                }
+            }
+        } else if (!context.acting_key.empty()) {
+            auto decision =
+                context.node.authorize(context.acting_key, capability->required_operation);
             if (!decision) {
                 audit_call(context.node, *capability, context.acting_key,
                            /*allowed=*/false, decision.reason);
-                return finish(ApiResult::failure("unauthorized", decision.reason));
+                return ApiResult::failure("unauthorized", decision.reason);
             }
         }
-    } else if (!context.acting_key.empty()) {
-        auto decision =
-            context.node.authorize(context.acting_key, capability->required_operation);
-        if (!decision) {
-            audit_call(context.node, *capability, context.acting_key,
-                       /*allowed=*/false, decision.reason);
-            return finish(ApiResult::failure("unauthorized", decision.reason));
-        }
-    }
-    audit_call(context.node, *capability, context.acting_key, /*allowed=*/true,
-               std::string(to_string(capability->kind)) + " call");
+        audit_call(context.node, *capability, context.acting_key, /*allowed=*/true,
+                   std::string(to_string(capability->kind)) + " call");
+        return std::nullopt;
+    }(); });
+    if (refused) return finish(std::move(*refused));
 
     // Consent-gated capabilities never execute on a plain call (#621, the
     // cloud hard rule over the wire): when the input touches a cloud, issue a
