@@ -6589,6 +6589,72 @@
                         "deployment": {
                           "type": "string"
                         },
+                        "features": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "excluded": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "why": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "why"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "used": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array"
+                                  },
+                                  "transform": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "why": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source",
+                                  "transform",
+                                  "why"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "used",
+                            "excluded"
+                          ],
+                          "type": "object"
+                        },
                         "graph": {
                           "type": "string"
                         },
@@ -6823,6 +6889,72 @@
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
                         },
+                        "features": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "excluded": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "why": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "why"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "used": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "items": {
+                                      "minLength": 1,
+                                      "type": "string"
+                                    },
+                                    "minItems": 1,
+                                    "type": "array"
+                                  },
+                                  "transform": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "why": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "source",
+                                  "transform",
+                                  "why"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "used",
+                            "excluded"
+                          ],
+                          "type": "object"
+                        },
                         "fields": {
                           "description": "M-11 extracted fields with confidence, page, box, and review status",
                           "type": "array"
@@ -6886,7 +7018,8 @@
                       },
                       "required": [
                         "run",
-                        "model"
+                        "model",
+                        "features"
                       ],
                       "type": "object"
                     }

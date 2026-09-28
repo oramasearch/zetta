@@ -1,4 +1,5 @@
 #include "zetta/ml/anomaly_methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -307,13 +308,25 @@ api::ApiResult run_anomaly(RunRequest &request) {
         "not_supported", "anomaly: multi-member runs require coordinated "
                          "tabular mode; KPI prefix state is not implemented");
   }
-  const auto dataset = resolve_anomaly_dataset(
+  auto dataset = resolve_anomaly_dataset(
       context.node, *plan,
       data::default_dataset_sampler(context.node, context.cluster));
   if (!dataset.ok()) {
     return api::ApiResult::failure("invalid_input", dataset.error);
   }
   model->attributes["feature_columns"] = dataset.contract.feature_columns;
+  data::FeaturePlanOptions feature_options;
+  for (const auto& feature : dataset.contract.feature_columns) {
+    feature_options.native_entries.push_back({{feature}, {feature},
+        plan->params.mode == AnomalyMode::KpiTimeSeries
+            ? "causal KPI residual against strictly prior observations"
+            : "native isolation forest and median/MAD robust deviation",
+        "label-free anomaly scoring input"});
+  }
+  const auto feature_plan = plan_run_features(request, "M-7", dataset, feature_options);
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
+  }
   auto run =
       context.node.create_run(request.project->id(), request.graph->id());
   if (!run) {
@@ -321,6 +334,7 @@ api::ApiResult run_anomaly(RunRequest &request) {
                                    "anomaly: could not create Run");
   }
   run->set_trace_id(context.trace.trace_id);
+  record_run_features(context.node, run->id(), feature_plan);
   compute::CoordinatedLaunchRequest launch;
   launch.id = run->id();
   launch.kind = std::string(kLaunchKind);

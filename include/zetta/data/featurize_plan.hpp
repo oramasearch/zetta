@@ -13,7 +13,7 @@
 
 // Data-first featurization (#1062): inspect a landed table before deciding how
 // a methodology may use it. Analysis and planning are read-only value results;
-// phase B executes the returned plan after the methodology registry exists.
+// registered runs validate the plan before handing inputs to native trainers.
 namespace zetta::data {
 
 enum class SemanticType {
@@ -121,6 +121,7 @@ enum class MethodologyFamily {
     Forecast,
     Uplift,
     Ranking,
+    Native,
 };
 
 struct MethodologyRule {
@@ -132,8 +133,7 @@ struct MethodologyRule {
     bool time_ordered = false;
 };
 
-// The single phase-A methodology rule table. Phase B can replace string lookup
-// with registry identity without moving the behavior into trainers.
+// One rule table keyed by the methodology registry's stable IDs and aliases.
 std::optional<MethodologyRule> methodology_rule(std::string_view methodology);
 
 struct FeaturePlanEntry {
@@ -175,6 +175,11 @@ struct FeaturePlanOptions {
     std::string group_column;
     std::optional<std::string> as_of;
     std::size_t sample_rows = kDefaultSampleRows;
+    std::string entity_column;
+    std::string treatment_column;
+    // Native featurizers declare their actual derived features here. Sources
+    // are checked against the same analysis before they can be used (#1062).
+    std::vector<FeaturePlanEntry> native_entries;
 };
 
 FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOptions& options);

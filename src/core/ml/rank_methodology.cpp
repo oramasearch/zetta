@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -194,7 +195,7 @@ api::ApiResult run_m9(RunRequest& request) {
         data::resolve_dataset(context.node, path, overrides,
                               data::default_dataset_sampler(context.node, context.cluster));
     if (!resolved.ok()) {
-        return api::ApiResult::failure("engine_error", resolved.error);
+        return run_dataset_failure(request, "M-9", resolved);
     }
     std::erase(resolved.contract.feature_columns, params.group_column);
     if (resolved.contract.feature_columns.empty()) {
@@ -203,6 +204,12 @@ api::ApiResult run_m9(RunRequest& request) {
     }
 
     RankRunOptions options;
+    data::FeaturePlanOptions feature_options;
+    feature_options.group_column = params.group_column;
+    const auto feature_plan = plan_run_features(request, "M-9", resolved, feature_options);
+    if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+        return api::ApiResult::failure("invalid_input", error);
+    }
     options.project = request.project->id();
     options.graph = request.graph->id();
     options.model_name = request.input.value("model_name", std::string("rank_model"));
@@ -250,6 +257,7 @@ api::ApiResult run_m9(RunRequest& request) {
     }
 
     nlohmann::json output;
+    record_run_features(context.node, run_id, feature_plan);
     output["run_id"] = run_id;
     output["engine"] = "rank";
     output["status"] = "running";

@@ -46,6 +46,7 @@
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
@@ -520,9 +521,10 @@ const nlohmann::json& get_run_report_schema() {
 const nlohmann::json& get_run_report_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"run", "model"}},
+        {"required", {"run", "model", "features"}},
         {"properties",
-         {{"run",
+         {{"features", zetta::pipeline::run_features_schema()},
+          {"run",
            {{"type", "object"},
             {"description", "run id, graph, status, and when it finished"}}},
           {"dataset",
@@ -962,7 +964,7 @@ nlohmann::json forecast_report(Node &node, const zetta::pipeline::Run &run,
     return report;
 }
 
-ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
     if (!run) {
@@ -1878,6 +1880,24 @@ ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
                                 databases + ") — pass \"database\" to pick one");
     }
     return ApiResult::success(dataset_summary_json(matches.front()));
+}
+
+ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+    auto result = assemble_run_report(input, context);
+    if (!result.ok) {
+        return result;
+    }
+    const auto run = context.node.find_run(input.at("run_id").get<std::string>());
+    for (const auto& output : run->outputs()) {
+        if (output.kind != "model") {
+            continue;
+        }
+        if (const auto model = context.node.find_model(output.ref)) {
+            result.value["features"] = zetta::ml::run_feature_report(*run, *model);
+            break;
+        }
+    }
+    return result;
 }
 
 // --- analyze_dataset / plan_features (#1062) --------------------------------

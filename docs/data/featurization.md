@@ -4,7 +4,8 @@
 **Code:** [`include/zetta/data/featurize_plan.hpp`](../../include/zetta/data/featurize_plan.hpp),
 [`src/core/data/analyze_dataset.cpp`](../../src/core/data/analyze_dataset.cpp),
 [`src/core/data/featurize_plan.cpp`](../../src/core/data/featurize_plan.cpp)
-**Tests:** `tests/data/test_featurize_plan.cpp`, `tests/api/test_registry.cpp`
+**Tests:** `tests/data/test_featurize_plan.cpp`, `tests/api/test_registry.cpp`,
+`tests/api/test_action_journeys.cpp`, `tests/pipeline/test_run.cpp`
 
 Featurization begins by reading the landed data. The read-only `analyze_dataset`
 capability describes the sampled columns and table shape. The read-only
@@ -43,9 +44,10 @@ requires a methodology string and accepts `label`, `time_column`, `group_column`
 }
 ```
 
-Methodology names remain strings until the methodology registry lands. Their aliases
-and behavior live in one rule table exposed through `methodology_rule`; trainers do
-not carry copies of these rules.
+Methodology names use the registry's string IDs, M-1 through M-13, and their human
+aliases. Their behavior lives in one rule table exposed through `methodology_rule`;
+trainers do not carry copies of these rules. M-2 is entity resolution, M-3
+segmentation, M-4 forecasting, M-5 survival, and M-6 uplift.
 
 ## Column analysis
 
@@ -147,10 +149,53 @@ because the SQL subset has no `LIMIT`. Inference is evidence from that sample, n
 claim about unobserved rows. Analysis is a value result only: it creates no durable
 entity, format, or model artifact.
 
-## Deferred phase
+## Phase B: the plan is a run precondition
 
-This phase returns analysis and plans. Executing a plan inside every methodology's
-featurize step, validating graph inputs against that plan, and listing the resulting
-features and exclusions in `get_run_report` remain deferred until the methodology
-registry from #1061 is available. Until then, callers must materialize any required
-dataset correction explicitly and methodology trainers remain unchanged.
+Every runnable registry callback calls the library directly before creating a Run
+or launching training. `ml::plan_run_features` analyzes the pipeline's landed table
+through the distributed reader, then calls `data::plan_features`. A required pivot,
+entity aggregation, missing role, or snapshot correction returns `invalid_input`
+with `transform_required`, the transform name, and its reason. No correction is
+executed automatically. M-1 now uses the Connect step's landed table when no
+`dataset_path` override is supplied; its built-in demo and directory inputs record
+the actual native account/event specification instead.
+
+The same helper reuses `DataLeakageCheck` and `CausalUpliftCheck` for selected
+sources. Explicitly selected leakage suspects, the label, and post-treatment uplift
+inputs are refused, including graph annotations. Inferred unwanted columns are
+excluded with reasons. M-3 retains its existing label/role gate. Sampling is still
+evidence, not a guarantee about unseen rows or the causal availability of data.
+
+The execution contract describes what the trainer can actually consume:
+
+| Family | Planned execution |
+|---|---|
+| M-1, M-5, M-6, M-9 numeric table trainers | The accepted source list replaces the numeric dataset contract before training. Explicit pipeline selections are respected; labels, keys, leakage and unsupported inputs are excluded. Prepared numeric columns are carried through without claiming an unfitted encoder or scaler. |
+| M-2 identity resolution | Native normalized pair similarities, missing indicators, and verified-identifier constraints. |
+| M-3 segmentation | The existing global fitted numeric scaling/imputation and bounded one-hot encoder; reports use its fitted encoded names and exclusions. |
+| M-4 forecasting | The pipeline's actual lag offsets and prior-only rolling window, evaluated at rolling origins; the raw current target is excluded. |
+| M-7 anomaly | Native isolation-forest/MAD features or strictly prior KPI residuals. |
+| M-8 recommendations | The pipeline's numeric propensity features, historical ALS affinity, and value/eligibility policy inputs; coordinated members retain the identical contract. |
+| M-10, M-11, M-13 | Native text embeddings, document extraction, and image embeddings from explicitly named sources. |
+| M-12 graph | Time-bounded weighted topology and embedding dimensions; endpoints remain structural keys, not scalar predictors. |
+
+M-1's native event specification also records aggregate names, source value/type
+columns and window bounds. M-5 records its native person-period `interval` feature
+and configured interval width; raw follow-up duration remains excluded as a predictor.
+
+The read-only advisory plan's generic encoding suggestions are not represented as
+executed transformations when a trainer has no such input contract. Unsupported
+sources name the required clean/encoding step; a plan with no consumable features
+requires `create_eligible_features`. This integration adds no new trainer, target
+encoder, embedding runtime, or silent table writes. Native temporal featurizers
+retain their existing cutoff/split checks instead of inventing a snapshot date.
+
+Each accepted run stores its feature provenance in the replicated Run record.
+`get_run_report` presents `features.used` and `features.excluded` with reasons for
+every methodology, as described in [run-report.md](../pipeline/run-report.md).
+Legacy records remain readable and only report what their fitted model recorded.
+
+The action-journey tests verify reports across the runnable families, reject a
+long-measurement table in every runnable callback before any Run is created, reject
+event-grain M-1 inputs, and exercise selected leakage, clustering labels, and uplift
+post-treatment refusal. Run tests verify provenance persistence and schema rejection.

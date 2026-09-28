@@ -19,6 +19,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
@@ -441,6 +442,16 @@ api::ApiResult run_methodology(RunRequest &request) {
     if (!dataset.ok()) {
         return api::ApiResult::failure("engine_error", dataset.error);
     }
+    data::FeaturePlanOptions feature_options;
+    for (const auto& feature : dataset.contract.feature_columns) {
+        feature_options.native_entries.push_back({{feature}, {feature},
+            "native global numeric scaling or bounded one-hot encoding; fitted columns reported by the model",
+            "selected as an eligible clustering input"});
+    }
+    const auto feature_plan = plan_run_features(request, "M-3", dataset, feature_options);
+    if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+        return api::ApiResult::failure("invalid_input", reason);
+    }
     if (!validate_segmentation_config(config, error)) {
         return api::ApiResult::failure("invalid_input",
                                        "segmentation: " + error);
@@ -451,7 +462,11 @@ api::ApiResult run_methodology(RunRequest &request) {
             "invalid_input",
             "segmentation requires coordinate=true when the cluster has peers");
     }
-    return submit_run(request, dataset, config, roster);
+    auto submitted = submit_run(request, dataset, config, roster);
+    if (submitted.ok) {
+        record_run_features(node, submitted.value.at("run_id"), feature_plan);
+    }
+    return submitted;
 }
 
 class LaunchErrors : public nlohmann::json_schema::error_handler {

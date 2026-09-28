@@ -23,14 +23,30 @@ const std::vector<MethodologyRuleEntry>& methodology_rules() {
     static const std::vector<MethodologyRuleEntry> rules = {
         {MethodologyRule{"M-1", MethodologyFamily::Tree, true, true, false, false},
          {"m-1", "classification", "classifier", "churn", "tree", "gbdt"}},
-        {MethodologyRule{"segmentation", MethodologyFamily::Distance, false, true, true, false},
-         {"segmentation", "segment", "clustering", "cluster", "anomaly", "m-2"}},
-        {MethodologyRule{"forecast", MethodologyFamily::Forecast, true, false, false, true},
+        {MethodologyRule{"M-2", MethodologyFamily::Native, false, true, false, false},
+         {"entity_resolution", "entity-resolution", "m-2"}},
+        {MethodologyRule{"M-3", MethodologyFamily::Distance, false, true, true, false},
+         {"segmentation", "segment", "clustering", "cluster", "m-3"}},
+        {MethodologyRule{"M-4", MethodologyFamily::Forecast, true, false, false, true},
          {"forecast", "forecasting", "time_series", "m-4"}},
-        {MethodologyRule{"uplift", MethodologyFamily::Uplift, true, true, false, false},
-         {"uplift", "treatment_effect", "m-5"}},
-        {MethodologyRule{"ranking", MethodologyFamily::Ranking, true, false, false, false},
-         {"ranking", "rank", "learning_to_rank", "m-6"}},
+        {MethodologyRule{"M-5", MethodologyFamily::Tree, true, true, false, true},
+         {"survival", "time_to_event", "m-5"}},
+        {MethodologyRule{"M-6", MethodologyFamily::Uplift, true, true, false, false},
+         {"uplift", "causal", "treatment_effect", "m-6"}},
+        {MethodologyRule{"M-7", MethodologyFamily::Distance, false, false, true, false},
+         {"anomaly", "anomaly_detection", "m-7"}},
+        {MethodologyRule{"M-8", MethodologyFamily::Native, true, false, false, true},
+         {"next_best_action", "recommendation", "m-8"}},
+        {MethodologyRule{"M-9", MethodologyFamily::Ranking, true, false, false, false},
+         {"ranking", "rank", "learning_to_rank", "m-9"}},
+        {MethodologyRule{"M-10", MethodologyFamily::Native, false, false, false, false},
+         {"language", "nlp", "embedding", "embeddings", "rag", "fine_tuning", "retrieval", "m-10"}},
+        {MethodologyRule{"M-11", MethodologyFamily::Native, false, false, false, false},
+         {"document_extraction", "document_intelligence", "ocr", "document", "m-11"}},
+        {MethodologyRule{"M-12", MethodologyFamily::Native, true, false, false, true},
+         {"graph", "graph_ml", "m-12"}},
+        {MethodologyRule{"M-13", MethodologyFamily::Native, true, false, false, false},
+         {"vision", "computer_vision", "m-13"}},
     };
     return rules;
 }
@@ -309,11 +325,16 @@ void append_column_plan(FeaturePlan& plan, const ColumnAnalysis& column,
                          : "the label is the target, never an input feature");
         return;
     }
+    if (column.name == options.entity_column) {
+        exclude_once(plan, column.name, "the entity key identifies rows, not a model feature");
+        return;
+    }
     if (column.name == group) {
         exclude_once(plan, column.name, "used to form ranking groups, not as a feature");
         return;
     }
-    if (rule.family == MethodologyFamily::Uplift && has_role(column, "treatment")) {
+    if (rule.family == MethodologyFamily::Uplift &&
+        (has_role(column, "treatment") || column.name == options.treatment_column)) {
         exclude_once(plan, column.name,
                      "used as the uplift treatment assignment, not as an input feature");
         return;
@@ -410,7 +431,8 @@ FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOpti
                              [](const ColumnAnalysis& column) {
                                  return column.semantic_type == SemanticType::Datetime;
                              })) &&
-        !options.as_of && rule->family != MethodologyFamily::Forecast) {
+        !options.as_of && rule->family != MethodologyFamily::Forecast &&
+        rule->family != MethodologyFamily::Native && options.native_entries.empty()) {
         return require_transform(
             std::move(plan), "add_snapshot_date",
             "Datetime features must be computed relative to a declared as_of or "
@@ -460,7 +482,8 @@ FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOpti
                                  {}, "Add a group column such as query_id and rerun the plan.");
     }
     if (rule->family == MethodologyFamily::Uplift &&
-        first_with_role(analysis, "treatment") == nullptr) {
+        first_with_role(analysis, "treatment") == nullptr &&
+        find_column(analysis, options.treatment_column) == nullptr) {
         return require_transform(std::move(plan), "capture_treatment",
                                  "Uplift needs the treatment assignment in "
                                  "addition to the outcome label.",
@@ -472,6 +495,41 @@ FeaturePlan plan_features(const DatasetAnalysis& analysis, const FeaturePlanOpti
     const bool time_ordered = rule->time_ordered || !time.empty() ||
                               analysis.grain == DatasetGrain::TimeSeries ||
                               analysis.grain == DatasetGrain::Snapshot;
+    if (!options.native_entries.empty()) {
+        for (const auto& entry : options.native_entries) {
+            for (const auto& source : entry.source_columns) {
+                if (find_column(analysis, source) == nullptr) {
+                    return require_transform(
+                        std::move(plan), "add_feature_source",
+                        "The native featurizer needs source column '" + source + "'.", {},
+                        "Add the source column or correct the pipeline's input roles.");
+                }
+            }
+            plan.entries.push_back(entry);
+        }
+        for (const auto& column : analysis.columns) {
+            const bool used = std::ranges::any_of(plan.entries, [&](const auto& entry) {
+                return std::ranges::contains(entry.source_columns, column.name);
+            });
+            if (column.name == label || column.name == options.entity_column || !used) {
+                std::string reason;
+                if (column.name == label) {
+                    reason = "the label is a target or evaluation role, never a contemporaneous feature";
+                } else if (column.name == options.entity_column) {
+                    reason = "the entity key identifies rows, not a model feature";
+                } else if (is_leakage(analysis, column.name, reason)) {
+                    reason = "leakage candidate: " + reason;
+                } else if (rule->family == MethodologyFamily::Uplift &&
+                           has_role(column, "post_treatment")) {
+                    reason = "uplift excludes columns observed after treatment";
+                } else {
+                    reason = "not an input to this methodology's native featurizer";
+                }
+                exclude_once(plan, column.name, std::move(reason));
+            }
+        }
+        return plan;
+    }
     for (const ColumnAnalysis& column : analysis.columns) {
         append_column_plan(plan, column, *rule, options, label, group, time_ordered);
     }

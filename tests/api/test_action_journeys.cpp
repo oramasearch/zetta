@@ -10,6 +10,7 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <filesystem>
@@ -38,6 +39,8 @@
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/vision.hpp"
 #include "zetta/ml/language.hpp"
 #include "zetta/node.hpp"
@@ -96,7 +99,26 @@ struct ActionJourneys : ::testing::Test {
         ApiContext context{node,  nullptr,
                            key,   trace,
                            &node.span_recorder(), &background};
-        return registry.call(name, input, context);
+        auto result = registry.call(name, input, context);
+        if (name == "get_run_report" && result.ok) {
+            EXPECT_TRUE(result.value.contains("features"));
+            if (result.value.contains("features")) {
+                const auto& features = result.value.at("features");
+                EXPECT_FALSE(features.at("used").empty()) << result.value.dump();
+                EXPECT_FALSE(features.at("excluded").empty()) << result.value.dump();
+                for (const auto& feature : features.at("used")) {
+                    EXPECT_FALSE(feature.at("name").get<std::string>().empty());
+                    EXPECT_FALSE(feature.at("source").empty());
+                    EXPECT_FALSE(feature.at("transform").get<std::string>().empty());
+                    EXPECT_FALSE(feature.at("why").get<std::string>().empty());
+                }
+                for (const auto& excluded : features.at("excluded")) {
+                    EXPECT_FALSE(excluded.at("name").get<std::string>().empty());
+                    EXPECT_FALSE(excluded.at("why").get<std::string>().empty());
+                }
+            }
+        }
+        return result;
     }
 
     ApiResult call_as_user(const std::string& user_id,
@@ -147,6 +169,185 @@ struct Uc1Journey : ActionJourneys {
 };
 
 }  // namespace
+
+TEST_F(Uc1Journey, FeaturePlanRefusesLongMeasurementsInEveryRunnableMethodology) {
+    auto database = node.create_database("feature_plan");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("long_measurements");
+    ASSERT_TRUE(table);
+    table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"id", index + 1}, {"entity", index + 1}, {"entity_id", index + 1},
+            {"label", index % 2}, {"response", index % 2}, {"treatment", index % 3 == 0},
+            {"outcome", index % 2}, {"metric", "temperature"}, {"value", index % 17},
+            {"time", index}, {"timestamp", index}, {"feature", index % 7},
+            {"src", index + 1}, {"dst", index + 2}, {"weight", 1.0},
+            {"query_id", index / 4}, {"relevance", index % 3},
+            {"duration", 30}, {"feature_time", index},
+            {"action_id", index % 3}, {"action_value", 10.0}, {"action_cost", 1.0},
+            {"eligible", true}, {"contacts", 0}, {"contact_cap", 3},
+            {"interaction_count", 1}, {"interaction_time", index}, {"logging_propensity", 0.5},
+            {"source", "fixture"}, {"record_id", index + 1}, {"name", "Example Person"},
+            {"document_id", "document-" + std::to_string(index)}, {"document", "Total: 12.00"},
+            {"labels", nlohmann::json::object()}, {"image", "unused-image"}});
+    }
+    const auto written = zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+    const auto project = node.create_project("feature refusals");
+    ASSERT_TRUE(project);
+    for (const auto& methodology : zetta::ml::methodologies()) {
+        if (!methodology.runnable) {
+            continue;
+        }
+        SCOPED_TRACE(methodology.id);
+        zetta::ml::ShapeRequest shape;
+        shape.hints = {{"source", "feature_plan"}, {"table", "long_measurements"}};
+        if (methodology.id == "M-6") {
+            shape.hints["treatment"] = "treatment";
+            shape.hints["outcome"] = "outcome";
+        }
+        if (methodology.id == "M-9") {
+            shape.hints["group"] = "query_id";
+            shape.hints["label"] = "relevance";
+            shape.hints["features"] = {"feature"};
+        }
+        if (methodology.id == "M-13") {
+            shape.hints = {{"database", "feature_plan"}, {"table", "long_measurements"},
+                           {"backbone_model", "not-read-before-plan-check"}};
+        }
+        auto graph = methodology.build_shape(shape);
+        for (const auto& step : graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+            step->attributes["source"] = "feature_plan";
+            step->attributes["table"] = "long_measurements";
+        }
+        const auto stored = project->create_graph(methodology.id, std::move(graph));
+        ASSERT_TRUE(stored);
+        ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+        zetta::ml::RunRequest request{&context, project.get(), stored.get(), nlohmann::json::object()};
+        const auto result = methodology.run(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "invalid_input") << result.error.message;
+        EXPECT_NE(result.error.message.find("transform_required"), std::string::npos)
+            << result.error.message;
+        EXPECT_NE(result.error.message.find("pivot_long_to_wide"), std::string::npos)
+            << result.error.message;
+    }
+    EXPECT_TRUE(node.runs().empty());
+    EXPECT_TRUE(node.models().empty());
+}
+
+TEST_F(Uc1Journey, FeaturePlanRefusesSelectedLeakageAndPostTreatmentAtRun) {
+    const auto database = node.create_database("feature_checks");
+    const auto table = database->create_table("entities");
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"id", index + 1}, {"label", index % 2},
+                       {"label_copy", index % 2}, {"feature", index % 7},
+                       {"treatment", index % 3 == 0}, {"post_treatment_score", index % 11}});
+    }
+    const auto project = node.create_project("unsafe features");
+    for (const auto* id : {"M-1", "M-3", "M-6"}) {
+        SCOPED_TRACE(id);
+        const auto* methodology = zetta::ml::find_methodology(id);
+        const std::string unsafe = std::string(id) == "M-6" ? "post_treatment_score"
+                                  : std::string(id) == "M-3" ? "label" : "label_copy";
+        zetta::ml::ShapeRequest shape;
+        shape.hints = {{"source", "feature_checks"}, {"table", "entities"}};
+        if (std::string(id) == "M-3") {
+            shape.hints["entity_column"] = "id";
+            shape.hints["label_column"] = "label";
+            shape.hints["feature_columns"] = {"feature", unsafe};
+        }
+        if (std::string(id) == "M-6") {
+            shape.hints["entity"] = "id";
+            shape.hints["outcome"] = "label";
+        }
+        const auto stored = project->create_graph(id, methodology->build_shape(shape));
+        ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+        zetta::ml::RunRequest request{&context, project.get(), stored.get(),
+            {{"dataset_path", "feature_checks.entities"},
+             {"dataset", {{"entity_column", "id"}, {"label_column", "label"},
+                           {"feature_columns", {"feature", unsafe}}}}}};
+        const auto result = methodology->run(request);
+        EXPECT_FALSE(result.ok);
+        EXPECT_NE(result.error.message.find(unsafe), std::string::npos) << result.error.message;
+    }
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, FeaturePlanRefusesEventGrainBeforeStartingM1) {
+    const auto database = node.create_database("feature_events");
+    const auto table = database->create_table("events");
+    for (int index = 0; index < 100; ++index) {
+        table->add_row({{"customer_id", index % 10}, {"label", index % 2},
+                       {"amount", index % 17}, {"event_at", "2026-09-01T12:00:00Z"}});
+    }
+    const auto project = node.create_project("event refusal");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    auto graph = methodology->build_shape({});
+    for (const auto& source : graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        source->attributes["source"] = "feature_events";
+        source->attributes["table"] = "events";
+    }
+    const auto stored = project->create_graph("events", std::move(graph));
+    ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+    zetta::ml::RunRequest request{&context, project.get(), stored.get(), nlohmann::json::object()};
+    const auto result = methodology->run(request);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_NE(result.error.message.find("transform_required"), std::string::npos);
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, FeaturePlanReportsMissingLabelBeforeContractFailure) {
+    const auto database = node.create_database("feature_missing");
+    const auto table = database->create_table("entities");
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"id", index + 1}, {"feature", index % 7}});
+    }
+    const auto project = node.create_project("missing label");
+    const auto* methodology = zetta::ml::find_methodology("M-1");
+    const auto graph = project->create_graph("missing label", methodology->build_shape({}));
+    ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+    zetta::ml::RunRequest request{&context, project.get(), graph.get(),
+        {{"dataset_path", "feature_missing.entities"}}};
+    const auto result = methodology->run(request);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error.code, "invalid_input");
+    EXPECT_NE(result.error.message.find("capture_label"), std::string::npos) << result.error.message;
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, FeaturePlanKeepsSafeInputsAndHonorsExplicitSafetyAnnotations) {
+    const auto database = node.create_database("feature_usage");
+    const auto table = database->create_table("entities");
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"id", index + 1}, {"label", index % 2},
+                       {"feature", 1.0 + (index % 7) * 1.3}, {"label_copy", index % 2}});
+    }
+    auto dataset = zetta::data::resolve_dataset(node,
+        zetta::data::parse_dataset_path("feature_usage.entities"));
+    ASSERT_TRUE(dataset.ok()) << dataset.error;
+    const auto project = node.create_project("feature usage");
+    zetta::ir::ExecutionGraph graph;
+    const auto step = graph.add_node(zetta::ir::StepKind::Model, "model",
+        {{"label", "label"}}, "model");
+    const auto stored = project->create_graph("feature usage", std::move(graph));
+    ApiContext context{node, &cluster, "", trace, &node.span_recorder(), &background};
+    zetta::ml::RunRequest request{&context, project.get(), stored.get(), nlohmann::json::object()};
+    const auto accepted = zetta::ml::plan_run_features(request, "M-1", dataset);
+    EXPECT_TRUE(zetta::ml::feature_plan_error(accepted).empty())
+        << zetta::ml::feature_plan_error(accepted);
+    EXPECT_EQ(dataset.contract.feature_columns, std::vector<std::string>{"feature"});
+    for (const auto* excluded : {"id", "label", "label_copy"}) {
+        EXPECT_TRUE(std::ranges::any_of(accepted.excluded, [&](const auto& item) {
+            return item.source_column == excluded && !item.reason.empty();
+        }));
+    }
+    step->attributes["features"] = {{{"name", "feature"}, {"leaks_target", true}}};
+    const auto refused = zetta::ml::plan_run_features(request, "M-1", dataset);
+    EXPECT_FALSE(zetta::ml::feature_plan_error(refused).empty());
+    EXPECT_TRUE(node.runs().empty());
+}
 
 // =====================================================================
 // Canonical journey 1 — UC-1 end to end: project → intent → compile → gate →

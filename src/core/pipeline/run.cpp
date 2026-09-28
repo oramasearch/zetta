@@ -44,6 +44,32 @@ const nlohmann::json& schema_document() {
         "created": { "type": "string" },
         "updated": { "type": "string" },
         "trace_id": { "type": "string" },
+        "features": {
+          "type": "object",
+          "required": ["used", "excluded"],
+          "additionalProperties": false,
+          "properties": {
+            "used": { "type": "array", "items": {
+              "type": "object", "required": ["name", "source", "transform", "why"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "source": { "type": "array", "minItems": 1,
+                            "items": { "type": "string", "minLength": 1 } },
+                "transform": { "type": "string", "minLength": 1 },
+                "why": { "type": "string", "minLength": 1 }
+              }
+            } },
+            "excluded": { "type": "array", "items": {
+              "type": "object", "required": ["name", "why"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "why": { "type": "string", "minLength": 1 }
+              }
+            } }
+          }
+        },
         "logs": {
           "type": "array",
           "items": {
@@ -154,6 +180,7 @@ nlohmann::json to_json(const RunValue& value) {
         {"created", value.created},
         {"updated", value.updated},
         {"trace_id", value.trace_id},
+        {"features", value.features},
         {"logs", std::move(logs)},
         {"outputs", std::move(outputs)},
         {"lineage",
@@ -164,6 +191,10 @@ nlohmann::json to_json(const RunValue& value) {
 }
 
 const nlohmann::json& run_value_schema() { return schema_document(); }
+
+const nlohmann::json& run_features_schema() {
+    return schema_document().at("properties").at("features");
+}
 
 bool validate_run_value(const nlohmann::json& value, std::string* error) {
     collecting_error_handler handler;
@@ -191,6 +222,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     parsed.created = value.value("created", std::string{});
     parsed.updated = value.value("updated", std::string{});
     parsed.trace_id = value.value("trace_id", std::string{});
+    parsed.features = value.value("features", parsed.features);
 
     if (const auto logs = value.find("logs"); logs != value.end()) {
         for (const auto& entry : *logs) {
@@ -253,6 +285,17 @@ void Run::set_lineage(RunLineage lineage) {
 void Run::set_trace_id(std::string trace_id) {
     value_.trace_id = std::move(trace_id);
     capture_and_persist();
+}
+
+bool Run::set_features(nlohmann::json features, std::string* error) {
+    auto candidate = metadata();
+    candidate["features"] = features;
+    if (!validate_run_value(candidate, error)) {
+        return false;
+    }
+    value_.features = std::move(features);
+    capture_and_persist();
+    return true;
 }
 
 void Run::apply_value(RunValue value) {

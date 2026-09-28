@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -177,7 +178,7 @@ api::ApiResult run_m6(RunRequest &request) {
       data::default_dataset_sampler(request.context->node,
                                     request.context->cluster));
   if (!resolved.ok()) {
-    return api::ApiResult::failure("engine_error", resolved.error);
+    return run_dataset_failure(request, "M-6", resolved);
   }
   resolved.contract.label_column = outcome;
   std::erase(resolved.contract.feature_columns, treatment);
@@ -204,11 +205,19 @@ api::ApiResult run_m6(RunRequest &request) {
       "bootstrap_samples", options.params.bootstrap_samples);
   options.params.seed = request.input.value("seed", options.params.seed);
 
+  data::FeaturePlanOptions feature_options;
+  feature_options.treatment_column = treatment;
+  const auto feature_plan = plan_run_features(request, "M-6", resolved, feature_options);
+  if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+    return api::ApiResult::failure("invalid_input", error);
+  }
+
   UpliftRunResult result =
       run_uplift_on_table(request.context->node, resolved, options);
   if (!result.run) {
     return api::ApiResult::failure("engine_error", result.error);
   }
+  record_run_features(request.context->node, result.run->id(), feature_plan);
   nlohmann::json output{
       {"run_id", result.run->id()},
       {"engine", "uplift"},

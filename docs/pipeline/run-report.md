@@ -46,6 +46,7 @@ state, and `get_run_report` puts them together at query time:
 | survival quality | the survival Model's concordance and IPCW Brier metrics |
 | survival outputs | the run's survival and interval-calibration table refs |
 | M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
+| used features and exclusions with reasons | the Run's accepted feature plan, plus fitted segmentation encoding metadata |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -76,6 +77,47 @@ than failing the whole report. A dataset-less churn run (the built-in demo data)
 covered end to end over REST in `tests/api/test_rest_server.cpp`.
 
 ## What the run has to write down
+
+### Features used and excluded (#1062)
+
+Every methodology report includes the same provenance shape:
+
+```json
+{
+  "features": {
+    "used": [{
+      "name": "lag_7",
+      "source": ["value", "time"],
+      "transform": "strictly past lag 7",
+      "why": "forecast history is ordered within series and evaluated with rolling origins"
+    }],
+    "excluded": [{
+      "name": "value",
+      "why": "the label is a target or evaluation role, never a contemporaneous feature"
+    }]
+  }
+}
+```
+
+`source` is an array because native transformations can read several columns. The
+label and entity key are reserved roles, not scalar predictors. A structural key
+or historical target can therefore appear as a transformation source while also
+being excluded as a direct feature. Leakage suspects and post-treatment uplift
+columns have explicit exclusion reasons; selecting unsafe inputs refuses the run.
+
+The accepted choices are stored on the Run through the schema-validated
+`set_features` mutator and survive persistence and replication. The report is still
+assembled on read, without a second report document. Segmentation expands the
+record using its fitted encoder's actual names, scaling, and exclusions. Other
+native featurizers record their own executed transforms, not generic suggestions
+that their trainers do not implement. See [featurization.md](../data/featurization.md).
+
+Older/direct-trainer Runs without provenance remain readable. Their report uses
+the fitted Model's feature-name list when present, explicitly saying detailed
+provenance was not recorded; it does not reconstruct historical exclusions from
+today's mutable table.
+
+### Measured outcomes
 
 The feature table is in memory and gone when the run ends, so the facts a report needs
 are recorded as the run goes:
@@ -137,9 +179,11 @@ accuracy a constant answer would score, and **draw `missing` rather than skippin
 
 ## Boundaries
 
-No new JSON format and no new storage. `run.schema.json`'s output `kind` enum gains
-`"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
-tool list, and the agent's read-tool allowlist.
+Feature provenance extends `run.schema.json` with an optional, strictly validated
+`features` object; older records default to empty arrays. The output `kind` enum
+includes `"report"`. `get_run_report` remains a read capability (`GET`), on the REST
+surface, the MCP tool list, and the agent's read-tool allowlist. Its OpenAPI response
+requires the same feature-provenance shape.
 
 ## Learning-to-rank reports
 

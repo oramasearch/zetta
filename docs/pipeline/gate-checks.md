@@ -158,6 +158,9 @@ name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
 `overlap_upper` annotations must remain within `[0.05,0.95]` and be ordered.
 Features named like the outcome, equal to the treatment column, or carrying a
 `data_as_of` later than `treatment_time` fail before execution.
+An explicit `post_treatment: true` feature annotation also fails. Data-first run
+planning reuses this check and `DataLeakageCheck` for the analyzed feature sources;
+an accepted graph is not permission to train on newly discovered leakage (#1062).
 
 ### `graph_edge_time` — graph rows available at prediction time
 

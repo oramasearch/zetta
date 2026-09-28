@@ -454,6 +454,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     segmentation_graph.cpp  M-3 config schema and correctness gate: excluded roles, global transforms, K criterion and connected outputs (#1042)
     segmentation_methodology.cpp M-3 shape/owns/run adapter, unlabeled table resolution, coordinated launch and measured report (#1042)
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
+    run_features.cpp        plan_run_features / record_run_features / run_feature_report — common data-first run preflight, existing leakage/causal checks, accepted trainer inputs, and persistent feature/exclusion reasons for all runnable methodologies (#1062); public declarations in include/zetta/ml/run_features.hpp
     graph.cpp               deterministic native graph feature and node2vec-style embedding implementation (#1051)
     graph_job.cpp           SPMD sparse edge-statistics combine and iterative PageRank rank-mass allreduce (#1051)
     graph_methodology.cpp   M-12 graph pipeline shape, ownership predicate, registry metadata, resolved-table run callback (#1051)

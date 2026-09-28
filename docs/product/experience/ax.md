@@ -47,11 +47,13 @@ relay it to a person.
   into explicit features and exclusions. When the prediction unit is wrong or a
   required field is absent, the read returns a named `transform_required` correction
   and proposed SQL or clean step. It never changes the dataset for the agent
-  ([featurization.md](../../data/featurization.md), #1062).
+  ([featurization.md](../../data/featurization.md), #1062). Runnable methodology
+  callbacks enforce the plan before training and refuse selected unsafe features;
+  `get_run_report.features` lists used sources/transforms and exclusions with reasons.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
   metrics, and runnable status. `compile_intent` accepts a methodology or
-  solution selector; M-1 and M-12 are runnable, while unsupported work names
+  solution selector; M-1 through M-13 are runnable, while unsupported work names
   its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
