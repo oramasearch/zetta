@@ -102,6 +102,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   time-to-stockout, complete policy and holdout defaults, bounded ERP release,
   five observed guardrails, and a service-level ROI readout. See
   [solutions/S-6.md](solutions/S-6.md).
+- **S-11 Next-Best-Action (#1120)** — runnable at levels 1–4 with
+  M-2/M-1/M-6/M-8/M-15, complete request-time policy and uplift-cell defaults,
+  exploit/explore arbitration, durable selection propensities, cross-channel
+  consent/contact enforcement, action delivery, and a net-value ROI readout.
+  See [solutions/S-11.md](solutions/S-11.md).
 
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal

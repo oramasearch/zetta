@@ -416,9 +416,31 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
-// S-5's domain adaptations (#1114). The methodology check proves M-4's own
-// shape; these checks bind its temporal contract to the complete demand
-// solution and require a coherent leaf-level hierarchy declaration.
+// S-11 validates logged probabilities, contact constraints, and interpretation.
+class S11LoggedPropensityCheck final : public Check {
+public:
+    std::string name() const override { return "s11_logged_propensity"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S11ContactConsentCheck final : public Check {
+public:
+    std::string name() const override { return "s11_contact_consent"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S11PropensityInterpretationCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s11_propensity_interpretation";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-10 validates label maturity, selection bias, and request-time parity.
 class S10LabelDelayCheck final : public Check {
 public:
     std::string name() const override { return "s10_label_delay"; }
@@ -451,6 +473,9 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-5's domain adaptations (#1114). The methodology check proves M-4's own
+// shape; these checks bind its temporal contract to the complete demand
+// solution and require a coherent leaf-level hierarchy declaration.
 class S5RollingOriginCheck final : public Check {
 public:
     std::string name() const override { return "s5_rolling_origin"; }

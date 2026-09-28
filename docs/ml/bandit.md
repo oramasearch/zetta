@@ -84,7 +84,9 @@ Create a table with decision, arm, reward, and optional numeric context columns.
 Create a project, capture its intent, compile with `methodology: "M-15"`, and
 run the resulting pipeline with that table as `dataset_path`. Optional run
 parameters choose `thompson`, `linucb`, or `linear_thompson`, set the seed,
-and override the graph's floor and caps. Read the completed run with
+and override the graph's floor and caps. Compile hints may bind
+`decision_column`, `arm_column`, and `reward_column`; their defaults remain
+`decision_id`, `arm`, and `reward`. Read the completed run with
 `get_run_report`; its outputs name the policy and decision tables.
 
 When `dataset_path` is omitted, the M-15 registry adapter resolves the source

@@ -142,7 +142,9 @@ What's inside, by domain (each links to that domain's docs):
   contact limits, positive-uplift targeting, capped journeys, protected
   holdouts, and response ROI. S-10 adds request-time fraud decisions with graph evidence,
   case tasks, and delayed-label, selection-bias, and feature-parity refusals.
-  S-11 retains minimal defaults. Snapshot
+  S-11 is runnable at all four levels with M-8 action rankings,
+  M-15 logged exploration, consent/contact enforcement, request-time channel
+  delivery, uplift cells, and a net-value ROI readout. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while

@@ -82,8 +82,16 @@ At levels 2–4, M-6 treatment effects supply positive-uplift targeting.
 S-10's M-1 stage writes `fraud_results.authorization_scores_*` with
 `transaction` and `fraud_score` columns. The module binds that real output,
 not the retention table, and crosses its authorization band with graph and
-case-owner evidence. S-11 inputs and score scales remain its module's
-responsibility while its template is minimal.
+case-owner evidence.
+
+S-11 is the other bound primary-output case. It automatically selects the M-8
+recommendation table's `entity` and `policy_score`. Its snapshot may retain
+multiple candidate rows per customer by using a unique candidate key while
+`M-8.entity_column` names the shared customer. M-15 accepts an explicit
+`decision_column` so its chosen arm and actual probability join to that same
+customer. The S-11 foundation groups M-8 candidates, applies the experiment's
+exploit or explore choice, resolves the chosen action's channel, and refuses an
+arm that is absent, ineligible, or capped.
 
 ## Run and read back
 
@@ -121,6 +129,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    actionable audience syncs with predicted value and horizon, retain budget
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
+   S-11 rows carry the policy tier, channel, exploit/explore mode, selected
+   action, predictive propensity, and actual selection probability. Its five
+   guardrails are observed from the same execution.
 
    S-7 routes only flagged rows within its exact alert budget, publishes one
    candidate-driver report with a causal caveat, and includes the durable forum
@@ -251,3 +262,11 @@ request-time and case-management payloads, proves permanent holdout
 suppression, observes all five guardrails, records centered fraud-loss outcomes
 with a `-0.12` treatment effect, and checks that the champion/challenger
 readout's estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.NextBestActionArbitratesChannelsAndRecoversPlantedEffect`
+builds and runs S-11 over two candidate channels per synthetic customer. It
+executes all five methodology callbacks, verifies exploit and explore
+deliveries and channel selection, reads positive M-15 propensity logs, proves
+holdout/consent/contact-cap suppression, records centered net-value outcomes
+with a 0.18 effect, and checks that the estimate and 95% confidence interval
+recover the planted effect.

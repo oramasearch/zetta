@@ -96,10 +96,16 @@ named exclusion or manual-authorization-only flag suppresses action. Its
 deterministic experiment protects 10% of every score band and assigns the rest
 across champion, challenger, and exploration cells.
 
-S-11 intentionally provides a minimal starter policy derived from
-its catalogue actions. It requires explicit eligibility, suppresses excluded
-entities, sets a zero spending budget, uses conservative authority for high-stakes
-work, and leaves the kill switch off. Its module issue refines these defaults.
+S-11 defines recommended/no-positive-value floors of 0.0 and negative one
+billion. The recommended tier returns an A2 decision response; an optional
+high-stakes review is A1 and no action is A0. Eligibility, consent, and a
+remaining cross-channel contact allowance must pass. Exclusion,
+do-not-contact, or denied consent suppresses delivery. The lifetime cap is four,
+the rolling seven-day cap is one, and the budget is 1,000 currency units. Its
+experiment keeps 10% as permanent holdout and divides the rest equally between
+M-8 exploit and M-15 explore cells. The explore cell records M-15's actual
+selection probability; exploit records one.
+
 These numbers are editable configuration, not calibration claims or customer
 economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
@@ -129,6 +135,9 @@ S-9 uses the `journey_sent` treatment cell and observes unsubscribe, complaint,
 consent-violation, contact-frequency, and action-execution metrics.
 S-10 observes fraud loss, false declines, challenge rate, review load, and
 action execution over a champion/challenger design.
+S-11 observes consent,
+contact-cap, propensity-log, margin-floor, and action-execution guardrails and
+measures `net_value` through uplift cells.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

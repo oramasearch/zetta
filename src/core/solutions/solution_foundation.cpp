@@ -98,8 +98,12 @@ Json create_bindings(Node& node, const pipeline::Project& project,
     experiment.allocations.push_back({scope + "/holdout", ExperimentTier::Holdout, holdout});
     const auto& cells = solution.templates.experiment.treatment_cells;
     for (const std::string& cell : cells) {
+        const ExperimentTier tier =
+            solution.id == "S-11" && cell == "explore"
+                ? ExperimentTier::Exploration
+                : ExperimentTier::Treatment;
         experiment.allocations.push_back(
-            {scope + "/" + cell, ExperimentTier::Treatment, (1.0 - holdout) / cells.size()});
+            {scope + "/" + cell, tier, (1.0 - holdout) / cells.size()});
     }
     const auto created = node.experiment_manager().create(std::move(experiment), &error);
     if (!created) {
@@ -141,7 +145,8 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
     const bool solution_with_numeric_cutoff =
         manifest &&
         (solution == "S-1" || solution == "S-2" || solution == "S-5" ||
-         solution == "S-8" || solution == "S-9" || solution == "S-10");
+         solution == "S-8" || solution == "S-9" || solution == "S-10" ||
+         solution == "S-11");
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
@@ -478,6 +483,50 @@ void bind_s12_correctness(ir::ExecutionGraph& graph,
            common.value("low_confidence_routes_to_review", true)},
           {"fast_track_requires_clear",
            common.value("fast_track_requires_clear", true)}}}};
+}
+
+void bind_s11_correctness(ir::ExecutionGraph& graph,
+                          const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-11") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    const Json recommendation =
+        sources.contains("M-8") && sources.at("M-8").is_object()
+            ? sources.at("M-8")
+            : Json::object();
+    manifest->attributes["s11_correctness"] = {
+        {"entity_column",
+         recommendation.value("entity_column", "entity_id")},
+        {"action_column",
+         recommendation.value("action_column", "action_id")},
+        {"logging_propensity_column",
+         recommendation.value("logging_propensity_column",
+                              "logging_propensity")},
+        {"bandit_propensity_output", "decision propensities"},
+        {"constraints",
+         {{"require_consent", common.value("require_consent", true)},
+          {"consent_column", common.value("consent_column", "consent")},
+          {"eligibility_column",
+           recommendation.value("eligibility_column", "eligible")},
+          {"contacts_column",
+           recommendation.value("contacts_column", "contacts")},
+          {"contact_cap_column",
+           recommendation.value("contact_cap_column", "contact_cap")},
+          {"cross_channel", common.value("cross_channel", true)}}},
+        {"propensity_interpretation",
+         recommendation.value("propensity_interpretation",
+                              "predictive_not_causal")},
+        {"causal_claim_from_propensity",
+         common.value("causal_claim_from_propensity", false)}};
 }
 
 void bind_s10_correctness(ir::ExecutionGraph& graph,
@@ -830,6 +879,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s6_correctness"] = {{"type", "object"}};
     schema["properties"]["s3_correctness"] = {{"type", "object"}};
     schema["properties"]["s4_correctness"] = {{"type", "object"}};
+    schema["properties"]["s11_correctness"] = {{"type", "object"}};
     schema["properties"]["s12_correctness"] = {{"type", "object"}};
     schema["properties"]["s5_correctness"] = {{"type", "object"}};
     schema["properties"]["s7_correctness"] = {{"type", "object"}};
@@ -879,6 +929,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s3_correctness(composed.graph, settings, input.at("sources"));
     bind_s4_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"), *solution);
+    bind_s11_correctness(composed.graph, input.at("sources"));
     bind_s12_correctness(composed.graph, *solution, settings,
                          input.at("sources"));
     bind_s5_correctness(composed.graph, input.at("sources"));
@@ -905,7 +956,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return entry.role == "primary";
     });
     if (primary != solution->composition.end() && primary->id != "M-1" &&
-        solution->id != "S-5" && !settings.contains("decision_source")) {
+        solution->id != "S-5" && solution->id != "S-11" &&
+        !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
     if (settings.contains("decision_source") &&
@@ -927,6 +979,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
             {"entity_column", "entity"},
             {"score_column", "predicted_value"},
             {"output_name", "Write lifetime value predictions"}};
+    } else if (!binding.contains("decision_source") && solution->id == "S-11") {
+        binding["decision_source"] = {
+            {"methodology", "M-8"},
+            {"entity_column", "entity"},
+            {"score_column", "policy_score"},
+            {"output_name", "recommendation table"}};
     } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
@@ -977,6 +1035,9 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "S-4") {
         binding["s4_correctness"] = composed.graph.find_node("solution_manifest")
                                         ->attributes.at("s4_correctness");
+    } else if (solution->id == "S-11") {
+        binding["s11_correctness"] = composed.graph.find_node("solution_manifest")
+                                         ->attributes.at("s11_correctness");
     } else if (solution->id == "S-12") {
         binding["s12_correctness"] =
             composed.graph.find_node("solution_manifest")
@@ -1161,7 +1222,40 @@ std::optional<std::vector<Json>> score_rows(Node& node, const Json& binding,
                 }
                 return decision_rows;
             }
-            return rows;
+            if (binding.value("solution", std::string{}) != "S-11") {
+                return rows;
+            }
+            std::map<std::string, std::vector<Json>> candidates;
+            for (const Json& row : *rows) {
+                if (!row.contains("entity") || !row.contains("action") ||
+                    !row.contains("policy_score") ||
+                    !row.at("policy_score").is_number() ||
+                    !row.contains("propensity") ||
+                    !row.at("propensity").is_number() ||
+                    !row.contains("eligible") ||
+                    !row.at("eligible").is_boolean() ||
+                    !row.contains("capped") || !row.at("capped").is_boolean() ||
+                    !row.contains("chosen") || !row.at("chosen").is_boolean()) {
+                    error = "S-11 recommendation output has an invalid candidate row";
+                    return std::nullopt;
+                }
+                candidates[entity_key(row.at("entity"))].push_back(row);
+            }
+            std::vector<Json> selected;
+            selected.reserve(candidates.size());
+            for (auto& [entity, actions] : candidates) {
+                (void)entity;
+                const auto chosen = std::ranges::find_if(
+                    actions, [](const Json& candidate) {
+                        return candidate.at("chosen").get<bool>();
+                    });
+                Json decision = chosen == actions.end() ? actions.front()
+                                                        : *chosen;
+                decision["recommendation_chosen"] = chosen != actions.end();
+                decision["candidate_actions"] = std::move(actions);
+                selected.push_back(std::move(decision));
+            }
+            return selected;
         }
     }
     error = "selected methodology produced no table matching decision_source";
@@ -1198,6 +1292,45 @@ std::optional<std::vector<Json>> aggregate_replenishment_forecast(
         aggregated.push_back(std::move(row));
     }
     return aggregated;
+}
+
+std::optional<std::map<std::string, Json>> s11_bandit_decisions(
+    Node& node, const Json& binding,
+    const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
+    std::map<std::string, Json> decisions;
+    if (binding.value("solution", std::string{}) != "S-11") {
+        return decisions;
+    }
+    for (const pipeline::RunOutput& output : outputs) {
+        if (output.kind != "dataset" ||
+            output.name != "decision propensities") {
+            continue;
+        }
+        const std::shared_ptr<data::Table> table = table_at(node, output.ref);
+        if (!table) {
+            continue;
+        }
+        const std::optional<std::vector<Json>> rows =
+            read_rows(node, *table, error);
+        if (!rows) {
+            return std::nullopt;
+        }
+        for (const Json& row : *rows) {
+            if (!row.contains("decision") ||
+                !row.contains("chosen_arm") ||
+                !row.at("chosen_arm").is_string() ||
+                !row.contains("propensity") ||
+                !row.at("propensity").is_number() ||
+                !(row.at("propensity").get<double>() > 0.0)) {
+                error = "S-11 bandit output has an invalid logged propensity row";
+                return std::nullopt;
+            }
+            decisions[entity_key(row.at("decision"))] = row;
+        }
+        return decisions;
+    }
+    error = "S-11 produced no bandit decision-propensity table";
+    return std::nullopt;
 }
 
 std::optional<std::map<std::string, Json>> uplift_rows(
@@ -1384,6 +1517,18 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
         spec.payload["rep_capacity_available"] =
             entity.value("rep_capacity_available", false);
         spec.payload["queue_owner"] = spec.owner;
+    } else if (binding.value("solution", std::string{}) == "S-11") {
+        spec.payload["selected_action"] =
+            entity.value("selected_action", std::string{});
+        spec.payload["channel"] = entity.value("channel", std::string{});
+        spec.payload["selection_mode"] =
+            entity.value("selection_mode", std::string{});
+        spec.payload["selection_propensity"] =
+            entity.value("selection_propensity", 0.0);
+        spec.payload["predictive_propensity"] =
+            entity.value("predictive_propensity", 0.0);
+        spec.payload["propensity_interpretation"] =
+            "predictive_not_causal";
     } else if (binding.value("solution", std::string{}) == "S-12") {
         spec.payload["claim_id"] = decision.entity_id;
         spec.payload["assigned_path"] = decision.action;
@@ -1570,6 +1715,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     if (!targeting) {
         return ApiResult::failure("engine_error", read_error);
     }
+    const auto bandit_decisions =
+        s11_bandit_decisions(node, binding, scores, read_error);
+    if (!bandit_decisions) {
+        return ApiResult::failure("engine_error", read_error);
+    }
     if (binding.value("solution", std::string{}) == "S-1") {
         const double threshold =
             binding.at("s1_correctness").value("too_good_auc_threshold", 0.95);
@@ -1611,13 +1761,36 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         entities = *forecast_entities;
     } else {
         std::map<std::string, Json> evidence;
+        std::map<std::string, Json> action_channels;
+        const bool next_best_action =
+            binding.value("solution", std::string{}) == "S-11";
+        const std::string evidence_entity_column = next_best_action
+            ? binding.at("s11_correctness").value(
+                  "entity_column", std::string("entity_id"))
+            : "entity_id";
+        const std::string evidence_action_column = next_best_action
+            ? binding.at("s11_correctness").value(
+                  "action_column", std::string("action_id"))
+            : std::string{};
         for (std::size_t index = 0; index < snapshot->store().size(); ++index) {
             const auto row = snapshot->store().at(index);
-            if (!row) {
+            if (!row || !row->contains(evidence_entity_column)) {
                 return ApiResult::failure(
                     "engine_error", "could not read snapshot evidence");
             }
-            evidence.emplace(entity_key(row->at("entity_id")), *row);
+            const std::string key = entity_key(row->at(evidence_entity_column));
+            evidence.emplace(key, *row);
+            if (next_best_action) {
+                if (!row->contains(evidence_action_column) ||
+                    !row->contains("channel") ||
+                    !row->at("channel").is_string()) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "S-11 snapshot rows must contain an action and channel");
+                }
+                action_channels[key][entity_key(row->at(evidence_action_column))] =
+                    row->at("channel");
+            }
         }
         std::set<std::string> seen;
         for (const Json& row : decision_scores) {
@@ -1642,6 +1815,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     "decision output repeats snapshot entity " + key);
             }
             Json entity = evidence.at(key);
+            if (next_best_action) {
+                entity["entity_id"] = row.at(entity_column);
+                entity["action_channels"] = action_channels.at(key);
+            }
             entity["score"] = row.at(score_column);
             for (const std::string field : {
                      "dominant_driver", "driver_effect", "reason_codes",
@@ -1683,6 +1860,24 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                         0.0) {
                     entity["action"] = "no_contact";
                 }
+            }
+            if (next_best_action) {
+                const auto bandit = bandit_decisions->find(key);
+                if (bandit == bandit_decisions->end()) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "S-11 bandit propensity output must join exactly once "
+                        "to decision entity " + key);
+                }
+                entity["recommended_action"] = row.at("action");
+                entity["predictive_propensity"] = row.at("propensity");
+                entity["recommendation_chosen"] = row.at("recommendation_chosen");
+                entity["candidate_actions"] = row.at("candidate_actions");
+                entity["exploration_action"] = bandit->second.at("chosen_arm");
+                entity["exploration_propensity"] = bandit->second.at("propensity");
+                entity["cost"] = row.value("cost", 0.0);
+                entity["within_contact_cap"] =
+                    entity.value("contacts", 0.0) < entity.value("contact_cap", 0.0);
             }
             entity["experiment"] = binding.at("experiment_id");
             entities.push_back(std::move(entity));
@@ -1760,6 +1955,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t challenges = 0;
     std::size_t review_tasks = 0;
     std::size_t operational_decisions = 0;
+    std::size_t s11_consent_violations = 0;
+    std::size_t s11_contact_cap_violations = 0;
+    std::size_t s11_missing_propensities = 0;
+    std::size_t s11_margin_floor_violations = 0;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -1781,6 +1980,56 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     }
     for (Json& entity : entities) {
         std::string error;
+        if (binding.value("solution", std::string{}) == "S-11") {
+            const auto assignment = node.experiment_manager().assign(
+                binding.at("experiment_id").get<std::string>(),
+                entity_key(entity.at("entity_id")), false, {}, {}, &error);
+            if (!assignment) {
+                return ApiResult::failure("engine_error", error);
+            }
+            const bool explore =
+                assignment->value.tier == ExperimentTier::Exploration;
+            const std::string selected_action =
+                explore
+                    ? entity.at("exploration_action").get<std::string>()
+                    : entity_key(entity.at("recommended_action"));
+            Json candidate = Json::object();
+            for (const Json& action : entity.at("candidate_actions")) {
+                if (entity_key(action.at("action")) == selected_action) {
+                    candidate = action;
+                    break;
+                }
+            }
+            const bool candidate_allowed =
+                !candidate.empty() && candidate.at("eligible").get<bool>() &&
+                !candidate.at("capped").get<bool>();
+            const bool source_eligible =
+                entity.contains("eligible") &&
+                ((entity.at("eligible").is_boolean() &&
+                  entity.at("eligible").get<bool>()) ||
+                 (entity.at("eligible").is_number() &&
+                  entity.at("eligible").get<double>() > 0.5));
+            entity["selected_action"] = selected_action;
+            entity["channel"] =
+                entity.at("action_channels")
+                    .value(selected_action, std::string{});
+            entity["selection_mode"] = explore ? "explore" : "exploit";
+            entity["selection_propensity"] =
+                explore ? entity.at("exploration_propensity") : Json(1.0);
+            entity["eligible"] = source_eligible && candidate_allowed;
+            entity["within_contact_cap"] =
+                entity.value("within_contact_cap", false) &&
+                candidate_allowed;
+            if (!candidate.empty()) {
+                entity["cost"] = candidate.value("cost", 0.0);
+                entity["selected_expected_value"] =
+                    candidate.value("expected_value", 0.0);
+            }
+            entity["action"] =
+                candidate_allowed && entity.value("recommendation_chosen", false)
+                    ? "decision_api_response"
+                    : "no_action";
+        }
         const auto decision = policies.decide(policy->id, entity, actor, &error);
         if (!decision) {
             return ApiResult::failure("engine_error", error);
@@ -1861,6 +2110,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 {"case_owner",
                  entity.value("owner",
                               binding.at("delivery").at("owner").get<std::string>())}};
+        } else if (binding.value("solution", std::string{}) == "S-11") {
+            entity["decision_cell"] = {
+                {"policy_tier", decision->tier},
+                {"channel", entity.value("channel", std::string{})},
+                {"selection_mode",
+                 entity.value("selection_mode", std::string{})},
+                {"selected_action",
+                 entity.value("selected_action", std::string{})}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -1907,6 +2164,21 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 unsafe_work_orders += unsafe ? 1u : 0u;
                 false_work_orders +=
                     entity.value("false_work_order", false) ? 1u : 0u;
+            }
+            if (binding.value("solution", std::string{}) == "S-11") {
+                if (!entity.value("consent", false)) {
+                    ++s11_consent_violations;
+                }
+                if (!entity.value("within_contact_cap", false)) {
+                    ++s11_contact_cap_violations;
+                }
+                if (!(entity.value("selection_propensity", 0.0) > 0.0)) {
+                    ++s11_missing_propensities;
+                }
+                if (entity.value("selected_expected_value", 0.0) <
+                    entity.value("margin_floor", 0.0)) {
+                    ++s11_margin_floor_violations;
+                }
             }
         }
         if (!deliver_decision(node, *decision, entity,
@@ -2119,6 +2391,23 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 "contact_frequency", maximum_contacts);
             monitor->observe_guardrail("complaints", complaints / entities.size());
             monitor->observe_guardrail("action_execution_rate", execution_rate);
+        } else if (binding.value("solution", std::string{}) == "S-11") {
+            const double denominator =
+                static_cast<double>(std::max<std::size_t>(actionable, 1));
+            monitor->observe_guardrail(
+                "consent_violation_rate",
+                static_cast<double>(s11_consent_violations) / denominator);
+            monitor->observe_guardrail(
+                "contact_cap_violation_rate",
+                static_cast<double>(s11_contact_cap_violations) / denominator);
+            monitor->observe_guardrail(
+                "missing_propensity_rate",
+                static_cast<double>(s11_missing_propensities) / denominator);
+            monitor->observe_guardrail(
+                "margin_floor_violation_rate",
+                static_cast<double>(s11_margin_floor_violations) / denominator);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else if (binding.value("solution", std::string{}) == "S-12") {
             monitor->observe_guardrail("automated_denials",
                                        automated_denials);
