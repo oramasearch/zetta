@@ -29,7 +29,9 @@ problem the module solves and what data roles it needs.
 
 `list_solutions` and `get_solution` are read capabilities on the REST and MCP
 surfaces. They are also eligible for an agent's opt-in, read-only capability
-list. `pipelines:manage` grants the two preview write operations.
+list. `pipelines:manage` grants the two preview write operations. The permission
+vocabulary test checks both `create_solution` and `run_solution` explicitly,
+alongside the owner-authorizes-every-registry-operation invariant.
 
 ## Portfolio-number mapping
 
