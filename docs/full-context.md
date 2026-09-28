@@ -135,6 +135,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   eligibility, persisted contact limits, positive-uplift targeting, capped
   journey delivery, tier holdouts, and a response ROI readout. See
   [solutions/S-9.md](solutions/S-9.md).
+- **S-10 Fraud & Financial-Crime Decisioning (#1119)** — runnable at levels
+  1–4 with M-2 identity, M-12 time-bounded graph features, fraud-specific M-1
+  authorization scores, and M-5 timing at levels 3 and 4. Full policy,
+  champion/challenger exploration, request-time and case-management actions,
+  five observed guardrails, delayed-label/selection-bias/feature-parity
+  refusals, and a planted fraud-loss readout ship as module defaults. See
+  [solutions/S-10.md](solutions/S-10.md).
 
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and

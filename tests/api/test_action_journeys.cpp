@@ -1466,6 +1466,324 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_fraud_decisioning_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("authorizations");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool fraudulent = index % 5 == 0;
+        const int transaction = index + 1;
+        const int counterparty = 1000 + index % 24;
+        table->add_row(
+            {{"entity", transaction},
+             {"record_id", "authorization-" + std::to_string(transaction)},
+             {"source", "authorization_fixture"},
+             {"name", "Authorization " + std::to_string(transaction)},
+             {"label", fraudulent ? 1 : 0},
+             {"counterparty_id", counterparty},
+             {"amount", 25.0 + (index * 37) % 1000},
+             {"device_velocity",
+              fraudulent ? 5.0 + index % 8 : 1.0 + index % 7},
+             {"decision_propensity", 0.5 + (index % 5) * 0.1},
+             {"graph_page_rank",
+              fraudulent ? 0.45 + (index % 10) * 0.04
+                         : 0.05 + (index % 15) * 0.04},
+             {"graph_component", index % 8},
+             {"edge_time", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"account_id", 5000 + index % 40},
+             {"merchant_id", 7000 + index % 30},
+             {"eligible", true},
+             {"excluded", false},
+             {"account_open", true},
+             {"request_time_features_current", true},
+             {"graph_features_current", true},
+             {"manual_authorization_only", false},
+             {"owner", "fraud-operations"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", "authorization-9999"},
+         {"source", "authorization_fixture"},
+         {"name", "Future authorization"},
+         {"label", 1},
+         {"counterparty_id", 1099},
+         {"amount", 5000.0},
+         {"device_velocity", 99.0},
+         {"decision_propensity", 0.5},
+         {"graph_page_rank", 0.99},
+         {"graph_component", 99},
+         {"edge_time", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"account_id", 5999},
+         {"merchant_id", 7999},
+         {"eligible", true},
+         {"excluded", false},
+         {"account_open", true},
+         {"request_time_features_current", true},
+         {"graph_features_current", true},
+         {"manual_authorization_only", false},
+         {"owner", "fraud-operations"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json fraud_decisioning_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "authorizations"},
+          {"target_table", "fraud_decisioning_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "edge_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"counterparty_id", "amount", "device_velocity",
+            "decision_propensity", "graph_page_rank",
+            "graph_component"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://fraud.example.test/authorization-decisions"},
+          {"owner", "fraud-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", -100.0},
+          {"investment", 400.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_fraud_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"fraud-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double fraud_loss =
+            0.3 + 0.1 * centered / counts[cell] -
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed fraud loss",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "fraud_loss"},
+              {"value", fraud_loss},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured fraud-loss effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted fraud-loss effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() +
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= -0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= -0.12;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       FraudDecisioningActsAtRequestTimeAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_fraud_decisioning_data(node);
+    journey::Journey flow{"fraud-decisioning-solution", {}};
+    flow.steps = {
+        {"read S-10 defaults",
+         "get_solution",
+         {{"solution", "S-10"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/design", "champion_challenger"),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "fraud_loss")}}},
+        {"create fraud decisioning project",
+         "create_project",
+         {{"name", "fraud decisioning"}}},
+        {"create S-10 Pipeline",
+         "create_solution",
+         {{"project", "fraud decisioning"},
+          {"solution", "S-10"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "authorizations"},
+            {"M-12",
+             {{"source_column", "entity_id"},
+              {"destination_column", "counterparty_id"},
+              {"weight_column", "amount"},
+              {"time_column", "edge_time"},
+              {"label_column", "label"},
+              {"prediction_time", 239.0}}}}},
+          {"foundation", fraud_decisioning_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"fraud_graph", "/graph"},
+          {"fraud_experiment", "/experiment_id"},
+          {"fraud_readout", "/readout_id"}}},
+        {"run S-10 Pipeline",
+         "run_solution",
+         {{"project", "fraud decisioning"},
+          {"graph", "$fraud_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"fraud_run", "/run_id"}}},
+        {"read completed fraud decisioning Run",
+         "get_run",
+         {{"run_id", "$fraud_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected authorization assignments",
+         "get_experiment",
+         {{"experiment", "$fraud_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read fraud action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("fraud decisioning");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-10 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "transaction");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "fraud_score");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    std::size_t case_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        EXPECT_TRUE(request.at("payload").contains("authorization_decision"));
+        EXPECT_TRUE(request.at("payload").contains("transaction_id"));
+        EXPECT_TRUE(request.at("payload").contains("graph_page_rank"));
+        EXPECT_TRUE(request.at("payload").contains("decision_cell"));
+        if (request.at("payload").at("case_task").get<bool>()) {
+            ++case_tasks;
+            EXPECT_EQ(request.at("payload").at("authorization_decision"),
+                      "review");
+            EXPECT_EQ(request.at("payload").at("case_queue"),
+                      "fraud-operations");
+        }
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_GT(case_tasks, 0u);
+
+    const auto fraud_results = node.find_database("fraud_results");
+    ASSERT_TRUE(fraud_results);
+    ASSERT_EQ(fraud_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement", "SELECT * FROM fraud_results." +
+                           fraud_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("transaction"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("fraud_score"));
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("fraud_decisioning_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_fraud_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
 void land_replenishment_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);

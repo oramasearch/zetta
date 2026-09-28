@@ -464,6 +464,54 @@ void automated_outbound_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "response", "response", 30};
 }
 
+void fraud_decisioning_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.9},
+         {"action", "fraud_review_task"},
+         {"allowed_actions", {"fraud_review_task", "challenge", "block"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.65},
+         {"action", "challenge"},
+         {"allowed_actions", {"challenge", "fraud_review_task"}}},
+        {{"name", "standard"}, {"minimum_score", 0.0},
+         {"action", "approve"}}};
+    result.policy["actions"] = {
+        {"fraud_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 900},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"challenge",
+         {{"autonomy", "A2"}, {"sla_seconds", 2},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"approve",
+         {{"autonomy", "A2"}, {"sla_seconds", 2},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"block",
+         {{"autonomy", "A1"}, {"sla_seconds", 900},
+          {"frequency_cap", frequency(1, 1)}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1, 1);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true),
+        predicate("account_open", true),
+        predicate("request_time_features_current", true),
+        predicate("graph_features_current", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("excluded", true),
+        predicate("manual_authorization_only", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"elevated", 0.1}, {"standard", 0.1}};
+    result.experiment.treatment_cells = {
+        "champion", "challenger", "exploration"};
+    result.guardrails = {
+        {"fraud_loss_rate", 0.02, "maximum"},
+        {"false_decline_rate", 0.01, "maximum"},
+        {"challenge_rate", 0.15, "maximum"},
+        {"review_queue_rate", 0.2, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement.window_days = 45;
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -490,6 +538,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 automated_outbound_defaults(result);
             } else if (solution_id == "S-12") {
                 claims_triage_defaults(result);
+            } else if (solution_id == "S-10") {
+                fraud_decisioning_defaults(result);
             }
             return result;
         }

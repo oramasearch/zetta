@@ -47,6 +47,7 @@ The reusable annotation and methodology-specific checks are:
 | `S8*Check` family | `s8_censoring`, `s8_sensor_drift`, `s8_post_failure_maintenance_leakage` | an S-8 graph that discards censored assets, lacks a bounded pre-decision sensor baseline, or uses maintenance facts recorded after failure |
 
 | `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
+| `S10*Check` family | `s10_label_delay`, `s10_declined_selection_bias`, `s10_request_time_feature_parity`, `s10_level_composition` | an S-10 graph with immature labels, declined-request selection bias, unlogged exploration, request-time feature drift, stale graph evidence, or missing level stages |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -215,6 +216,25 @@ positive incremental uplift selection with no contact for non-positive effects;
 levels 3 and 4 add M-8, and level 4 adds M-10. The bound profile is created and
 persisted by `create_solution`, then checked again by `run_solution`. See
 [S-9](../solutions/S-9.md) for the full contract.
+
+### S-10 composed solution checks
+
+The S-10 checks engage only for a bound S-10 manifest and evaluate the full
+composed graph once. `s10_label_delay` requires a named fully matured fraud or
+case label whose observed delay meets the configured minimum.
+`s10_declined_selection_bias` requires declined requests in the learning
+population, logged exploration propensity in the training contract, and
+below-the-line audit evidence. `s10_request_time_feature_parity` requires exact
+training/authorization feature equality, named graph features, bounded
+freshness, and a graph cutoff no later than the decision.
+`s10_level_composition` requires M-1, M-2, and M-12 at every level and M-5 at
+levels 3 and 4. M-12's `graph_edge_time` check still validates the graph stage
+itself.
+
+`create_solution` derives the profile from the snapshot, dataset roles, and
+optional `sources.correctness` overrides. `run_solution` checks the persisted
+profile again. See [S-10](../solutions/S-10.md) for the full run, action, and
+measurement contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

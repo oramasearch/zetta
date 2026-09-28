@@ -419,6 +419,38 @@ public:
 // S-5's domain adaptations (#1114). The methodology check proves M-4's own
 // shape; these checks bind its temporal contract to the complete demand
 // solution and require a coherent leaf-level hierarchy declaration.
+class S10LabelDelayCheck final : public Check {
+public:
+    std::string name() const override { return "s10_label_delay"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10DeclinedSelectionBiasCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s10_declined_selection_bias";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10RequestTimeFeatureParityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s10_request_time_feature_parity";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S10LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s10_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class S5RollingOriginCheck final : public Check {
 public:
     std::string name() const override { return "s5_rolling_origin"; }

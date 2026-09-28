@@ -116,7 +116,9 @@ relay it to a person.
   defaults, censoring/sensor/leakage refusals, governed CMMS tasks, and holdout
   ROI. S-9 has full outbound defaults, consent/suppression and contact-limit
   refusals, positive-uplift targeting, capped journeys, and holdout ROI.
-  S-10 and S-11 are marked minimal.
+  S-10 has full request-time fraud policy, graph and case payloads,
+  delayed-label and selection-bias refusals, and champion/challenger ROI.
+  S-11 is marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
