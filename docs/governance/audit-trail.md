@@ -16,7 +16,7 @@ gates). It builds directly on the [key-scoped access model](access-control.md)
 > [large-burst cost-cap approval gate](../cloud/burst-approval-gate.md) (APR-3) records its
 > block/approve decision here as a `provision_requested` event. Threading the
 > login key through the whole request path (so *every* read/write is authorized
-> and thereby audited) is a later slice; today the data-access seam is
+> and thereby audited) is a later slice; today the data-access boundary is
 > `Node::authorize` itself.
 
 ## The type
@@ -36,11 +36,14 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | `time` | `std::string` | ISO-8601 UTC stamp of when the action was recorded. |
 
 Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
-chronologically as plain text); the trail is kept sorted by `(time, id)`.
+chronologically as plain text); the trail is kept sorted by `time`. A new
+event is inserted at its place (a local one lands at the end; a peer's older
+one is placed by binary search), and events sharing a stamp keep the order they
+arrived in. Loading the trail from disk sorts it by `(time, id)`.
 
 ## What emits an event
 
-Events are emitted at the governed seams, and **only for local user actions** —
+Events are emitted at governed boundaries, and **only for local user actions** —
 the reverse `materialize_*` paths used by reconciliation never emit (a peer's
 action arrives already-audited as its own replicated `audit:` event, so each
 action is recorded exactly once, on the node where it happened):
@@ -69,14 +72,14 @@ for (const auto& event : node.audit_events()) {    // listed, chronological
 }
 ```
 
-## The sink seam
+## The sink interface
 
 A graph change happens on a `Project`, not on the `Node` that owns the trail, so
 the two are decoupled by an **`AuditSink`** (`include/zetta/governance/audit_event.hpp`):
-a one-method seam (`record_audit_event`). `Node` *is* the sink (it implements
+a one-method interface (`record_audit_event`). `Node` *is* the sink (it implements
 `AuditSink`), and a `Project` holds a non-owning `AuditSink*` the same way it
 holds a `ReplicationManager*` — null means "not audited". This mirrors how the
-[blob-store](../data/large-objects.md) and storage-engine seams keep `zetta-core`
+[blob-store](../data/large-objects.md) and storage-engine interfaces keep `zetta-core`
 decoupled. `Node::record_audit_event` is also the **public append API**, so the
 future request-path slice can record data accesses at real read/write points
 without going through `authorize`.
@@ -97,9 +100,41 @@ so the CRDT converges trivially and reconciliation only *adds* peer events (it
 never removes or updates one). `record_audit_event` captures `audit:<uuid>` into
 the document (when replicated) then materializes the on-disk file;
 `migrate_to_replication` captures any local-only events on start, and
-`reconcile_from_replication` materializes peer events merged in by gossip. The
+`reconcile_from_replication` materializes the full startup state, while changed
+ticks route only new `audit:` keys to the audit reconciler. The
 distributed, convergent, tamper-evident trail every node agrees on is a natural
 fit for the CRDT model.
+
+**Reconciliation cost (#1070).** Every tick whose document changed walks every
+`audit:` key, and every audited call changes the document, so on a busy node this
+runs about ten times a second over the whole trail. The node keeps an id index
+beside the trail: a known event is skipped before its value is parsed, and
+nothing is re-sorted, so the walk is linear. Before, each key was parsed and
+searched for linearly, which is O(n²) per tick. At 25k events, lake's bus Zetta
+fell to three ticks a second and every request waited over a second behind them.
+The whole-document snapshot and persist that remained are made incremental by #1079 (below).
+
+### Reconciliation cost (#1079)
+
+The append-only trail can dominate the replicated document, so a tick must not
+scan every historical event when one new event arrives. `ReplicationManager`
+keeps a parsed cache and changed-key journal; `Node::tick()` routes changed
+`audit:` keys directly to `reconcile_audit_events`. The node's audit ID index
+rejects known IDs before parsing and inserts a new event in chronological order.
+The full pass remains for startup, a journal gap, or a batch larger than one
+quarter of the live document.
+
+Persistence uses a one-second debounce rather than modifying the vendored
+Automerge implementation. A dirty document is fully saved at most once per
+second and is always saved by `stop()`. This keeps clean restarts durable while
+removing a full-document rewrite from each changed tick.
+
+On the 100,000-event regression fixture, 40 ticks with one new local event each
+took 15,639 ms before the incremental path and 4 ms after it. The timed region
+excludes fixture creation, startup reconciliation, shutdown persistence, and
+temporary-directory cleanup. Both measurements include the audit ID index
+prerequisite from #1073; the baseline retains the old snapshot, full reconcile,
+and per-tick persistence paths, isolating the changes in #1079.
 
 On disk, audit events project to a **single shared `audit/` folder** — one file
 per event — rather than a folder per event, the natural shape for a high-volume
@@ -150,7 +185,7 @@ This is the audit half of FEAT-9, on top of the
 [key-scoped access model](access-control.md). The pieces still ahead: **approval
 gates** (block a risky action pending sign-off), threading the login key through
 the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` seam), and a **`system.audit`** SQL table (the trail is
+just the `authorize` boundary), and a **`system.audit`** SQL table (the trail is
 queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
 headed [Admin & Settings panel](../gui/admin-panel.md) (SCR-7 / CMP-5) renders it as a
 read-only table.
@@ -158,11 +193,11 @@ read-only table.
 ## Pointers
 
 - `include/zetta/governance/audit_event.hpp` — `zetta::governance::AuditEvent` / `AuditEventValue` /
-  `AuditAction` (ENT-23) + the `AuditSink` seam + JSON schema/validate/parse.
+  `AuditAction` (ENT-23) + the `AuditSink` interface + JSON schema/validate/parse.
 - `src/core/governance/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
   validation.
 - `include/zetta/node.hpp` — `Node::record_audit_event` / `audit_events` and the
-  emission seams (`deploy_graph`, `authorize`).
+  emission boundaries (`deploy_graph`, `authorize`).
 - [access-control.md](access-control.md) — the `Principal` + `AccessKey` model a
   `data_access` event records the decision of.
 - [admin-panel.md](../gui/admin-panel.md) — the headed **Admin & Settings panel** that

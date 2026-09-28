@@ -340,10 +340,11 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
 - **Capture / gossip / apply.** Local mutations are **captured** into the CRDT
   at the data-model layer (`Node`/`Database`/`Table`/stores hold a
   `ReplicationManager*`), so *every* write path replicates. Peers **gossip**
-  `save()`/`merge()` blobs. `Node::tick()` **reconciles** the on-disk projection
-  from the document (materialize-only, never re-capture — no feedback loop) and
-  persists it. Reconcile paths never emit audit events (a peer's action arrives
-  already-audited).
+  `save()`/`merge()` blobs. `Node::tick()` **reconciles** changed keys into the
+  on-disk projection (materialize-only, never re-capture — no feedback loop),
+  falls back to a full pass for startup/journal gaps/large batches, and saves a
+  dirty document at most once per second plus on `stop()`. Reconcile paths never
+  emit audit events (a peer's action arrives already-audited).
 
 - **Thread safety:** the cluster's **network thread** may only touch thread-safe
   things (`ReplicationManager` is mutex-guarded; `BlobStore` works off the CRDT

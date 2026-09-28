@@ -118,6 +118,15 @@ Value block_on(task<Value> coroutine) {
 // dangles once the temporary lambda is destroyed (same caveat as parallel_for).
 void spawn(task<> coroutine, std::function<void()> on_complete);
 
+// spawn() on a separate pool reserved for work that BLOCKS WAITING — a long poll
+// parked on a condition variable — rather than computing (#1063). A waiter holds
+// its thread for the whole wait, so on the shared pool (one thread per core) a
+// handful of long polls starve every offload and parallel_for behind them. This
+// pool is sized for waiting (kBlockingThreads), and nothing compute-bound goes
+// on it.
+inline constexpr unsigned kBlockingThreads = 64;
+void spawn_blocking(task<> coroutine, std::function<void()> on_complete);
+
 // --- Offload blocking work onto the pool, awaited as a coroutine ---------------
 //
 // Run a **blocking** callable on a runtime pool worker and resume the awaiting
@@ -150,6 +159,19 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     auto done = std::make_shared<async_event>();
     spawn(detail_run_blocking<Callable, Result>(std::move(callable), slot),
           [done] { done->set(); });
+    [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
+    co_return std::move(**slot);
+}
+
+// offload() onto the blocking pool (spawn_blocking): for a callable that waits
+// (a long poll), never for compute.
+template <class Callable>
+task<std::invoke_result_t<Callable>> offload_blocking(Callable callable) {
+    using Result = std::invoke_result_t<Callable>;
+    auto slot = std::make_shared<std::optional<Result>>();
+    auto done = std::make_shared<async_event>();
+    spawn_blocking(detail_run_blocking<Callable, Result>(std::move(callable), slot),
+                   [done] { done->set(); });
     [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
     co_return std::move(**slot);
 }

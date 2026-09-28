@@ -3356,7 +3356,9 @@ const nlohmann::json& run_schema() {
              "the data to train on, in either form: a `database.table` landed by "
              "a connection or a query (what add_dataset / create_dataset_from_query "
              "produce), or a churn dataset directory on the node's filesystem. "
-             "Default: the built-in demo dataset"}}},
+             "Default: the table the pipeline's first connect step names (its "
+             "`source` + `table` attributes), when this node holds it, with the model "
+             "step's `target` as the label; otherwise the built-in demo dataset"}}},
           {"dataset", zetta::data::dataset_contract_schema()},
           {"model_name",
            {{"type", "string"},
@@ -3457,7 +3459,39 @@ const nlohmann::json& run_output_schema() {
     return schema;
 }
 
-ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
+// The table a pipeline reads, when its run is given none: the first connect step whose
+// `source`+`table` attributes name a dataset this node holds, with the first model step's
+// `target` as the label. lake points a project's pipeline at a table this way (a project made
+// from an Opportunity, "Build a Pipeline" from a dataset); before, such a run trained on the
+// built-in demo dataset and said nothing. Empty when no step names an existing table.
+struct PipelineDataset {
+    std::string path, step, label;
+};
+std::optional<PipelineDataset> pipeline_dataset(zetta::Node& node,
+                                                const zetta::ir::ExecutionGraph& graph) {
+    std::optional<PipelineDataset> found;
+    std::string label;
+    for (const std::shared_ptr<zetta::ir::Node>& step : graph.nodes()) {
+        if (!step || !step->attributes.is_object()) continue;
+        const auto text = [&](const char* key) {
+            const auto value = step->attributes.find(key);
+            return value != step->attributes.end() && value->is_string() ? value->get<std::string>()
+                                                                         : std::string();
+        };
+        if (step->kind == zetta::ir::StepKind::Model && label.empty()) label = text("target");
+        if (step->kind != zetta::ir::StepKind::Connect || found) continue;
+        const std::string source = text("source"), table = text("table");
+        if (source.empty() || table.empty()) continue;
+        const auto database = node.find_database(source);
+        if (!database || !database->find_table(table)) continue;
+        found = PipelineDataset{source + "." + table, step->name, ""};
+    }
+    if (found) found->label = label;
+    return found;
+}
+
+ApiResult handle_run(const nlohmann::json& given, ApiContext& context) {
+    nlohmann::json input = given;
     const std::string name = input.at("project").get<std::string>();
     auto project = resolve_project(context, name);
     if (!project) {
@@ -3528,6 +3562,20 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
         return ApiResult::success(std::move(output));
     }
 
+    // No dataset given (#1040): M-1 trains on the table the pipeline's own
+    // connect step reads, with the model step's target as the label. The other
+    // methodologies resolve their pipeline's table in their own run callbacks.
+    if (methodology->id == "M-1" && !input.contains("dataset_path")) {
+        if (const auto own = pipeline_dataset(context.node, graph->graph())) {
+            input["dataset_path"] = own->path;
+            if (!own->label.empty() && !input.contains("dataset")) {
+                input["dataset"] = {{"label_column", own->label}};
+            }
+            input["pipeline_note"] =
+                "read from the pipeline's connect step '" + own->step + "': " + own->path +
+                (own->label.empty() ? std::string() : ", label '" + own->label + "'");
+        }
+    }
     zetta::ml::RunRequest request;
     request.context = &context;
     request.project = project.get();

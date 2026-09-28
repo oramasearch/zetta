@@ -889,12 +889,17 @@ struct ApiServer::Impl {
             // generation never pins the owner/tick loop. Everything else is marshaled
             // onto the owning loop, where a handler may touch the Node freely.
             if (capability->offloadable) {
-                call_result = co_await zetta::runtime::offload([&]() -> ApiResult {
+                auto call = [&]() -> ApiResult {
                     ApiContext context{node, cluster, identity.acting_key, trace,
                                        &node.span_recorder(), &background};
                     context.acting_is_user = identity.is_user;
                     return capability_registry.call(capability->name, input, context);
-                });
+                };
+                // A handler that waits (a long poll) parks on the blocking pool,
+                // never on the compute pool's one-thread-per-core (#1063).
+                call_result = capability->blocks
+                                  ? co_await zetta::runtime::offload_blocking(call)
+                                  : co_await zetta::runtime::offload(call);
                 // offload resumes us on a pool worker; hop back onto the owning
                 // loop before touching the connection. route.send below is a
                 // Corosio op bound to that loop's executor — resuming it on a pool
@@ -3816,6 +3821,8 @@ void ApiServer::wait_for_work(std::chrono::milliseconds max_idle) {
 void ApiServer::set_wakeup(std::function<void()> wakeup) {
     impl_->bridge.set_wakeup(std::move(wakeup));
 }
+
+void ApiServer::wake() { impl_->bridge.poke(); }
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
     return impl_->node.span_recorder();

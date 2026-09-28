@@ -182,8 +182,8 @@ using DatasetSampler = std::function<std::vector<nlohmann::json>(
 // read is node-local and would type the columns off whatever slice happens to live
 // here.
 //
-// **It reads the whole table and keeps the first `limit` rows**, because the SQL
-// subset has no LIMIT yet. That is bounded work on a demo-sized table and wasteful
+// **It reads the whole table and keeps the first `limit` rows**: the SQL subset's
+// LIMIT cuts the result, not the scan. That is bounded work on a demo-sized table and wasteful
 // on a large one; the partition catalog already records each body's column types
 // (#837), so typing the columns from the catalog instead — reading no rows at all —
 // is the follow-up. Recorded rather than left as a surprise.

@@ -10457,7 +10457,7 @@
                     "type": "object"
                   },
                   "dataset_path": {
-                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
+                    "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
                     "type": "string"
                   },
                   "duration_column": {

@@ -30,7 +30,11 @@ namespace zetta::api {
 struct ServerOptions {
     std::string listen_address = "127.0.0.1";  // loopback by default
     unsigned short port = 4800;                // 0 = pick an ephemeral port
-    int worker_coroutines = 32;  // the SPA fetches many assets in parallel (Chrome opens 6+ connections)
+    // Connections served at once: each worker coroutine serves one connection at
+    // a time, and a long poll (receive_events) holds its connection for the whole
+    // wait. At 32, 32 bus long polls left every other request queued for up to
+    // 10 s (#1063). Workers are coroutines, not threads, so this is cheap.
+    int worker_coroutines = 256;
     // The built Studio web app (the design repo's React bundle). When set, the
     // node serves it statically at /app with an SPA fallback to index.html —
     // the app's only data path is the /v1 surface. Empty = /app is 404.
@@ -87,6 +91,10 @@ public:
     // Register a wakeup the owning loop provides so it drains on enqueue (headed:
     // push an SDL event so its event wait returns early). Call before start().
     void set_wakeup(std::function<void()> wakeup);
+
+    // Wake the owning loop now, from any thread, so its next tick runs without
+    // waiting out the idle interval (Node::set_owner_wakeup, #1063).
+    void wake();
 
     Registry& registry();
     // The node's span ring (convenience passthrough to Node::span_recorder()).
