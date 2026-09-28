@@ -5,7 +5,10 @@ distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-dev
 Python / XGBoost / foreign runtime, ADR-17). The pipeline shape every use case reuses: train a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
-rather than a reference runtime. Read here for any model-training, explanation, or scoring work.
+rather than a reference runtime. The segmentation Phase-A runner adds entity assignments and
+descriptive segment profiles; its methodology adapter is deferred. Read here for model work.
+
+- [segmentation.md](segmentation.md) — native distributed k-means, global preprocessing, selection diagnostics, assignments and profiles (#1042 Phase A).
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).

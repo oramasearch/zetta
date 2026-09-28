@@ -167,6 +167,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
+    segmentation.hpp        zetta::ml — segmentation parameters, trainer, metrics and resolved-dataset runner (#1042 Phase A; docs/ml/segmentation.md)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
@@ -417,6 +418,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     featurize_job.cpp       run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
+    segmentation.cpp        native k-means training, global transforms, deterministic sampling, collective Lloyd rounds, selection and profiles (#1042)
+    segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
@@ -594,6 +597,7 @@ modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
+  ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   temp_dir.hpp              per-test isolated data_dir helper
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
