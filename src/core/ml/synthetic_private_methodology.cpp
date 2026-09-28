@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -221,6 +222,22 @@ api::ApiResult run_m20(RunRequest& request) {
                                        "could not create M-20 run record");
     }
     record_run_features(context.node, run->id(), feature_plan);
+    run->suppress_metrics_for_privacy();
+    nlohmann::json run_params = {
+        {"trainer", "synthetic_private"},
+        {"epsilon", params.epsilon},
+        {"delta", params.delta},
+        {"noise", params.noise == PrivacyNoise::Gaussian ? "gaussian" : "laplace"},
+        {"clip_min", params.clip_min},
+        {"clip_max", params.clip_max}};
+    const nlohmann::json gbdt_params = params.gbdt.to_json();
+    for (const auto& [name, value] : gbdt_params.items()) {
+        run_params["gbdt." + name] = value;
+    }
+    std::string metrics_error;
+    if (!context.node.log_run_params(run->id(), run_params, &metrics_error)) {
+        return fail_run(run, metrics_error);
+    }
     run->set_status(pipeline::RunStatus::Running);
     run->add_log({util::now_iso8601(), "info",
                   "dataset: read: " + path_value});
@@ -280,6 +297,13 @@ api::ApiResult run_m20(RunRequest& request) {
                                  : distributed.learned.error);
     }
     SyntheticPrivateResult& learned = distributed.learned;
+    // Reuse only values the trainer already releases in its final report.
+    const auto released =
+        learned.metrics.to_json().get<std::map<std::string, double>>();
+    if (!context.node.log_run_metrics(run->id(), params.gbdt.num_trees,
+                                       released, {}, &metrics_error)) {
+        return fail_run(run, metrics_error);
+    }
 
     std::shared_ptr<data::Database> output_database =
         context.node.find_database("synthetic_private_results");

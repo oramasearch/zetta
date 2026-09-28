@@ -51,7 +51,9 @@ What's inside, by domain (each links to that domain's docs):
   (schema/type, data-leakage/point-in-time, optimization-contract,
   entity-resolution checks) before it
   can deploy, and a **deployment controller** reconciles desired→actual and
-  self-heals failed runs. Runs record status, logs, outputs, and lineage. The
+  self-heals failed runs. Runs record status, logs, outputs, lineage, and
+  live per-step [training metrics](docs/ml/run-metrics.md) with parameters,
+  summaries, and typed chart data. The
   **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
   Deploy panel.
 - **[Data + storage](docs/data/README.md)** — databases → tables → JSON rows on

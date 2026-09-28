@@ -41,6 +41,8 @@ MCP/HTTP work.
 - [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
   (#1033, #1076): create_topic / drop_topic / list_topics / publish_event / receive_events,
   exposed topics and long polls that suspend without holding threads.
+- [../ml/run-metrics.md](../ml/run-metrics.md) — the five run-metric capabilities,
+  their REST and MCP request/response examples, and live topic reads (#1137).
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,

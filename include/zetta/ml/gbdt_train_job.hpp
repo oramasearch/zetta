@@ -157,6 +157,7 @@ DistributedTrainResult run_train_job(
     const std::string& round_tag = {},
     CalibrationConfig calibration = {},
     std::chrono::milliseconds timeout = kDefaultGbdtTimeout,
-    TrainCheckpointConfig checkpoint = {});
+    TrainCheckpointConfig checkpoint = {},
+    const std::string& run_id = {});
 
 }  // namespace zetta::ml

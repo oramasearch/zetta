@@ -339,6 +339,17 @@ public:
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
 
+    // Run experiment tracking (#1137). These owner-thread entry points update
+    // the replicated Run record. Metric batches also sample available host
+    // gauges and publish JSON to exposed topic run-metrics.<run>.
+    bool log_run_metrics(const std::string& run, std::uint64_t step,
+                         std::map<std::string, double> values,
+                         std::string time = {}, std::string* error = nullptr);
+    bool log_run_params(const std::string& run, nlohmann::json params,
+                        std::string* error = nullptr);
+    bool log_run_artifact(const std::string& run, nlohmann::json artifact,
+                          std::string* error = nullptr);
+
     // CRUD for models (a trained model registered on the node — see model.hpp /
     // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
     // find / drop take the id; the registry is models() + the

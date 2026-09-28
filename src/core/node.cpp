@@ -1535,6 +1535,121 @@ std::shared_ptr<zetta::pipeline::Run> Node::find_run(const std::string& id) cons
     return nullptr;
 }
 
+bool Node::log_run_metrics(const std::string& run_id, std::uint64_t step,
+                           std::map<std::string, double> values,
+                           std::string time, std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    if (run->value().metrics_suppressed.empty()) {
+        const zetta::cluster::NodeMetrics host = sample_node_metrics();
+        if (host.cpu_percent_available && !values.contains("system.cpu.percent")) {
+            values["system.cpu.percent"] = host.cpu_percent;
+        }
+        if (host.memory_available) {
+            values.try_emplace("system.memory.used_bytes",
+                               static_cast<double>(host.memory_used_bytes));
+            values.try_emplace("system.memory.percent", host.memory_percent);
+        }
+        if (host.gpu_available) {
+            values.try_emplace("system.gpu.percent", host.gpu_percent);
+            values.try_emplace("system.gpu.vram_used_bytes",
+                               static_cast<double>(host.vram_used_bytes));
+        }
+        if (const auto tokens = values.find("train.tokens_per_second");
+            tokens != values.end()) {
+            values.try_emplace("system.throughput.per_second", tokens->second);
+        } else if (const auto rows = values.find("train.rows_per_second");
+                   rows != values.end()) {
+            values.try_emplace("system.throughput.per_second", rows->second);
+        }
+    }
+    if (time.empty()) {
+        time = zetta::util::now_iso8601();
+    }
+    if (!run->log_metrics(step, values, time, error)) {
+        return false;
+    }
+    if (pubsub_ == nullptr) {
+        return true;
+    }
+
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "run-metrics"}, {}};
+    const zetta::pubsub::Address topic{"topic", "run-metrics." + run_id};
+    if (!pubsub_->topic_settings(topic)) {
+        zetta::pubsub::TopicSettings settings;
+        settings.exposed = true;
+        settings.lifecycle = zetta::pubsub::TopicLifecycle::Ephemeral;
+        std::string reason;
+        if (!pubsub_->create_topic(engine, topic, settings, &reason) &&
+            !pubsub_->topic_settings(topic)) {
+            if (error != nullptr) {
+                *error = "/run: metric batch was stored but its live topic could not be created: " +
+                         reason;
+            }
+            return false;
+        }
+    }
+    const std::optional<zetta::pubsub::TopicSettings> settings =
+        pubsub_->topic_settings(topic);
+    if (!settings || !settings->exposed) {
+        if (error != nullptr) {
+            *error = "/run: metric batch was stored but topic " +
+                     topic.to_string() + " is not exposed";
+        }
+        return false;
+    }
+    zetta::pubsub::PublishRequest request;
+    request.to = {topic};
+    request.encoding = zetta::pubsub::Encoding::Json;
+    request.mime_type = "application/json";
+    request.correlation_id = run_id;
+    request.payload = nlohmann::json{{"run", run_id},
+                                     {"step", step},
+                                     {"values", values},
+                                     {"time", time}}
+                          .dump();
+    const zetta::pubsub::PublishResult published =
+        pubsub_->publish(engine, std::move(request));
+    if (!published.accepted) {
+        if (error != nullptr) {
+            *error = "/run: metric batch was stored but live publish failed: " +
+                     published.error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool Node::log_run_params(const std::string& run_id, nlohmann::json params,
+                          std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_params(std::move(params), error);
+}
+
+bool Node::log_run_artifact(const std::string& run_id,
+                            nlohmann::json artifact, std::string* error) {
+    const std::shared_ptr<zetta::pipeline::Run> run = find_run(run_id);
+    if (!run) {
+        if (error != nullptr) {
+            *error = "/run: no run with id '" + run_id + "'";
+        }
+        return false;
+    }
+    return run->log_artifact(std::move(artifact), error);
+}
+
 // ----- models (a registered trained model; replicated as model:<uuid>) -------
 
 void Node::load_models() {

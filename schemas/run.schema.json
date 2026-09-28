@@ -127,6 +127,349 @@
       },
       "type": "array"
     },
+    "metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "confusion_matrix"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "labels": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "matrix": {
+                          "items": {
+                            "items": {
+                              "type": "number"
+                            },
+                            "type": "array"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "labels",
+                        "matrix"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "roc_curve",
+                        "pr_curve"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "thresholds": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        },
+                        "x": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        },
+                        "y": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "x",
+                        "y",
+                        "thresholds"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "calibration"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "counts": {
+                          "items": {
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "type": "array"
+                        },
+                        "observed": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        },
+                        "predicted": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "predicted",
+                        "observed",
+                        "counts"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "feature_importance"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "features": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "values": {
+                          "items": {
+                            "type": "number"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "features",
+                        "values"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "sample_predictions"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "rows": {
+                          "items": {
+                            "additionalProperties": false,
+                            "patternProperties": {
+                              "^.{1,128}$": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "integer",
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "rows"
+                      ]
+                    }
+                  }
+                }
+              }
+            ],
+            "properties": {
+              "data": {
+                "type": "object"
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "time": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "confusion_matrix",
+                  "roc_curve",
+                  "pr_curve",
+                  "calibration",
+                  "feature_importance",
+                  "sample_predictions"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "time",
+              "data"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "params": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[A-Za-z0-9_.-]{1,128}$": {
+              "type": [
+                "string",
+                "number",
+                "integer",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "series": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[A-Za-z0-9_.-]{1,128}$": {
+              "additionalProperties": false,
+              "properties": {
+                "steps": {
+                  "items": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "times": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "values": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "steps",
+                "values",
+                "times"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "summary": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[A-Za-z0-9_.-]{1,128}$": {
+              "additionalProperties": false,
+              "properties": {
+                "best": {
+                  "type": "number"
+                },
+                "best_step": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "direction": {
+                  "enum": [
+                    "min",
+                    "max"
+                  ],
+                  "type": "string"
+                },
+                "final": {
+                  "type": "number"
+                },
+                "final_step": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "final",
+                "final_step",
+                "best",
+                "best_step",
+                "direction"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "params",
+        "series",
+        "summary",
+        "artifacts"
+      ],
+      "type": "object"
+    },
+    "metrics_suppressed": {
+      "enum": [
+        "differential_privacy"
+      ],
+      "type": "string"
+    },
     "outputs": {
       "items": {
         "additionalProperties": false,

@@ -501,6 +501,7 @@ add_library(zetta-core STATIC
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/pubsub_capabilities.cpp
+  src/core/api/run_metrics_capabilities.cpp
   src/core/api/decision_policy_capabilities.cpp
   src/core/api/solution_capabilities.cpp
   src/core/api/action_capabilities.cpp

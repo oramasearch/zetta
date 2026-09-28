@@ -9,10 +9,13 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/autograd/qwen.hpp"
+#include "zetta/autograd/transformer.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 #include "zetta/util/uuid.hpp"
 
 using zetta::cluster::Cluster;
@@ -163,6 +166,190 @@ TEST(RunFeaturePlan, FeatureReasonsSurviveRestartAndRejectMalformedUsage) {
     ASSERT_TRUE(restored.find_run(run_id));
     EXPECT_EQ(restored.find_run(run_id)->value().features, usage);
     restored.stop();
+}
+
+TEST(RunMetrics, ParamsSummaryArtifactsAndDownsamplingAreDurable) {
+    TempDir directory;
+    std::string run_id;
+    {
+        Node node{config_for(directory)};
+        ASSERT_TRUE(node.start());
+        const auto run = node.create_run("project", "trainer");
+        ASSERT_TRUE(run);
+        run_id = run->id();
+
+        std::string error;
+        ASSERT_TRUE(run->log_params(
+            {{"optimizer.learning_rate", 0.01},
+             {"model.layers", 2},
+             {"device", "cpu"}},
+            &error))
+            << error;
+        EXPECT_FALSE(run->log_params({{"duplicate", true}}, &error));
+
+        for (std::uint64_t step = 0; step < 100; ++step) {
+            double loss = 100.0 - static_cast<double>(step);
+            if (step == 37) {
+                loss = 1'000.0;
+            }
+            if (step == 68) {
+                loss = -1'000.0;
+            }
+            ASSERT_TRUE(run->log_metrics(
+                step, {{"train.loss", loss}, {"train.tokens_per_second", 5.0 + step}},
+                "2026-09-28T00:00:00.000Z", &error))
+                << error;
+        }
+        EXPECT_FALSE(run->log_metrics(99, {{"train.loss", 0.0}}, {}, &error));
+
+        ASSERT_TRUE(run->log_artifact(
+            {{"type", "feature_importance"},
+             {"name", "gain"},
+             {"data", {{"features", {"age", "spend"}},
+                       {"values", {0.25, 0.75}}}}},
+            &error))
+            << error;
+        EXPECT_FALSE(run->log_artifact(
+            {{"type", "feature_importance"},
+             {"name", "bad"},
+             {"data", {{"features", {"age"}},
+                       {"values", {1.0}},
+                       {"unexpected", true}}}},
+            &error));
+
+        const nlohmann::json read = run->get_metrics(
+            {"train.loss"}, /*from_step=*/0, /*max_points=*/8);
+        ASSERT_EQ(read.at("series").size(), 1u);
+        const nlohmann::json& points = read["series"][0]["points"];
+        ASSERT_EQ(points.size(), 8u);
+        bool saw_minimum = false;
+        bool saw_maximum = false;
+        for (const nlohmann::json& point : points) {
+            saw_minimum = saw_minimum || point.at("value") == -1'000.0;
+            saw_maximum = saw_maximum || point.at("value") == 1'000.0;
+        }
+        EXPECT_TRUE(saw_minimum);
+        EXPECT_TRUE(saw_maximum);
+        EXPECT_EQ(read["summary"]["train.loss"]["final_step"], 99);
+        EXPECT_EQ(read["summary"]["train.loss"]["best_step"], 68);
+        EXPECT_EQ(read["summary"]["train.loss"]["direction"], "min");
+        node.stop();
+    }
+
+    Node restored{config_for(directory)};
+    ASSERT_TRUE(restored.start());
+    const auto run = restored.find_run(run_id);
+    ASSERT_TRUE(run);
+    const nlohmann::json read = run->get_metrics({"train.loss"});
+    EXPECT_EQ(read["params"]["optimizer.learning_rate"], 0.01);
+    EXPECT_EQ(read["series"][0]["points"].size(), 100u);
+    EXPECT_EQ(read["artifacts"].size(), 1u);
+    restored.stop();
+}
+
+TEST(RunMetrics, NodeLoggingPublishesAnExposedLiveTopic) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run();
+    ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(node.log_run_metrics(
+        run->id(), 0, {{"train.loss", 1.5}, {"train.rows_per_second", 42.0}},
+        "2026-09-28T00:00:00.000Z", &error))
+        << error;
+    const zetta::pubsub::Address topic{"topic", "run-metrics." + run->id()};
+    const auto settings = node.pubsub()->topic_settings(topic);
+    ASSERT_TRUE(settings);
+    EXPECT_TRUE(settings->exposed);
+    const auto stats = node.pubsub()->topic_stats();
+    const auto found = std::ranges::find_if(stats, [&](const auto& entry) {
+        return entry.address == topic.to_string();
+    });
+    ASSERT_NE(found, stats.end());
+    EXPECT_EQ(found->held_events, 1u);
+    node.stop();
+}
+
+TEST(RunMetrics, PrivacySuppressionSurvivesRestartAndDoesNotAddSystemMetrics) {
+    TempDir directory;
+    std::string run_id;
+    {
+        Node node{config_for(directory)};
+        ASSERT_TRUE(node.start());
+        const auto run = node.create_run();
+        ASSERT_TRUE(run);
+        run_id = run->id();
+        run->suppress_metrics_for_privacy();
+        ASSERT_TRUE(node.log_run_metrics(run_id, 8, {{"epsilon_spent", 4.0}}));
+        EXPECT_EQ(run->get_metrics().at("series").size(), 1u);
+        auto invalid = run->metadata();
+        invalid["metrics_suppressed"] = "unknown";
+        EXPECT_FALSE(zetta::pipeline::parse_run_value(invalid));
+        node.stop();
+    }
+    Node restored{config_for(directory)};
+    ASSERT_TRUE(restored.start());
+    const auto run = restored.find_run(run_id);
+    ASSERT_TRUE(run);
+    EXPECT_EQ(run->metadata().at("metrics_suppressed"), "differential_privacy");
+    EXPECT_EQ(run->get_metrics().at("metrics_suppressed"), "differential_privacy");
+    EXPECT_EQ(run->get_metrics().at("series").size(), 1u);
+    restored.stop();
+}
+
+TEST(RunMetrics, QwenFineTuneProducesReadableAndLiveLossCurves) {
+    TempDir directory;
+    Node node{config_for(directory)};
+    ASSERT_TRUE(node.start());
+    const auto run = node.create_run("qwen-project", "fine-tune");
+    ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(node.log_run_params(
+        run->id(),
+        {{"trainer", "qwen"},
+         {"optimizer.learning_rate", 0.01},
+         {"model.layers", 1}},
+        &error))
+        << error;
+
+    zetta::autograd::QwenConfig config;
+    config.vocab_size = 16;
+    config.d_model = 8;
+    config.n_layers = 1;
+    config.n_heads = 2;
+    config.n_kv_heads = 1;
+    config.head_dim = 4;
+    config.d_ff = 16;
+    zetta::autograd::QwenModel model(config, 7);
+    zetta::autograd::Adam optimizer(0.01F);
+    const std::vector<int> tokens{2, 5, 7, 3, 9, 1};
+    const auto logger = [&](std::uint64_t step,
+                            const std::map<std::string, double>& values) {
+        return node.log_run_metrics(run->id(), step, values, {}, &error);
+    };
+    for (std::uint64_t step = 0; step < 4; ++step) {
+        const auto metrics = zetta::autograd::fine_tune_qwen_step(
+            model, optimizer, tokens, 0, step, logger, &error);
+        ASSERT_TRUE(metrics) << error;
+        EXPECT_TRUE(std::isfinite(metrics->gradient_norm));
+        EXPECT_GT(metrics->tokens_per_second, 0.0);
+    }
+
+    const nlohmann::json read = run->get_metrics({"train.loss"});
+    ASSERT_EQ(read["series"].size(), 1u);
+    EXPECT_EQ(read["series"][0]["points"].size(), 4u);
+    EXPECT_EQ(read["params"]["trainer"], "qwen");
+    EXPECT_TRUE(read["summary"].contains("train.loss"));
+    const zetta::pubsub::Address topic{"topic", "run-metrics." + run->id()};
+    const auto topic_stats = node.pubsub()->topic_stats();
+    const auto found = std::ranges::find_if(
+        topic_stats, [&](const auto& entry) {
+            return entry.address == topic.to_string();
+        });
+    ASSERT_NE(found, topic_stats.end());
+    EXPECT_EQ(found->held_events, 4u);
+    node.stop();
 }
 
 TEST(Run, PersistsAcrossRestartViaDisk) {

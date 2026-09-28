@@ -458,6 +458,55 @@ TEST_F(RestServerFixture, PostActionThenReadBack) {
     EXPECT_EQ(duplicate_body.at("error").at("code"), "engine_error");
 }
 
+TEST_F(RestServerFixture, RunMetricCapabilitiesWorkOverRest) {
+    const auto first = node.create_run("rest", "first");
+    const auto second = node.create_run("rest", "second");
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+
+    const auto params = request(
+        "POST", "/v1/log_run_params",
+        nlohmann::json{{"run", first->id()},
+                       {"params", {{"trainer", "test"}}}}
+            .dump());
+    EXPECT_EQ(params.status, 200) << params.body;
+    for (const auto& run : {first, second}) {
+        const auto logged = request(
+            "POST", "/v1/log_run_metrics",
+            nlohmann::json{{"run", run->id()},
+                           {"step", 1},
+                           {"values", {{"train.loss", 0.5}}}}
+                .dump());
+        EXPECT_EQ(logged.status, 200) << logged.body;
+    }
+    const auto artifact = request(
+        "POST", "/v1/log_run_artifact",
+        nlohmann::json{
+            {"run", first->id()},
+            {"artifact",
+             {{"type", "feature_importance"},
+              {"name", "gain"},
+              {"time", "2026-09-28T00:00:00.000Z"},
+              {"data", {{"features", {"age"}}, {"values", {1.0}}}}}}}
+            .dump());
+    EXPECT_EQ(artifact.status, 200) << artifact.body;
+
+    const auto read = request(
+        "GET", "/v1/get_run_metrics?run=" + first->id() +
+                   "&names=%5B%22train.loss%22%5D");
+    ASSERT_EQ(read.status, 200) << read.body;
+    EXPECT_EQ(json_of(read)["value"]["series"][0]["points"].size(), 1u);
+    const auto compared = request(
+        "GET", "/v1/compare_runs?runs=%5B%22" + first->id() +
+                   "%22%2C%22" + second->id() +
+                   "%22%5D&names=%5B%22train.loss%22%5D");
+    ASSERT_EQ(compared.status, 200) << compared.body;
+    EXPECT_EQ(json_of(compared)["value"]["metrics"][0]["points"][0]
+                               ["values"]
+                                   .size(),
+              2u);
+}
+
 // The error mapping over the wire: schema-invalid input -> 400 with the
 // path-qualified reason; a miss -> 404; a malformed body -> 400.
 TEST_F(RestServerFixture, ErrorsMapToStatuses) {

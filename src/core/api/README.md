@@ -4,3 +4,8 @@ Registry declarations generate REST routes, MCP tools and OpenAPI. Pub/sub CRUD
 uses the same schemas and handlers on both transports, with coroutine long polls
 and no thread per waiter. See [CRUD](../../../docs/pubsub/crud.md) and
 [REST/OpenAPI](../../../docs/api/rest-openapi.md).
+
+The run-metric capabilities share this registry and publish exposed metric
+topics. MCP receive and browse waits inspect the first governed result directly;
+neither path holds a thread or changes non-object request error handling.
+See [run metrics](../../../docs/ml/run-metrics.md).

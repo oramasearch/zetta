@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -248,6 +249,16 @@ struct TrainHooks {
     std::function<bool(int trees_built, const GbdtModel& partial,
                        const std::vector<double>& importances)>
         on_round;
+
+    // Called after each committed tree with globally reduced training metrics.
+    // All participants must enable this together (non-root hooks may be no-ops).
+    // No hook means no metric computation or collective. DP callers force
+    // suppress_metrics so private training data never enters this path (#1137).
+    // Returning false stops training with an error so a lost metric batch is not
+    // silently reported as a fully tracked run.
+    std::function<bool(int step, const std::map<std::string, double>& values)>
+        on_metrics;
+    bool suppress_metrics = false;
 };
 
 // The outcome of training: the model, the per-feature total split gain (the

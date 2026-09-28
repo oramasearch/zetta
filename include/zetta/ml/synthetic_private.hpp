@@ -89,17 +89,21 @@ struct PrivateCollectives {
 // lock-step with the same contract, parameters, and collective callbacks. Raw rows
 // stay local: only category dictionaries, marginal counts, normal-score moments,
 // evaluation scores, and model histograms cross the collective plane.
+// DP training always suppresses hooks.on_metrics before any private-data metric
+// computation or reduction. Only the existing final metrics are released (#1137).
 SyntheticPrivateResult run_synthetic_private(
     const std::vector<nlohmann::json>& local_rows,
     const data::DatasetContract& contract,
     const SyntheticPrivateParams& params,
     const PrivateCollectives& collectives,
-    const std::string& tag = "synthetic_private");
+    const std::string& tag = "synthetic_private",
+    const TrainHooks& hooks = {});
 
 // Single-node convenience used by direct callers and unit tests.
 SyntheticPrivateResult run_synthetic_private(
     const std::vector<nlohmann::json>& rows,
     const data::DatasetContract& contract,
-    const SyntheticPrivateParams& params = {});
+    const SyntheticPrivateParams& params = {},
+    const TrainHooks& hooks = {});
 
 }  // namespace zetta::ml

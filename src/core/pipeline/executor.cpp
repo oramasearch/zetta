@@ -164,6 +164,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
                      "run created: " + std::to_string(graph.node_count()) +
                          " step(s)"});
     });
+    step_executor_->bind_run(node, run_id);
     const zetta::observability::TraceContext run_trace{
         trace_id, zetta::observability::make_span_id()};
     zetta::observability::ScopedSpan run_span(&node.span_recorder(), run_trace,
