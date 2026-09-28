@@ -20,6 +20,7 @@ using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::matmul_transposed_b;
 using zetta::autograd::mul;
+using zetta::autograd::patch_embedding;
 using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
 using zetta::autograd::sequence_policy_gradient_loss;
@@ -101,6 +102,36 @@ TEST(Autograd, MatmulGradientMatchesFiniteDifference) {
             (2 * epsilon);
         EXPECT_NEAR(analytic[i], numeric, 1e-2F) << "parameter " << i;
     }
+}
+
+TEST(Autograd, PatchEmbeddingForwardAndGradientsAreCorrect) {
+    const std::vector<float> image_values = {
+        1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16,
+    };
+    const std::vector<float> weights = {
+        1, 0, 0, 1,
+        0, 1, 1, 0,
+    };
+    const std::vector<float> biases = {0.5F, -0.5F};
+    const Tensor image = Tensor::leaf(image_values, {4, 4, 1}, false);
+    const Tensor weight = Tensor::leaf(weights, {2, 4}, false);
+    const Tensor bias = Tensor::leaf(biases, {2}, false);
+    const Tensor patches = patch_embedding(image, weight, bias, 2);
+    EXPECT_EQ(patches.shape(), (std::vector<int>{4, 2}));
+    EXPECT_EQ(patches.data(),
+              (std::vector<float>{7.5F, 6.5F, 11.5F, 10.5F, 23.5F,
+                                  22.5F, 27.5F, 26.5F}));
+
+    check_gradient(weights, {2, 4}, [&](const Tensor& parameter) {
+        return sum(patch_embedding(image, parameter, bias, 2));
+    });
+    check_gradient(biases, {2}, [&](const Tensor& parameter) {
+        return sum(patch_embedding(image, weight, parameter, 2));
+    });
+    check_gradient(image_values, {4, 4, 1}, [&](const Tensor& parameter) {
+        return sum(patch_embedding(parameter, weight, bias, 2));
+    });
 }
 
 // Gradient flows to both operands of a matmul.
