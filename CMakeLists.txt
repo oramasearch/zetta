@@ -556,6 +556,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/run.cpp
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
+  src/core/ml/document_methodology.cpp
   src/core/ml/document_extraction.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp

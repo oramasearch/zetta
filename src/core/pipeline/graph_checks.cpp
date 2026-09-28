@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -334,6 +335,79 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return CheckResult{name(), CheckStatus::Pass,
                        "every model step names a methodology the engine can execute"};
+}
+
+CheckResult DocumentReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string() ||
+            kind->get<std::string>() != "document_extraction") {
+            continue;
+        }
+        const auto confidence =
+            node->attributes.find("confidence_required");
+        if (confidence == node->attributes.end() ||
+            !confidence->is_boolean() || !confidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must assign a confidence to every field"};
+        }
+        const auto evidence = node->attributes.find("retain_evidence");
+        if (evidence == node->attributes.end() || !evidence->is_boolean() ||
+            !evidence->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction must retain each field's source page and box"};
+        }
+        const auto routing =
+            node->attributes.find("route_low_confidence_to_review");
+        if (routing == node->attributes.end() || !routing->is_boolean() ||
+            !routing->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": fields below the review threshold must be routed to review"};
+        }
+        const auto threshold = node->attributes.find("review_threshold");
+        if (threshold == node->attributes.end() || !threshold->is_number() ||
+            !std::isfinite(threshold->get<double>()) ||
+            threshold->get<double>() < 0.0 ||
+            threshold->get<double>() > 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": review_threshold must be a number between 0 and 1"};
+        }
+        bool has_review_step = false;
+        for (const auto& candidate : graph.successors(node->id)) {
+            if (candidate->kind != ir::StepKind::Act ||
+                !candidate->attributes.is_object()) {
+                continue;
+            }
+            const auto route = candidate->attributes.find("route");
+            if (route != candidate->attributes.end() && route->is_string() &&
+                route->get<std::string>() == "review_queue") {
+                has_review_step = true;
+                break;
+            }
+        }
+        if (!has_review_step) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": document extraction needs an Act step that writes the review_queue"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "document fields keep confidence and evidence, with uncertain values routed to review"};
 }
 
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {

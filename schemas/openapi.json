@@ -6521,12 +6521,20 @@
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
                         },
+                        "fields": {
+                          "description": "M-11 extracted fields with confidence, page, box, and review status",
+                          "type": "array"
+                        },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
                         },
                         "model": {
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "type": "object"
+                        },
+                        "review_queue": {
+                          "description": "M-11 review-table reference and routed-field count",
                           "type": "object"
                         },
                         "run": {
@@ -10409,6 +10417,25 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "document_column": {
+                    "description": "M-11: source column containing text, PDF, or PGM bytes",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "document_id_column": {
+                    "description": "M-11: stable source document identifier column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "M-11: declared field names to extract",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10424,6 +10451,11 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "labels_column": {
+                    "description": "M-11: optional object of labelled field values",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
                     "minLength": 1,
@@ -10434,10 +10466,26 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "review_threshold": {
+                    "description": "M-11: route lower-confidence fields to review",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "seed": {
+                    "description": "M-11: deterministic tiny TrOCR seed",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "trocr_directory": {
+                    "description": "M-11: pinned native TrOCR checkpoint directory",
+                    "minLength": 1,
+                    "type": "string"
                   }
                 },
                 "required": [

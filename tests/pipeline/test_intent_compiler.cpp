@@ -95,6 +95,28 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, DocumentMethodologyBuildsItsOwnRunnableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-11";
+    options.hints = {{"source", "documents"},
+                     {"table", "invoices"},
+                     {"fields", {"invoice_number", "total"}},
+                     {"review_threshold", 0.85}};
+    const auto compiled = compile_intent("extract invoice fields", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-11");
+    ASSERT_EQ(compiled->graph.nodes_of_kind(StepKind::Model).size(), 1u);
+    const auto model = compiled->graph.nodes_of_kind(StepKind::Model).front();
+    EXPECT_EQ(model->attributes.at("model_kind"), "document_extraction");
+    EXPECT_EQ(model->attributes.at("fields").size(), 2u);
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Act).front()
+                  ->attributes.at("route"),
+              "review_queue");
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Clean).front()
+                  ->attributes.at("ocr"),
+              "trocr");
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
     std::string error;
     EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));

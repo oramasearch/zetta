@@ -10,9 +10,11 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -245,6 +247,79 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneyDocumentMethodologyLandsCompilesRunsAndReports) {
+    const std::string document =
+        "Invoice Number: INV-42\nDate: 2026-09-27\nTotal: 149.95";
+    const nlohmann::json row = {
+        {"document_id", "invoice-1"},
+        {"document", document},
+        {"labels",
+         {{"invoice_number", "INV-42"},
+          {"date", "2026-09-27"},
+          {"total", "149.95"}}}};
+    const ApiResult landed = call(
+        "upload_dataset",
+        {{"database", "documents"},
+         {"table_name", "documents"},
+         {"format", "jsonl"},
+         {"content", row.dump() + "\n"}});
+    ASSERT_TRUE(landed.ok) << landed.error.message;
+
+    ASSERT_TRUE(call("create_project", {{"name", "document project"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "document project"},
+         {"text", "Extract invoice fields and route uncertain values for review"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "document project"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-11"},
+         {"name", "invoice extraction"},
+         {"hints",
+          {{"source", "documents"},
+           {"table", "documents"},
+           {"fields", {"invoice_number", "date", "total"}},
+           {"review_threshold", 0.8}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-11");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult submitted = call(
+        "run", {{"project", "document project"},
+                {"graph", "invoice extraction"}});
+    ASSERT_TRUE(submitted.ok) << submitted.error.message;
+    const std::string run_id = submitted.value.at("run_id");
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    ApiResult run;
+    while (std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        background.prune();
+        run = call("get_run", {{"run_id", run_id}});
+        ASSERT_TRUE(run.ok) << run.error.message;
+        if (run.value.at("status") == "succeeded" ||
+            run.value.at("status") == "failed") {
+            break;
+        }
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(run.value.at("status"), "succeeded") << run.value.dump(2);
+
+    const ApiResult report =
+        call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("model").at("kind"), "document_extraction");
+    EXPECT_DOUBLE_EQ(
+        report.value.at("model").at("metrics").at("field_f1").get<double>(),
+        1.0);
+    EXPECT_EQ(report.value.at("fields").size(), 3u);
+    EXPECT_TRUE(report.value.at("review_queue").contains("table"));
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "documents.documents");
 }
 
 // =====================================================================

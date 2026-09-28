@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m11_methodology();
 
 namespace {
 
@@ -134,14 +135,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "task labels or golden answers")},
                 {"embeddings", "search results", "generated text"},
                 {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
-        planned("M-11", "Document intelligence",
-                "Language, documents & perception",
-                {"document_intelligence", "ocr", "document"}, {},
-                {"extract document", "ocr", "invoice", "form"},
-                {input("text", true, "document image or text"),
-                 input("label", false, "field annotations")},
-                {"structured fields", "evidence links"},
-                {"field accuracy", "F1", "straight-through rate"}, 1050),
+        make_m11_methodology(),
         planned("M-12", "Graph ML", "Identity & structure",
                 {"graph_ml", "graph"}, {},
                 {"graph", "network", "link prediction"},

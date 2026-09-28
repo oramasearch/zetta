@@ -72,6 +72,16 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-11 document extraction must never accept a field without a confidence,
+// source evidence, and an explicit low-confidence review route.
+class DocumentReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "document_review";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }
