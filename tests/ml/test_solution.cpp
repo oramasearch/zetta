@@ -106,6 +106,49 @@ zetta::ir::ExecutionGraph bound_s2_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s8_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-8");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s8_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"censoring",
+         {{"event_indicator", "event"},
+          {"duration_column", "duration"},
+          {"censored_assets_included", true},
+          {"censored_value", 0}}},
+        {"sensor_drift",
+         {{"monitoring_enabled", true},
+          {"baseline_end", "2024-01-01T00:00:00Z"},
+          {"sensor_columns", {"temperature", "vibration"}},
+          {"maximum_psi", 0.2}}},
+        {"maintenance_records",
+         {{"failure_time_column", "failure_at"},
+          {"truncate_at_failure", true},
+          {"post_failure_records", "exclude"}}},
+        {"post_failure_blocklist",
+         {"repair_completed_at", "failure_code", "replacement_reason"}},
+        {"feature_names", {"temperature", "vibration"}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -127,6 +170,15 @@ void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
 }
 
 void expect_s2_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s8_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -158,7 +210,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
             EXPECT_EQ(solution.templates.minimal,
-                      solution.id != "S-1" && solution.id != "S-2");
+                      solution.id != "S-1" && solution.id != "S-2" &&
+                          solution.id != "S-8");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -272,6 +325,42 @@ TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
               "A1");
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, PredictiveMaintenanceEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* maintenance =
+        zetta::ml::find_solution("S-8");
+    ASSERT_NE(maintenance, nullptr);
+    EXPECT_TRUE(maintenance->runnable);
+    EXPECT_EQ(maintenance->issue,
+              "https://github.com/oramasearch/zetta/issues/1117");
+    EXPECT_FALSE(maintenance->templates.minimal);
+    EXPECT_EQ(maintenance->action_patterns.size(), 2u);
+    EXPECT_EQ(maintenance->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(maintenance->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"work_order"}));
+    ASSERT_EQ(maintenance->templates.guardrails.size(), 6u);
+    EXPECT_EQ(maintenance->templates.guardrails.front().metric,
+              "unsafe_work_order_rate");
+    EXPECT_EQ(maintenance->templates.guardrails.back().direction,
+              "minimum");
+    EXPECT_EQ(maintenance->templates.measurement.design, "holdout");
+    EXPECT_EQ(maintenance->templates.measurement.outcome,
+              "failure_avoided");
+
+    const nlohmann::json policy = maintenance->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("actions").at("draft_work_order").at("autonomy"),
+              "A0");
+    EXPECT_EQ(policy.at("actions")
+                  .at("inspection_work_order")
+                  .at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("actions")
+                  .at("scheduled_work_order")
+                  .at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 4u);
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -416,6 +505,49 @@ TEST(SolutionRegistry, S2ChecksRefuseWrongConversionAndRoutingCases) {
 TEST(SolutionRegistry, S2EveryLevelBuildsThroughRegisteredMethodologies) {
     for (int level = 1; level <= 4; ++level) {
         const zetta::ir::ExecutionGraph graph = bound_s2_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, S8ChecksRefuseWrongMaintenanceCases) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s8_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto censoring = bound_s8_graph();
+    censoring.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["censoring"]
+                   ["censored_assets_included"] = false;
+    expect_s8_failure(censoring, "s8_censoring");
+
+    auto drift = bound_s8_graph();
+    drift.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["sensor_drift"]
+                   ["monitoring_enabled"] = false;
+    expect_s8_failure(drift, "s8_sensor_drift");
+
+    auto leakage = bound_s8_graph();
+    leakage.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["feature_names"]
+        .push_back("repair_completed_at");
+    expect_s8_failure(leakage,
+                      "s8_post_failure_maintenance_leakage");
+}
+
+TEST(SolutionRegistry, S8EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s8_graph(level);
         ASSERT_FALSE(graph.empty()) << level;
         const auto report = zetta::pipeline::default_gate().run(graph);
         EXPECT_TRUE(report.passed())

@@ -35,6 +35,7 @@ The reusable annotation and methodology-specific checks are:
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
+| `S8*Check` family | `s8_censoring`, `s8_sensor_drift`, `s8_post_failure_maintenance_leakage` | an S-8 graph that discards censored assets, lacks a bounded pre-decision sensor baseline, or uses maintenance facts recorded after failure |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -93,6 +94,21 @@ M-6 at levels 3 and 4.
 optional `sources.correctness` overrides. `run_solution` checks the stored
 profile again. See [S-2](../solutions/S-2.md) for its data, policy, action, and
 measurement contract.
+
+### S-8 composed solution checks
+
+The S-8 checks engage only for a bound S-8 manifest. `s8_censoring` requires a
+named event indicator and duration, retains event `0` assets, checks the native
+M-5 stop-after-event contract, and verifies M-5/M-1/M-2 plus M-7 at levels 3–4.
+`s8_sensor_drift` requires named sensors, an enabled PSI check capped at 0.2,
+and a baseline ending no later than prediction. The maintenance-leakage check
+requires failure-time truncation, exclusion of later records, and a nonempty
+blocklist that no selected feature may match.
+
+`create_solution` derives the profile from the snapshot, dataset roles, M-5
+hints, and optional `sources.correctness` overrides. `run_solution` checks the
+stored profile again. See [S-8](../solutions/S-8.md) for the complete module
+contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

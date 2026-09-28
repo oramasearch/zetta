@@ -325,6 +325,32 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-8's predictive-maintenance adaptations (#1117). Censored assets remain in
+// the survival cohort, sensor drift has a pre-decision baseline, and failure or
+// repair facts recorded after failure cannot become predictors.
+class S8CensoringCheck final : public Check {
+public:
+    std::string name() const override { return "s8_censoring"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S8SensorDriftCheck final : public Check {
+public:
+    std::string name() const override { return "s8_sensor_drift"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S8PostFailureMaintenanceLeakageCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s8_post_failure_maintenance_leakage";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

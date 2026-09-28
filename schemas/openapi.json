@@ -4572,6 +4572,10 @@
                             "minLength": 1,
                             "type": "string"
                           },
+                          "horizon": {
+                            "exclusiveMinimum": 0,
+                            "type": "number"
+                          },
                           "methodology": {
                             "minLength": 1,
                             "type": "string"

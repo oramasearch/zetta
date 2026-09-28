@@ -32,7 +32,15 @@ exclusion and do-not-contact evidence suppresses action. The lifetime cap is
 six tasks and the rolling seven-day cap is one. Its deterministic experiment
 keeps 10% as permanent holdout and assigns the remainder to `routed`.
 
-S-3 through S-12 intentionally provide minimal starter policies derived from
+S-8 defines imminent/elevated/monitor hazard floors of 0.65/0.25/0.0. Imminent
+assets receive an A0 draft work order; elevated assets receive an A2 inspection
+work order; optional scheduling is A1. Eligibility requires an approved asset
+class, maintenance window, service safety, and maintenance eligibility.
+Lockouts, active work orders, and untrusted sensor evidence suppress action.
+The rolling cap is one work order per seven days. Its permanent 10% holdout and
+`work_order` cell measure `failure_avoided` over 30 days.
+
+S-3 through S-7 and S-9 through S-12 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -42,6 +50,8 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-8 observes unsafe and false work orders, missed failures, sensor PSI,
+maintenance capacity, and action execution.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
