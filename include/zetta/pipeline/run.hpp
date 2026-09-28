@@ -72,6 +72,9 @@ struct RunValue {
     std::vector<RunLogEntry> logs;
     std::vector<RunOutput> outputs;
     RunLineage lineage;
+    // Frozen input choices, not a fresh analysis at report time (#1062).
+    nlohmann::json features = {{"used", nlohmann::json::array()},
+                               {"excluded", nlohmann::json::array()}};
 };
 
 // Serialize a run value to its JSON shape (no id). The inverse of
@@ -81,6 +84,7 @@ nlohmann::json to_json(const RunValue& value);
 // The Run JSON Schema (draft-07) — the single source of truth for the value
 // shape, exposed so callers/tests can introspect it.
 const nlohmann::json& run_value_schema();
+const nlohmann::json& run_features_schema();
 
 // Boundary validation: check a JSON value against the Run JSON Schema. Returns
 // true when valid; on failure returns false and (if `error` is non-null) fills
@@ -133,6 +137,7 @@ public:
     void set_outputs(std::vector<RunOutput> outputs);
     void set_lineage(RunLineage lineage);
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
+    bool set_features(nlohmann::json features, std::string* error = nullptr);
 
     // Replace the mutable value to match a (replicated) document value, then
     // rewrite run.json — with NO capture (used by reconciliation).

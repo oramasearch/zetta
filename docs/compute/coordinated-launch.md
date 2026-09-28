@@ -118,6 +118,16 @@ churn solution (`usecases::churn::install_churn_launch_runner`):
 
 ## Limits / later slices
 
+M-3 adds the `segmentation` launch kind (#1042). Its validated payload carries
+the resolved table identity and feature contract, never feature rows. Every peer
+trains over its owned partitions with the same config and unique Run round tag.
+The initiator returns a Run immediately while a runtime task drives its shard;
+peers use the existing owner-loop launch listener. The initiator writes both
+output tables even when it is not the collective root. Final assignments are
+gathered and broadcast for that single-writer step; training stays distributed.
+Missing owners, changed tables or roster disagreements fail rather than train a
+partial dataset. See [segmentation.md](../ml/segmentation.md).
+
 - **Membership races.** The roster is snapshotted at launch; a node that joins
   between fan-out and the first round makes the collectives wait on a
   non-participant — the run fails with the bounded timeout (the same window

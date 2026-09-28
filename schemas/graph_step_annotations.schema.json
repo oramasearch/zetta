@@ -1,10 +1,61 @@
 {
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "The correctness annotations the gate's concrete checks (#309) read from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles (schema_type check) and point-in-time / target-leakage metadata (data_leakage check). Only the named fields are constrained; a node may carry any other attributes. Mirrored verbatim by the inline schema in src/core/graph_checks.cpp (the runtime source of truth) — keep the two in sync.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements, plus streaming event/label ordering. Only the named fields are constrained; a node may carry any other attributes.",
   "properties": {
+    "allowed_lateness": {
+      "description": "How far behind the maximum observed event time an event may arrive before exclusion.",
+      "minimum": 0,
+      "type": "number"
+    },
     "as_of": {
       "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
+    "audio_local_only": {
+      "description": "Audio samples remain on their owner node.",
+      "type": "boolean"
+    },
+    "blackout_gap_seconds": {
+      "description": "Minimum interval between feature_window_end and label_window_start.",
+      "minimum": 0,
+      "type": "number"
+    },
+    "caller_read_required": {
+      "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
+    },
+    "censoring_handled": {
+      "type": "boolean"
+    },
+    "citations_required": {
+      "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "consent_column": {
+      "description": "The boolean source field that records speech-processing consent.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "consent_required": {
+      "description": "Speech transcription must require explicit source consent.",
+      "type": "boolean"
+    },
+    "duration_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "event_indicator": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "event_time_ordered": {
+      "description": "Streaming work is released in event-time order behind its watermark.",
+      "type": "boolean"
+    },
+    "feature_window_end": {
+      "description": "The final instant any feature window may observe; it must not be after prediction as_of.",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
       "type": "string"
     },
@@ -30,6 +81,10 @@
             "description": "The feature's name.",
             "minLength": 1,
             "type": "string"
+          },
+          "post_treatment": {
+            "description": "The feature is observed after treatment and cannot be an uplift predictor.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -39,10 +94,63 @@
       },
       "type": "array"
     },
+    "future_event_policy": {
+      "description": "How streaming work prevents future events from entering the current decision.",
+      "enum": [
+        "buffer_until_watermark"
+      ],
+      "type": "string"
+    },
+    "governance_check": {
+      "description": "Requires runtime authorization before language training reads text.",
+      "type": "boolean"
+    },
     "label": {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
       "minLength": 1,
       "type": "string"
+    },
+    "label_time_policy": {
+      "description": "A label may train the model only at or after its event time.",
+      "enum": [
+        "not_before_event_time"
+      ],
+      "type": "string"
+    },
+    "label_window_start": {
+      "description": "The first instant from which labels may be observed.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "overlap_lower": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
+    "overlap_upper": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
+    "point_in_time_features": {
+      "type": "boolean"
+    },
+    "prequential": {
+      "description": "Metrics are computed test-then-train from the score made before an update.",
+      "type": "boolean"
+    },
+    "redact_pii": {
+      "description": "Speech transcript text is privacy-filtered before durable storage.",
+      "type": "boolean"
+    },
+    "refuse_without_retrieval": {
+      "description": "Requires the language path to refuse when no relevant chunk was retrieved.",
+      "type": "boolean"
     },
     "requires": {
       "additionalProperties": {
@@ -59,6 +167,44 @@
       },
       "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
       "type": "object"
+    },
+    "snapshot_as_of": {
+      "description": "The inclusive cutoff used to materialize a terminal snapshot source.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
+    },
+    "source_column": {
+      "description": "The camera, site, document, or other source-group column used for a vision holdout.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "source_disjoint": {
+      "description": "Vision models must split whole source groups between train and test.",
+      "type": "boolean"
+    },
+    "source_kind": {
+      "description": "Whether a terminal feature source is an immutable point-in-time snapshot or a live table. Feature lineage accepts only snapshot.",
+      "enum": [
+        "snapshot",
+        "live"
+      ],
+      "type": "string"
+    },
+    "stop_after_event": {
+      "type": "boolean"
+    },
+    "temporal_validation": {
+      "type": "boolean"
+    },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
     }
   },
   "title": "zetta.GraphStepAnnotations",

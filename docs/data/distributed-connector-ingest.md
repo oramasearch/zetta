@@ -275,6 +275,11 @@ has its own in-app case,
 a node is made idle by not giving it a tick loop rather than by wedging it
 ([#840](https://github.com/oramasearch/zetta/issues/840)).
 
+The non-Snowflake dispatch regression accepts both the core's `Postgres` diagnostic
+and the installed protocol runner's `postgres` diagnostic. API journeys can install
+the runner earlier in a full-suite process; capitalization must not make the test
+order-dependent. Neither form may mention Snowflake or call its transport.
+
 See also [connector-query.md](connector-query.md) (the connector + the credential
 contract), [partition-only-tables.md](partition-only-tables.md) (why nothing
 re-replicates), [scatter-gather-select.md](scatter-gather-select.md) (the read

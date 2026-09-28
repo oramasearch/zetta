@@ -17,6 +17,7 @@ using zetta::governance::Operation;
 
 Operation operation_for(PubSubOperation operation) {
     switch (operation) {
+        case PubSubOperation::Read: return {CapabilityDomain::Data, "topics_read"};
         case PubSubOperation::Publish: return {CapabilityDomain::Data, "pubsub_publish"};
         case PubSubOperation::Subscribe: return {CapabilityDomain::Data, "pubsub_subscribe"};
         case PubSubOperation::SendWildcard: return {CapabilityDomain::Data, "pubsub_send_wildcard"};
@@ -41,12 +42,11 @@ public:
             if (!user) user = node_.find_user(principal.name);
             if (!user) return;
             const auto op = operation_for(operation);
-            if (!node_.authorize_user(user->id(), op)) return;
-            if (target.kind != "topic") {
-                allowed = true;
+            if (target.kind != "topic" && target.kind != "inbox") {
+                allowed = node_.authorize_user(user->id(), op).allowed;
                 return;
             }
-            // The object tier: a user whose right is scoped to topic prefixes is narrowed.
+            // Global grants cover every topic; scoped-only grants cover their prefix.
             std::string name = target.name;
             if (!name.empty() && name.back() == '*') name.pop_back();
             allowed = node_.authorize_object(user->id(), true, op, zetta::governance::Resource::topic(name));
@@ -113,6 +113,17 @@ std::string iso8601(std::chrono::system_clock::time_point time) {
 
 std::shared_ptr<Authorizer> make_node_authorizer(zetta::Node& node) {
     return std::make_shared<NodeAuthorizer>(node);
+}
+
+void connect_audit_trail(PubSub& pubsub, zetta::Node& node) {
+    pubsub.set_audit_sink([&node](const AuditRecord& record) {
+        const auto action = zetta::governance::audit_action_from(record.action);
+        if (!action) return;
+        node.run_on_owner([&] {
+            node.record_audit_event({.action = *action, .actor = record.principal.to_string(),
+                .target = record.target.to_string(), .allowed = true, .detail = record.detail});
+        });
+    });
 }
 
 std::shared_ptr<InboxDrain> make_table_drain(zetta::Node& node) { return std::make_shared<TableDrain>(node); }

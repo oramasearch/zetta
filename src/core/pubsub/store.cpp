@@ -1,5 +1,6 @@
 #include "zetta/pubsub/store.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <system_error>
@@ -11,13 +12,17 @@ namespace zetta::pubsub {
 RingBuffer::RingBuffer(std::uint64_t first_position, std::size_t capacity)
     : first_position_(first_position), capacity_(capacity == 0 ? 1 : capacity) {
     slots_.resize(capacity_);
+    occupied_.resize(capacity_, false);
+    sequences_.resize(capacity_);
 }
 
 bool RingBuffer::try_append(Event event) {
     std::lock_guard lock(mutex_);
     if (count_ >= capacity_) return false;
     memory_bytes_ += event.memory_bytes();
+    sequences_[count_] = event.sequence;
     slots_[count_] = std::move(event);
+    occupied_[count_] = true;
     ++count_;
     return true;
 }
@@ -28,6 +33,54 @@ std::optional<Event> RingBuffer::read(std::uint64_t position) {
     const auto& slot = slots_[position - first_position_];
     if (!slot) return std::nullopt;
     return *slot;
+}
+
+bool RingBuffer::replace(std::uint64_t position, std::optional<Event> event) {
+    std::lock_guard lock(mutex_);
+    if (spilled_ || position < first_position_ || position >= first_position_ + count_) {
+        return false;
+    }
+    const auto index = position - first_position_;
+    if (!slots_[index]) return false;
+    if (on_disk_) {
+        const auto temporary = spill_path_.string() + ".replace";
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        for (std::size_t current = 0; current < count_; ++current) {
+            const auto& value = current == index ? event : slots_[current];
+            if (!value) continue;
+            const auto frame = encode_event_frame(*value, current);
+            output.write(frame.data(), static_cast<std::streamsize>(frame.size()));
+        }
+        output.close();
+        if (!output) return false;
+        std::error_code error;
+        std::filesystem::rename(temporary, spill_path_, error);
+        if (error) return false;
+    }
+    memory_bytes_ -= slots_[index]->memory_bytes();
+    if (event) memory_bytes_ += event->memory_bytes();
+    slots_[index] = std::move(event);
+    occupied_[index] = slots_[index].has_value();
+    if (slots_[index]) sequences_[index] = slots_[index]->sequence;
+    return true;
+}
+
+std::size_t RingBuffer::held_from(std::uint64_t position) const {
+    std::lock_guard lock(mutex_);
+    const auto first = position > first_position_ ? std::min<std::uint64_t>(position - first_position_, count_) : 0;
+    std::size_t held = 0;
+    for (auto index = first; index < count_; ++index) held += occupied_[index] ? 1 : 0;
+    return held;
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> RingBuffer::sequence_positions() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+    for (std::size_t index = 0; index < count_; ++index) {
+        if (occupied_[index]) result.emplace_back(first_position_ + index, sequences_[index]);
+    }
+    return result;
 }
 
 bool RingBuffer::full() const {
@@ -69,7 +122,7 @@ bool RingBuffer::spill_to(const std::filesystem::path& path, std::size_t& writte
     if (!out) return false;
     for (std::size_t index = 0; index < count_; ++index) {
         if (!slots_[index]) continue;
-        const std::string frame = encode_event_frame(*slots_[index]);
+        const std::string frame = encode_event_frame(*slots_[index], index);
         out.write(frame.data(), static_cast<std::streamsize>(frame.size()));
         written += frame.size();
     }
@@ -96,13 +149,18 @@ bool RingBuffer::load_back(std::size_t inline_threshold) {
     std::string_view rest(buffer);
     std::size_t index = 0;
     std::size_t bytes = 0;
-    while (!rest.empty() && index < count_) {
+    std::vector<std::optional<Event>> restored(capacity_);
+    while (!rest.empty()) {
         auto decoded = decode_event_frame(rest, inline_threshold);
         if (decoded.status != FrameStatus::Ok) return false;
+        const auto slot = decoded.slot.value_or(index);
+        if (slot >= count_ || restored[slot]) return false;
         bytes += decoded.event.memory_bytes();
-        slots_[index++] = std::move(decoded.event);
+        restored[slot] = std::move(decoded.event);
+        index = slot + 1;
         rest.remove_prefix(decoded.consumed);
     }
+    slots_ = std::move(restored);
     memory_bytes_ = bytes;
     spilled_ = false;
     return true;
@@ -123,6 +181,7 @@ void RingBuffer::reset(std::uint64_t first_position) {
     first_position_ = first_position;
     for (auto& slot : slots_) slot.reset();
     count_ = 0;
+    std::fill(occupied_.begin(), occupied_.end(), false);
     memory_bytes_ = 0;
     spilled_ = false;
     on_disk_ = false;
@@ -171,15 +230,64 @@ std::shared_ptr<RingBuffer> TopicRingStack::ring_for(std::uint64_t position) con
 }
 
 std::optional<Event> TopicRingStack::read(std::uint64_t position) {
-    std::shared_ptr<RingBuffer> ring;
-    {
-        std::lock_guard lock(mutex_);
-        if (position < released_before_) return std::nullopt;
-        ring = ring_for(position);
-    }
+    std::lock_guard lock(mutex_);
+    if (position < released_before_) return std::nullopt;
+    const auto ring = ring_for(position);
     if (!ring) return std::nullopt;
     if (ring->spilled() && !ring->load_back(options_.inline_threshold)) return std::nullopt;
     return ring->read(position);
+}
+
+bool TopicRingStack::replace(std::uint64_t position, std::optional<Event> event) {
+    std::lock_guard lock(mutex_);
+    if (position < released_before_) return false;
+    const auto ring = ring_for(position);
+    if (!ring || !ring->load_back(options_.inline_threshold)) return false;
+    std::error_code error;
+    const auto before = std::filesystem::file_size(ring->spill_path(), error);
+    const bool persisted = !error;
+    if (!ring->replace(position, std::move(event))) return false;
+    if (persisted) {
+        const auto after = std::filesystem::file_size(ring->spill_path(), error);
+        if (!error) disk_bytes_ = disk_bytes_ - std::min<std::size_t>(disk_bytes_, before) + after;
+    }
+    return true;
+}
+
+std::vector<std::pair<std::uint64_t, Event>> TopicRingStack::entries(
+    std::optional<std::uint64_t> from, std::size_t limit, bool backward) {
+    std::lock_guard lock(mutex_);
+    std::vector<std::pair<std::uint64_t, Event>> result;
+    for (std::size_t index = 0; index < rings_.size() && result.size() < limit; ++index) {
+        const auto& ring = rings_[backward ? rings_.size() - index - 1 : index];
+        auto positions = ring->sequence_positions();
+        if (backward) std::reverse(positions.begin(), positions.end());
+        for (const auto& [position, sequence] : positions) {
+            if (result.size() >= limit) break;
+            if (position < released_before_ || (from && (backward ? sequence > *from : sequence < *from))) continue;
+            if (!ring->load_back(options_.inline_threshold)) throw std::runtime_error("cannot read pub/sub spill file");
+            if (auto event = ring->read(position)) result.emplace_back(position, std::move(*event));
+        }
+    }
+    return result;
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> TopicRingStack::sequence_positions() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+    for (const auto& ring : rings_) {
+        for (const auto& entry : ring->sequence_positions()) {
+            if (entry.first >= released_before_) result.push_back(entry);
+        }
+    }
+    return result;
+}
+
+std::size_t TopicRingStack::held_events() const {
+    std::lock_guard lock(mutex_);
+    std::size_t held = 0;
+    for (const auto& ring : rings_) held += ring->held_from(released_before_);
+    return held;
 }
 
 std::uint64_t TopicRingStack::first_position() const {
@@ -274,30 +382,9 @@ std::size_t TopicRingStack::spill_oldest(const std::filesystem::path& directory)
 }
 
 std::vector<Event> TopicRingStack::snapshot_all() {
-    std::vector<std::shared_ptr<RingBuffer>> rings;
-    std::uint64_t released = 0;
-    {
-        std::lock_guard lock(mutex_);
-        rings.assign(rings_.begin(), rings_.end());
-        released = released_before_;
-    }
     std::vector<Event> events;
-    for (const auto& ring : rings) {
-        if (ring->spilled() && !ring->load_back(options_.inline_threshold)) continue;
-        for (auto& event : ring->snapshot()) {
-            // snapshot() loses positions; recompute from the ring's first position.
-            events.push_back(std::move(event));
-        }
-    }
-    // Drop anything already released (the oldest ring may be partly released).
-    std::vector<Event> held;
-    held.reserve(events.size());
-    std::uint64_t position = rings.empty() ? released : rings.front()->first_position();
-    for (auto& event : events) {
-        if (position >= released) held.push_back(std::move(event));
-        ++position;
-    }
-    return held;
+    for (auto& [position, event] : entries()) events.push_back(std::move(event));
+    return events;
 }
 
 void TopicRingStack::restore(std::vector<Event> events, std::uint64_t next_position) {
@@ -325,7 +412,7 @@ std::uint64_t QueueStore::append(Event event) {
     {
         std::lock_guard lock(mutex_);
         memory_bytes_ += event.memory_bytes();
-        queue_.push(std::move(event));
+        queue_.push_back(std::move(event));
         position = next_position_++;
     }
     appended_.notify_all();
@@ -336,6 +423,51 @@ std::optional<Event> QueueStore::read(std::uint64_t position) {
     std::lock_guard lock(mutex_);
     if (queue_.empty() || position != first_position_) return std::nullopt;
     return queue_.front();
+}
+
+bool QueueStore::replace(std::uint64_t position, std::optional<Event> event) {
+    std::lock_guard lock(mutex_);
+    if (position < first_position_ || position >= next_position_) return false;
+    auto& slot = queue_[position - first_position_];
+    if (!slot) return false;
+    memory_bytes_ -= slot->memory_bytes();
+    if (event) memory_bytes_ += event->memory_bytes();
+    slot = std::move(event);
+    while (!queue_.empty() && !queue_.front()) {
+        queue_.pop_front();
+        ++first_position_;
+    }
+    return true;
+}
+
+std::vector<std::pair<std::uint64_t, Event>> QueueStore::entries(
+    std::optional<std::uint64_t> from, std::size_t limit, bool backward) {
+    std::lock_guard lock(mutex_);
+    std::vector<std::pair<std::uint64_t, Event>> result;
+    for (std::size_t offset = 0; offset < queue_.size() && result.size() < limit; ++offset) {
+        const auto index = backward ? queue_.size() - offset - 1 : offset;
+        if (!queue_[index]) continue;
+        const auto sequence = queue_[index]->sequence;
+        if (from && (backward ? sequence > *from : sequence < *from)) continue;
+        result.emplace_back(first_position_ + index, *queue_[index]);
+    }
+    return result;
+}
+
+std::vector<std::pair<std::uint64_t, std::uint64_t>> QueueStore::sequence_positions() const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> result;
+    for (std::size_t index = 0; index < queue_.size(); ++index) {
+        if (queue_[index]) result.emplace_back(first_position_ + index, queue_[index]->sequence);
+    }
+    return result;
+}
+
+std::size_t QueueStore::held_events() const {
+    std::lock_guard lock(mutex_);
+    std::size_t held = 0;
+    for (const auto& slot : queue_) held += slot.has_value() ? 1 : 0;
+    return held;
 }
 
 std::uint64_t QueueStore::first_position() const {
@@ -351,8 +483,8 @@ std::uint64_t QueueStore::next_position() const {
 void QueueStore::release_before(std::uint64_t position) {
     std::lock_guard lock(mutex_);
     while (!queue_.empty() && first_position_ < position) {
-        memory_bytes_ -= std::min(memory_bytes_, queue_.front().memory_bytes());
-        queue_.pop();
+        if (queue_.front()) memory_bytes_ -= queue_.front()->memory_bytes();
+        queue_.pop_front();
         ++first_position_;
     }
 }

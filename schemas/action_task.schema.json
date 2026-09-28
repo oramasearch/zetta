@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "acknowledgement": {
+      "type": "object"
+    },
+    "agent_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "attempts": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cell": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "connector": {
+      "enum": [
+        "webhook",
+        "salesforce",
+        "hubspot"
+      ],
+      "type": "string"
+    },
+    "created_at": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "currency": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "decision_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "endpoint": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "idempotency_key": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "last_error": {
+      "type": "string"
+    },
+    "ledger_action_id": {
+      "type": "string"
+    },
+    "max_attempts": {
+      "maximum": 100,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "model_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "sla_due_at": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "delivered",
+        "blocked",
+        "dead_letter"
+      ],
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "timeout_seconds": {
+      "maximum": 300,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "updated_at": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "decision_id",
+    "owner",
+    "sla_due_at",
+    "connector",
+    "endpoint",
+    "timeout_seconds",
+    "payload",
+    "idempotency_key",
+    "max_attempts",
+    "attempts",
+    "status",
+    "ledger_action_id",
+    "last_error",
+    "acknowledgement",
+    "model_version",
+    "agent_version",
+    "cell",
+    "currency",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "zetta.ActionTask",
+  "type": "object"
+}

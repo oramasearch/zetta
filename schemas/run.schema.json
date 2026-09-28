@@ -8,6 +8,72 @@
     "deployment": {
       "type": "string"
     },
+    "features": {
+      "additionalProperties": false,
+      "properties": {
+        "excluded": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "why": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "why"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "used": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "source": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "transform": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "why": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "source",
+              "transform",
+              "why"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "used",
+        "excluded"
+      ],
+      "type": "object"
+    },
     "graph": {
       "type": "string"
     },
