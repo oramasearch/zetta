@@ -61,12 +61,13 @@ read-backs proving nothing placed and nothing executed), **dataset ingest**
 (add_dataset → placement visible in `get_dataset` AND the
 `system.dataset_partitions` read-back). `tests/api/test_action_journeys.cpp`
 runs them at layer 1 (plus n8n import+compile, sim-Python compile,
+the M-16 knapsack table→compile→run→report journey,
 testsuite_run submit-then-poll, and the denied-key negative);
 `tests/api/test_mcp_server.cpp` replays dataset-ingest and gate-blocked over
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 
 The methodology registry journey in `test_action_journeys.cpp` discovers all
-21 entries, compiles S-1 through M-1, verifies issue-bearing refusals for M-3
+21 entries, compiles S-1 through M-1 and S-4 through M-16, verifies issue-bearing refusals for M-3
 and segmentation keywords, rejects an unmatched non-predictive intent, refuses
 a segmentation model at run time, and reads back `methodology` plus `runnable`
 from both graph and project views (#1061).
@@ -75,7 +76,7 @@ from both graph and project views (#1061).
 
 - Journeys run against **real engine state** (temp data_dir, loopback
   cluster) — no mocks of zetta itself; fakes only at the CommandRunner-style
-  outer seams (cloud CLIs).
+  outer injection points (cloud CLIs).
 - Multi-node journeys follow the patient-convergence rule (poll with a
   deadline, never a fixed count).
 - Every new capability lands with at least one journey step exercising it

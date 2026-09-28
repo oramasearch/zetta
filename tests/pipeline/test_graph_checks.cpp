@@ -276,11 +276,12 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -372,11 +373,70 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
+              implemented.end())
+        << "M-16 optimization ships today";
     for (const char* unshipped :
          {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
+}
+
+namespace {
+
+zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
+  zetta::ir::ExecutionGraph graph;
+  graph.add_node(zetta::ir::StepKind::Connect, "scenario table", {}, "source");
+  graph.add_node(zetta::ir::StepKind::Model, "optimization",
+                 std::move(attributes), "model");
+  graph.add_edge("source", "model");
+  return graph;
+}
+
+} // namespace
+
+TEST(OptimizationGraphCheck, CompleteContractPasses) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(OptimizationGraphCheck, PointForecastShapeIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("scenario or quantile"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, UnverifiedPlanIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("independently verify"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("solver status"), std::string::npos)
+      << result.reason;
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------

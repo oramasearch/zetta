@@ -10,6 +10,7 @@ include/zetta/pipeline/intent_compiler.hpp   compile options and result
 src/core/pipeline/intent_compiler.cpp         deterministic resolution
 include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
+src/core/ml/methodology_optimization.cpp      M-16 shape and run callbacks
 ```
 
 ## Resolution order
@@ -70,6 +71,20 @@ load_activity ──┘
 The model node carries `model_kind: "gbdt"` as the dispatch identity and keeps
 the existing `algo: "gradient_boosting"` configuration. All attributes remain
 editable starting-point hints for review.
+
+## M-16 optimization shape
+
+M-16 compiles its own table-to-plan pipeline:
+
+```
+load_optimization_table → validate_optimization_model → solve_optimization_plan → publish_optimization_plan
+       connect                    clean                       model                         act
+```
+
+The model step carries `model_kind: "optimization"` plus the scenario-input,
+independent-verification, and status-reporting contract flags required by the
+correctness gate. The connect step's `source` and `table` are the default run
+dataset; callers can override them with `dataset_path`.
 
 ## Stored intent bridge
 

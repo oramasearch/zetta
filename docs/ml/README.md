@@ -1,7 +1,7 @@
 # ML docs
 
 The native ML engine — the "learns from your data" differentiator, re-implemented from scratch as
-distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) seams (no
+distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) interfaces (no
 Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
@@ -16,6 +16,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [optimization.md](optimization.md) — M-16 native revised-simplex LP and best-bound branch-and-bound MIP: scenario table in, independently verified plan and constraint trace out (#1055).
 
 ## Methodology portfolio
 
@@ -26,7 +27,7 @@ carry `*`. Regenerate it with
 <!-- methodology-table:start -->
 | ID | Methodology | Family | Model kinds | Solutions | Inputs | Outputs | Metrics | Status | Issue |
 |---|---|---|---|---|---|---|---|---|---|
-| M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
+| M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
 | M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group | entity map, match evidence | pair precision, pair recall, blocking recall | not runnable | [#1041](https://github.com/oramasearch/zetta/issues/1041) |
 | M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature* | segment assignments, segment profiles | silhouette, stability, cluster size | not runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
 | M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecasts, prediction intervals | MAE, RMSE, WAPE, forecast value added | not runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
@@ -41,7 +42,7 @@ carry `*`. Regenerate it with
 | M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label | classifications, detections, masks | mAP, IoU, escape rate | not runnable | [#1052](https://github.com/oramasearch/zetta/issues/1052) |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, label | transcripts, speaker segments, audio scores | word error rate, F1 | not runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
 | M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |
-| M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | feature*, group* | plan, allocation, constraint trace | objective value, constraint violations | not runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
+| M-16 | Optimization / operations research | Action & decision | optimization, operations_research | S-4 | variable*, objective*, constraint*, scenario*, group | plan, constraint trace, solver status | objective value, current plan objective, objective delta, constraint violations, optimality gap | runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
 | M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | feature*, group | posterior, prediction intervals | coverage, CRPS, calibration | not runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |
 | M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | — | feature*, label | labels, review queue, label provenance | agreement, cost per label, downstream lift | not runnable | [#1058](https://github.com/oramasearch/zetta/issues/1058) |

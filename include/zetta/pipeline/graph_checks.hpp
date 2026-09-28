@@ -10,19 +10,21 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
 
-// The concrete correctness checks for #309 — the first real semantic checks that
-// plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
-// gate itself. They read a small, documented set of **annotations** from each
-// step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
-// and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
-// gate failure (RULE-1 — no deploy without a passing gate).
+// The concrete correctness checks for #309 — the first real semantic checks
+// that plug into the CorrectnessGate's `Check` interface (gate.hpp) without
+// touching the gate itself. They read a small, documented set of
+// **annotations** from each step's free-form `attributes` bag (see
+// schemas/graph_step_annotations.schema.json and docs/pipeline/gate-checks.md)
+// and turn a mistyped or leaky graph into a clear-reason gate failure (RULE-1 —
+// no deploy without a passing gate).
 //
-// Both validate the annotations they read against the JSON Schema at the boundary
+// Both validate the annotations they read against the JSON Schema at the
+// boundary
 // (`graph_step_annotations_schema()` below), so malformed annotations
-// fail fast with a precise reason rather than being silently misread. A step that
-// carries none of the relevant annotations is simply skipped (it passes), so
-// these checks are opt-in per step and never penalise a graph that doesn't use
-// them.
+// fail fast with a precise reason rather than being silently misread. A step
+// that carries none of the relevant annotations is simply skipped (it passes),
+// so these checks are opt-in per step and never penalise a graph that doesn't
+// use them.
 namespace zetta::pipeline {
 
 // Schema/type check (#309): every field a step `requires` from its inputs must be
@@ -72,6 +74,16 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-16 contract check (#1055): optimization must consume scenario/quantile
+// predictions, independently verify the returned plan, and report its solver
+// status. Missing any of these annotations means the pipeline could emit a
+// confident plan from a point forecast or return an unchecked allocation.
+class OptimizationContractCheck final : public Check {
+public:
+  std::string name() const override { return "optimization_contract"; }
+  CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }
@@ -95,4 +107,4 @@ public:
 // drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& graph_step_annotations_schema();
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

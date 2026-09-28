@@ -571,6 +571,40 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
     return nullptr;
 }
 
+std::shared_ptr<zetta::data::Table> run_output_table(
+    Node& node, const zetta::pipeline::Run& run, std::string_view output_name) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        if (output.kind != "dataset" || output.name != output_name) {
+            continue;
+        }
+        const std::size_t dot = output.ref.find('.');
+        if (dot == std::string::npos) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (!database) {
+            continue;
+        }
+        if (const std::shared_ptr<zetta::data::Table> table =
+                database->find_table(output.ref.substr(dot + 1))) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+nlohmann::json table_rows(const zetta::data::Table& table) {
+    nlohmann::json rows = nlohmann::json::array();
+    const zetta::storage::StorageEngine& store = table.store();
+    for (std::size_t index = 0; index < store.size(); ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    return rows;
+}
+
 // A number from an at-risk row, or `fallback` when the column is absent or not a
 // number. nlohmann's `value<T>` THROWS when the key is present with another type
 // (a null rank, a string account id from a customer's dataset), and a throw from
@@ -634,6 +668,53 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "optimization") {
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"solver_status",
+             model->feature_schema().value("status", std::string("unknown"))}};
+        for (const char* key :
+             {"objective_value", "current_plan_objective", "objective_delta",
+              "feasible", "optimality_gap", "constraint_violations", "iterations",
+              "explored_nodes"}) {
+            if (const std::optional<double> value = number(key)) {
+                model_facts[key] = *value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const std::optional<double> input_rows = number("input_rows")) {
+            dataset["rows"] = *input_rows;
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(9));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        if (const std::shared_ptr<zetta::data::Table> plan =
+                run_output_table(context.node, *run, "optimization plan")) {
+            report["plan"] = table_rows(*plan);
+        }
+        if (const std::shared_ptr<zetta::data::Table> constraints =
+                run_output_table(context.node, *run, "constraint trace")) {
+            report["constraints"] = table_rows(*constraints);
+        }
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2077,7 +2158,7 @@ ApiResult handle_submit_feedback(const nlohmann::json& input,
 //
 // The mutating half of the product loop, each a thin caller of the SAME engine
 // entry point the GUI drives (RULE-1/RULE-3 cannot be bypassed by construction:
-// authorize + audit happen in Registry::call, the gate inside the engine seams).
+// authorize + audit happen in Registry::call, the gate inside the engine interfaces).
 // Long work is `kind: job`: submit, return the engine's durable Run id, poll
 // progress through the read surface (get_run / system.runs) — no request-scoped
 // blocking, no new job infrastructure. Errors carry the engine's path-qualified
@@ -2838,7 +2919,7 @@ ApiResult handle_deploy(const nlohmann::json& input, ApiContext& context) {
     }
     // The gate report first, for the failing check's reason; the engine's own
     // deploy_graph re-runs the gate and audits BOTH outcomes (RULE-1 lives in
-    // the engine seam — this handler cannot bypass it by construction).
+    // the engine boundary — this handler cannot bypass it by construction).
     const zetta::pipeline::ValidationReport report =
         zetta::pipeline::default_gate().run(graph->graph());
     auto deployment = context.node.deploy_graph(
@@ -2894,7 +2975,7 @@ const nlohmann::json& run_schema() {
           {"model_name",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the registered model's name (default churn_model)"}}},
+            {"description", "the registered model or solver-result name"}}},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},
@@ -2911,7 +2992,21 @@ const nlohmann::json& run_schema() {
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
                             "true; false is only correct on a single-member "
-                            "cluster)"}}}}}};
+                            "cluster)"}}},
+          {"optimization",
+           {{"type", "object"},
+            {"additionalProperties", false},
+            {"description", "M-16 native LP/MIP solver controls"},
+            {"properties",
+             {{"maximize", {{"type", "boolean"}}},
+              {"iteration_limit", {{"type", "integer"}, {"minimum", 1}}},
+              {"node_limit", {{"type", "integer"}, {"minimum", 1}}},
+              {"time_limit_ms", {{"type", "integer"}, {"minimum", 1}}},
+              {"feasibility_tolerance",
+               {{"type", "number"}, {"exclusiveMinimum", 0}}},
+              {"integrality_tolerance",
+               {{"type", "number"}, {"exclusiveMinimum", 0}}},
+              {"seed", {{"type", "integer"}, {"minimum", 0}}}}}}}}}};
     return schema;
 }
 
@@ -2953,7 +3048,19 @@ const nlohmann::json& run_output_schema() {
             {"items", {{"type", "string"}}},
             {"description", "what was inferred rather than given — read these "
                             "before trusting the "
-                            "model"}}}}}};
+                            "model"}}},
+          {"solver_status",
+           {{"type", "string"},
+            {"description", "M-16 solver termination status"}}},
+          {"model_id", {{"type", "string"}}},
+          {"plan_table",
+           {{"type", "string"},
+            {"description",
+             "M-16 decision table; absent without a feasible plan"}}},
+          {"constraint_table",
+           {{"type", "string"},
+            {"description",
+             "M-16 independent constraint verification table"}}}}}};
     return schema;
 }
 

@@ -1,6 +1,7 @@
 # The run report — what a run found
 
-**Issue:** [#958](https://github.com/oramasearch/zetta/issues/958)
+**Issues:** [#958](https://github.com/oramasearch/zetta/issues/958),
+[#1055](https://github.com/oramasearch/zetta/issues/1055)
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
 **Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp` ·
@@ -30,9 +31,10 @@ state, and `get_run_report` puts them together at query time:
 
 | Part | Source |
 |---|---|
-| model quality, dataset facts | the **Model record's** `metrics` |
+| model quality or solver facts, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
-| the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| the ranked list + evidence | a churn run's **at-risk table** in `churn_results` |
+| decisions + constraint checks | an optimization run's plan and constraint-trace tables in `optimization_results` |
 
 That is deliberate. A stored copy is a second set of the same numbers, and two copies
 of a number drift. It also means a report generated a month later reflects the same
@@ -41,6 +43,21 @@ facts as one generated the moment the run ended, and that anything querying
 
 It follows RULE-7: observable state is a view computed from the live source, never a
 hand-synced copy.
+
+## Optimization reports
+
+For an M-16 run, `model` carries `solver_status`, objective value, current-plan
+objective, objective delta, feasibility, MIP optimality gap, constraint
+violations, simplex iterations, and explored branch nodes. `dataset` names the
+table actually read, the row count, and excluded fields recorded by dataset
+resolution. `plan` contains one row per decision variable and `constraints`
+contains the independently recomputed activity, bounds, residual, and satisfied
+flag for every constraint.
+
+Infeasible or unbounded problems still return status and report metrics, but
+the run has no plan output. A feasible plan is published only after the
+independent verifier confirms every variable bound, integrality requirement,
+and constraint within the declared tolerance.
 
 **It always answers (#1007).** A run with no resolvable model output answers
 `not_found` (404) saying there are no measured numbers — it does not wait for one.
@@ -118,6 +135,6 @@ tool list, and the agent's read-tool allowlist.
 
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- Other model engines may emit a `report` output once they record the facts
+  needed to assemble one.
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

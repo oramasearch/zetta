@@ -31,8 +31,8 @@ styled to the Orama design system; the desktop is itself a cluster member) or
 **headless** (no UI, for servers). C++26, macOS-first, single statically-linked
 binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name —
 the older name *"ZettaDB"* is retired.) It is designed as **true hybrid** — one
-equal-peer cluster spanning every vendor and architecture; the seams are built,
-the breadth of backends is in flight
+equal-peer cluster spanning every vendor and architecture; the core interfaces
+are built, the breadth of backends is in flight
 ([docs/architecture/true-hybrid.md](docs/architecture/true-hybrid.md)).
 
 What's inside, by domain (each links to that domain's docs):
@@ -44,7 +44,8 @@ What's inside, by domain (each links to that domain's docs):
   `connect→clean→model→index→serve→act` step graph, persisted + replicated as
   JSON). Three compilers produce graphs — NL intent, n8n workflow JSON, and a
   simulated-Python frontend — every graph passes the **correctness gate**
-  (schema/type, data-leakage/point-in-time, entity-resolution checks) before it
+  (schema/type, data-leakage/point-in-time, optimization-contract,
+  entity-resolution checks) before it
   can deploy, and a **deployment controller** reconciles desired→actual and
   self-heals failed runs. Runs record status, logs, outputs, and lineage. The
   **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
@@ -62,7 +63,7 @@ What's inside, by domain (each links to that domain's docs):
   (RPC / events / tasks) carries **collectives** (allreduce / broadcast /
   barrier / gather) and cluster-wide telemetry.
 - **[Distributed compute](docs/compute/README.md)** — the `ComputeDevice`
-  accelerator seam (CPU always; CUDA opt-in), a **work-stealing scheduler**
+  accelerator interface (CPU always; CUDA opt-in), a **work-stealing scheduler**
   (local + cross-node, elastic mid-job), the **job coordinator** (SPMD job
   spine every algorithm submits through), recorded **compute jobs**, a
   reward-driven **job autoscaler**, spot-eviction **checkpoint/restart**, and
@@ -77,13 +78,14 @@ What's inside, by domain (each links to that domain's docs):
   (weights as verified large-object bodies), all proven by a **native
   correctness oracle** (no Python/XGBoost anywhere).
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
-  name their implementation issues. Intent compilation and run dispatch use
-  this registry and refuse unsupported model work.
-- **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;
+  approaches: M-1 and M-16 run today, M-10 has partial retrieval support, and
+  the others name their implementation issues. Intent compilation and run
+  dispatch use this registry and refuse unsupported model work.
+- **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend`
+  interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
-- **[Cloud + provisioning](docs/cloud/README.md)** — the `Provisioner` seam
+- **[Cloud + provisioning](docs/cloud/README.md)** — the `Provisioner` interface
   with **seven backends** (local, Azure reference, AWS, GCP, OCI, Kubernetes,
   bare-metal containers) driven through vendor CLIs (no SDKs), bulk **burst
   identity**, a **cost-cap approval gate**, and a **permission-gated Cloud

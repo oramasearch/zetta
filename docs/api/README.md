@@ -164,7 +164,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
-| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner; refuse unknown or unavailable model kinds; graphs without a model remain structural |
+| `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner; M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008, [add-dataset.md](../data/add-dataset.md)) |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |

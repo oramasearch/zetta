@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m16_methodology();
 
 namespace {
 
@@ -172,13 +173,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", true, "observed reward")},
                 {"action policy", "propensities"},
                 {"cumulative reward", "regret", "policy value"}, 1054),
-        planned("M-16", "Optimization / operations research",
-                "Action & decision", {"optimization", "operations_research"},
-                {}, {"optimize", "schedule", "allocate", "constraints"},
-                {input("feature", true, "objective inputs"),
-                 input("group", true, "constraints and resources")},
-                {"plan", "allocation", "constraint trace"},
-                {"objective value", "constraint violations"}, 1055),
+        make_m16_methodology(),
         planned(
             "M-17",
             "Bayesian / probabilistic modeling & uncertainty quantification",

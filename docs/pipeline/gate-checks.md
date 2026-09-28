@@ -1,23 +1,29 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks
 
-The first **concrete** correctness checks that plug into the
-[correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+The concrete correctness checks that plug into the
+[correctness gate](gate.md). They implement
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+The graph checks include:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `MethodologyCheck` | `methodology` | a model step whose `model_kind` has no runnable methodology |
+| `TemporalValidationCheck` | `temporal_validation` | a forecast without temporal validation, or one that applies probability calibration instead of backtesting |
+| `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
-so every gate run applies them. They are **opt-in per step**: a step that carries
-none of the relevant annotations is skipped and passes, so adding them never
-penalises a graph that doesn't use them.
+`SchemaTypeCheck`, `DataLeakageCheck`, and `OptimizationContractCheck` are
+registered in [`default_gate()`](gate.md) after `NonEmptyGraphCheck` and before
+the entity-resolution check, so every deploy and run applies them.
+`MethodologyCheck` and `TemporalValidationCheck` remain reusable checks for
+explicit methodology/corpus gates; registry dispatch separately refuses a
+model kind without a runnable methodology. All are **opt-in per step**: a step
+that carries none of the relevant annotations is skipped and passes.
 
 ## How a check reads a step
 
@@ -143,13 +149,28 @@ reason (`step "model" (n-model): malformed correctness annotations — /requires
 …`). This is the issue's *"a mistyped graph fails with a clear reason"* applied to
 the annotations themselves.
 
+## `optimization_contract` — no unchecked or point-forecast plan
+
+An M-16 model step (`model_kind: "optimization"` or
+`"operations_research"`) must set all three contract flags to `true`:
+
+- `scenario_input`: the objective or constraints come from scenario or
+  quantile predictions, never one point prediction;
+- `verify_constraints`: the runner independently checks every bound and
+  constraint after solving and suppresses any violating plan; and
+- `report_solver_status`: every run reports termination status and MIP gap.
+
+The methodology's own compiler emits these flags. An edited or imported graph
+that removes any flag is refused before run. The runner enforces the same rules
+again at the table and solution boundaries; the graph check makes the unsafe
+shape impossible to deploy in the first place (#1055).
+
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
-trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
+These checks sit on the `Check` interface the [gate](gate.md) defines, alongside
+`NonEmptyGraphCheck` and the entity-resolution check. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
-result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+result format** here.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
