@@ -51,14 +51,20 @@ Graph names are unique within a project; foundation record names include the
 project UUID and graph name.
 
 Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
-`methodology`, `entity_column`, `score_column`, and optional `output_name`.
+`methodology`, `entity_column`, `score_column`, and optional `output_name` and
+positive `horizon`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. M-1 defaults to its `account` / `risk` score table.
 S-2 also uses M-1 as its primary methodology. Its shared table carries the
 entity in `account` and conversion propensity in `risk`; S-2 binds that real
-output and relabels the downstream decision cell as a conversion band. Inputs
-and score scales for S-3 through S-12 remain their catalogue module's
-responsibility; their templates are deliberately minimal.
+output and relabels the downstream decision cell as a conversion band.
+
+S-8 binds M-5's `survival table`, using `entity` and `hazard` at a configured
+emitted horizon. M-5 writes one row per asset and horizon, so the runtime selects
+that real row and carries `hazard`, `survival`, `expected_time`, and
+`median_survival` into the decision and CMMS payload. It never substitutes the
+M-1 churn table. Inputs and score scales for the remaining minimal modules stay
+their catalogue module's responsibility.
 
 ## Run and read back
 
@@ -88,6 +94,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    reason codes and risk × value × driver cells. Observe complaint fraction,
    committed action cost, monthly contact count, and action-execution rate in
    its monitor. Publish the S-1 driver report through the report action pattern.
+   S-8 rows carry the selected risk horizon and expected failure timing; its
+   monitor observes safety, false work, missed failure, sensor drift,
+   maintenance capacity, and execution.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -129,3 +138,10 @@ territory, capacity evidence and SLA payloads, observes all four guardrails,
 records centered conversion outcomes with a 0.15 routing effect, and checks
 that the readout's estimate and 95% confidence interval recover the planted
 effect.
+
+`SolutionJourney.PredictiveMaintenanceCreatesWorkOrdersAndRecoversPlantedEffect`
+builds and runs S-8 over partitioned synthetic asset history. It excludes a
+future asset, retains censored assets, selects a real M-5 horizon, proves
+holdout suppression, checks the CMMS work-order payload and all six guardrails,
+records a centered 0.18 failure-avoidance effect, and verifies the estimate and
+95% confidence interval recover it.
