@@ -6,10 +6,12 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -571,6 +573,40 @@ std::shared_ptr<zetta::data::Table> run_at_risk_table(
     return nullptr;
 }
 
+std::shared_ptr<zetta::data::Table> run_named_table(
+    Node& node, const zetta::pipeline::Run& run, std::string_view name) {
+    for (const zetta::pipeline::RunOutput& output : run.outputs()) {
+        const std::size_t dot = output.ref.find('.');
+        if (output.kind != "dataset" || output.name != name ||
+            dot == std::string::npos) {
+            continue;
+        }
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(output.ref.substr(0, dot));
+        if (database) {
+            return database->find_table(output.ref.substr(dot + 1));
+        }
+    }
+    return nullptr;
+}
+
+nlohmann::json table_rows(
+    const std::shared_ptr<zetta::data::Table>& table,
+    std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+    nlohmann::json rows = nlohmann::json::array();
+    if (!table) {
+        return rows;
+    }
+    const zetta::storage::StorageEngine& store = table->store();
+    for (std::size_t index = 0; index < store.size() && rows.size() < limit;
+         ++index) {
+        if (const auto row = store.at(index)) {
+            rows.push_back(*row);
+        }
+    }
+    return rows;
+}
+
 // A number from an at-risk row, or `fallback` when the column is absent or not a
 // number. nlohmann's `value<T>` THROWS when the key is present with another type
 // (a null rank, a string account id from a customer's dataset), and a throw from
@@ -634,6 +670,60 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "uplift") {
+        const bool selected_x = number("selected_learner").value_or(0.0) != 0.0;
+        const std::string prefix = selected_x ? "x_" : "t_";
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"selected_learner", selected_x ? "x_learner" : "t_learner"},
+            {"metrics", metrics}};
+        report["model"] = std::move(model_facts);
+        report["arm_sizes"] = {
+            {"treated", number("treated_rows").value_or(0.0)},
+            {"control", number("control_rows").value_or(0.0)},
+            {"held_out", number("held_out_rows").value_or(0.0)}};
+        report["propensity"] = {
+            {"minimum", number("propensity_min").value_or(0.0)},
+            {"maximum", number("propensity_max").value_or(0.0)},
+            {"mean", number("propensity_mean").value_or(0.0)},
+            {"standard_deviation", number("propensity_stddev").value_or(0.0)}};
+        report["targeting"] = {
+            {"fraction", number("targeting_fraction").value_or(0.0)},
+            {"uplift",
+             number((prefix + "uplift_at_target").c_str()).value_or(0.0)},
+            {"uncertainty_lower", number("uplift_lower").value_or(0.0)},
+            {"uncertainty_upper", number("uplift_upper").value_or(0.0)},
+            {"overlap_excluded", number("overlap_excluded").value_or(0.0)}};
+        report["treatment_effects"] = table_rows(
+            run_named_table(context.node, *run, "treatment effects"), limit);
+        report["qini_curve"] =
+            table_rows(run_named_table(context.node, *run, "Qini curve"));
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json notes = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: ")) {
+                notes.push_back(log.message.substr(9));
+            }
+        }
+        if (!notes.empty()) {
+            dataset["notes"] = std::move(notes);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        if (number("observational").value_or(0.0) != 0.0) {
+            report["assumptions"] = nlohmann::json::array(
+                {"causal claims assume no unmeasured confounding"});
+        }
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2911,7 +3001,19 @@ const nlohmann::json& run_schema() {
            {{"type", "boolean"},
             {"description", "fan the run out to the live membership (default "
                             "true; false is only correct on a single-member "
-                            "cluster)"}}}}}};
+                            "cluster)"}}},
+          {"treatment_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-6 binary treatment column"}}},
+          {"outcome_column",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "M-6 binary observed outcome column"}}},
+          {"targeting_fraction",
+           {{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1}}},
+          {"bootstrap_samples", {{"type", "integer"}, {"minimum", 0}}},
+          {"seed", {{"type", "integer"}, {"minimum", 0}}}}}};
     return schema;
 }
 

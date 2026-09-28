@@ -168,6 +168,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
+    uplift.hpp              zetta::ml native T/X uplift learners, propensity model, held-out Qini/AUUC evaluation, bootstrap interval, and targeting policy (#1045)
+    uplift_job.hpp          zetta::ml::run_uplift_job — distributed owned-partition training and gathered/broadcast uplift evaluation (#1045)
+    uplift_runner.hpp       zetta::ml::run_uplift_on_table — resolved-table runner that writes model, effect/Qini tables, run state, and lineage (#1045)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
@@ -420,6 +423,10 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   ml/
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
+    uplift.cpp              native T- and X-learner fitting, propensity overlap, held-out selection, Qini/AUUC, bootstrap, and targeting policy (#1045)
+    uplift_job.cpp          JobRound allreduce/gather/broadcast adapter for distributed uplift training (#1045)
+    uplift_runner.cpp       resolved-table execution, output tables, model weights, report facts, and lineage (#1045)
+    uplift_methodology.cpp  M-6 registry shape, ownership, table resolution, and run callback (#1045)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
@@ -607,6 +614,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
+  ml/test_uplift.cpp        planted-effect, binary-role, positivity, and deterministic-bootstrap tests (#1045)
+  ml/test_uplift_partitions.cpp  owned-partition distributed uplift versus single-node oracle (#1045)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

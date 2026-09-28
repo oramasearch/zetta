@@ -565,8 +565,11 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
         reduce("edges.max", local_max, GbdtReduce::Max);
 
     // 2. Global base rate: local [Σy, n] -> allreduce Sum.
+    const bool regression_objective = params.objective == "squared_error";
     double local_pos = 0.0;
-    for (const double label : labels) local_pos += label >= 0.5 ? 1.0 : 0.0;
+    for (const double label : labels) {
+        local_pos += regression_objective ? label : (label >= 0.5 ? 1.0 : 0.0);
+    }
     const std::vector<double> base =
         reduce("base", {local_pos, static_cast<double>(local_rows)},
                GbdtReduce::Sum);
@@ -585,7 +588,6 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     // "A single class" is a classification concept. Regression labels are continuous, so
     // `global_pos` is their SUM and this guard would reject perfectly good data — a forecast of
     // daily revenue would fail because every value is positive.
-    const bool regression_objective = params.objective == "squared_error";
     if (!regression_objective && (global_pos <= 0.0 || global_pos >= global_count)) {
         result.status = ComputeStatus::invalid_argument(
             "train_gbdt: training labels are a single class");

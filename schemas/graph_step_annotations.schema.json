@@ -44,6 +44,21 @@
       "minLength": 1,
       "type": "string"
     },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "overlap_lower": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
+    "overlap_upper": {
+      "maximum": 0.95,
+      "minimum": 0.05,
+      "type": "number"
+    },
     "requires": {
       "additionalProperties": {
         "minLength": 1,
@@ -59,6 +74,16 @@
       },
       "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
       "type": "object"
+    },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
+      "type": "string"
     }
   },
   "title": "zetta.GraphStepAnnotations",

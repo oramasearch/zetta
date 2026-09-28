@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks (schema/type · leakage · causal uplift)
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -7,15 +7,17 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
-so every gate run applies them. They are **opt-in per step**: a step that carries
+All three are registered in [`default_gate()`](gate.md) (after
+`NonEmptyGraphCheck`), so every gate run applies them. They are **opt-in per
+step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
 
@@ -81,6 +83,14 @@ A feature **fails** the check when:
 
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
+
+### `causal_uplift` — treatment design and pre-treatment features
+
+Engages on model steps whose `model_kind` is `uplift` or `causal`. The step must
+name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
+`overlap_upper` annotations must remain within `[0.05,0.95]` and be ordered.
+Features named like the outcome, equal to the treatment column, or carrying a
+`data_as_of` later than `treatment_time` fail before execution.
 
 ## Example
 

@@ -90,6 +90,15 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// M-6 causal correctness: treatment and outcome roles must be explicit and
+// distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
+// and outcome-like or post-treatment features are refused before execution.
+class CausalUpliftCheck final : public Check {
+public:
+    std::string name() const override { return "causal_uplift"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).

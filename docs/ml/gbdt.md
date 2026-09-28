@@ -1,6 +1,6 @@
 # Distributed histogram GBDT training (`zetta::ml`)
 
-Histogram gradient-boosted decision trees with a **binary logistic** objective —
+Histogram gradient-boosted decision trees with **binary logistic and squared-error** objectives —
 the native training engine for UC-1 churn (FEAT-6 / ENT-14, #390; part of the
 native distributed accelerated-compute pass, #264). This is the differentiator:
 zetta **trains a model on the customer's own data**, rather than running inference
@@ -55,8 +55,9 @@ each round:
    `allreduce(Min)` / `allreduce(Max)` makes the bin edges identical on every node
    (so a row bins the same way everywhere). A node with no rows contributes the
    identities (`+inf` / `-inf`).
-2. **Global base rate.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
-   `logit(Σy / n)` over the whole cluster.
+2. **Global base value.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
+   `logit(Σy / n)` for binary logistic and the global mean `Σy / n` for squared
+   error.
 3. **Gradient histograms.** At each tree level, each node builds the
    gradient/Hessian histograms over only its **local** rows, then those per-node
    histograms are **summed across the cluster** with one `allreduce(Sum)`.

@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m6_methodology();
 
 namespace {
 
@@ -94,14 +95,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", true, "event and censor indicator")},
                 {"risk curves", "expected time to event"},
                 {"concordance", "time-dependent AUC", "IPCW Brier"}, 1044),
-        planned("M-6", "Causal inference & uplift", "Action & decision",
-                {"causal", "uplift"}, {},
-                {"uplift", "treatment", "who to target", "incremental effect"},
-                {input("entity", true, "unit receiving treatment"),
-                 input("treatment", true, "treatment assignment"),
-                 input("label", true, "observed outcome")},
-                {"treatment effects", "targeting policy"},
-                {"uplift", "Qini", "policy value"}, 1045),
+        make_m6_methodology(),
         planned("M-7", "Anomaly detection", "Time & vigilance",
                 {"anomaly", "anomaly_detection", "outlier"}, {"S-7"},
                 {"anomaly", "outlier", "unusual", "spike"},

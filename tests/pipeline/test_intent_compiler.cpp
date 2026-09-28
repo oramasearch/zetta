@@ -95,6 +95,29 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, CausalMethodologyAndSolutionBuildUpliftShape) {
+    for (const bool by_solution : {false, true}) {
+        zetta::pipeline::IntentCompileOptions options;
+        if (by_solution) {
+            options.solution = "S-11";
+        } else {
+            options.methodology = "M-6";
+        }
+        options.hints = {{"source", "experiments"},
+                         {"table", "population"},
+                         {"treatment", "offer"},
+                         {"outcome", "converted"}};
+        const auto compiled = compile_intent("Decide who to treat", options);
+        ASSERT_TRUE(compiled);
+        EXPECT_EQ(compiled->methodology, "M-6");
+        const auto models =
+            compiled->graph.nodes_of_kind(zetta::ir::StepKind::Model);
+        ASSERT_EQ(models.size(), 1u);
+        EXPECT_EQ(models.front()->attributes.at("model_kind"), "uplift");
+        EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+    }
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
     std::string error;
     EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));

@@ -247,6 +247,89 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
 }
 
+TEST_F(Uc1Journey, JourneyCausalUpliftCompilesRunsAndReports) {
+    const fs::path file = fs::path(dir.path()) / "uplift.jsonl";
+    {
+        std::ofstream out(file);
+        for (std::int64_t index = 0; index < 360; ++index) {
+            const double segment =
+                static_cast<double>((index * 37) % 101) / 101.0;
+            const double baseline =
+                static_cast<double>((index * 61) % 103) / 103.0;
+            const std::int64_t treatment = (index * 17) % 2;
+            const double probability =
+                0.12 + 0.18 * baseline +
+                (segment >= 0.5 ? 0.5 * treatment : 0.0);
+            const double draw =
+                static_cast<double>((index * 73) % 107) / 107.0;
+            out << nlohmann::json{{"entity", index},
+                                  {"segment", segment},
+                                  {"baseline", baseline},
+                                  {"treatment", treatment},
+                                  {"outcome", draw < probability ? 1 : 0}}
+                       .dump()
+                << '\n';
+        }
+    }
+    const ApiResult landed =
+        call("add_dataset", {{"path", file.string()},
+                             {"database", "experiments"},
+                             {"table_name", "causal_population"},
+                             {"partition_count", 4}});
+    ASSERT_TRUE(landed.ok) << landed.error.message;
+
+    ASSERT_TRUE(call("create_project", {{"name", "causal targeting"}}).ok);
+    const ApiResult captured =
+        call("capture_intent",
+             {{"project", "causal targeting"},
+              {"text", "Estimate uplift and decide who to treat"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "causal targeting"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-6"},
+         {"name", "uplift policy"},
+         {"hints",
+          {{"source", "experiments"},
+           {"table", "causal_population"},
+           {"entity", "entity"},
+           {"treatment", "treatment"},
+           {"outcome", "outcome"},
+           {"features", nlohmann::json::array({"segment", "baseline"})}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-6");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+    ASSERT_TRUE(call("approve_plan", {{"project", "causal targeting"},
+                                      {"graph", "uplift policy"}})
+                    .ok);
+
+    const ApiResult started =
+        call("run", {{"project", "causal targeting"},
+                     {"graph", "uplift policy"},
+                     {"targeting_fraction", 0.2},
+                     {"bootstrap_samples", 40},
+                     {"seed", 1045}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    EXPECT_EQ(started.value.at("engine"), "uplift");
+    const std::string run_id = started.value.at("run_id");
+
+    const ApiResult run = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+    ASSERT_EQ(run.value.at("outputs").size(), 4u);
+
+    const ApiResult report =
+        call("get_run_report", {{"run_id", run_id}, {"limit", 12}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_TRUE(report.value.at("model").at("metrics").contains("t_auuc"));
+    EXPECT_TRUE(report.value.at("model").at("metrics").contains("x_auuc"));
+    EXPECT_EQ(report.value.at("treatment_effects").size(), 12u);
+    EXPECT_FALSE(report.value.at("qini_curve").empty());
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "experiments.causal_population");
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

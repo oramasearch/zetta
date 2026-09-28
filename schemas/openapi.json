@@ -10370,6 +10370,10 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "bootstrap_samples": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10429,15 +10433,34 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "outcome_column": {
+                    "description": "M-6 binary observed outcome column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "project": {
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
                   },
+                  "seed": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "targeting_fraction": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "treatment_column": {
+                    "description": "M-6 binary treatment column",
+                    "minLength": 1,
+                    "type": "string"
                   }
                 },
                 "required": [

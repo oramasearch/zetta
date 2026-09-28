@@ -13,6 +13,7 @@
 
 using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CausalUpliftCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::SchemaTypeCheck;
@@ -48,6 +49,28 @@ ExecutionGraph clean_graph() {
         "n-model");
     graph.add_edge("n-load", "n-clean", EdgeKind::DataFlow);
     graph.add_edge("n-clean", "n-model", EdgeKind::DataFlow);
+    return graph;
+}
+
+ExecutionGraph uplift_graph(json overrides = json::object()) {
+    json attributes = {
+        {"model_kind", "uplift"},
+        {"treatment", "treated"},
+        {"outcome", "converted"},
+        {"label", "converted"},
+        {"treatment_time", "2024-01-15"},
+        {"as_of", "2024-01-15"},
+        {"overlap_lower", 0.05},
+        {"overlap_upper", 0.95},
+        {"features",
+         json::array({json{{"name", "tenure"},
+                            {"data_as_of", "2024-01-14"}}})}};
+    for (auto& [key, value] : overrides.items()) {
+        attributes[key] = value;
+    }
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "uplift", std::move(attributes),
+                   "uplift-model");
     return graph;
 }
 
@@ -272,15 +295,51 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+TEST(CausalUpliftGraphCheck, CleanGraphPasses) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(CausalUpliftGraphCheck, MissingTreatmentIsRefused) {
+    ExecutionGraph graph = uplift_graph();
+    graph.find_node("uplift-model")->attributes.erase("treatment");
+    const CheckResult result = CausalUpliftCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("treatment and outcome"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, PostTreatmentFeatureIsRefused) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph(
+        {{"features", json::array({json{{"name", "after_contact"},
+                                        {"data_as_of", "2024-01-16"}}})}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("after treatment"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, OutcomeNamedFeatureIsRefused) {
+    const CheckResult result = CausalUpliftCheck{}.evaluate(uplift_graph(
+        {{"features", json::array({json{{"name", "converted_30d"}}})}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("named like outcome"), std::string::npos);
+}
+
+TEST(CausalUpliftGraphCheck, UnsafeOverlapBoundsAreRefused) {
+    const CheckResult result =
+        CausalUpliftCheck{}.evaluate(uplift_graph({{"overlap_lower", 0.01}}));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("overlap"), std::string::npos);
+}
+
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "causal_uplift");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -372,8 +431,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         zetta::pipeline::MethodologyCheck::implemented();
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end())
         << "M-1 tabular supervised ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "uplift"),
+              implemented.end()) << "M-6 causal uplift ships today";
     for (const char* unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
+         {"forecast", "anomaly", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
@@ -596,8 +657,10 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "uplift"),
+              implemented.end());
     for (const char* unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
+         {"forecast", "anomaly", "survival", "cluster", "graph"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }
