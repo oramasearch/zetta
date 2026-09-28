@@ -34,7 +34,8 @@ const nlohmann::json& schema_document() {
                               "cloud_inspected", "dataset_added",
                               "consent_requested", "consent_decided",
                               "consent_bypassed", "decision_policy_created",
-                              "decision_policy_updated", "decision_approved"] },
+                              "decision_policy_updated", "decision_approved",
+                              "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -94,6 +95,9 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::DecisionPolicyCreated: return "decision_policy_created";
         case AuditAction::DecisionPolicyUpdated: return "decision_policy_updated";
         case AuditAction::DecisionApproved: return "decision_approved";
+        case AuditAction::PubSubTopicUpdated: return "pubsub_topic_updated";
+        case AuditAction::PubSubEventUpdated: return "pubsub_event_updated";
+        case AuditAction::PubSubEventDeleted: return "pubsub_event_deleted";
     }
     return "data_access";
 }
@@ -117,6 +121,9 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "decision_policy_created") return AuditAction::DecisionPolicyCreated;
     if (name == "decision_policy_updated") return AuditAction::DecisionPolicyUpdated;
     if (name == "decision_approved") return AuditAction::DecisionApproved;
+    if (name == "pubsub_topic_updated") return AuditAction::PubSubTopicUpdated;
+    if (name == "pubsub_event_updated") return AuditAction::PubSubEventUpdated;
+    if (name == "pubsub_event_deleted") return AuditAction::PubSubEventDeleted;
     return std::nullopt;
 }
 

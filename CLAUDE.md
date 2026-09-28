@@ -384,11 +384,14 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   Rules that bind it: it locks, by decision (see the first principle); the
   library never names `zetta::Node` — `src/core/pubsub/node_integration.cpp` is
   the one TU that does (governance, the table drain, `system.pubsub_topics`);
-  rights are `pubsub:*` permissions + `Topic` prefix grants, decided on the
+  rights are `topics:read`, `topics:write`, `events:write`, and the existing
+  `pubsub:*` subscription/legacy permissions + `Topic` prefix grants, decided on the
   owner thread via `run_on_owner`; a new delivery target is a new `InboxDrain`
   for its address kind, never a special case in the router; every topic is
-  engine-internal unless created `exposed` (the five pub/sub capabilities
-  reach only exposed topics).
+  engine-internal unless created `exposed` (the ten pub/sub capabilities
+  reach only exposed topics). Node-local CRUD includes non-consuming browse,
+  revision-checked edits, deletion, and REST/MCP async long polls (#1136;
+  `docs/pubsub/crud.md`); clustered behaviour remains deferred under D39.
 
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,

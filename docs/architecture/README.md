@@ -8,6 +8,8 @@ in the sibling directories.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, the async runtime and cluster, pub/sub (node-local messaging, the one locking subsystem), and module map.
 - [code-map.md](code-map.md) — the annotated file-by-file map of the codebase (build targets, include/zetta, src/core, src/gui, tests).
+- [../pubsub/crud.md](../pubsub/crud.md) — node-local message mutation and async
+  REST/MCP browse; pub/sub stores remain authoritative and D39 remains deferred.
 - [observability.md](observability.md) — **a foundation**: every operation captures intent · plan · performance · result shape as OTel-style spans threaded by trace id across surfaces and nodes; crash reports; feedback bundles; the traced test suite.
 - [coding-conventions.md](coding-conventions.md) — the canonical conventions reference: C++ style, the domain layout + namespace rule, boundaries/no-throw, interfaces, commit/branch flow.
 - [owner-gate.md](owner-gate.md) — the Node owner-thread gate (#624): `run_on_owner` lets background workers drive engine runs while node writes land on the owner loop.

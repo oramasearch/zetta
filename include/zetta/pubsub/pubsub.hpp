@@ -84,6 +84,23 @@ struct TopicSettings {
     bool exposed = false;                             // D22: MCP/REST exposure
     std::size_t topics_chain_max = kDefaultTopicsChainDepth;
     std::optional<std::chrono::milliseconds> default_ttl;
+    std::optional<std::chrono::milliseconds> retention;
+    std::optional<std::uint64_t> max_events;
+    DeliveryBounds bounds;
+};
+
+nlohmann::json topic_settings_json(const TopicSettings& settings);
+TopicSettings parse_topic_settings(const nlohmann::json& value);
+
+struct EventChange {
+    Event before;
+    std::optional<Event> after;
+};
+
+struct TopicMutation {
+    bool ok = false;
+    std::string reason;
+    std::vector<EventChange> changes;
 };
 
 enum class StartPosition : std::uint8_t { Next, Oldest, Sequence };
@@ -288,6 +305,20 @@ public:
     std::vector<Address> list_topics() const;
     std::optional<TopicSettings> topic_settings(const Address& topic) const;
     std::vector<TopicStats> topic_stats() const;
+    std::optional<nlohmann::json> get_topic(const Identity& identity, const Address& topic,
+                                           std::string* reason = nullptr);
+    TopicMutation update_topic(const Identity& identity, const Address& topic,
+                               const nlohmann::json& settings);
+    std::optional<nlohmann::json> browse_topic(const Identity& identity, const Address& topic,
+                                              std::optional<std::uint64_t> from_sequence,
+                                              std::size_t limit, bool backward,
+                                              std::string* reason = nullptr,
+                                              std::shared_ptr<runtime::async_event> waiter = {});
+    TopicMutation update_event(const Identity& identity, const Address& topic, std::uint64_t sequence,
+                               std::string payload, std::uint64_t expected_revision, bool redeliver);
+    TopicMutation delete_events(const Identity& identity, const Address& topic,
+                                const std::vector<std::uint64_t>& sequences,
+                                std::optional<std::uint64_t> before_sequence);
 
     // Subscribe `subscriber` to a topic (auto-creating it when configured).
     std::unique_ptr<Subscription> subscribe(const Identity& identity, const Address& subscriber,
@@ -359,7 +390,11 @@ private:
     std::uint64_t total_disk_bytes() const;
     std::filesystem::path topics_directory() const;
     std::filesystem::path spill_directory_for(const Address& topic) const;
-    void persist_definition(const Topic& topic) const;
+    bool persist_definition(const Topic& topic, const TopicSettings* replacement = nullptr) const;
+    bool persist_sequence(const Topic& topic) const;
+    std::shared_ptr<Topic> crud_topic(const Identity& identity, const Address& address,
+                                     PubSubOperation operation, std::string* reason) const;
+    void audit_changes(const Identity& identity, const Address& topic, const TopicMutation& mutation);
     void log(LogLevel level, std::string message) const;
     zetta::observability::SpanRecorder* spans() const { return config_.spans; }
 

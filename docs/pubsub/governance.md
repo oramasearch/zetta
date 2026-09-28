@@ -7,6 +7,12 @@ D8, D27, D33, D34 · **Code:** `include/zetta/pubsub/authorizer.hpp`, `delivery.
 
 Pub/sub decides nothing about rights itself; it asks an injected **`Authorizer`**:
 
+CRUD (#1136) separates `topics:read`, `topics:write`, and `events:write`;
+`pubsub:subscribe` remains independent. Existing write grants remain compatible.
+Per-topic `bounds` further restrict the authorizer's delivery bounds. Mutation
+audit records are wired into the node's owner-thread audit sink and contain
+hashes, never payloads. See [crud.md](crud.md) for exact scope and audit contracts.
+
 - `authorize(principal, operation, target)` for `pubsub:publish`, `pubsub:subscribe`,
   `pubsub:create`, `pubsub:manage` and the separate `pubsub:send_wildcard`;
 - `bounds(principal, target)`: the `DeliveryBounds` (max priority, allowed recipient

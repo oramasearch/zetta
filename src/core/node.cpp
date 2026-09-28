@@ -513,6 +513,7 @@ bool Node::start() {
         pubsub_ = std::make_unique<zetta::pubsub::PubSub>(
             std::move(pubsub_config), zetta::pubsub::make_node_authorizer(*this));
         pubsub_->register_drain("table", zetta::pubsub::make_table_drain(*this));
+        zetta::pubsub::connect_audit_trail(*pubsub_, *this);
         pubsub_->start();
     }
     // Re-establish the compute plane if a cluster was attached before this start

@@ -66,6 +66,174 @@ std::string text_of(const std::optional<Delivery>& delivery) {
 
 // --- Topics and broadcast ----------------------------------------------------
 
+TEST(PubSubCrud, BrowseDoesNotConsumeAndEditsRespectDeliveryAndRevision) {
+    zetta::test::TempDir directory;
+    PubSub pubsub(test_config(directory.path()));
+    pubsub.start();
+    const auto topic = address("topic:crud");
+    TopicSettings settings;
+    settings.exposed = true;
+    settings.max_events = 100;
+    settings.delivery.guarantee = Guarantee::ExactlyOnce;
+    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+    auto early = pubsub.subscribe(kSteve, address("agent:early"), topic);
+    auto pending = pubsub.subscribe(kSteve, address("agent:pending"), topic);
+    ASSERT_TRUE(early && pending);
+    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "original")).accepted);
+    const auto before = pubsub.get_topic(kSteve, topic);
+    ASSERT_TRUE(before);
+    auto browsed = pubsub.browse_topic(kSteve, topic, {}, 10, false);
+    ASSERT_TRUE(browsed);
+    EXPECT_EQ((*browsed)["events"][0]["revision"], 1);
+    EXPECT_EQ(pubsub.get_topic(kSteve, topic), before);
+    auto received = early->receive(0ms);
+    ASSERT_TRUE(received);
+    EXPECT_EQ(received->event.payload.bytes(), "original");
+    ASSERT_TRUE(early->ack(received->sequence));
+    auto edited = pubsub.update_event(kSteve, topic, 1, "edited", 1, false);
+    ASSERT_TRUE(edited.ok) << edited.reason;
+    EXPECT_FALSE(pubsub.update_event(kSteve, topic, 1, "stale", 1, false).ok);
+    EXPECT_FALSE(early->receive(0ms));
+    received = pending->receive(0ms);
+    ASSERT_TRUE(received);
+    EXPECT_EQ(received->event.payload.bytes(), "edited");
+    EXPECT_EQ(received->event.revision, 2u);
+    ASSERT_TRUE(pending->ack(1));
+    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "explicit", 2, true).ok);
+    for (auto* subscriber : {early.get(), pending.get()}) {
+        auto redelivery = subscriber->receive(0ms);
+        ASSERT_TRUE(redelivery);
+        EXPECT_TRUE(redelivery->redelivery);
+        EXPECT_EQ(redelivery->event.revision, 3u);
+        EXPECT_EQ(redelivery->event.payload.bytes(), "explicit");
+        ASSERT_TRUE(subscriber->ack(1));
+        EXPECT_FALSE(subscriber->receive(0ms));
+    }
+}
+
+TEST(PubSubCrud, DeletionsLeaveHolesAndCancelInflightAndExplicitRedelivery) {
+    zetta::test::TempDir directory;
+    PubSub pubsub(test_config(directory.path()));
+    pubsub.start();
+    const auto topic = address("topic:purge");
+    TopicSettings settings;
+    settings.exposed = true;
+    settings.max_events = 100;
+    settings.delivery.guarantee = Guarantee::AtLeastOnce;
+    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+    auto early = pubsub.subscribe(kSteve, address("agent:early"), topic);
+    auto pending = pubsub.subscribe(kSteve, address("agent:pending"), topic);
+    for (int index = 1; index <= 5; ++index) {
+        ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, std::to_string(index))).accepted);
+    }
+    ASSERT_TRUE(early->receive(0ms));
+    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "queued", 1, true).ok);
+    auto removed = pubsub.delete_events(kSteve, topic, {1, 3, 99}, {});
+    ASSERT_TRUE(removed.ok);
+    EXPECT_EQ(removed.changes.size(), 2u);
+    EXPECT_EQ(text_of(early->receive(0ms)), "2");
+    EXPECT_EQ(text_of(pending->receive(0ms)), "2");
+    EXPECT_EQ(text_of(pending->receive(0ms)), "4");
+    EXPECT_FALSE(early->ack(1));
+    auto backwards = pubsub.browse_topic(kSteve, topic, 4, 2, true);
+    ASSERT_TRUE(backwards);
+    ASSERT_EQ((*backwards)["events"].size(), 2u);
+    EXPECT_EQ((*backwards)["events"][0]["sequence"], 4);
+    EXPECT_EQ((*backwards)["events"][1]["sequence"], 2);
+    EXPECT_EQ((*backwards)["earliest_sequence"], 2);
+    EXPECT_EQ((*backwards)["next_sequence"], 6);
+    removed = pubsub.delete_events(kSteve, topic, {}, 5);
+    EXPECT_EQ(removed.changes.size(), 2u);
+    EXPECT_EQ(text_of(pending->receive(0ms)), "5");
+}
+
+TEST(PubSubCrud, SettingsTrimAndRefuseImmutableFieldsAndSurviveRestart) {
+    zetta::test::TempDir directory;
+    const auto topic = address("topic:durable");
+    {
+        PubSub pubsub(test_config(directory.path()));
+        pubsub.start();
+        TopicSettings settings;
+        settings.exposed = true;
+        settings.max_events = 100;
+        ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+        for (int index = 1; index <= 4; ++index) {
+            ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, std::to_string(index))).accepted);
+        }
+        auto changed = pubsub.update_topic(kSteve, topic, {{"max_events", 2}});
+        ASSERT_TRUE(changed.ok);
+        EXPECT_EQ(changed.changes.size(), 2u);
+        changed = pubsub.update_topic(kSteve, topic, {{"store", "queue"}});
+        EXPECT_FALSE(changed.ok);
+        EXPECT_NE(changed.reason.find("store is immutable"), std::string::npos);
+        ASSERT_TRUE(pubsub.update_event(kSteve, topic, 3, "persisted edit", 1, false).ok);
+        ASSERT_TRUE(pubsub.delete_events(kSteve, topic, {4}, {}).ok);
+        pubsub.shutdown();
+    }
+    PubSub restored(test_config(directory.path()));
+    restored.start();
+    auto browsed = restored.browse_topic(kSteve, topic, {}, 10, false);
+    ASSERT_TRUE(browsed);
+    ASSERT_EQ((*browsed)["events"].size(), 1u);
+    EXPECT_EQ((*browsed)["events"][0]["sequence"], 3);
+    EXPECT_EQ((*browsed)["events"][0]["payload"], "persisted edit");
+    EXPECT_EQ((*browsed)["events"][0]["revision"], 2);
+    EXPECT_EQ((*browsed)["events"][0]["edited_by"], "user:steve");
+    EXPECT_EQ((*browsed)["next_sequence"], 5);
+    EXPECT_EQ(restored.topic_settings(topic)->max_events, 2u);
+    ASSERT_TRUE(restored.update_topic(kSteve, topic, {{"retention_ms", 0}}).ok);
+    EXPECT_EQ((*restored.get_topic(kSteve, topic))["held_events"], 0);
+}
+
+TEST(PubSubCrud, ConcurrentEditorsHaveOneRevisionWinner) {
+    zetta::test::TempDir directory;
+    PubSub pubsub(test_config(directory.path()));
+    pubsub.start();
+    const auto topic = address("topic:edit-race");
+    TopicSettings settings;
+    settings.exposed = true;
+    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "original")).accepted);
+    std::atomic<int> succeeded{0};
+    std::vector<std::thread> editors;
+    for (int index = 0; index < 8; ++index) {
+        editors.emplace_back([&, index] {
+            if (pubsub.update_event(kSteve, topic, 1, std::to_string(index), 1, false).ok) ++succeeded;
+        });
+    }
+    for (auto& editor : editors) editor.join();
+    EXPECT_EQ(succeeded.load(), 1);
+    const auto result = pubsub.browse_topic(kSteve, topic, {}, 1, false);
+    ASSERT_TRUE(result);
+    EXPECT_EQ((*result)["events"][0]["revision"], 2);
+    EXPECT_EQ((*result)["next_sequence"], 2);
+}
+
+TEST(PubSubCrud, ExplicitRedeliveryOnlyTargetsTheGroupMemberThatReceived) {
+    zetta::test::TempDir directory;
+    PubSub pubsub(test_config(directory.path()));
+    pubsub.start();
+    const auto topic = address("topic:group-edits");
+    TopicSettings settings;
+    settings.exposed = true;
+    settings.max_events = 10;
+    ASSERT_TRUE(pubsub.create_topic(kSteve, topic, settings));
+    SubscribeOptions options;
+    options.group = "workers";
+    auto first = pubsub.subscribe(kSteve, address("agent:first"), topic, options);
+    auto second = pubsub.subscribe(kSteve, address("agent:second"), topic, options);
+    ASSERT_TRUE(first && second);
+    ASSERT_TRUE(pubsub.publish(kSteve, text_to({topic}, "one")).accepted);
+    ASSERT_TRUE(first->receive(0ms));
+    ASSERT_TRUE(pubsub.update_event(kSteve, topic, 1, "two", 1, true).ok);
+    EXPECT_FALSE(second->receive(0ms));
+    const auto redelivery = first->receive(0ms);
+    ASSERT_TRUE(redelivery);
+    EXPECT_TRUE(redelivery->redelivery);
+    EXPECT_EQ(redelivery->event.payload.bytes(), "two");
+    EXPECT_FALSE(first->receive(0ms));
+}
+
 TEST(PubSub, BroadcastsToEverySubscriberInOrder) {
     zetta::test::TempDir directory;
     PubSub pubsub(test_config(directory.path()));

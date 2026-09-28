@@ -22,6 +22,9 @@ run / test.
 
 ## Domains
 
+Pub/sub [CRUD](pubsub/crud.md) covers node-local topic/message management on
+REST and MCP, non-consuming reads, revisions, retention and mutation auditing.
+
 | Domain | Covers |
 |---|---|
 | [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |

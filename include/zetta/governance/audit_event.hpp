@@ -31,6 +31,9 @@ enum class AuditAction {
     DecisionPolicyCreated,  // a versioned decision policy was created (#1104)
     DecisionPolicyUpdated,  // a new immutable policy version was created (#1104)
     DecisionApproved,       // a pending A1 decision was approved (#1104)
+    PubSubTopicUpdated,
+    PubSubEventUpdated,
+    PubSubEventDeleted,
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the

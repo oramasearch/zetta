@@ -75,12 +75,17 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   touch only thread-safe state (the replication store, `PubSub`), and
   `Registry::add` refuses an offloadable entry that mutates or requires consent,
   because the activity hook and the consent ledger run after the gate.
-- **Awaitable reads do not offload.** `receive_events` registers a topic event
-  inside its first owner-loop call, returns an immediate read, and lets the REST
-  coroutine suspend on that event under `runtime::timeout`. Publish or close
+- **Awaitable reads do not offload.** `receive_events` and `browse_topic` register a topic event
+  inside their first owner-loop call, return an immediate read, and let the REST
+  or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
   wakes it; the route makes one final owner-loop call. A long poll therefore
   holds no thread and makes at most two authorized, audited registry calls
-  (#1076).
+  (#1076, #1136).
+- **Object-scoped operation grants** (#1136): an entry may declare an
+  `authorize_scoped` owner-thread fallback when there is no global operation
+  grant. The per-tool gate still runs first. Pub/sub resolves concrete topic
+  addresses through the object tier; listings accept a topic-prefix grant and
+  filter every result through it. A global grant still covers all objects.
 - **Owner hops wake the loop.** Work a pool worker queues with
   `Node::run_on_owner` (that gate, the pub/sub authorizer, background actions)
   wakes the idle loop through `Node::set_owner_wakeup` (the API server's
