@@ -292,7 +292,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("list_methodologies", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
-    for (std::size_t index = 0; index < 20; ++index) {
+    for (std::size_t index = 0; index < 21; ++index) {
         const auto& methodology = listed.value.at("methodologies")[index];
         EXPECT_EQ(methodology.at("id"), "M-" + std::to_string(index + 1));
         EXPECT_TRUE(methodology.at("runnable"));
@@ -383,10 +383,20 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
 
     const auto unavailable = call("compile_intent", {{"project", "portfolio"},
                                                      {"input_id", input_id},
-                                                     {"methodology", "M-21"}});
+                                                     {"methodology", "unregistered_model_kind"}});
     EXPECT_FALSE(unavailable.ok);
-    EXPECT_EQ(unavailable.error.code, "not_supported");
-    EXPECT_NE(unavailable.error.message.find("1060"), std::string::npos);
+    EXPECT_EQ(unavailable.error.code, "invalid_input");
+    EXPECT_NE(unavailable.error.message.find("unregistered_model_kind"), std::string::npos);
+
+    zetta::ir::ExecutionGraph unknown_graph;
+    unknown_graph.add_node(zetta::ir::StepKind::Model, "unknown model",
+                           {{"model_kind", "unregistered_model_kind"}}, "unknown");
+    ASSERT_TRUE(project->create_graph("unknown model graph", std::move(unknown_graph)));
+    const ApiResult refused = call(
+        "run", {{"project", "portfolio"}, {"graph", "unknown model graph"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "not_supported");
+    EXPECT_NE(refused.error.message.find("no registered methodology"), std::string::npos);
 }
 
 TEST_F(Uc1Journey, EntityResolutionCompilesAndRunsItsPipelinesTable) {
@@ -2191,6 +2201,78 @@ TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
               "privacy_source.records");
     ASSERT_EQ(report.value.at("outputs").size(), 3u);
     EXPECT_EQ(report.value.at("outputs").front().at("kind"), "dataset");
+}
+
+TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
+    const auto database = node.create_database("stream_journey");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    for (std::size_t index = 0; index < 80; ++index) {
+        const double signal = index % 2 == 0 ? 0.0 : 1.0;
+        table->add_row({{"event_id", "journey-" + std::to_string(index)},
+                        {"account_id", static_cast<std::int64_t>(index)},
+                        {"event_time", static_cast<double>(index)},
+                        {"amount", signal},
+                        {"fraud", signal},
+                        {"label_time", static_cast<double>(index) + 0.5},
+                        {"comment", "excluded text"}});
+    }
+
+    journey::Journey streaming{"streaming-methodology", {}};
+    streaming.steps = {
+        {"create the project", "create_project", {{"name", "live fraud"}}},
+        {"capture the streaming intent", "capture_intent",
+         {{"project", "live fraud"},
+          {"text", "Score transaction events with online learning"}}},
+        {"compile M-21 with its event contract", "compile_intent",
+         {{"project", "live fraud"},
+          {"methodology", "M-21"},
+          {"name", "stream decisions"},
+          {"hints",
+           {{"source", "stream_journey"},
+            {"table", "events"},
+            {"entity_column", "account_id"},
+            {"time_column", "event_time"},
+            {"label_column", "fraud"},
+            {"label_time_column", "label_time"},
+            {"feature_columns", nlohmann::json::array({"amount"})},
+            {"input_topic", "journey.events"},
+            {"output_topic", "journey.scores"},
+            {"window_duration", 1.0}}}},
+         {.checks = {journey::equals("/methodology", "M-21"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/name", "stream decisions")}}},
+        {"approve the streaming plan", "approve_plan",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"the event-time policy passes the gate", "gate",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/block_deploy", false)}}},
+        {"start the native streaming run", "run",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/engine", "streaming"),
+                     journey::equals("/status", "running")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the durable run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 3)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read prequential metrics and output tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {
+             journey::equals("/model/kind", "streaming"),
+             journey::at_least("/model/evaluated_labels", 80),
+             journey::size_at_least("/outputs", 3),
+             journey::equals("/dataset/source", "stream_journey.events"),
+             journey::contains("/dataset/not_used/0", "comment")}}},
+        {"read scores back from the output topic", "receive_events",
+         {{"topic", "journey.scores"}, {"max", 100}},
+         {.checks = {journey::size_at_least("/events", 80)}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(streaming, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

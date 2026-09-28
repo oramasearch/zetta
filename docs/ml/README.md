@@ -10,7 +10,7 @@ runs distributed k-means and reports entity assignments, descriptive profiles an
 metrics through the methodology registry. Forecasting uses temporal backtests and prediction
 intervals without probability calibration; M-4 is runnable on its pipeline's table. M-12 adds time-safe graph features and
 native node embeddings over partitioned relationship edges. Read here
-for model work.
+for model work. M-21 adds event-time online logistic regression over pub/sub topics.
 
 - [segmentation.md](segmentation.md) — runnable M-3 / S-9: native distributed k-means, global preprocessing, graph checks, table outputs and run reports (#1042).
 
@@ -42,6 +42,7 @@ for model work.
 - [bayesian.md](bayesian.md) — M-17 native split-conformal intervals / classification sets and distributed Gibbs partial pooling, with measured hold-out coverage (#1056).
 - [label-efficiency.md](label-efficiency.md) — M-19 active learning plus a native weak-supervision label model, with queryable label-queue and probabilistic-label outputs (#1058).
 - [synthetic_private.md](synthetic_private.md) — M-20 native Gaussian-copula synthesis, disclosure-risk evaluation, TSTR utility, and differentially private histogram GBDT with per-run accounting (#1059).
+- [streaming.md](streaming.md) — M-21 event-time windows, online logistic SGD, prequential metrics, drift indicators, distributed gradients, topics, output tables, and correctness rules (#1060).
 
 ## Methodology portfolio
 
@@ -72,5 +73,5 @@ carry `*`. Regenerate it with
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | entity*, feature*, label*, time | ensemble model, blended scores, meta-model weights | held-out ROC-AUC, log loss, lift over best single model | runnable | — |
 | M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | label-efficient-training, support-ticket-triage | entity*, feature*, label* | label queue table, weak-label table | accuracy at labelling budget, labels saved, label-model gold accuracy | runnable | — |
 | M-20 | Privacy-preserving learning & synthetic data | The data supply chain | synthetic_private, privacy_preserving, synthetic_data | — | feature*, label*, group | synthetic table, DP model, guarantee report | marginal distance, correlation distance, DCR, membership AUC, TSTR AUC, epsilon, delta | runnable | [#1059](https://github.com/oramasearch/zetta/issues/1059) |
-| M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | — | time*, feature*, label | online model, streaming scores | prequential loss, drift, latency | not runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |
+| M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | — | entity*, time*, feature*, label, group | online model, streaming scores, score table, run report | prequential log loss, prequential accuracy, drift loss delta, late events excluded | runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |
 <!-- methodology-table:end -->

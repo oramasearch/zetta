@@ -6,10 +6,9 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-20 are runnable. M-10 builds
+callbacks for runnable implementations. All 21 methodologies are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
-writes its native model, metrics, tables, and lineage. The other entries link to
-their implementation issues.
+writes its native model, metrics, tables, and lineage.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -279,6 +278,17 @@ owned-partition job, and writes an evaluated synthetic table, DP model, privacy
 report, and lineage. The methodology's formal mechanism, empirical publication
 gate, inputs, metrics, and run examples are documented in
 [synthetic_private.md](synthetic_private.md).
+## M-21 streaming implementation
+
+`src/core/ml/streaming_methodology.cpp` builds and owns the event-time streaming
+shape and resolves its connect-step table. Its run callback starts the native
+runner in `src/core/ml/streaming.cpp`, which subscribes to the graph's input
+topic, computes per-entity window features, updates online logistic regression,
+publishes scores, persists weights, writes a score table with lineage, and
+exposes prequential metrics through `get_run_report`.
+
+The API handler contains no M-21-specific dispatch branch. The registry callback
+uses the same generic run path as M-1.
 
 ## Adding a methodology
 

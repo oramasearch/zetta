@@ -2,11 +2,10 @@
 
 The deploy branch combines the registry with M-3, M-7, M-4, M-2, M-5,
 M-6, M-8 and M-9, followed by M-12, M-13, M-11 and M-10 in round two.
-Round three adds M-14 speech, M-15 bandits and M-16 optimization. Round four begins
-with M-17 Bayesian uncertainty, M-18 ensembling, M-19 label efficiency and M-20 privacy.
-All nineteen source histories remain represented by merge commits.
-M-1 through M-20 are runnable; later methodologies retain
-their unsupported status and issue links.
+Round three adds M-14 speech, M-15 bandits and M-16 optimization. Round four adds
+M-17 Bayesian uncertainty, M-18 ensembling, M-19 label efficiency, M-20 privacy
+and M-21 streaming. All twenty source histories remain represented by merge
+commits. All 21 portfolio methodologies are runnable.
 
 ## Conflict decisions
 
@@ -36,18 +35,21 @@ their unsupported status and issue links.
 - M-20 also leaves S-10 with M-1. Explicit solution selection retains the
   primary lookup even when the intent mentions privacy; M-20 remains reachable
   by ID or model kind. Its budget check, launch runner and reports are retained.
-- All twenty-seven default gate checks are retained in methodology order after
-  the shared checks. Discovery requires all twenty implemented methodologies
-  runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
-  including the graph-check refusal test; forecasting is now runnable and is
-  no longer a valid unsupported-method fixture.
+- M-21 drops S-10 and S-11 claims: M-1 and M-8 retain those primary lookups.
+  The existing registry lookup is preserved; streaming keeps its ID/model-kind
+  lookup, event-time gate, pub/sub runner and prequential report.
+- All twenty-eight default gate checks are retained in methodology order after
+  the shared checks. Discovery requires all 21 methodologies runnable. Unknown
+  model kinds now exercise compiler/API/graph-check refusals. A fake registry
+  entry tests the unavailable-method message without misrepresenting a shipped method.
 - The round-two test audit checks all test files for stale unsupported or
   non-runnable assertions about M-2 through M-13. Both implemented-set tests
-  now require graph ML and use M-21's `online_learning` as their unsupported
-  example. Refusals for invalid graphs, unsafe parameters, unauthorized input,
+  required graph ML and used M-21's then-unimplemented `online_learning` as
+  their negative example. Round four replaces that fixture in every test.
+  Refusals for invalid graphs, unsafe parameters, unauthorized input,
   and unmatched intent remain unchanged.
 - The round-three audit extends discovery and support assertions through M-16;
-  M-21 remains the unsupported fixture. The naming regression checks every
+  round four extends it through M-21. The naming regression checks every
   runnable method and the M-3 capability response: default names come from
   `CompiledIntent::name`, not the legacy `IntentShape::Generic` label.
   Explicit names and M-1's `churn skeleton` remain unchanged.
@@ -81,7 +83,7 @@ is changed beyond resolving the integration conflicts.
 The integration was rebuilt from the registry base without running any
 formatter. Conflict edits preserve the surrounding layout. Before publication,
 each file's added/deleted lines are compared with the sum of its changes across
-the nineteen source branches; only small integration documentation and regression
+the twenty source branches; only small integration documentation and regression
 coverage may exceed that sum. The issue comment records the complete audit,
 the requested shared-file statistics, and normal versus whitespace-ignored totals.
 
@@ -93,7 +95,7 @@ Use a fresh native Release build after combining headers and CMake lists:
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 6 --target zetta-tests zetta
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='*Schema*'
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='OpenApi.*'
-./build/tests/zetta-tests --gtest_filter='*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*:*Gate*:IntentCompiler*:*Segment*:*Forecast*:*Anomal*:*Entity*:*Surviv*:*Uplift*:*Causal*:*NextBest*:*Rank*:*Lambda*:*Language*:*Document*:*Graph*:*Vision*:*Speech*:*Audio*:*Bandit*:*Thompson*:*LinUCB*:*Solver*:*Optim*'
+./build/tests/zetta-tests --gtest_filter='*Methodology*:ActionJourneys.*:Uc1Journey.*:*GraphCheck*:*Gate*:IntentCompiler*:*Segment*:*Forecast*:*Anomal*:*Entity*:*Surviv*:*Uplift*:*Causal*:*NextBest*:*Rank*:*Lambda*:*Language*:*Document*:*Graph*:*Vision*:*Speech*:*Audio*:*Bandit*:*Thompson*:*LinUCB*:*Solver*:*Optim*:*Bayes*:*Conformal*:*Ensembl*:*Stack*:*Label*:*Privacy*:*Synthetic*:*Online*:*Stream*'
 ./build/tests/zetta-tests
 ```
 

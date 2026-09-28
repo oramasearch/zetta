@@ -26,3 +26,6 @@ decays. A number with no date is not evidence.
 - [label-efficiency validation (2026-09-27)](label-efficiency-validation-2026-09-27.md) — M-19
   active learning and weak supervision validated on planted distributed tasks, including the
   registry-driven API journey and gold-set isolation checks.
+- [M-21 streaming validation (2026-09-27)](streaming-validation-2026-09-27.md) — native online
+  logistic regression converges deterministically, preserves test-then-train ordering, distributes
+  gradient statistics across two members, and completes its registry-driven API journey.

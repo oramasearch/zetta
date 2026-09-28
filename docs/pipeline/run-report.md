@@ -7,7 +7,7 @@
 **Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp`,
 `src/core/ml/rank_runner.cpp` ·
 **Tests:** `tests/usecases/churn/test_churn_solution.cpp`,
-`tests/api/test_action_journeys.cpp`
+`tests/ml/test_streaming.cpp`, `tests/api/test_action_journeys.cpp`
 
 A run's outputs say what it *produced* — a dataset, a model, an index. A run's
 **report** says what it *found*: how good the model is, what drives the outcome, and
@@ -52,6 +52,8 @@ state, and `get_run_report` puts them together at query time:
 | M-17 source and output tables | the Run's lineage and dataset outputs |
 | M-18 lift and base weights | the ensemble Model's metrics and drivers |
 | queryable result tables | the Run's dataset outputs |
+| streaming prequential metrics and drift | the streaming Model record's `metrics` |
+| streaming source, exclusions, topics, and score table | the run's lineage, logs, Model feature contract, and outputs |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -114,6 +116,10 @@ are recorded as the run goes:
   ([held-out metrics](../ml/held-out-metrics.md)).
 - **In the at-risk table** (`run_act`): each row's values for the population's three
   strongest drivers, alongside `rank` / `account` / `risk` / `dominant_driver`.
+- **For M-21 streaming runs:** prequential loss and accuracy, drift delta,
+  event/exclusion counts and watermark on the Model; resolved table and input
+  topic in lineage; excluded columns in logs; and model, score-table, and report
+  outputs on the Run.
 
 **Every value on the Model's `metrics` must be a number.** `model_schema()` declares it
 as `additionalProperties: {"type": "number"}`, and the rejection happens at the

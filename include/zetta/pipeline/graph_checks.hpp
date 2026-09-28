@@ -188,6 +188,17 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// Streaming correctness check (#1060): M-21 must order work behind an
+// event-time watermark, reject negative lateness, withhold labels until their
+// own event time, and measure predictions before training on those labels.
+// These annotations are required on every streaming model step; runtime code
+// independently applies the same policy to each event.
+class StreamingCorrectnessCheck final : public Check {
+public:
+    std::string name() const override { return "streaming_correctness"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

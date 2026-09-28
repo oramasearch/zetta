@@ -30,7 +30,7 @@ const nlohmann::json& graph_step_annotations_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "title": "zetta.GraphStepAnnotations",
-  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements, plus streaming event/label ordering. Only the named fields are constrained; a node may carry any other attributes.",
   "type": "object",
   "properties": {
     "schema": {
@@ -153,6 +153,29 @@ const nlohmann::json& graph_step_annotations_schema() {
     },
     "caller_read_required": {
       "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
+    },
+    "event_time_ordered": {
+      "description": "Streaming work is released in event-time order behind its watermark.",
+      "type": "boolean"
+    },
+    "allowed_lateness": {
+      "description": "How far behind the maximum observed event time an event may arrive before exclusion.",
+      "type": "number",
+      "minimum": 0
+    },
+    "future_event_policy": {
+      "description": "How streaming work prevents future events from entering the current decision.",
+      "type": "string",
+      "enum": ["buffer_until_watermark"]
+    },
+    "label_time_policy": {
+      "description": "A label may train the model only at or after its event time.",
+      "type": "string",
+      "enum": ["not_before_event_time"]
+    },
+    "prequential": {
+      "description": "Metrics are computed test-then-train from the score made before an update.",
       "type": "boolean"
     }
   }
@@ -519,6 +542,54 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return CheckResult{name(), CheckStatus::Pass,
                        "every model step names a methodology the engine can execute"};
+}
+
+CheckResult StreamingCorrectnessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](const ir::Node& node, std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail,
+                           node_label(node) + ": " + std::move(reason)};
+    };
+    for (const auto& node : graph.nodes()) {
+        if (!node || node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        if (auto error = validate_annotations(node->attributes)) {
+            return fail(*node,
+                        "malformed correctness annotations — " + *error);
+        }
+        const std::string kind =
+            node->attributes.value("model_kind", std::string{});
+        if (kind != "streaming" && kind != "online_learning") {
+            continue;
+        }
+        if (!node->attributes.value("event_time_ordered", false)) {
+            return fail(*node,
+                        "streaming decisions must set event_time_ordered=true");
+        }
+        if (!node->attributes.contains("allowed_lateness")) {
+            return fail(*node,
+                        "streaming decisions must declare allowed_lateness");
+        }
+        if (node->attributes.value("future_event_policy", std::string{}) !=
+            "buffer_until_watermark") {
+            return fail(*node,
+                        "future_event_policy must be buffer_until_watermark");
+        }
+        if (node->attributes.value("label_time_policy", std::string{}) !=
+            "not_before_event_time") {
+            return fail(*node,
+                        "label_time_policy must be not_before_event_time");
+        }
+        if (!node->attributes.value("prequential", false)) {
+            return fail(*node,
+                        "streaming evaluation must set prequential=true");
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "streaming models order event time, delay labels, and evaluate test-then-train"};
 }
 
 CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const {

@@ -40,6 +40,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `PrivacyBudgetCheck` | `privacy_budget` | an M-20 model with a missing or invalid epsilon/delta maximum, unknown noise mechanism, invalid public clipping bounds, or disabled privacy evaluation |
 
+| `StreamingCorrectnessCheck` | `streaming_correctness` | an M-21 model without event-time ordering, allowed lateness, future-event buffering, delayed-label protection, or prequential evaluation |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -95,6 +97,14 @@ This check engages on `label_efficiency`, `active_learning`, and
 `gold_split: "disjoint"`. Missing, malformed, or contradictory values fail the
 gate before a run starts. The runtime uses the same rule when materializing the
 label queue and weak-label table; both exclude every reserved gold row.
+### `streaming_correctness` — M-21 event and label order
+
+This check engages only on model steps whose `model_kind` is `streaming` or
+`online_learning`. It requires `event_time_ordered: true`, a non-negative
+`allowed_lateness`, `future_event_policy: "buffer_until_watermark"`,
+`label_time_policy: "not_before_event_time"`, and `prequential: true`. Missing
+or contradictory policy blocks the graph before run. Runtime processing applies
+the same rules to each event; see [online and streaming learning](../ml/streaming.md).
 
 ## How a check reads a step
 

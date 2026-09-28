@@ -175,6 +175,8 @@ add_executable(zetta-tests
   ml/test_uplift_partitions.cpp
   ml/test_rank.cpp
   ml/test_bandit.cpp
+  ml/test_streaming.cpp
+  ml/test_streaming_train_partitions.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
   ml/test_anomaly.cpp

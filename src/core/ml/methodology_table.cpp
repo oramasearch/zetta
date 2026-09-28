@@ -29,6 +29,7 @@ Methodology make_m17_methodology();
 Methodology make_m18_methodology();
 Methodology make_m19_methodology();
 Methodology make_m20_methodology();
+Methodology make_m21_methodology();
 
 namespace {
 
@@ -101,14 +102,7 @@ const std::vector<Methodology>& methodologies() {
         make_m18_methodology(),
         make_m19_methodology(),
         make_m20_methodology(),
-        planned("M-21", "Online / streaming learning", "Time & vigilance",
-                {"online_learning", "streaming"}, {},
-                {"online learning", "streaming", "real time learning"},
-                {input("time", true, "event time"),
-                 input("feature", true, "event features"),
-                 input("label", false, "delayed outcome")},
-                {"online model", "streaming scores"},
-                {"prequential loss", "drift", "latency"}, 1060),
+        make_m21_methodology(),
     };
     return table;
 }
