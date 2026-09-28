@@ -1,5 +1,12 @@
 # Code map
 
+Issue #1136 adds local navigation READMEs in `include/zetta/{api,governance,pubsub}`,
+`src/core/` and `src/core/{api,governance,observability,pubsub}`,
+`tests/{api,governance,pubsub}`, and `schemas/`. They link the implemented
+contracts to [pub/sub CRUD](../pubsub/crud.md), the new API/example page.
+The existing pub/sub stores own sparse payload mutation; the topic layer owns
+revisions/redelivery; registry declarations generate both transports and schemas.
+
 The annotated, file-by-file map of the zetta codebase — what every header and
 translation unit is for, which issue introduced it, and which library it builds
 into. This is the highest-fidelity map of the repo that exists: **keep it in

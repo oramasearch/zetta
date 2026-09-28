@@ -67,12 +67,17 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        113u); // +5 run-metrics controls (#1137), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        118u); // +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136)
+              // +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
               // +upload_dataset (#1008), +delete_project (#1009),
               // +list_methodologies (#1061)
+    for (const char* name :
+         {"get_topic", "update_topic", "browse_topic", "update_event", "delete_events"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // A remote caller can put data on the node without a file on its disk
     // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));

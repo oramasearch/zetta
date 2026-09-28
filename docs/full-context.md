@@ -112,6 +112,9 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [plans/pubsub/](plans/pubsub/README.md); what is built: [pubsub/](pubsub/README.md). One
   node only (the cluster is stage 2, designed later); locks and condition variables by
   decision D1/D5 (the one exception to the coroutine rule).
+  Issue #1136 adds node-local topic/message CRUD with revision checking,
+  hash-only mutation audit and non-consuming browse over REST/MCP async long
+  polls; [pubsub/crud.md](pubsub/crud.md). D39 still defers clustered pub/sub.
 
 - **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
   datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)

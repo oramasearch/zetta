@@ -24,6 +24,10 @@ and the per-audience [experience contracts](docs/product/experience/README.md)
 
 ## Under the hood
 
+Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
+REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
+retention updates and audited deletions. Clustered pub/sub remains deferred (D39).
+
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*
 is one running instance — **headed** (default: an SDL3 + Dear ImGui desktop UI

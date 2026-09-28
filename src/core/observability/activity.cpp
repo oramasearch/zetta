@@ -54,6 +54,9 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::DecisionPolicyCreated: return "decision policy created";
         case AuditAction::DecisionPolicyUpdated: return "decision policy updated";
         case AuditAction::DecisionApproved:   return "decision approved";
+        case AuditAction::PubSubTopicUpdated: return "topic updated";
+        case AuditAction::PubSubEventUpdated: return "event updated";
+        case AuditAction::PubSubEventDeleted: return "event deleted";
     }
     return "data access";
 }

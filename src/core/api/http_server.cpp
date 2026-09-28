@@ -600,6 +600,7 @@ boost::http::status http_status_of(int status_code) {
         case 400: return boost::http::status::bad_request;
         case 403: return boost::http::status::forbidden;
         case 404: return boost::http::status::not_found;
+        case 409: return boost::http::status::conflict;
         case 422: return boost::http::status::unprocessable_entity;
         case 503: return boost::http::status::service_unavailable;
         default: return boost::http::status::internal_server_error;
@@ -659,7 +660,8 @@ struct ApiServer::Impl {
     std::string dispatch(const nlohmann::json& request,
                          const std::string& acting_key, bool acting_is_user,
                          const std::string& traceparent_header,
-                         std::shared_ptr<zetta::runtime::async_event> wait_event = {}) {
+                         std::shared_ptr<zetta::runtime::async_event> wait_event = {},
+                         ApiResult* observed_result = nullptr) {
         if (!request.is_object() || request.value("jsonrpc", "") != "2.0") {
             return jsonrpc_error({}, -32600, "invalid JSON-RPC 2.0 request");
         }
@@ -732,6 +734,9 @@ struct ApiServer::Impl {
             // bridge-aware wrapper below, so here `work` has already been
             // marshaled; see handle_mcp(). This branch never runs off-loop.
             work();
+            if (observed_result) {
+                *observed_result = call_result;
+            }
 
             nlohmann::json payload;
             payload["ok"] = call_result.ok;
@@ -3707,6 +3712,7 @@ bool ApiServer::start() {
     });
 
     router.use("/mcp", [&impl](http::route_params& route) -> http::route_task {
+        Impl::RequestLifetime request_lifetime(impl.requests_in_flight);
         if (route.req.method() != http::method::post) {
             route.status(http::status::method_not_allowed);
             stamp_response_headers(route, "POST /mcp only");
@@ -3737,52 +3743,26 @@ bool ApiServer::start() {
             if (request.is_discarded()) {
                 response_body = jsonrpc_error({}, -32700, "parse error");
             } else {
-                std::shared_ptr<const Capability> awaitable_capability;
-                nlohmann::json awaitable_input = nlohmann::json::object();
-                if (request.is_object() &&
-                    request.value("method", std::string{}) == "tools/call") {
-                    const nlohmann::json params = request.value(
-                        "params", nlohmann::json::object());
-                    awaitable_capability = impl.capability_registry.find(
-                        params.value("name", std::string{}));
-                    awaitable_input = params.value(
-                        "arguments", nlohmann::json::object());
-                    if (awaitable_capability &&
-                        !awaitable_capability->awaitable_read) {
-                        awaitable_capability.reset();
-                    }
-                }
-                std::shared_ptr<zetta::runtime::async_event> wait_event;
-                if (awaitable_capability) {
-                    wait_event =
-                        std::make_shared<zetta::runtime::async_event>();
-                }
+                auto wait_event =
+                    std::make_shared<zetta::runtime::async_event>();
+                ApiResult observed;
                 // Marshal the whole dispatch onto the loop that owns the
                 // Node; this coroutine suspends until drain() has run it.
                 co_await impl.bridge.run_on_owner([&] {
                     response_body = impl.dispatch(
                         request, identity.acting_key, identity.is_user,
-                        traceparent, wait_event);
+                        traceparent, wait_event, &observed);
                 });
-                if (awaitable_capability) {
-                    const nlohmann::json first = nlohmann::json::parse(
-                        response_body, nullptr, /*allow_exceptions=*/false);
-                    ApiResult first_result;
-                    if (first.is_object() && first.contains("result") &&
-                        first["result"].contains("structuredContent")) {
-                        const nlohmann::json& structured =
-                            first["result"]["structuredContent"];
-                        first_result.ok = structured.value("ok", false);
-                        if (first_result.ok) {
-                            first_result.value = structured.value(
-                                "value", nlohmann::json::object());
-                        }
-                    }
-                    if (awaitable_capability->awaitable_read->should_wait(
-                            first_result)) {
+                if (observed.ok && request.is_object() &&
+                    request.value("method", std::string{}) == "tools/call") {
+                    const auto& params = request.at("params");
+                    const auto capability = impl.capability_registry.find(
+                        params.at("name").get<std::string>());
+                    if (capability && capability->awaitable_read &&
+                        capability->awaitable_read->should_wait(observed)) {
                         const auto wait_for =
-                            awaitable_capability->awaitable_read->wait_for(
-                                awaitable_input);
+                            capability->awaitable_read->wait_for(params.value(
+                                "arguments", nlohmann::json::object()));
                         if (wait_for.count() > 0) {
                             [[maybe_unused]] auto wait_result =
                                 co_await zetta::runtime::timeout(
@@ -3843,6 +3823,12 @@ bool ApiServer::start() {
                        -> http::route_task {
                        return impl.serve_rest_capability(route, capability);
                    });
+        if (capability->post_alias && method == http::method::get) {
+            router.add(http::method::post, rest_path(*capability),
+                [&impl, capability](http::route_params& route) -> http::route_task {
+                    return impl.serve_rest_capability(route, capability);
+                });
+        }
     }
 
     // The governed serving routes (#648, docs/api/serving.md): per-entity

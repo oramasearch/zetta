@@ -6,17 +6,22 @@
 `tests/pubsub/test_pubsub_capabilities.cpp`, `tests/api/test_rest_server.cpp`,
 `tests/test_runtime.cpp`
 
-Pub/sub is engine-internal by default. Five capabilities are registered on every node
+Pub/sub is engine-internal by default. Ten capabilities are registered on every node
 (each renders as a REST route, an MCP tool and an OpenAPI entry), but only topics whose
 `exposed` setting is on are reachable through them; an unexposed topic answers
 `not_found`, as if it did not exist.
 
 | Capability | Kind | Right | What |
 |---|---|---|---|
-| `create_topic` | action | `pubsub:create` | create a topic; `exposed` defaults to false; `lifecycle`, `guarantee` |
-| `drop_topic` | action | `pubsub:manage` | drop an exposed topic |
-| `list_topics` | read | `pubsub:subscribe` | exposed topics with subscribers, held events, next sequence |
-| `publish_event` | action | `pubsub:publish` | publish to an exposed topic; `from` is the caller; clamped fields reported |
+| `create_topic` | action | `topics:write` | create with full settings; `exposed` defaults to false |
+| `drop_topic` | action | `topics:write` | drop an exposed topic |
+| `list_topics` | read | `topics:read` | exposed, authorized topics with subscribers, held events, next sequence |
+| `get_topic` | read | `topics:read` | full settings and per-subscription positions/lag |
+| `update_topic` | action | `topics:write` | mutable settings, immediate retention shrink |
+| `browse_topic` | read | `topics:read` | non-consuming forward/backward browse and async long poll |
+| `publish_event` | action | `events:write` | publish to an exposed topic; `from` is the caller; clamped fields reported |
+| `update_event` | action | `events:write` | revision-checked payload edit, opt-in redelivery |
+| `delete_events` | action | `events:write` | remove held sequences or an exclusive range |
 | `receive_events` | read | `pubsub:subscribe` | events from a sequence number, oldest first; `wait_ms` long-polls (up to 30 s) |
 
 `receive_events` is stateless: pass the returned `next_sequence` to continue. For REST,
@@ -26,8 +31,17 @@ initial no-wait read. If that read is empty, the route suspends on the event, bo
 waiter. The route then reads once more. Both reads use the normal authorization + audit
 path on the owner loop, so a long poll makes at most two governed calls. MCP
 `tools/call` uses the same event-based bounded suspension and final governed
-read; neither rendering holds a thread while waiting (#1076, #1137).
+read; neither rendering holds a thread while waiting (#1076, #1136, #1137).
 Non-object MCP request bodies retain the JSON-RPC invalid-request response.
+The same mechanism serves `browse_topic`; it never creates or advances a
+subscription. See [crud.md](crud.md) for schemas, examples, revisions and D39.
+
+Trainer-owned `run-metrics.<run>` topics use this same exposed-topic surface.
+Clients can tail batches with `receive_events` or inspect them without consuming
+with `browse_topic`, through REST or MCP. The transport uses the first registry
+call's `ApiResult` to decide whether to wait, preserving authorization failures
+and avoiding a second JSON parse. Durable history remains on the Run and is read
+through `get_run_metrics`; see [run metrics](../ml/run-metrics.md).
 
 The runtime event adapter serializes registration, publish and cancellation cleanup
 across threads. Its lock is held only while updating the event's waiter list; suspended
