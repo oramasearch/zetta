@@ -14,6 +14,7 @@
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/solutions/decision_policy.hpp"
+#include "zetta/solutions/solution_templates.hpp"
 #include "zetta/util/uuid.hpp"
 
 namespace {
@@ -91,6 +92,68 @@ TEST(DecisionPolicy, EnforcesExclusionsAndContactAndFrequencyCaps) {
     ASSERT_TRUE(frequency_capped) << error;
     EXPECT_EQ(frequency_capped->status, "blocked");
     EXPECT_EQ(frequency_capped->reasons.front(), "frequency cap reached");
+}
+
+TEST(DecisionPolicy, RetentionTemplateEnforcesActionAuthorityAndRecordedMonthlyCaps) {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    DecisionPolicyStore store{replication};
+    std::string error;
+    const auto defaults = zetta::solutions::solution_templates("S-1");
+    const auto policy = store.create("S-1", defaults.policy, "owner", &error);
+    ASSERT_TRUE(policy) << error;
+    Json customer = {{"entity_id", "high"}, {"score", 0.9},
+                     {"in_collections", false}, {"open_complaint", false},
+                     {"vulnerable", false}};
+    const auto high = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(high) << error;
+    EXPECT_EQ(high->tier, "high");
+    EXPECT_EQ(high->action, "csm_task");
+    EXPECT_TRUE(high->actionable);
+    customer["entity_id"] = "discount";
+    customer["action"] = "discount";
+    customer["cost"] = 51;
+    const auto discount = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(discount) << error;
+    EXPECT_EQ(discount->autonomy, "A1");
+    EXPECT_EQ(discount->status, "pending_approval");
+    EXPECT_FALSE(discount->actionable);
+    customer["entity_id"] = "within-cap";
+    customer["cost"] = 50;
+    const auto bounded = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(bounded) << error;
+    EXPECT_TRUE(bounded->actionable);
+    customer.erase("action");
+    customer.erase("cost");
+    customer["entity_id"] = "medium";
+    customer["score"] = 0.5;
+    const auto medium = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(medium) << error;
+    EXPECT_EQ(medium->action, "retention_journey");
+    EXPECT_TRUE(medium->actionable);
+    const auto repeated = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(repeated) << error;
+    EXPECT_FALSE(repeated->actionable);
+    EXPECT_EQ(repeated->reasons.front(), "frequency cap reached");
+    customer["entity_id"] = "low";
+    customer["score"] = 0.1;
+    const auto low = store.decide(policy->id, customer, "owner", &error);
+    ASSERT_TRUE(low) << error;
+    EXPECT_EQ(low->tier, "low");
+    EXPECT_FALSE(low->actionable);
+    for (const std::string field : {"in_collections", "open_complaint", "vulnerable"}) {
+        customer["entity_id"] = field;
+        customer["score"] = 0.9;
+        customer[field] = true;
+        const auto blocked = store.decide(policy->id, customer, "owner", &error);
+        ASSERT_TRUE(blocked) << error;
+        EXPECT_EQ(blocked->status, "blocked");
+        EXPECT_EQ(blocked->tier, "high");
+        customer.erase(field);
+        const auto absent = store.decide(policy->id, customer, "owner", &error);
+        ASSERT_TRUE(absent) << error;
+        EXPECT_FALSE(absent->actionable);
+        customer[field] = false;
+    }
 }
 
 TEST(DecisionPolicy, A1WaitsForApprovalAndRecordsPolicyVersion) {

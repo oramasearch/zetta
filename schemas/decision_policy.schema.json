@@ -31,6 +31,57 @@
             "$schema": "http://json-schema.org/draft-07/schema#",
             "additionalProperties": false,
             "properties": {
+              "actions": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "approval_above": {
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "autonomy": {
+                      "enum": [
+                        "A0",
+                        "A1",
+                        "A2",
+                        "A3"
+                      ],
+                      "type": "string"
+                    },
+                    "contact_cap": {
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "frequency_cap": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "max_actions": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "window_seconds": {
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "max_actions",
+                        "window_seconds"
+                      ],
+                      "type": "object"
+                    },
+                    "sla_seconds": {
+                      "minimum": 1,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "autonomy"
+                  ],
+                  "type": "object"
+                },
+                "type": "object"
+              },
               "autonomy": {
                 "enum": [
                   "A0",
@@ -65,6 +116,10 @@
                       "minLength": 1,
                       "type": "string"
                     },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
                     "operator": {
                       "enum": [
                         "eq",
@@ -77,6 +132,10 @@
                         "not_in",
                         "exists"
                       ],
+                      "type": "string"
+                    },
+                    "role": {
+                      "minLength": 1,
                       "type": "string"
                     },
                     "value": {}
@@ -97,6 +156,10 @@
                       "minLength": 1,
                       "type": "string"
                     },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
                     "operator": {
                       "enum": [
                         "eq",
@@ -109,6 +172,10 @@
                         "not_in",
                         "exists"
                       ],
+                      "type": "string"
+                    },
+                    "role": {
+                      "minLength": 1,
                       "type": "string"
                     },
                     "value": {}
@@ -152,6 +219,12 @@
                     "action": {
                       "minLength": 1,
                       "type": "string"
+                    },
+                    "allowed_actions": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
                     },
                     "minimum_score": {
                       "type": "number"

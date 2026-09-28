@@ -64,6 +64,20 @@ bool validate_policy_config(const Json& config, std::string* error) {
     if (!validate(decision_policy_config_schema(), config, error)) {
         return false;
     }
+    if (config.contains("actions")) {
+        for (const Json& tier : config.value("tiers", Json::array())) {
+            Json permitted = tier.value("allowed_actions", Json::array());
+            permitted.push_back(tier.at("action"));
+            for (const Json& action : permitted) {
+                if (!config.at("actions").contains(action.get<std::string>())) {
+                    if (error != nullptr) {
+                        *error = "/tiers: every action needs configured authority in actions";
+                    }
+                    return false;
+                }
+            }
+        }
+    }
     for (const auto& [path, bound] :
          config.value("tunable_bounds", Json::object()).items()) {
         if (bound.at("minimum").get<double>() > bound.at("maximum").get<double>()) {
@@ -101,7 +115,9 @@ const Json& rule_schema() {
         {"additionalProperties", false},
         {"required", {"field", "operator"}},
         {"properties",
-         {{"field", {{"type", "string"}, {"minLength", 1}}},
+         {{"name", {{"type", "string"}, {"minLength", 1}}},
+          {"role", {{"type", "string"}, {"minLength", 1}}},
+          {"field", {{"type", "string"}, {"minLength", 1}}},
           {"operator",
            {{"type", "string"},
             {"enum", {"eq", "neq", "lt", "lte", "gt", "gte", "in", "not_in", "exists"}}}},
@@ -278,10 +294,59 @@ bool apply_tuning(
     return true;
 }
 
+Json select_action(const Json& config, const Json& entity, DecisionRecord& decision) {
+    double selected_minimum = -std::numeric_limits<double>::infinity();
+    Json selected = Json::object();
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        const double minimum = tier.at("minimum_score").get<double>();
+        if (decision.score >= minimum && minimum >= selected_minimum) {
+            selected_minimum = minimum;
+            selected = tier;
+            decision.tier = tier.at("name").get<std::string>();
+            decision.action = tier.at("action").get<std::string>();
+        }
+    }
+    const std::string requested = entity.value("action", std::string{});
+    const Json allowed = selected.value("allowed_actions", Json::array());
+    if (!requested.empty() && std::find(allowed.begin(), allowed.end(), Json(requested)) != allowed.end()) {
+        decision.action = requested;
+    }
+    if (decision.action.empty() && !config.contains("actions")) {
+        decision.action = requested;
+    }
+    const Json actions = config.value("actions", Json::object());
+    const Json settings = actions.value(decision.action, Json::object());
+    decision.autonomy = settings.value("autonomy", decision.autonomy);
+    if (settings.contains("approval_above") &&
+        decision.cost > settings.at("approval_above").get<double>()) {
+        decision.autonomy = "A1";
+    }
+    return settings;
+}
+
+std::size_t recorded_contacts(const Json& snapshot, const DecisionRecord& decision,
+                              const std::string& since) {
+    std::size_t count = 0;
+    for (const auto& [key, value] : snapshot.items()) {
+        if (!key.starts_with(std::string(zetta::catalog::kDecisionPrefix))) {
+            continue;
+        }
+        const auto prior = parse_decision_record(value);
+        if (prior && prior->policy_id == decision.policy_id &&
+            prior->entity_id == decision.entity_id && prior->created >= since &&
+            (prior->status == "allowed" || prior->status == "approved" ||
+             prior->status == "pending_approval") && !prior->holdout) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 DecisionRecord evaluate(
     const DecisionPolicy& policy,
     const Json& entity,
-    double spend) {
+    double spend,
+    const Json& snapshot) {
     const PolicyVersion& current = *policy.current();
     const Json& config = current.config;
     DecisionRecord decision;
@@ -295,6 +360,7 @@ DecisionRecord evaluate(
     decision.holdout = entity.value("holdout", false);
     decision.created = zetta::util::now_iso8601();
     decision.evidence = entity;
+    const Json action_settings = select_action(config, entity, decision);
 
     if (config.value("kill_switch", false)) {
         decision.status = "blocked";
@@ -317,15 +383,22 @@ DecisionRecord evaluate(
         }
     }
 
-    const std::size_t contacts = count_or(entity, "contacts");
-    const std::size_t contact_cap = config.value("contact_cap", std::numeric_limits<std::size_t>::max());
+    const std::size_t contacts = std::max(count_or(entity, "contacts"),
+                                        recorded_contacts(snapshot, decision, {}));
+    const std::size_t contact_cap = std::min(
+        config.value("contact_cap", std::numeric_limits<std::size_t>::max()),
+        action_settings.value("contact_cap", std::numeric_limits<std::size_t>::max()));
     if (contacts >= contact_cap) {
         decision.status = "blocked";
         decision.reasons.push_back("contact cap reached");
         return decision;
     }
-    const Json frequency = config.value("frequency_cap", Json::object());
-    const std::size_t recent_actions = count_or(entity, "recent_actions");
+    const Json frequency = action_settings.value(
+        "frequency_cap", config.value("frequency_cap", Json::object()));
+    const std::string since = zetta::util::iso8601_seconds_ago(
+        frequency.value("window_seconds", 1LL));
+    const std::size_t recent_actions = std::max(count_or(entity, "recent_actions"),
+                                               recorded_contacts(snapshot, decision, since));
     const std::size_t maximum_actions = frequency.value(
         "max_actions",
         std::numeric_limits<std::size_t>::max());
@@ -350,19 +423,6 @@ DecisionRecord evaluate(
         return decision;
     }
 
-    double selected_minimum = -std::numeric_limits<double>::infinity();
-    for (const Json& tier : config.value("tiers", Json::array())) {
-        const double minimum = tier.at("minimum_score").get<double>();
-        if (decision.score >= minimum && minimum >= selected_minimum) {
-            selected_minimum = minimum;
-            decision.tier = tier.at("name").get<std::string>();
-            decision.action = tier.at("action").get<std::string>();
-        }
-    }
-    if (decision.action.empty()) {
-        decision.action = entity.value("action", std::string{});
-    }
-
     if (decision.holdout) {
         decision.status = "blocked";
         decision.reasons.push_back(
@@ -373,6 +433,11 @@ DecisionRecord evaluate(
     if (decision.autonomy == "A0") {
         decision.status = "manual";
         decision.reasons.push_back("A0 records a recommendation without authorizing action");
+        return decision;
+    }
+    if (decision.action.empty() || decision.action == "no_contact") {
+        decision.status = "manual";
+        decision.reasons.push_back("the selected tier authorizes no contact");
         return decision;
     }
     if (decision.autonomy == "A1") {
@@ -519,6 +584,61 @@ const Json& decision_policy_config_schema() {
               {"autonomy", {{"type", "string"}, {"enum", {"A0", "A1", "A2", "A3"}}}},
               {"tunable_bounds",
                {{"type", "object"}, {"additionalProperties", bound_schema()}}}}}};
+        value["properties"]["tiers"]["items"]["properties"]["allowed_actions"] = {
+            {"type", "array"}, {"items", {{"type", "string"}}}};
+        value["properties"]["actions"] = Json::parse(R"JSON(
+{
+  "type": "object",
+  "additionalProperties": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "autonomy"
+    ],
+    "properties": {
+      "autonomy": {
+        "type": "string",
+        "enum": [
+          "A0",
+          "A1",
+          "A2",
+          "A3"
+        ]
+      },
+      "approval_above": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sla_seconds": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "contact_cap": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "frequency_cap": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "max_actions",
+          "window_seconds"
+        ],
+        "properties": {
+          "max_actions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "window_seconds": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}
+)JSON");
         return value;
     }();
     return schema;
@@ -775,6 +895,26 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         }
         return std::nullopt;
     }
+    for (const std::string field : {"score", "cost", "contacts", "recent_actions"}) {
+        const auto value = entity.find(field);
+        if (value == entity.end()) {
+            continue;
+        }
+        const bool count = field == "contacts" || field == "recent_actions";
+        if (!value->is_number() || !std::isfinite(value->get<double>()) ||
+            (count && (value->get<double>() < 0 || std::floor(value->get<double>()) != value->get<double>()))) {
+            if (error != nullptr) {
+                *error = "/entity/" + field + ": requires a finite number (counts must be non-negative integers)";
+            }
+            return std::nullopt;
+        }
+    }
+    if (entity.contains("action") && !entity.at("action").is_string()) {
+        if (error != nullptr) {
+            *error = "/entity/action: must be a string";
+        }
+        return std::nullopt;
+    }
     if (entity.contains("holdout") && !entity.at("holdout").is_boolean()) {
         if (error != nullptr) {
             *error = "/entity/holdout: must be a boolean";
@@ -786,7 +926,7 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
     if (policy->current()->config.contains("budget")) {
         spend = committed_spend(snapshot, policy_id, policy->current()->version);
     }
-    DecisionRecord decision = evaluate(*policy, entity, spend);
+    DecisionRecord decision = evaluate(*policy, entity, spend, snapshot);
     if (entity.contains("experiment")) {
         if (experiment_manager_ == nullptr) {
             if (error != nullptr) {
@@ -815,7 +955,10 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         }
         decision.experiment = experiment_decision->assignment.value.experiment;
         decision.cell = experiment_decision->assignment.value.allocation;
-        if (!experiment_decision->allowed) {
+        const ExperimentTier cell_tier = experiment_decision->assignment.value.tier;
+        decision.holdout = decision.holdout || cell_tier == ExperimentTier::Holdout ||
+                           cell_tier == ExperimentTier::BelowLine;
+        if (decision.holdout) {
             decision.action.clear();
             decision.actionable = false;
             decision.status = "blocked";

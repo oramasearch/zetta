@@ -41,23 +41,36 @@ A config contains:
 | `kill_switch` | When true, every decision is blocked before any other rule. |
 | `threshold` | Minimum score for an action. |
 | `tiers[]` | Named score floors and their selected action; the highest matching floor wins. |
+| `actions` | Optional named action settings: autonomy, SLA seconds, approval-above cost, contact cap and frequency cap. Every tier action must have a setting when this map is present. |
 | `budget.limit` | Maximum committed cost for one policy version. |
 | `contact_cap` | Blocks when the entity's contact count has reached the cap. |
-| `frequency_cap` | Maximum actions in the supplied recent window and its window size. |
+| `frequency_cap` | Maximum actions in the configured window; enforce both supplied counts and persisted authorized/pending decisions for the entity. |
 | `eligibility_rules[]` | Every rule must match. |
 | `exclusion_rules[]` | Any matching rule blocks. |
 | `autonomy` | `A0`, `A1`, `A2`, or `A3`. |
 | `tunable_bounds` | Numeric config paths an agent may tune, with inclusive bounds. |
 
-The evaluator applies the kill-switch, exclusions, eligibility, contact cap,
-frequency cap, budget, threshold, and tier in that order. A blocked decision is
-still a durable record, including its evidence and policy version.
+The evaluator first records the matching tier and action settings, then applies
+the kill-switch, exclusions, eligibility, contact cap, frequency cap, budget and
+threshold. A blocked decision retains its tier, evidence and policy version.
+The optional `tiers[].allowed_actions` list permits an explicitly requested
+alternative, such as a high-risk retention discount; unlisted requests cannot
+override the tier. `actions.<name>.approval_above` promotes a cost above the cap
+to A1. `no_contact` never authorizes delivery. Named rule `name` and `role`
+metadata identify catalogue predicates while `field` remains the executable
+data binding. Missing eligibility evidence blocks.
+
+Recorded contact counts span policy versions and are combined with supplied
+counts using the larger count. Pending approvals reserve a contact; protected
+holdout decisions do not. S-1's monthly cap therefore survives a new Run or a
+policy version change. Counts and cost supplied directly from tables must be
+finite, and counts must be non-negative integers.
 
 When an entity supplies an `experiment` reference, the same `decide` call passes
 the selected policy action through `ExperimentManager::decide` before persisting
 the result. The decision row records the experiment id and allocation `cell`.
 A model-driven action assigned to a `holdout` or `below_line` cell is cleared,
-marked non-actionable, and stored as blocked. Treatment and exploration cells
+marked `holdout: true`, non-actionable, and stored as blocked. Treatment and exploration cells
 retain the policy result. A missing experiment manager or unknown experiment is
 a request error rather than an unprotected decision.
 
