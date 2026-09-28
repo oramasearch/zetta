@@ -757,6 +757,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime interface)
+  cluster/test_solution_replication.cpp  one-tick incremental solution projections, scoped removals, late parents, direct CRDT reads, and table-backed state (#1128)
   api/ util/ cluster/ data/ ddf/ ml/ solutions/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   solutions/test_audit_ledger.cpp  action/outcome chain reconstruction, append-only behavior, persistence, CRDT replication, SQL queryability, and schema rejection (#1107)

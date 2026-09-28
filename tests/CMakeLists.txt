@@ -251,6 +251,7 @@ add_executable(zetta-tests
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
   cluster/test_replication.cpp
+  cluster/test_solution_replication.cpp
   cluster/test_data_replication.cpp
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp

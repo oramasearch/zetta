@@ -43,6 +43,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <system_error>
 #include <thread>
 #include <tuple>
@@ -91,6 +92,8 @@ struct ReplicationReconcileBatches {
     ReconcileBatch deployments;
     ReconcileBatch runs;
     ReconcileBatch models;
+    ReconcileBatch monitors;
+    ReconcileBatch experiments;
     ReconcileBatch profiles;
     ReconcileBatch plans;
     ReconcileBatch indexes;
@@ -104,6 +107,7 @@ struct ReplicationReconcileBatches {
     ReconcileBatch user_roles;
     ReconcileBatch policies;
     ReconcileBatch audit_events;
+    ReconcileBatch ledger_entries;
     ReconcileBatch nodes;
 };
 
@@ -134,6 +138,13 @@ ReconcileBatch* batch_for_replication_key(
     }
     if (key.starts_with(catalog::kModelPrefix)) {
         return &batches.models;
+    }
+    if (key.starts_with(catalog::kMonitorPrefix)) {
+        return &batches.monitors;
+    }
+    if (key.starts_with(catalog::kExperimentPrefix) ||
+        key.starts_with(catalog::kExperimentAssignmentPrefix)) {
+        return &batches.experiments;
     }
     if (key.starts_with(catalog::kWorkspaceProfilePrefix)) {
         return &batches.profiles;
@@ -174,6 +185,9 @@ ReconcileBatch* batch_for_replication_key(
     if (key.starts_with(catalog::kAuditPrefix)) {
         return &batches.audit_events;
     }
+    if (key.starts_with(catalog::kLedgerPrefix)) {
+        return &batches.ledger_entries;
+    }
     if (key.starts_with(catalog::kNodePrefix)) {
         return &batches.nodes;
     }
@@ -189,6 +203,30 @@ void add_current_value(ReconcileBatch& batch,
     }
 }
 
+void include_experiment_assignments(ReconcileBatch& batch,
+                                    const nlohmann::json& snapshot) {
+    std::set<std::string> parent_ids;
+    for (const std::string& key : batch.keys) {
+        const std::string id = catalog::id_after(key, catalog::kExperimentPrefix);
+        if (!id.empty()) {
+            parent_ids.insert(id);
+        }
+    }
+    if (parent_ids.empty()) {
+        return;
+    }
+    // A parent may arrive after an assignment, or be removed while its child
+    // keys remain in the document. Revisit those children in the same tick.
+    for (const auto& [key, value] : snapshot.items()) {
+        const std::string compound_id =
+            catalog::id_after(key, catalog::kExperimentAssignmentPrefix);
+        if (parent_ids.contains(compound_id.substr(0, compound_id.find(':'))) &&
+            !batch.values.contains(key)) {
+            add_current_value(batch, snapshot, key);
+        }
+    }
+}
+
 ReplicationReconcileBatches make_reconcile_batches(
     const nlohmann::json& snapshot,
     const std::vector<std::string>& changed_keys) {
@@ -198,6 +236,7 @@ ReplicationReconcileBatches make_reconcile_batches(
             add_current_value(*batch, snapshot, key);
         }
     }
+    include_experiment_assignments(batches.experiments, snapshot);
     for (const std::string& key : batches.data.keys) {
         std::string related_key;
         if (const std::string table_id =
@@ -4037,12 +4076,19 @@ void Node::reconcile_replication_changes(
     if (!batches.models.keys.empty()) {
         reconcile_models(batches.models.values, &batches.models.keys);
     }
+    if (!batches.monitors.keys.empty()) {
+        reconcile_monitors(batches.monitors.values, &batches.monitors.keys);
+    }
     if (!batches.profiles.keys.empty()) {
         reconcile_workspace_profiles(batches.profiles.values,
                                      &batches.profiles.keys);
     }
     if (!batches.plans.keys.empty()) {
         reconcile_plans(batches.plans.values, &batches.plans.keys);
+    }
+    if (!batches.experiments.keys.empty()) {
+        experiment_manager_.reconcile(batches.experiments.values,
+                                      &batches.experiments.keys);
     }
     if (!batches.indexes.keys.empty()) {
         reconcile_indexes(batches.indexes.values, &batches.indexes.keys);
@@ -4081,6 +4127,10 @@ void Node::reconcile_replication_changes(
     if (!batches.audit_events.keys.empty()) {
         reconcile_audit_events(batches.audit_events.values,
                                &batches.audit_events.keys);
+    }
+    if (!batches.ledger_entries.keys.empty()) {
+        reconcile_ledger_entries(batches.ledger_entries.values,
+                                 &batches.ledger_entries.keys);
     }
     if (!batches.nodes.keys.empty()) {
         rebalance_partitions_on_membership_change(snapshot,
@@ -4605,11 +4655,13 @@ void Node::reconcile_models(
     }
 }
 
-void Node::reconcile_monitors(const nlohmann::json& snapshot) {
+void Node::reconcile_monitors(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
     std::map<std::string, zetta::solutions::MonitorValue> monitors;
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kMonitorPrefix);
-        if (id.empty()) {
+        if (id.empty() || !reconciliation_includes_key(changed_keys, key)) {
             continue;
         }
         std::optional<zetta::solutions::MonitorValue> parsed =
@@ -4623,7 +4675,8 @@ void Node::reconcile_monitors(const nlohmann::json& snapshot) {
         local_ids.push_back(monitor->id());
     }
     for (const std::string& id : local_ids) {
-        if (!monitors.contains(id)) {
+        if (reconciliation_includes_key(changed_keys, catalog::monitor_key(id)) &&
+            !monitors.contains(id)) {
             materialize_drop_monitor(id);
         }
     }
@@ -4948,10 +5001,14 @@ void Node::reconcile_audit_events(
     }
 }
 
-void Node::reconcile_ledger_entries(const nlohmann::json& snapshot) {
+void Node::reconcile_ledger_entries(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    // Like the audit trail, ledger records are immutable and append-only.
+    // An incremental bucket may add records, never edit or remove history.
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kLedgerPrefix);
-        if (id.empty()) {
+        if (id.empty() || !reconciliation_includes_key(changed_keys, key)) {
             continue;
         }
         const std::optional<zetta::solutions::LedgerEntryValue> parsed =

@@ -329,6 +329,11 @@ are a materialized *projection* of it.** Concretely:
   complete snapshot. Reconcile reads the CRDT and writes only disk, so it never
   loops back into the CRDT, and it is idempotent.
 
+  Solution monitors, experiments/assignments, and ledger additions participate
+  in these changed-key buckets too. Definition changes revisit dependent
+  assignment records; the policy/decision and ROI stores remain direct CRDT
+  reads. See [solution-reconciliation.md](solution-reconciliation.md) (#1128).
+
   **The watermark is the version read at the TOP of the tick, never the current
   one.** Peers merge on the network thread, so a merge can land at any moment
   during a tick. `tick()` used to read `version()` again at the end and record

@@ -590,10 +590,19 @@ void ExperimentManager::migrate_to_replication() {
     }
 }
 
-void ExperimentManager::reconcile(const nlohmann::json& snapshot) {
+void ExperimentManager::reconcile(
+    const nlohmann::json& snapshot,
+    const std::vector<std::string>* changed_keys) {
+    const auto includes = [changed_keys](const std::string& key) {
+        return !changed_keys ||
+               std::ranges::find(*changed_keys, key) != changed_keys->end();
+    };
     std::map<std::string, ExperimentValue> desired_experiments;
     std::map<std::string, ExperimentAssignmentValue> desired_assignments;
     for (const auto& [key, value] : snapshot.items()) {
+        if (!includes(key)) {
+            continue;
+        }
         const std::string experiment_id =
             catalog::id_after(key, catalog::kExperimentPrefix);
         if (!experiment_id.empty()) {
@@ -617,8 +626,24 @@ void ExperimentManager::reconcile(const nlohmann::json& snapshot) {
         desired_assignments.emplace(compound_id, *parsed);
     }
 
+    for (auto iterator = experiments_.begin(); iterator != experiments_.end();) {
+        if (!includes(catalog::experiment_key(iterator->first)) ||
+            desired_experiments.contains(iterator->first)) {
+            ++iterator;
+            continue;
+        }
+        std::error_code error;
+        fs::remove_all(experiment_dir(iterator->first), error);
+        iterator = experiments_.erase(iterator);
+    }
     for (auto iterator = assignments_.begin(); iterator != assignments_.end();) {
-        if (desired_assignments.contains(iterator->first)) {
+        const std::string key =
+            std::string(catalog::kExperimentAssignmentPrefix) + iterator->first;
+        const bool parent_present =
+            experiments_.contains(iterator->second.experiment) ||
+            desired_experiments.contains(iterator->second.experiment);
+        if (parent_present &&
+            (!includes(key) || desired_assignments.contains(iterator->first))) {
             ++iterator;
             continue;
         }
@@ -628,16 +653,6 @@ void ExperimentManager::reconcile(const nlohmann::json& snapshot) {
         }
         iterator = assignments_.erase(iterator);
     }
-    for (auto iterator = experiments_.begin(); iterator != experiments_.end();) {
-        if (desired_experiments.contains(iterator->first)) {
-            ++iterator;
-            continue;
-        }
-        std::error_code error;
-        fs::remove_all(experiment_dir(iterator->first), error);
-        iterator = experiments_.erase(iterator);
-    }
-
     for (const auto& [id, value] : desired_experiments) {
         experiments_.insert_or_assign(id, value);
         persist_experiment({id, value});

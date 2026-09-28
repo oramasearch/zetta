@@ -1102,7 +1102,8 @@ private:
                         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_models(const nlohmann::json& snapshot,
                           const std::vector<std::string>* changed_keys = nullptr);
-    void reconcile_monitors(const nlohmann::json& snapshot);
+    void reconcile_monitors(const nlohmann::json& snapshot,
+                            const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_workspace_profiles(
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
@@ -1124,7 +1125,9 @@ private:
     void reconcile_audit_events(
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
-    void reconcile_ledger_entries(const nlohmann::json& snapshot);
+    void reconcile_ledger_entries(
+        const nlohmann::json& snapshot,
+        const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_users(const nlohmann::json& snapshot,
                          const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_roles(const nlohmann::json& snapshot,

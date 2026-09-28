@@ -4,6 +4,10 @@ Runtime foundations shared by deployed solutions: experimental measurement,
 action policy, monitoring, audit, and durable evidence that connects model scores
 and policy decisions to actions and measured outcomes.
 
+The workspace integration routes projected solution records through the engine's
+[incremental reconciliation](../cluster/solution-reconciliation.md), with
+one-tick checks for all added catalog families and existing table-backed state.
+
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.

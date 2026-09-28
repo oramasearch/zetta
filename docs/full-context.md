@@ -63,6 +63,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Workspace solution integration (#1128)** — `deploy/workspace` combines the
+  solution foundations with the bus/engine fixes and #1131's in-flight signal
+  handler protection. Solution monitors, experiments/assignments and ledger
+  additions participate in #1086's incremental reconciliation; policies,
+  decisions and ROI definitions remain direct CRDT reads. The audit ID index
+  and owner wake-up callback are retained. See
+  [cluster/solution-reconciliation.md](cluster/solution-reconciliation.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

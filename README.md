@@ -107,6 +107,9 @@ What's inside, by domain (each links to that domain's docs):
   S-1 has the complete retention template; S-2 through S-12 have explicitly
   minimal editable defaults. Snapshot cutoffs, delivery destinations and ROI
   economics remain caller-supplied.
+  Their projected records participate in the workspace engine's
+  [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
+  policy/decision and ROI stores read directly from replicated state.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

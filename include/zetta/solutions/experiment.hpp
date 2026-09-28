@@ -137,7 +137,10 @@ public:
 
     void load();
     void migrate_to_replication();
-    void reconcile(const nlohmann::json& snapshot);
+    // Null keys apply a full snapshot. Otherwise only the supplied keys and
+    // children of a removed experiment are affected (#1086, #1128).
+    void reconcile(const nlohmann::json& snapshot,
+                   const std::vector<std::string>* changed_keys = nullptr);
 
     std::optional<ExperimentRecord> create(
         ExperimentValue value, std::string* error = nullptr);
