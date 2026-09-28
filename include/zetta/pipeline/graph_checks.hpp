@@ -157,6 +157,13 @@ public:
     std::string name() const override {
         return "optimization_contract";
     }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class UncertaintyValidationCheck final : public Check {
+public:
+    std::string name() const override { return "uncertainty_validation"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

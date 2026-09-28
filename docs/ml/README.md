@@ -38,6 +38,7 @@ for model work.
 - [speech.md](speech.md) — M-14 native WAV transcription, Whisper tiny/base checkpoints, consent and privacy rules, transcript tables, and word error rate (#1053).
 - [bandit.md](bandit.md) — M-15 native Thompson sampling, LinUCB, and linear Thompson sampling with allreduced per-arm state, constrained propensities, persisted policy tables, and registry execution (#1054).
 - [optimization.md](optimization.md) — M-16 native revised-simplex LP and best-bound branch-and-bound MIP: scenario table in, independently verified plan and constraint trace out (#1055).
+- [bayesian.md](bayesian.md) — M-17 native split-conformal intervals / classification sets and distributed Gibbs partial pooling, with measured hold-out coverage (#1056).
 
 ## Methodology portfolio
 
@@ -64,7 +65,7 @@ carry `*`. Regenerate it with
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, group*, label | transcript table, speech model | word error rate | runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
 | M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label*, feature | allocation policy, decision propensities | cumulative reward, regret, exploration share | runnable | — |
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | variable*, objective*, constraint*, scenario*, group | plan, constraint trace, solver status | objective value, current plan objective, objective delta, constraint violations, optimality gap | runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
-| M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | feature*, group | posterior, prediction intervals | coverage, CRPS, calibration | not runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
+| M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | entity*, label*, group*, time, prediction | posterior estimates, credible intervals, prediction intervals, prediction sets | empirical coverage, nominal coverage, mean interval width, mean prediction-set size | runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |
 | M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | — | feature*, label | labels, review queue, label provenance | agreement, cost per label, downstream lift | not runnable | [#1058](https://github.com/oramasearch/zetta/issues/1058) |
 | M-20 | Privacy-preserving learning & synthetic data | The data supply chain | privacy_preserving, federated, synthetic_data | — | group*, feature* | private model, synthetic dataset, guarantee report | privacy budget, TSTR, attack success | not runnable | [#1059](https://github.com/oramasearch/zetta/issues/1059) |

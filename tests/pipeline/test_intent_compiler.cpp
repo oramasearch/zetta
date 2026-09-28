@@ -113,6 +113,30 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, ExplicitBayesianMethodologyBuildsItsOwnShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-17";
+    options.hints = {{"database", "measurements"},
+                     {"table", "store_demand"},
+                     {"entity_column", "id"},
+                     {"label_column", "demand"},
+                     {"group_column", "store"}};
+    const auto compiled = compile_intent(
+        "Estimate store demand with honest uncertainty", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-17");
+    EXPECT_TRUE(compiled->graph.has_node("read_grouped_observations"));
+    EXPECT_TRUE(compiled->graph.has_node("fit_hierarchical_posterior"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph
+                  .find_node("fit_hierarchical_posterior")
+                  ->attributes.at("model_kind"),
+              "bayesian");
+    EXPECT_TRUE(zetta::pipeline::default_gate()
+                    .run(compiled->graph)
+                    .passed());
+}
+
 TEST(IntentCompilerTest, CausalMethodologyIdAndModelKindsBuildUpliftShape) {
     for (const char* methodology : {"M-6", "uplift", "causal"}) {
         zetta::pipeline::IntentCompileOptions options;

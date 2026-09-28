@@ -25,6 +25,7 @@ Methodology make_m13_methodology();
 Methodology make_m14_methodology();
 Methodology make_m15_methodology();
 Methodology make_m16_methodology();
+Methodology make_m17_methodology();
 
 namespace {
 
@@ -93,16 +94,7 @@ const std::vector<Methodology>& methodologies() {
         make_m14_methodology(),
         make_m15_methodology(),
         make_m16_methodology(),
-        planned(
-            "M-17",
-            "Bayesian / probabilistic modeling & uncertainty quantification",
-            "The tabular decision core",
-            {"bayesian", "probabilistic", "uncertainty"}, {},
-            {"bayesian", "uncertainty", "credible interval", "probabilistic"},
-            {input("feature", true, "observations"),
-             input("group", false, "hierarchical group")},
-            {"posterior", "prediction intervals"},
-            {"coverage", "CRPS", "calibration"}, 1056),
+        make_m17_methodology(),
         planned("M-18", "Ensembling & stacking", "The tabular decision core",
                 {"ensemble", "ensembling", "stacking"}, {},
                 {"ensemble", "stack", "blend models"},

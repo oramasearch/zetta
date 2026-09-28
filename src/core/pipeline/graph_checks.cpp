@@ -479,6 +479,93 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
                        "every model step names a methodology the engine can execute"};
 }
 
+CheckResult UncertaintyValidationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        const std::string normalized_model_kind =
+            normalize_type(model_kind->get<std::string>());
+        if (normalized_model_kind != "bayesian" &&
+            normalized_model_kind != "probabilistic" &&
+            normalized_model_kind != "uncertainty") {
+            continue;
+        }
+        const auto coverage = node->attributes.find("coverage_checked");
+        if (coverage == node->attributes.end() || !coverage->is_boolean() ||
+            !coverage->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must set coverage_checked=true; "
+                    "nominal coverage is not evidence of observed coverage"};
+        }
+        const auto assumption =
+            node->attributes.find("exchangeability_assumption");
+        if (assumption == node->attributes.end() ||
+            !assumption->is_string() || assumption->get<std::string>().empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must state its "
+                    "exchangeability_assumption"};
+        }
+        const auto nominal = node->attributes.find("nominal_coverage");
+        if (nominal == node->attributes.end() || !nominal->is_number() ||
+            nominal->get<double>() <= 0.0 || nominal->get<double>() >= 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": nominal_coverage must be a number between 0 and 1"};
+        }
+        const auto uncertainty_kind =
+            node->attributes.find("uncertainty_kind");
+        if (uncertainty_kind == node->attributes.end() ||
+            !uncertainty_kind->is_string()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical or split_conformal"};
+        }
+        const std::string normalized_uncertainty_kind =
+            normalize_type(uncertainty_kind->get<std::string>());
+        const bool is_conformal =
+            normalized_uncertainty_kind == "split_conformal_regression" ||
+            normalized_uncertainty_kind == "split_conformal_classification";
+        if (normalized_uncertainty_kind != "hierarchical" && !is_conformal) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical, "
+                    "split_conformal_regression, or "
+                    "split_conformal_classification"};
+        }
+        if (is_conformal) {
+            const auto disjoint =
+                node->attributes.find("calibration_disjoint");
+            if (disjoint == node->attributes.end() ||
+                !disjoint->is_boolean() || !disjoint->get<bool>()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split conformal calibration rows must be declared "
+                        "disjoint from fitting rows"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "Bayesian model steps measure coverage and state exchangeability"};
+}
+
+
 CheckResult EntityResolutionGraphCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     for (const auto& node : graph.nodes()) {

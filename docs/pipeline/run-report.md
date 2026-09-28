@@ -48,6 +48,8 @@ state, and `get_run_report` puts them together at query time:
 | survival outputs | the run's survival and interval-calibration table refs |
 | M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
 | decisions + constraint checks | an optimization run's plan and constraint-trace tables in `optimization_results` |
+| M-17 uncertainty metrics | the Bayesian Model's numeric `metrics` |
+| M-17 source and output tables | the Run's lineage and dataset outputs |
 
 For an M-2 entity-resolution run, the same capability returns the registered
 model's native metrics and scoring method, the stated match/review/non-match
@@ -153,6 +155,16 @@ app, MCP and chat cannot disagree about what a run found:
 Reports is **one item under Data library** on both, matching the design
 (`oramasearch/orama-design@4621d87`); the import is recorded in
 [`docs/product/experience/design-sync.md`](../product/experience/design-sync.md).
+
+## Bayesian uncertainty reports
+
+An M-17 report returns an `uncertainty` object instead of churn ranking fields.
+It carries nominal and empirical hold-out coverage, mean interval width,
+hold-out row count, and the exchangeability assumption. `dataset` names the
+table actually read, its excluded-row count, and any columns not used.
+`output_tables` names the materialized per-group posterior table. Every numeric
+value comes from the replicated Bayesian Model record; the assumption and table
+refs come from the Run.
 
 **The report's discipline is part of the surface, not the prose.** A screen that shows
 the figures without it undoes the work that produced them, so both renderers lead with

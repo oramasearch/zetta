@@ -33,6 +33,8 @@ The reusable annotation and methodology-specific checks are:
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 
+| `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -193,6 +195,22 @@ compiled graph that weakens any M-14 privacy rule fail before execution. The
 speech runner independently validates row consent before reading a blob and
 filters text before table insertion; graph annotations are not treated as proof
 that the underlying data complied.
+### `uncertainty_validation` — honest uncertainty for M-17
+
+Engages on a model step whose `model_kind` is `bayesian`, `probabilistic`, or
+`uncertainty`. It requires:
+
+- `coverage_checked: true`, because nominal coverage is a request rather than
+  evidence;
+- numeric `nominal_coverage` strictly between zero and one;
+- a non-empty `exchangeability_assumption`; and
+- an `uncertainty_kind` of `hierarchical`, `split_conformal_regression`, or
+  `split_conformal_classification`.
+
+A `split_conformal*` shape must additionally set
+`calibration_disjoint: true`. This graph check is backed by the runtime split
+validator, which rejects overlapping row indexes even if a hand-authored graph
+claims they are disjoint.
 
 ## Example
 

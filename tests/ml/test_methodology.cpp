@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 15;
+        const bool runnable = index <= 16;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
@@ -101,6 +101,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_TRUE(methodologies.front().runnable);
     EXPECT_FALSE(methodologies.front().partial);
     EXPECT_EQ(methodologies.front().id, "M-1");
+    EXPECT_TRUE(methodologies[16].runnable);
     EXPECT_TRUE(methodologies[15].runnable);
     EXPECT_EQ(methodologies[15].id, "M-16");
     EXPECT_TRUE(methodologies[14].runnable);
@@ -227,6 +228,7 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("bayesian")->id, "M-17");
     EXPECT_EQ(zetta::ml::find_methodology("S-4")->id, "M-1");
     EXPECT_EQ(zetta::ml::find_methodology("optimization")->id, "M-16");
     EXPECT_EQ(zetta::ml::find_methodology("uplift")->id, "M-6");
@@ -299,6 +301,17 @@ TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
         zetta::ml::methodology_for_graph(segmentation);
     ASSERT_NE(methodology, nullptr);
     EXPECT_EQ(methodology->id, "M-3");
+    EXPECT_TRUE(methodology->runnable);
+
+    zetta::ir::ExecutionGraph bayesian;
+    bayesian.add_node(zetta::ir::StepKind::Connect, "source", {}, "bayes-source");
+    bayesian.add_node(zetta::ir::StepKind::Model, "posterior",
+                      nlohmann::json{{"model_kind", "bayesian"}},
+                      "posterior");
+    bayesian.add_edge("bayes-source", "posterior");
+    methodology = zetta::ml::methodology_for_graph(bayesian);
+    ASSERT_NE(methodology, nullptr);
+    EXPECT_EQ(methodology->id, "M-17");
     EXPECT_TRUE(methodology->runnable);
 
     zetta::ir::ExecutionGraph unknown;
