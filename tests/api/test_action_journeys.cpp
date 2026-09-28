@@ -23,6 +23,8 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -167,6 +169,8 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
     EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
+    EXPECT_EQ(listed.value.at("methodologies").back().at("id"), "M-21");
+    EXPECT_TRUE(listed.value.at("methodologies").back().at("runnable"));
 
     ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
     const ApiResult captured =
@@ -245,6 +249,78 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
+    const auto database = node.create_database("stream_journey");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    for (std::size_t index = 0; index < 80; ++index) {
+        const double signal = index % 2 == 0 ? 0.0 : 1.0;
+        table->add_row({{"event_id", "journey-" + std::to_string(index)},
+                        {"account_id", static_cast<std::int64_t>(index)},
+                        {"event_time", static_cast<double>(index)},
+                        {"amount", signal},
+                        {"fraud", signal},
+                        {"label_time", static_cast<double>(index) + 0.5},
+                        {"comment", "excluded text"}});
+    }
+
+    journey::Journey streaming{"streaming-methodology", {}};
+    streaming.steps = {
+        {"create the project", "create_project", {{"name", "live fraud"}}},
+        {"capture the streaming intent", "capture_intent",
+         {{"project", "live fraud"},
+          {"text", "Score transaction events with online learning"}}},
+        {"compile M-21 with its event contract", "compile_intent",
+         {{"project", "live fraud"},
+          {"methodology", "M-21"},
+          {"name", "stream decisions"},
+          {"hints",
+           {{"source", "stream_journey"},
+            {"table", "events"},
+            {"entity_column", "account_id"},
+            {"time_column", "event_time"},
+            {"label_column", "fraud"},
+            {"label_time_column", "label_time"},
+            {"feature_columns", nlohmann::json::array({"amount"})},
+            {"input_topic", "journey.events"},
+            {"output_topic", "journey.scores"},
+            {"window_duration", 1.0}}}},
+         {.checks = {journey::equals("/methodology", "M-21"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/name", "stream decisions")}}},
+        {"approve the streaming plan", "approve_plan",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"the event-time policy passes the gate", "gate",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/block_deploy", false)}}},
+        {"start the native streaming run", "run",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/engine", "streaming"),
+                     journey::equals("/status", "running")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the durable run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 3)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read prequential metrics and output tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {
+             journey::equals("/model/kind", "streaming"),
+             journey::at_least("/model/evaluated_labels", 80),
+             journey::size_at_least("/outputs", 3),
+             journey::equals("/dataset/source", "stream_journey.events"),
+             journey::contains("/dataset/not_used/0", "comment")}}},
+        {"read scores back from the output topic", "receive_events",
+         {{"topic", "journey.scores"}, {"max", 100}},
+         {.checks = {journey::size_at_least("/events", 80)}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(streaming, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

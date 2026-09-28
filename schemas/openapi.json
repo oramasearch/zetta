@@ -6529,8 +6529,16 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "outputs": {
+                          "description": "the model, score table, and report artifacts written by the run",
+                          "type": "array"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
+                          "type": "object"
+                        },
+                        "topics": {
+                          "description": "streaming input and score-output topic addresses",
                           "type": "object"
                         }
                       },
@@ -10433,6 +10441,54 @@
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "streaming": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "additionalProperties": false,
+                    "properties": {
+                      "allowed_lateness": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "input_topic": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "l2_regularization": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "label_time_column": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "learning_rate": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "metric_window": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "output_topic": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "persist_every": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "window_duration": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      }
+                    },
+                    "title": "zetta.StreamingParams",
+                    "type": "object"
                   },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",

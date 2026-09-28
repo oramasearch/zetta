@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "allowed_lateness": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "input_topic": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "l2_regularization": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "label_time_column": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "learning_rate": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "metric_window": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "output_topic": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "persist_every": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "seed": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "window_duration": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    }
+  },
+  "title": "zetta.StreamingParams",
+  "type": "object"
+}

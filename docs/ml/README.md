@@ -5,7 +5,8 @@ distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-dev
 Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
-rather than a reference runtime. Read here for any model-training, explanation, or scoring work.
+rather than a reference runtime. M-21 adds event-time online logistic regression
+over Zetta pub/sub topics. Read here for any model-training, explanation, or scoring work.
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
@@ -16,6 +17,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [streaming.md](streaming.md) — M-21 event-time windows, online logistic SGD, prequential metrics, drift indicators, distributed gradients, topics, output tables, and correctness rules (#1060).
 
 ## Methodology portfolio
 
@@ -46,5 +48,5 @@ carry `*`. Regenerate it with
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |
 | M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | — | feature*, label | labels, review queue, label provenance | agreement, cost per label, downstream lift | not runnable | [#1058](https://github.com/oramasearch/zetta/issues/1058) |
 | M-20 | Privacy-preserving learning & synthetic data | The data supply chain | privacy_preserving, federated, synthetic_data | — | group*, feature* | private model, synthetic dataset, guarantee report | privacy budget, TSTR, attack success | not runnable | [#1059](https://github.com/oramasearch/zetta/issues/1059) |
-| M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | — | time*, feature*, label | online model, streaming scores | prequential loss, drift, latency | not runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |
+| M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | S-10, S-11 | entity*, time*, feature*, label, group | online model, streaming scores, score table, run report | prequential log loss, prequential accuracy, drift loss delta, late events excluded | runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |
 <!-- methodology-table:end -->

@@ -43,6 +43,7 @@
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
@@ -539,6 +540,12 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"outputs",
+           {{"type", "array"},
+            {"description", "the model, score table, and report artifacts written by the run"}}},
+          {"topics",
+           {{"type", "object"},
+            {"description", "streaming input and score-output topic addresses"}}},
           {"caveats",
            {{"type", "array"},
             {"description",
@@ -634,6 +641,73 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "streaming") {
+        nlohmann::json model_facts = {
+            {"id", model->id()}, {"name", model->name()}, {"kind", model->kind()}};
+        for (const auto& [key, value] : metrics.items()) {
+            if (value.is_number()) {
+                model_facts[key] = value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        nlohmann::json topics = nlohmann::json::object();
+        const nlohmann::json& feature_schema = model->feature_schema();
+        if (feature_schema.is_object()) {
+            if (const auto found = feature_schema.find("event_features");
+                found != feature_schema.end()) {
+                dataset["features"] = *found;
+            }
+            if (const auto found = feature_schema.find("entity_column");
+                found != feature_schema.end()) {
+                dataset["entity_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("time_column");
+                found != feature_schema.end()) {
+                dataset["time_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("label_column");
+                found != feature_schema.end()) {
+                dataset["label_column"] = *found;
+            }
+            if (const auto found = feature_schema.find("input_topic");
+                found != feature_schema.end()) {
+                topics["input"] = *found;
+            }
+            if (const auto found = feature_schema.find("output_topic");
+                found != feature_schema.end()) {
+                topics["scores"] = *found;
+            }
+        }
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(18));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        report["dataset"] = std::move(dataset);
+        if (!topics.empty()) {
+            report["topics"] = std::move(topics);
+        }
+        nlohmann::json outputs = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            outputs.push_back({{"kind", output.kind},
+                               {"name", output.name},
+                               {"ref", output.ref}});
+        }
+        report["outputs"] = std::move(outputs);
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
@@ -2895,6 +2969,7 @@ const nlohmann::json& run_schema() {
            {{"type", "string"},
             {"minLength", 1},
             {"description", "the registered model's name (default churn_model)"}}},
+          {"streaming", zetta::ml::streaming_params_schema()},
           {"top_k",
            {{"type", "integer"},
             {"minimum", 0},

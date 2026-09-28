@@ -20,3 +20,6 @@ decays. A number with no date is not evidence.
 - [base-agent v10 validation (2026-07-27)](base-agent-v10-validation-2026-07-27.md) — 98.75% on the
   canary, and a demo smoke test that PASSED when it should not have: it checks mode and shape, not
   whether an answer is true, so a fluent non-sequitur scores as success.
+- [M-21 streaming validation (2026-09-27)](streaming-validation-2026-09-27.md) — native online
+  logistic regression converges deterministically, preserves test-then-train ordering, distributes
+  gradient statistics across two members, and completes its registry-driven API journey.

@@ -6,9 +6,10 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-21 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
-runner. The other entries link to their implementation issues.
+runner. The other entries link to their implementation issues. M-21's detailed
+contract is in [streaming.md](streaming.md).
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -26,8 +27,10 @@ entry:
   outputs, metrics, implementation status, and the `build_shape`, `owns`, and
   `run` callbacks.
 
-`methodologies()` owns the ordered table. `find_methodology()` resolves ids,
-model kinds, and primary solution ids. `methodology_for_graph()` first asks
+`methodologies()` owns the ordered table. `find_methodology()` resolves ids and
+model kinds first, then primary solution ids before secondary solution mappings.
+This makes M-21 the owner of its primary S-10 compile path while M-1 can still
+list S-10 as a composing methodology. `methodology_for_graph()` first asks
 implemented ownership callbacks, then resolves the model step's `model_kind` or
 legacy `algo` value.
 Compile and run refusal messages list runnable entries from the same registry.
@@ -66,6 +69,18 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-21 streaming implementation
+
+`src/core/ml/streaming_methodology.cpp` builds and owns the event-time streaming
+shape and resolves its connect-step table. Its run callback starts the native
+runner in `src/core/ml/streaming.cpp`, which subscribes to the graph's input
+topic, computes per-entity window features, updates online logistic regression,
+publishes scores, persists weights, writes a score table with lineage, and
+exposes prequential metrics through `get_run_report`.
+
+The API handler contains no M-21-specific dispatch branch. The registry callback
+uses the same generic run path as M-1.
 
 ## Adding a methodology
 
