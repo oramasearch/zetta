@@ -29,6 +29,13 @@ boost::capy::thread_pool& shared_pool() {
     return pool;
 }
 
+// The pool for work that blocks waiting (spawn_blocking, #1063): long polls park
+// here, never on the compute pool above.
+boost::capy::thread_pool& blocking_pool() {
+    static boost::capy::thread_pool pool(kBlockingThreads);
+    return pool;
+}
+
 // The number of worker threads (>= 1). Mirrors the pool's sizing.
 std::size_t worker_count() noexcept {
     const unsigned detected = std::thread::hardware_concurrency();
@@ -73,6 +80,15 @@ void spawn(task<> coroutine, std::function<void()> on_complete) {
     // thread-safe. run_async owns the coroutine frame + the completion until the
     // task completes, so spawn can return immediately.
     auto executor = shared_pool().get_executor();
+    boost::capy::run_async(
+        executor,
+        [callback = std::move(on_complete)](auto&&...) noexcept {
+            if (callback) callback();
+        })(std::move(coroutine));
+}
+
+void spawn_blocking(task<> coroutine, std::function<void()> on_complete) {
+    auto executor = blocking_pool().get_executor();
     boost::capy::run_async(
         executor,
         [callback = std::move(on_complete)](auto&&...) noexcept {

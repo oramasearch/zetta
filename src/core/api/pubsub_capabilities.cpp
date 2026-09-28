@@ -289,7 +289,11 @@ ApiResult handle_receive_events(const nlohmann::json& input, ApiContext& context
     if (auto missing = require_exposed(*pubsub, *topic)) return *missing;
     const auto from = input.value("from_sequence", std::uint64_t{1});
     const auto max = std::min<std::size_t>(input.value("max", std::size_t{100}), kMaxReceive);
-    const auto wait = std::chrono::milliseconds(std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
+    auto wait = std::chrono::milliseconds(std::min(input.value("wait_ms", 0LL), kMaxWaitMs));
+    // A long poll never blocks the owner loop: a surface that runs this on the
+    // owner thread (MCP tools/call) gets an immediate answer, as with wait_ms 0
+    // (#1063). REST runs it on the blocking pool, where it waits.
+    if (context.node.on_owner_thread()) wait = std::chrono::milliseconds(0);
     auto events = pubsub->read_events(identity_of(context), *topic, from, max, wait, &reason);
     if (!events) return ApiResult::failure("unauthorized", reason, "/topic");
     nlohmann::json rows = nlohmann::json::array();
@@ -378,6 +382,7 @@ void register_pubsub_capabilities(Registry& registry) {
     // A long poll must not hold the owner loop: it runs on a pool worker, and
     // the authorizer marshals its rights check onto the owner thread.
     receive.offloadable = true;
+    receive.blocks = true;
     registry.add(std::move(receive));
 }
 

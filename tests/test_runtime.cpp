@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -168,6 +169,47 @@ TEST(Runtime, OffloadReturnsResultFromAPoolWorker) {
     EXPECT_EQ(result, 99);                 // the blocking result flowed back
     EXPECT_NE(*ran_on, std::thread::id{});  // the callable actually ran
     EXPECT_NE(*ran_on, caller);             // …on a pool worker, not the caller
+}
+
+// #1063: waiters park on the blocking pool, so compute offloads are never
+// starved behind them. Before, a long poll held one of the shared pool's
+// one-thread-per-core workers for its whole wait; on an 8-core node eight bus
+// long polls stalled every other offload for up to 10 s.
+TEST(Runtime, WaitersOnTheBlockingPoolNeverStarveComputeOffloads) {
+    const unsigned waiters = std::max(2u, std::thread::hardware_concurrency()) * 2;
+    std::atomic<bool> release{false};
+    std::atomic<unsigned> parked{0};
+    std::atomic<unsigned> finished{0};
+    for (unsigned i = 0; i < waiters; ++i) {
+        zetta::runtime::spawn_blocking(
+            [](std::atomic<bool>* release, std::atomic<unsigned>* parked)
+                -> zetta::runtime::task<> {
+                ++*parked;
+                while (!release->load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                co_return;
+            }(&release, &parked),
+            [&finished] { ++finished; });
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (parked.load() < waiters && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(parked.load(), waiters) << "every waiter holds a blocking-pool thread";
+
+    // With more waiters parked than there are cores, a compute offload still runs.
+    const auto started = std::chrono::steady_clock::now();
+    const int result = zetta::runtime::block_on(
+        []() -> zetta::runtime::task<int> {
+            co_return co_await zetta::runtime::offload([] { return 7; });
+        }());
+    EXPECT_EQ(result, 7);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
+
+    release = true;
+    while (finished.load() < waiters && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(finished.load(), waiters);
 }
 
 TEST(RuntimeParallelForDeathTest, ThrowingBodyAborts) {

@@ -192,6 +192,10 @@ struct Capability {
     // still runs its authorization + audit gate on the owner thread (#1063), and
     // add() refuses an offloadable entry that mutates or requires consent.
     bool offloadable = false;
+    // The offloadable handler may block WAITING (receive_events' long poll): REST
+    // runs it on the blocking pool (runtime::offload_blocking), so waiters never
+    // hold the compute pool's threads (#1063). Meaningless without offloadable.
+    bool blocks = false;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh
