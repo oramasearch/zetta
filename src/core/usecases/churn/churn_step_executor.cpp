@@ -612,13 +612,15 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
     // Studio Results tab, and the agent could not read it back. It is now a table in
     // `churn_results`, named per pipeline and replaced on each run (a run supersedes
     // its predecessor; keeping every run's copy would just accumulate stale lists).
-    const std::string result_database = step.attributes.value(
+    const nlohmann::json attributes =
+        step.attributes.is_object() ? step.attributes : nlohmann::json::object();
+    const std::string result_database = attributes.value(
         "result_database", std::string(kChurnResultsDatabase));
-    const std::string table_prefix = step.attributes.value(
+    const std::string table_prefix = attributes.value(
         "result_table_prefix", std::string("at_risk_"));
-    const std::string entity_column = step.attributes.value(
+    const std::string entity_column = attributes.value(
         "entity_output_column", std::string("account"));
-    const std::string score_column = step.attributes.value(
+    const std::string score_column = attributes.value(
         "score_output_column", std::string("risk"));
     std::string at_risk_table;
     node_.run_on_owner([&] {

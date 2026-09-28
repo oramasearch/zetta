@@ -34,6 +34,7 @@ The reusable annotation and methodology-specific checks are:
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
+| `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -75,6 +76,16 @@ The profile is created from the snapshot, dataset roles, and optional
 `sources.correctness` settings during `create_solution`. The same bound graph is
 checked again by `run_solution`. See [S-1](../solutions/S-1.md) for the operator
 contract and refusal list.
+
+### S-12 composed solution checks
+
+The four S-12 checks engage only for a solution manifest bound to `S-12`.
+They require every denial outcome to remain A0, an owned fairness review with
+protected fields excluded from routing features, M-11 confidence evidence with
+low-confidence review routing, and exactly the methodology stages registered
+for the selected level. The policy constraints are checked again immediately
+before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
+operator contract and refusal list.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`
