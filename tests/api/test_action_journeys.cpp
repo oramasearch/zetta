@@ -320,6 +320,54 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_kpi_anomaly_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("kpi_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool planted_anomaly = index > 55 && index % 20 == 0;
+        const double seasonal =
+            100.0 + 8.0 * std::sin(
+                                static_cast<double>(index) *
+                                2.0 * std::numbers::pi / 7.0);
+        const double driver =
+            40.0 + static_cast<double>(index % 9) +
+            (planted_anomaly ? 35.0 : 0.0);
+        const double kpi = seasonal + 0.4 * driver +
+                           (planted_anomaly ? 55.0 : 0.0);
+        table->add_row(
+            {{"entity", index},
+             {"period", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"kpi", kpi},
+             {"candidate_driver", driver},
+             {"confirmed_anomaly", planted_anomaly ? 1 : 0},
+             {"eligible", true},
+             {"forum_owner_assigned", true},
+             {"sensitive_driver_access", true},
+             {"suppressed", false},
+             {"owner", "weekly-kpi-forum"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"period", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"kpi", 9999.0},
+         {"candidate_driver", 9999.0},
+         {"confirmed_anomaly", 1},
+         {"eligible", true},
+         {"forum_owner_assigned", true},
+         {"sensitive_driver_access", true},
+         {"suppressed", false},
+         {"owner", "weekly-kpi-forum"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -355,6 +403,36 @@ nlohmann::json lead_scoring_configuration() {
         {"roi_model",
          {{"value_per_outcome", 250.0},
           {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json kpi_anomaly_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "kpi_history"},
+          {"target_table", "kpi_anomaly_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "confirmed_anomaly"},
+          {"time_column", "period"},
+          {"as_of", 239.0},
+          {"feature_columns", {"kpi", "candidate_driver"}}}},
+        {"decision_source",
+         {{"methodology", "M-7"},
+          {"entity_column", "row"},
+          {"score_column", "score"},
+          {"output_name", "anomaly table"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://forum.example.test/kpi-decisions"},
+          {"owner", "weekly-kpi-forum"}}},
+        {"roi_model",
+         {{"value_per_outcome", 0.0},
+          {"investment", 0.0},
           {"currency", "USD"}}}};
 }
 
@@ -512,6 +590,48 @@ journey::Journey planted_conversion_outcomes(
                              estimate.at("confidence_interval")
                                      .at("upper")
                                      .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+journey::Journey planted_decision_quality_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    journey::Journey outcomes{"kpi-anomaly-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        outcomes.steps.push_back(
+            {"record observed forum adoption",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "decision_adopted"},
+              {"value", holdout ? 0.2 : 0.35},
+              {"currency", "USD"},
+              {"source", "manual"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read honest phased decision-quality result",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/measurement/design", "phased"),
+              journey::equals("/incrementality/claimable", false),
+              journey::at_least("/incrementality/holdout_samples", 1),
+              journey::equals("/roi_statement/claimable", false),
+              journey::predicate(
+                  "phased readout states why no causal effect is claimable",
+                  [](const auto& value) {
+                      return value.at("incrementality")
+                          .at("reason")
+                          .template get<std::string>()
+                          .contains("module-specific estimator");
                   })}}});
     return outcomes;
 }
@@ -725,6 +845,186 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest) {
+    SolutionDeliveryBoundary delivery;
+    land_kpi_anomaly_data(node);
+    journey::Journey flow{"kpi-anomaly-solution", {}};
+    flow.steps = {
+        {"read S-7 defaults",
+         "get_solution",
+         {{"solution", "S-7"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/design", "phased"),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "decision_adopted")}}},
+        {"create KPI anomaly project",
+         "create_project",
+         {{"name", "KPI anomaly forum"}}},
+        {"create S-7 Pipeline",
+         "create_solution",
+         {{"project", "KPI anomaly forum"},
+          {"solution", "S-7"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "kpi_history"},
+            {"M-7",
+             {{"mode", "kpi_time_series"},
+              {"entity_column", "entity_id"},
+              {"label_column", "confirmed_anomaly"},
+              {"time_column", "period"},
+              {"feature_columns", {"kpi", "candidate_driver"}},
+              {"alert_budget", 12},
+              {"seasonal_period", 7},
+              {"trend_window", 28},
+              {"residual_window", 56},
+              {"seasonal_cycles", 8}}},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "confirmed_anomaly"},
+              {"time_column", "period"},
+              {"as_of", 239.0},
+              {"feature_columns", {"kpi", "candidate_driver"}}}}}},
+          {"foundation", kpi_anomaly_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"anomaly_graph", "/graph"},
+          {"anomaly_experiment", "/experiment_id"},
+          {"anomaly_readout", "/readout_id"}}},
+        {"run S-7 Pipeline",
+         "run_solution",
+         {{"project", "KPI anomaly forum"},
+          {"graph", "$anomaly_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"anomaly_run", "/run_id"}}},
+        {"read completed S-7 Run",
+         "get_run",
+         {{"run_id", "$anomaly_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected forum assignments",
+         "get_experiment",
+         {{"experiment", "$anomaly_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 200),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read forum action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 200)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("KPI anomaly forum");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-7 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t actionable_alerts = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        if (decision.actionable) {
+            ++actionable_alerts;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(actionable_alerts, 0u);
+    EXPECT_LE(actionable_alerts, 12u);
+
+    std::size_t forum_tasks = 0;
+    std::size_t forum_reports = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++forum_reports;
+            EXPECT_FALSE(request.at("payload")
+                             .at("decision_log")
+                             .empty());
+            EXPECT_EQ(request.at("payload")
+                          .at("driver_report")
+                          .at("alert_budget"),
+                      12);
+            EXPECT_FALSE(request.at("payload")
+                             .at("driver_report")
+                             .at("causal_caveat")
+                             .get<std::string>()
+                             .empty());
+            continue;
+        }
+        ++forum_tasks;
+        EXPECT_EQ(request.at("action"), "decision_forum_report");
+        EXPECT_TRUE(request.at("payload").at("decision_log_required"));
+        EXPECT_FALSE(request.at("payload")
+                         .at("top_driver")
+                         .get<std::string>()
+                         .empty());
+        EXPECT_FALSE(request.at("payload")
+                         .at("causal_caveat")
+                         .get<std::string>()
+                         .empty());
+    }
+    EXPECT_EQ(forum_tasks, actionable_alerts);
+    EXPECT_EQ(forum_reports, 1u);
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("kpi_anomaly_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    const auto alert_guardrail = std::ranges::find_if(
+        monitor->value().guardrails,
+        [](const auto& guardrail) {
+            return guardrail.bound.name == "alert_volume";
+        });
+    ASSERT_NE(alert_guardrail, monitor->value().guardrails.end());
+    ASSERT_TRUE(alert_guardrail->value.has_value());
+    EXPECT_EQ(*alert_guardrail->value, 12.0);
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_decision_quality_outcomes(
+        ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(

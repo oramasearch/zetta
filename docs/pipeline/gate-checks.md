@@ -35,6 +35,7 @@ The reusable annotation and methodology-specific checks are:
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
+| `S7*Check` family | `s7_causal_humility`, `s7_alert_budget`, `s7_seasonality_baseline` | an S-7 graph that makes causal driver claims, disagrees on the exact alert budget, uses noncausal seasonal windows, or omits required M-7/M-1/M-3/M-4 stages |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -93,6 +94,22 @@ M-6 at levels 3 and 4.
 optional `sources.correctness` overrides. `run_solution` checks the stored
 profile again. See [S-2](../solutions/S-2.md) for its data, policy, action, and
 measurement contract.
+
+### S-7 composed solution checks
+
+The S-7 checks engage only for a bound S-7 manifest. `s7_causal_humility`
+requires associational driver language, disables causal claims, and requires a
+nonempty forum caveat. `s7_alert_budget` requires one positive integer budget,
+a routing window and owner, and M-7 exact-budget selection with the same cap;
+contamination fractions are refused.
+
+`s7_seasonality_baseline` requires KPI time-series mode, causal windows, a time
+role, sufficient seasonal/trend/residual history, and M-7, M-1, and M-3 at every
+level. Levels 3 and 4 also require M-4 rolling-origin context with a
+seasonal-naive baseline. `create_solution` binds the correctness profile from
+the module sources, and `run_solution` checks the stored profile again. See
+[S-7](../solutions/S-7.md) for the data, forum action, and phased measurement
+contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

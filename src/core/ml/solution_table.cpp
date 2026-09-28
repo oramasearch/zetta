@@ -70,6 +70,7 @@ Solution band_a(
     solution.status = "catalogue";
     solution.issue = issue(solution.id == "S-1" ? 1110
                            : solution.id == "S-2" ? 1111
+                           : solution.id == "S-7" ? 1116
                                                    : 1102);
     return solution;
 }
@@ -316,17 +317,28 @@ const std::vector<Solution>& solutions() {
             {{"M-7", "primary", 1}, {"M-1", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-4", "attachable", 3}},
             {"M-7", "M-1", "M-3", "M-4"},
-            {"report to decision forum", "decision log"}, {"L1", "L2"},
-            {{"detection and report drafting", "A2"}, {"business decision", "A0"},
-             {"alert-budget tuning", "A3"}},
+            {"decision-forum report with anomaly evidence",
+             "durable forum decision log"},
+            {"L1 decision-forum webhook", "L2 batch report read-back"},
+            {{"detection and report drafting", "A2"},
+             {"executive escalation", "A1"},
+             {"business decision", "A0"},
+             {"alert-budget tuning inside approved bounds", "A3"}},
             {{"feature", true, "KPI measures and candidate drivers"},
-             {"time", true, "event and reporting periods"}, {"entity", false, "business unit or segment"},
+             {"time", true, "ordered KPI and reporting periods"},
+             {"entity", true, "observation, business unit, or segment key"},
+             {"owner", true, "decision-forum owner"},
+             {"permission", true, "sensitive-driver access evidence"},
              {"label", false, "confirmed anomaly for evaluation only"}},
-            "Alert budgets, severity tiers, owner routing, sensitive-driver access, and documented decision outcomes.",
-            "Decision adoption and forecast-honesty tracking with confirmed-alert precision.",
-            {"alert volume", "false escalation", "sensitive-driver access", "causal caveats", "decision closure"},
-            levels("anomaly report", "add driver forum and log",
-                   "add forecast context", "add cross-module executive view")),
+            "Exact alert budgets and severity tiers with owner routing, sensitive-driver access, weekly caps, executive approval, and a kill switch.",
+            "Phased decision-quality tracking: adoption, closure, and confirmed-alert precision are descriptive until a module-specific estimator ships.",
+            {"alert volume", "false escalation rate",
+             "sensitive-driver access violations", "causal-claim violations",
+             "decision closure rate", "action-execution rate"},
+            levels("seasonal anomaly report and protected forum routing",
+                   "add candidate-driver forum and decision log",
+                   "add rolling-origin forecast context",
+                   "add cross-module executive review")),
         band_a(
             "S-8", "Predictive Maintenance",
             "Detect asset risk early and route evidence-backed maintenance work before failure.",

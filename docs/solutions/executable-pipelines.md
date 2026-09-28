@@ -56,9 +56,12 @@ It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. M-1 defaults to its `account` / `risk` score table.
 S-2 also uses M-1 as its primary methodology. Its shared table carries the
 entity in `account` and conversion propensity in `risk`; S-2 binds that real
-output and relabels the downstream decision cell as a conversion band. Inputs
-and score scales for S-3 through S-12 remain their catalogue module's
-responsibility; their templates are deliberately minimal.
+output and relabels the downstream decision cell as a conversion band. S-7 uses
+M-7's `anomaly table`, with `row` as entity and `score` as the anomaly score.
+Its forum decisions copy the real flag, threshold, period, top candidate driver,
+deviation, and contributor list. Inputs and score scales for S-3 through S-6
+and S-8 through S-12 remain their catalogue module's responsibility; their
+templates are deliberately minimal.
 
 ## Run and read back
 
@@ -88,6 +91,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    reason codes and risk × value × driver cells. Observe complaint fraction,
    committed action cost, monthly contact count, and action-execution rate in
    its monitor. Publish the S-1 driver report through the report action pattern.
+   S-7 routes only flagged rows within its exact alert budget, publishes one
+   candidate-driver report with a causal caveat, and includes the durable forum
+   decision log.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -129,3 +135,12 @@ territory, capacity evidence and SLA payloads, observes all four guardrails,
 records centered conversion outcomes with a 0.15 routing effect, and checks
 that the readout's estimate and 95% confidence interval recover the planted
 effect.
+
+`SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
+and runs S-7 over a partitioned seasonal KPI table with planted spikes and
+correlated driver spikes. It excludes a future observation, verifies exact
+alert-budget selection, protected holdouts, action-integration tasks and report,
+the driver caveat, decision log, ledger, and guardrails. It records a planted
+forum-adoption difference and verifies that phased evidence remains visible
+while incrementality and ROI are explicitly non-claimable until a
+module-specific estimator exists.

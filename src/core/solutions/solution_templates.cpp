@@ -123,6 +123,45 @@ void lead_scoring_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void kpi_anomaly_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.8},
+         {"action", "decision_forum_report"},
+         {"allowed_actions", {"decision_forum_report", "executive_review",
+                              "no_contact"}}},
+        {{"name", "anomaly"}, {"minimum_score", 0.0},
+         {"action", "decision_forum_report"},
+         {"allowed_actions", {"decision_forum_report", "no_contact"}}}};
+    result.policy["actions"] = {
+        {"decision_forum_report",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"executive_review",
+         {{"autonomy", "A1"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 12;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true),
+        predicate("forum_owner_assigned", true),
+        predicate("sensitive_driver_access", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("suppressed", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"anomaly", 0.1}};
+    result.experiment.treatment_cells = {"forum_routed"};
+    result.guardrails = {
+        {"alert_volume", 12.0, "maximum"},
+        {"false_escalation_rate", 0.25, "maximum"},
+        {"sensitive_driver_access_violations", 0.0, "maximum"},
+        {"causal_claim_violations", 0.0, "maximum"},
+        {"decision_closure_rate", 0.9, "minimum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -133,6 +172,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 retention_defaults(result);
             } else if (solution_id == "S-2") {
                 lead_scoring_defaults(result);
+            } else if (solution_id == "S-7") {
+                kpi_anomaly_defaults(result);
             }
             return result;
         }

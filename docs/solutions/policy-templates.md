@@ -32,8 +32,8 @@ exclusion and do-not-contact evidence suppresses action. The lifetime cap is
 six tasks and the rolling seven-day cap is one. Its deterministic experiment
 keeps 10% as permanent holdout and assigns the remainder to `routed`.
 
-S-3 through S-12 intentionally provide minimal starter policies derived from
-their catalogue actions. They require explicit eligibility, suppress excluded
+S-3 through S-6 and S-8 through S-12 intentionally provide minimal starter
+policies derived from their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
 These numbers are editable configuration, not calibration claims or customer
@@ -42,6 +42,16 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+
+S-7 defines critical/anomaly score floors of 0.8/0.0. Flagged rows create an A2
+decision-forum report with a one-day SLA; critical rows may be changed to an A1
+executive review with a four-hour SLA. Routing requires explicit eligibility,
+forum-owner assignment, and sensitive-driver access, while `suppressed` blocks
+action. The exact alert and lifetime cap is 12, with one action per entity per
+seven-day window. Its permanent 10% tier holdouts compare with `forum_routed`.
+Guardrails cover alert volume, false escalations, sensitive access, causal
+claims, decision closure, and action execution. Phased `decision_adopted`
+measurement remains descriptive until its module-specific estimator ships.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
