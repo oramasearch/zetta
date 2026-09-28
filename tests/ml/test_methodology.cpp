@@ -84,8 +84,9 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
+        const bool runnable = index <= 8;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        const bool runnable = index <= 7;
+
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
                   runnable);
@@ -102,6 +103,35 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+}
+
+TEST(MethodologyRegistry, RankBuildsItsOwnRunnableShape) {
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology("M-9");
+    ASSERT_NE(methodology, nullptr);
+    ASSERT_TRUE(methodology->runnable);
+
+    zetta::ml::ShapeRequest request;
+    request.project = "sales";
+    request.intent = "Prioritize leads for each representative";
+    request.hints = {{"source", "sales"},
+                     {"table", "leads"},
+                     {"entity", "lead_id"},
+                     {"group", "rep_id"},
+                     {"label", "relevance"},
+                     {"features", {"intent", "fit"}},
+                     {"cutoff", 5}};
+    const zetta::ir::ExecutionGraph graph =
+        methodology->build_shape(request);
+
+    ASSERT_TRUE(methodology->owns(graph));
+    const auto models = graph.nodes_of_kind(zetta::ir::StepKind::Model);
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models.front()->attributes.at("model_kind"), "rank");
+    EXPECT_EQ(models.front()->attributes.at("group_column"), "rep_id");
+    EXPECT_EQ(models.front()->attributes.at("split_strategy"), "group");
+    EXPECT_EQ(models.front()->attributes.at("feature_availability"),
+              "ranking_time");
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {

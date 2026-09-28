@@ -152,6 +152,16 @@ public:
 class CausalUpliftCheck final : public Check {
 public:
     std::string name() const override { return "causal_uplift"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Learning-to-rank correctness (#1048): every rank model names its group,
+// assigns whole groups to a holdout side, and declares that every feature is
+// available when ranking occurs.
+class RankCorrectnessCheck final : public Check {
+public:
+    std::string name() const override { return "rank_correctness"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

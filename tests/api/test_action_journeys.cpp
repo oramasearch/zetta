@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <thread>
@@ -1161,6 +1162,75 @@ TEST_F(Uc1Journey,
         }
     }
     EXPECT_TRUE(result.ok) << result.summary() << run_diagnostics;
+}
+
+TEST_F(Uc1Journey, JourneyLearningToRankCompilesRunsAndReports) {
+    std::ostringstream rows;
+    for (std::int64_t group = 0; group < 24; ++group) {
+        for (std::int64_t position = 0; position < 8; ++position) {
+            rows << nlohmann::json{{"lead_id", group * 100 + position},
+                                   {"rep_id", group},
+                                   {"relevance", position / 2},
+                                   {"intent", static_cast<double>(position)},
+                                   {"fit", static_cast<double>((group + position) % 5)}}
+                        .dump()
+                 << '\n';
+        }
+    }
+
+    journey::Journey ranking{"learning-to-rank", {}};
+    ranking.steps = {
+        {"land grouped ranking candidates", "upload_dataset",
+         {{"database", "sales"},
+          {"table_name", "leads"},
+          {"format", "jsonl"},
+          {"content", rows.str()}},
+         {.checks = {journey::equals("/rows", 192)}}},
+        {"create the project", "create_project", {{"name", "rank-leads"}}},
+        {"capture the ranking intent", "capture_intent",
+         {{"project", "rank-leads"},
+          {"text", "Prioritize each representative's leads"}},
+         {.checks = {journey::not_empty("/input_id")}},
+         {{"input_id", "/input_id"}}},
+        {"compile the M-9 pipeline", "compile_intent",
+         {{"project", "rank-leads"},
+          {"input_id", "$input_id"},
+          {"methodology", "M-9"},
+          {"name", "lead priority"},
+          {"hints",
+           {{"source", "sales"},
+            {"table", "leads"},
+            {"entity", "lead_id"},
+            {"group", "rep_id"},
+            {"label", "relevance"},
+            {"features", {"intent", "fit"}},
+            {"cutoff", 5}}}},
+         {.checks = {journey::equals("/methodology", "M-9"),
+                     journey::equals("/runnable", true)}},
+         {{"graph", "/name"}}},
+        {"run the compiled ranking pipeline", "run",
+         {{"project", "rank-leads"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/engine", "rank"),
+                     journey::not_empty("/run_id")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the rank run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::any_element(
+                         "/outputs", {{"/name", "ranked queue"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read ranking metrics and the queue", "get_run_report",
+         {{"run_id", "$run_id"}, {"limit", 10}},
+         {.checks = {journey::exists("/model/ndcg_at_k"),
+                     journey::exists("/model/yield_at_k"),
+                     journey::equals("/dataset/source", "sales.leads"),
+                     journey::contains_element("/dataset/excluded", "rep_id"),
+                     journey::size_equals("/ranked_queue", 10)}}},
+    };
+
+    const journey::JourneyReport report =
+        journey::run_journey(ranking, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

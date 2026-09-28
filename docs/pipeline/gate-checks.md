@@ -19,6 +19,7 @@ The reusable annotation and methodology-specific checks are:
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
 | `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
+| `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -212,3 +213,12 @@ alongside the M-2 profile check.
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
 type), and the related artifacts: ENT-5, FEAT-3 (`#134` / `#301`), RULE-1.
+
+## Learning-to-rank correctness
+
+The `rank_correctness` check applies to model kinds `rank`, `ranking`, and
+`learning_to_rank`. It requires a group column, a whole-group validation split,
+and features declared available at ranking time. A missing group, a row-level
+split, or an after-outcome feature contract blocks deploy and run. The
+distributed trainer separately verifies that a group is not spread across
+participants.

@@ -3,7 +3,8 @@
 **Issue:** [#958](https://github.com/oramasearch/zetta/issues/958)
 ([#948](https://github.com/oramasearch/zetta/issues/948) step 4) ·
 **Capability:** `get_run_report` ·
-**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp` ·
+**Code:** `src/core/api/capabilities.cpp`, `src/core/usecases/churn/churn_step_executor.cpp`,
+`src/core/ml/rank_runner.cpp` ·
 **Tests:** `tests/usecases/churn/test_churn_solution.cpp`,
 `tests/api/test_action_journeys.cpp`
 
@@ -41,7 +42,7 @@ state, and `get_run_report` puts them together at query time:
 |---|---|
 | model quality, dataset facts | the **Model record's** `metrics` |
 | drivers | the Model's `feature_schema` (`ranked_drivers`) |
-| the ranked list + evidence | the run's **at-risk table** in `churn_results` |
+| the ranked rows | the run's result table in `churn_results` or `rank_results` |
 | survival quality | the survival Model's concordance and IPCW Brier metrics |
 | survival outputs | the run's survival and interval-calibration table refs |
 | M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
@@ -139,6 +140,14 @@ accuracy a constant answer would score, and **draw `missing` rather than skippin
 No new JSON format and no new storage. `run.schema.json`'s output `kind` enum gains
 `"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
 tool list, and the agent's read-tool allowlist.
+
+## Learning-to-rank reports
+
+For a model whose kind is `rank`, `get_run_report` reports `ndcg_at_k`,
+`yield_at_k`, the cutoff, and train/held-out row and group counts. Its result
+table is returned as `ranked_queue` rows with group, entity, score, rank, and
+relevance. Classification-only AUC fields and at-risk wording are not applied
+to these runs.
 
 ## Later slices
 

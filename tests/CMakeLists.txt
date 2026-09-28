@@ -158,6 +158,7 @@ add_executable(zetta-tests
   ml/test_gbdt.cpp
   ml/test_uplift.cpp
   ml/test_uplift_partitions.cpp
+  ml/test_rank.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
   ml/test_anomaly.cpp
