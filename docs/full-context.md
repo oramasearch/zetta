@@ -63,6 +63,40 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **S-1 Churn & Retention (#1110)** — runnable at levels 1–4 with composed
+  M-2/M-1/M-3 foundations, M-5 survival timing, M-6 positive-only uplift
+  targeting, and M-8 treatment arbitration. The bound gate enforces eight
+  domain rules; governed actions carry reason codes and decision cells, preserve
+  tier holdouts and no-contact decisions, publish a driver report, and feed the
+  retention ROI readout. See [solutions/S-1.md](solutions/S-1.md).
+
+- **S-2 Lead & Opportunity Scoring (#1111)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 and optional M-6, full routing policy and holdout defaults,
+  point-in-time conversion labels, post-qualification leakage refusal,
+  rep-capacity-aware CRM queues with SLAs, and a conversion ROI readout. See
+  [solutions/S-2.md](solutions/S-2.md).
+
+- **S-3 Customer Lifetime Value (#1112)** — runnable at levels 1–4 with native
+  continuous-value M-1 prediction, M-2 stable-entity accounting, M-3 segments,
+  optional M-5 tenure survival, and M-6 causal allocation. Three bound checks
+  refuse immature uncensored labels, an unstated or mismatched value horizon,
+  and duplicate entity value. Governed audience syncs, A1 budget approvals,
+  permanent value-band holdouts, allocation reports, and net-value outcome
+  evidence feed the ROI readout. See [solutions/S-3.md](solutions/S-3.md).
+
+- **S-4 Collections Prioritization (#1113)** — runnable at levels 1–4 with
+  M-2/M-1/M-3 foundations and M-6 uplift selection. The composed correctness
+  gate refuses missing regulatory contact limits, unsafe vulnerable-customer
+  handling, and promise-to-pay labels that are not frozen at prediction time.
+  Governed digital and dialer delivery preserves a permanent holdout and feeds
+  the net-recovery readout. See [solutions/S-4.md](solutions/S-4.md).
+
+- **S-12 Claims Triage & Fraud Referral (#1121)** — runnable at levels 1–4
+  with M-2/M-11/M-1 and optional M-3. Claim-specific scores drive fast-track,
+  adjuster, and SIU tasks; denial remains human-only. Document confidence,
+  fairness review, protected holdouts, and measured referral outcomes are
+  covered by [solutions/S-12.md](solutions/S-12.md).
+
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal
   handler protection. Solution monitors, experiments/assignments and ledger

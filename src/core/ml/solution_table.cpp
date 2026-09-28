@@ -68,7 +68,12 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(1102);
+    solution.issue = issue(solution.id == "S-1" ? 1110
+                           : solution.id == "S-2" ? 1111
+                           : solution.id == "S-3" ? 1112
+                           : solution.id == "S-4" ? 1113
+                           : solution.id == "S-12" ? 1121
+                                                     : 1102);
     return solution;
 }
 
@@ -106,7 +111,8 @@ nlohmann::json source_hints(const nlohmann::json& sources,
         return hints;
     }
     for (const auto& [key, value] : sources.items()) {
-        if (key != "common" && !key.starts_with("M-")) {
+        if (key != "common" && key != "correctness" &&
+            !key.starts_with("M-")) {
             hints[key] = value;
         }
     }
@@ -187,16 +193,23 @@ const std::vector<Solution>& solutions() {
              {"M-3", "foundation", 1}, {"M-5", "attachable", 2},
              {"M-6", "attachable", 3}, {"M-8", "attachable", 4}},
             {"M-2", "M-1", "M-3", "M-5", "M-6", "M-8"},
-            {"tasks in CRM", "driver report"}, {"L1", "optional L3"},
-            {{"score and create tasks", "A2"}, {"concessions and playbook changes", "A1"},
+            {"CRM tasks with owner, SLA, and top-3 reason codes",
+             "capped retention journey triggers", "driver report publication"},
+            {"L1 CRM tasks", "L1 journey triggers", "batch driver report"},
+            {{"score and create CRM tasks", "A2"},
+             {"trigger capped retention journeys", "A2"},
+             {"concessions and playbook changes", "A1"},
              {"threshold tuning inside approved bounds", "A3"}},
             {{"entity", true, "customer, account, or household"},
              {"label", true, "churn event and outcome window"},
              {"time", true, "feature cutoff and label window"},
-             {"treatment", false, "retention action and no-contact cell"}},
+             {"feature", true, "point-in-time behavior, service, and billing drivers"},
+             {"value", true, "customer value or an explicit value tier"},
+             {"treatment", false, "retention action and no-contact cell"},
+             {"owner", false, "account owner for CRM task routing"}},
             "Risk and treatment tiers with eligibility, contact caps, concession approvals, and a kill switch.",
             "Permanent holdout with randomized treatment cells and incremental retention read-back.",
-            {"complaints", "margin", "contact fatigue", "offer fairness", "holdout integrity"},
+            {"complaints", "discount budget", "contact fatigue", "action-execution rate"},
             levels("propensity, reasons, segments, holdout and report",
                    "add survival timing", "add uplift targeting",
                    "add treatment arbitration")),
@@ -206,55 +219,79 @@ const std::vector<Solution>& solutions() {
             "Concentrate finite sales capacity while preserving exploration and coverage.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-6", "attachable", 3}},
-            {"M-2", "M-1", "M-3", "M-6"}, {"tasks and queues with SLAs"},
-            {"L1", "optional L2"},
-            {{"queue writes and nurture assignment", "A2"}, {"band and SLA changes", "A1"},
+            {"M-2", "M-1", "M-3", "M-6"},
+            {"CRM lead tasks with owners and SLAs", "capacity-aware sales and nurture queues"},
+            {"L1 CRM queue writes", "optional L2 scoring read-back"},
+            {{"queue writes and nurture assignment", "A2"}, {"priority overrides", "A1"},
+             {"band and SLA policy changes", "A1"},
              {"exploration rate inside bounds", "A3"}},
             {{"entity", true, "lead, contact, account, and opportunity hierarchy"},
              {"label", true, "stage conversion in a signed window"},
              {"time", true, "point-in-time CRM field history"},
-             {"treatment", false, "worked, routed, or nurtured action"}},
+             {"feature", true, "pre-qualification activity and firmographic signals"},
+             {"owner", true, "eligible sales owner or queue"},
+             {"territory", true, "routing territory and eligibility"},
+             {"capacity", true, "rep capacity available at decision time"},
+             {"value", false, "opportunity value for level-4 routing evidence"},
+             {"treatment", false, "worked, routed, nurtured, or no-contact action"}},
             "Score bands crossed with territory, rep capacity, SLAs, coverage caps, and an exploration quota.",
             "Randomized routing at matched capacity with a protected exploration slice.",
-            {"response SLA", "new-segment coverage", "rep cherry-picking", "speed to lead"},
+            {"SLA miss rate", "capacity violations", "routing coverage", "action-execution rate"},
             levels("scoring with queues and SLAs", "add opportunity risk",
                    "add worked-lead incrementality", "add value-weighted routing")),
         band_a(
             "S-3", "Customer Lifetime Value",
-            "Forecast customer value and govern audience and budget choices around it.",
-            "Allocate acquisition, service, and retention spend against future value rather than recent revenue.",
+            "Predict customer value and govern audience and budget choices around it.",
+            "Allocate acquisition, service, and retention spend against a stated future-value horizon rather than recent revenue.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-5", "attachable", 2},
              {"M-6", "attachable", 3}},
             {"M-2", "M-1", "M-3", "M-5", "M-6"},
-            {"policy engine", "audience and budget report"}, {"L1"},
-            {{"audience sync", "A2"}, {"budget and discount changes", "A1"},
+            {"audience sync", "budget allocation", "audience and budget report"},
+            {"L1 audience sync", "L1 allocation report"},
+            {{"audience sync", "A2"}, {"budget allocation changes", "A1"},
              {"threshold tuning inside bounds", "A3"}},
-            {{"entity", true, "customer or account"}, {"label", true, "future value components"},
-             {"time", true, "cohort and observation cutoff"},
-             {"treatment", false, "campaign or service intervention"}},
-            "Value bands with channel eligibility, budget ceilings, margin floors, consent, and discount approvals.",
-            "Geographic or audience holdouts with cohort calibration and incremental value read-back.",
-            {"margin", "consent", "discount fairness", "budget adherence", "cohort calibration"},
-            levels("value scoring and reporting", "add survival horizon",
-                   "add causal allocation", "add cross-channel budget policy")),
+            {{"entity", true, "stable customer or account counted once"},
+             {"label", true, "net future value over the declared horizon"},
+             {"time", true, "cohort and point-in-time observation cutoff"},
+             {"feature", true, "pre-cutoff value, engagement, cost, and tenure inputs"},
+             {"tenure", true, "customer age used to censor immature outcomes"},
+             {"margin", true, "margin evidence for the policy floor"},
+             {"consent", true, "audience consent and channel eligibility"},
+             {"treatment", false, "campaign, service, or budget intervention"},
+             {"owner", false, "audience or budget owner for routed actions"}},
+            "Predicted-value bands with consent and channel eligibility, a margin floor, frequency and lifetime caps, a budget ceiling, and owner approval for budget changes.",
+            "Permanent holdout in every value band with net value measured over the same stated horizon and compared against treated entities.",
+            {"margin violations", "consent violations", "discount fairness",
+             "budget utilization", "cohort calibration"},
+            levels("value regression, segments, audience sync, holdout and report",
+                   "add censoring-aware survival horizon",
+                   "add causal audience and budget allocation",
+                   "add governed cross-channel budget policy")),
         band_a(
             "S-4", "Collections Prioritization",
             "Prioritize fair, compliant collections work by expected net recovery.",
             "Match treatment and queue order to recoverability, cost, and customer protections.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-6", "attachable", 3}},
-            {"M-2", "M-1", "M-3", "M-6"}, {"policy engine", "dialer queues"},
-            {"L1"},
-            {{"digital treatments and queueing", "A2"}, {"settlements", "A1"},
+            {"M-2", "M-1", "M-3", "M-6"},
+            {"policy-engine treatment selection", "digital treatment delivery",
+             "dialer queue tasks"},
+            {"L1 digital treatments", "L1 dialer queue tasks"},
+            {{"digital treatments and dialer queueing", "A2"}, {"settlements", "A1"},
              {"thresholds inside approved bands", "A3"}},
             {{"entity", true, "account, customer, or household"},
-             {"label", true, "payment and recovery outcome"},
-             {"time", true, "delinquency and contact history cutoff"},
-             {"treatment", false, "contact channel and offer"}},
-            "Recovery tiers with contact-time rules, frequency caps, hardship eligibility, settlement approvals, and suppression.",
+             {"label", true, "point-in-time promise-to-pay and net recovery outcome"},
+             {"time", true, "promise, delinquency, and contact-history cutoff"},
+             {"feature", true, "point-in-time balance, aging, payment, and contact signals"},
+             {"eligibility", true, "regulatory contact eligibility and permitted contact hours"},
+             {"vulnerability", true, "explicit vulnerable-customer protection evidence"},
+             {"contact", true, "prior contact counts and timestamps"},
+             {"treatment", false, "contact channel, digital treatment, and offer"},
+             {"owner", false, "collections team or queue owner"}},
+            "Recovery tiers with contact-time rules, frequency caps, vulnerability protection, settlement approvals, and suppression.",
             "Champion/challenger treatment cells measured on net recovery after cost.",
-            {"contact limits", "complaints", "hardship protections", "fairness", "net recovery"},
+            {"contact limits", "complaints", "vulnerable-customer contacts", "fairness", "net recovery"},
             levels("queue prioritization", "add treatment policy",
                    "add uplift selection", "add bounded digital treatment")),
         band_a(
@@ -496,11 +533,11 @@ nlohmann::json solution_json(const Solution& solution) {
                               {"required", role.required},
                               {"description", role.description}});
     }
-    nlohmann::json capability_levels = nlohmann::json::array();
+    nlohmann::json levels = nlohmann::json::array();
     for (const SolutionCapabilityLevel& level : solution.capability_levels) {
-        capability_levels.push_back({{"level", level.level},
-                                     {"name", level.name},
-                                     {"description", level.description}});
+        levels.push_back({{"level", level.level},
+                          {"name", level.name},
+                          {"description", level.description}});
     }
     nlohmann::json missing = nlohmann::json::array();
     for (const MissingSolutionComponent& component : solution.missing_components) {
@@ -525,7 +562,7 @@ nlohmann::json solution_json(const Solution& solution) {
             {"measurement", zetta::solutions::to_json(solution.templates.measurement)},
             {"minimal_template", solution.templates.minimal},
             {"guardrails", std::move(guardrails)},
-            {"capability_levels", std::move(capability_levels)},
+            {"levels", std::move(levels)},
             {"missing_components", std::move(missing)},
             {"status", solution.status},
             {"runnable", solution.runnable},

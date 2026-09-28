@@ -108,9 +108,23 @@ What's inside, by domain (each links to that domain's docs):
   modules and eight Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
-  S-1 has the complete retention template; S-2 through S-12 have explicitly
-  minimal editable defaults. Snapshot cutoffs, delivery destinations and ROI
-  economics remain caller-supplied.
+  S-1 is runnable at all four levels with eight named domain refusals,
+  top-three reason codes, risk × value × driver cells, governed CRM/journey
+  delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
+  readout. S-2 is runnable at all four levels with point-in-time conversion
+  checks, post-qualification leakage refusal, capacity-aware CRM queues and SLA
+  tasks, permanent holdout measurement, and conversion ROI readout.
+  S-3 is runnable with continuous-value regression, tenure censoring,
+  value-band audience and budget policy, protected holdouts, allocation reports,
+  three named domain refusals, and net-value ROI readout.
+  S-4 is runnable at all four levels with regulatory contact-limit,
+  vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
+  dialer delivery; a permanent holdout; and net-recovery readout.
+  S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
+  SIU paths, A0-only denial, document-confidence and fairness refusals, action
+  tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
+  editable defaults. Snapshot
+  cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
   policy/decision and ROI stores read directly from replicated state.

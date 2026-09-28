@@ -15,7 +15,7 @@
 // ValidationReport type (validation.hpp) was built to be produced by: it does the
 // running; ValidationReport holds the result.
 //
-// The checks themselves are pluggable (the Check seam below). This file declares
+// The checks themselves are pluggable (the Check interface below). This file declares
 // the runner plus the trivial NonEmptyGraphCheck; the concrete correctness checks
 // implement Check and plug in separately without touching the gate. default_gate()
 // registers the trivial check, the #309 schema/type + data-leakage / point-in-time
@@ -35,6 +35,10 @@ public:
     // before the check runs so a gate can list what it will run.
     virtual std::string name() const = 0;
 
+    // Most checks validate one methodology stage at a time. Domain checks that
+    // need the manifest and multiple stages opt into the whole composed graph.
+    virtual bool evaluates_composed_graph() const noexcept { return false; }
+
     // Run the check over `graph` and return its outcome. The reason should
     // explain *why* — surfaced to authors, never a stack trace (FEAT-3).
     virtual CheckResult evaluate(const ir::ExecutionGraph& graph) const = 0;
@@ -51,7 +55,7 @@ std::shared_ptr<Check> make_check(
 
 // The trivial check this slice ships: a graph with no steps has nothing to
 // deploy, so an empty graph fails the gate. A non-empty graph passes. Concrete
-// semantic checks land separately on top of the same seam.
+// semantic checks land separately on top of the same interface.
 class NonEmptyGraphCheck final : public Check {
 public:
     std::string name() const override { return "non_empty_graph"; }

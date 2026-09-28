@@ -12483,29 +12483,6 @@
                               },
                               "type": "array"
                             },
-                            "capability_levels": {
-                              "items": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "description": {
-                                    "type": "string"
-                                  },
-                                  "level": {
-                                    "type": "integer"
-                                  },
-                                  "name": {
-                                    "type": "string"
-                                  }
-                                },
-                                "required": [
-                                  "level",
-                                  "name",
-                                  "description"
-                                ],
-                                "type": "object"
-                              },
-                              "type": "array"
-                            },
                             "composition": {
                               "items": {
                                 "additionalProperties": false,
@@ -12613,6 +12590,29 @@
                             "latency_classes": {
                               "items": {
                                 "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "levels": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "level": {
+                                    "type": "integer"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "level",
+                                  "name",
+                                  "description"
+                                ],
+                                "type": "object"
                               },
                               "type": "array"
                             },
@@ -12994,7 +12994,7 @@
                             "measurement",
                             "minimal_template",
                             "guardrails",
-                            "capability_levels",
+                            "levels",
                             "missing_components",
                             "status",
                             "runnable",
@@ -16467,29 +16467,6 @@
                                 },
                                 "type": "array"
                               },
-                              "capability_levels": {
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "description": {
-                                      "type": "string"
-                                    },
-                                    "level": {
-                                      "type": "integer"
-                                    },
-                                    "name": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "level",
-                                    "name",
-                                    "description"
-                                  ],
-                                  "type": "object"
-                                },
-                                "type": "array"
-                              },
                               "composition": {
                                 "items": {
                                   "additionalProperties": false,
@@ -16597,6 +16574,29 @@
                               "latency_classes": {
                                 "items": {
                                   "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "levels": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "level": {
+                                      "type": "integer"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "level",
+                                    "name",
+                                    "description"
+                                  ],
+                                  "type": "object"
                                 },
                                 "type": "array"
                               },
@@ -16978,7 +16978,7 @@
                               "measurement",
                               "minimal_template",
                               "guardrails",
-                              "capability_levels",
+                              "levels",
                               "missing_components",
                               "status",
                               "runnable",

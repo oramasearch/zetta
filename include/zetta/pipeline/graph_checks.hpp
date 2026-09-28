@@ -235,6 +235,187 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-1's domain adaptations (#1110). These inspect the complete composed
+// Pipeline because the manifest, point-in-time sources, and level-specific
+// methodology stages jointly establish the retention contract.
+class S1PointInTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s1_point_in_time"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LabelWindowCheck final : public Check {
+public:
+    std::string name() const override { return "s1_label_window"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1TemporalValidationCheck final : public Check {
+public:
+    std::string name() const override { return "s1_temporal_validation"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1GroupSplitCheck final : public Check {
+public:
+    std::string name() const override { return "s1_group_split"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1CensoringCheck final : public Check {
+public:
+    std::string name() const override { return "s1_censoring"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1CalibrationCheck final : public Check {
+public:
+    std::string name() const override { return "s1_calibration"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1EntityResolutionCheck final : public Check {
+public:
+    std::string name() const override { return "s1_entity_resolution"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LeakageReviewCheck final : public Check {
+public:
+    std::string name() const override { return "s1_leakage_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s1_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-2's domain adaptations (#1111). Conversion outcomes must be observed after
+// the score cutoff, post-qualification CRM fields may not become predictors,
+// and routed tasks must name the capacity evidence used to select an owner.
+class S2PointInTimeConversionCheck final : public Check {
+public:
+    std::string name() const override { return "s2_point_in_time_conversion"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S2PostQualificationLeakageCheck final : public Check {
+public:
+    std::string name() const override { return "s2_post_qualification_leakage"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S2CapacityRoutingCheck final : public Check {
+public:
+    std::string name() const override { return "s2_capacity_routing"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-3's customer-value correctness adaptations (#1112). The module refuses
+// immature value labels, an unstated prediction horizon, and entity accounting
+// that can count one customer more than once.
+class S3ShortTenureCensoringCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_short_tenure_censoring";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3ValueHorizonCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_value_horizon";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S3EntityAccountingCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s3_entity_accounting";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-4 collections correctness adaptations (#1113). Regulatory eligibility
+// and frequency limits, vulnerable-customer protection, and point-in-time
+// promise-to-pay labels are deployment refusals on the composed Pipeline.
+class S4RegulatoryContactCheck final : public Check {
+public:
+    std::string name() const override { return "s4_regulatory_contact"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4VulnerableCustomerCheck final : public Check {
+public:
+    std::string name() const override { return "s4_vulnerable_customer"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4PromiseToPayPointInTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s4_promise_to_pay_point_in_time"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-12 claim-routing adaptations (#1121). These checks keep claim denial out
+// of automatic paths, require a documented cohort fairness review, enforce the
+// M-11 field-confidence boundary, and verify every selected capability level.
+class S12NoAutomatedDenialCheck final : public Check {
+public:
+    std::string name() const override { return "s12_no_automated_denial"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override { return "s12_fairness_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12DocumentConfidenceCheck final : public Check {
+public:
+    std::string name() const override { return "s12_document_confidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S12LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s12_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

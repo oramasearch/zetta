@@ -56,6 +56,10 @@ estimated propensity outside `[0.05,0.95]` are flagged, counted, and never
 recommended. Their treatment-effect rows remain in the output so the exclusion
 is inspectable. If no held-out profile is overlap-eligible, held-out metrics are
 zero. If no profile at all is overlap-eligible, no profile is recommended.
+Profiles with zero or negative estimated uplift are sleeping dogs: they remain
+ranked and inspectable but receive a first-class no-contact recommendation,
+even when they fall inside the configured targeting fraction. S-1 level 3
+depends on this positive-uplift-only rule.
 
 When fitted propensities are far from constant, the run is marked
 observational. Its report states: “causal claims assume no unmeasured
@@ -111,7 +115,8 @@ cmake --build build -j 6 --target zetta-tests
 ./build/tests/zetta-tests --gtest_filter='*Methodology*:*GraphCheck*:ActionJourneys.*:Uc1Journey.*'
 ```
 
-The tests cover planted heterogeneous effects, Qini above random, binary-role
+The tests cover planted heterogeneous effects, persuadable targeting with
+sleeping-dog no-contact, Qini above random, binary-role
 refusals, post-treatment and outcome-like feature refusals, overlap exclusion,
 determinism, owned-partition distribution versus a single-node oracle, registry
 compilation, table selection from the graph, output materialization, and report

@@ -154,8 +154,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
 | `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
-| `list_solutions` | read | api:query | all 12 catalogue solutions and eight sketches, with composition, product contract, capability levels, missing components, and runnable status |
-| `get_solution` | read | api:query | one complete solution or sketch entry by id |
+| `list_solutions` | read | api:query | all 12 catalogue solutions and eight sketches, with composition, product contract, `levels` objects, missing components, and runnable status |
+| `get_solution` | read | api:query | one complete solution or sketch entry by id; `solution.levels[].level` is the integer posted to `create_solution` |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |

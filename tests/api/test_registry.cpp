@@ -135,6 +135,13 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     ASSERT_EQ(solutions.value.at("solutions").size(), 20u);
     EXPECT_EQ(solutions.value.at("solutions").front().at("id"), "S-1");
     EXPECT_TRUE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_FALSE(solutions.value.at("solutions").front().contains(
+        "capability_levels"));
+    ASSERT_EQ(solutions.value.at("solutions").front().at("levels").size(),
+              4u);
+    EXPECT_EQ(solutions.value.at("solutions").front().at("levels").at(0).at(
+                  "level"),
+              1);
     EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
     EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
     // The #617 action-parity slice: the rest of the governed product loop,

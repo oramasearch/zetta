@@ -19,6 +19,8 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -248,18 +250,76 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(table);
     table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(3));
     for (int index = 0; index < 240; ++index) {
+        const bool persuadable = index < 120;
+        const int treatment = index % 2;
+        const int outcome = persuadable ? treatment : 1 - treatment;
         table->add_row({{"entity", index + 1}, {"record_id", index + 1},
                        {"source", "fixture"}, {"name", "Customer " + std::to_string(index + 1)},
                        {"label", index % 10 != 0 ? 1 : 0}, {"feature", index % 13 + 0.5},
+                       {"uplift_segment", persuadable ? 1.0 : 0.0},
+                       {"treatment", treatment}, {"outcome", outcome},
+                       {"duration", static_cast<double>(30 + index % 60)},
+                       {"start_time", static_cast<double>(index)},
+                       {"feature_time", static_cast<double>(index)},
                        {"time", "2026-08-01T00:00:00.000Z"},
                        {"in_collections", false}, {"open_complaint", false},
                        {"vulnerable", false}});
     }
     table->add_row({{"entity", 9999}, {"record_id", 9999}, {"source", "fixture"},
                    {"name", "Future customer"}, {"label", 1}, {"feature", 999.0},
+                   {"uplift_segment", 1.0}, {"treatment", 1}, {"outcome", 1},
+                   {"duration", 30.0}, {"start_time", 240.0},
+                   {"feature_time", 240.0},
                    {"time", "2026-10-01T00:00:00.000Z"},
                    {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}});
     const auto written = zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+void land_lead_scoring_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("leads");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const std::string territory = index % 2 == 0 ? "west" : "east";
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "crm_fixture"},
+             {"name", "Lead " + std::to_string(index + 1)},
+             {"label", index % 10 != 0 ? 1 : 0},
+             {"engagement", index % 13 + 0.5},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"eligible", true},
+             {"excluded", false},
+             {"do_not_contact", false},
+             {"territory_eligible", true},
+             {"rep_capacity_available", true},
+             {"territory", territory},
+             {"owner", territory + "-sales"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "crm_fixture"},
+         {"name", "Future lead"},
+         {"label", 1},
+         {"engagement", 999.0},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"eligible", true},
+         {"excluded", false},
+         {"do_not_contact", false},
+         {"territory_eligible", true},
+         {"rep_capacity_available", true},
+         {"territory", "west"},
+         {"owner", "west-sales"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
@@ -269,9 +329,36 @@ nlohmann::json retention_configuration() {
                       {"target_table", "retention_snapshot"}, {"entity_column", "entity"},
                       {"time_column", "time"}, {"as_of", "2026-09-01T00:00:00.000Z"}}},
         {"dataset", {{"entity_column", "entity_id"}, {"label_column", "label"},
-                     {"feature_columns", {"feature"}}}},
+                     {"time_column", "start_time"},
+                     {"as_of", 239.0},
+                     {"feature_columns", {"feature", "uplift_segment"}}}},
         {"delivery", {{"endpoint", "https://crm.example.test/tasks"}, {"owner", "retention-team"}}},
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
+}
+
+nlohmann::json lead_scoring_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "leads"},
+          {"target_table", "lead_scoring_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"engagement"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://crm.example.test/lead-queues"},
+          {"owner", "sales-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 250.0},
+          {"investment", 300.0},
+          {"currency", "USD"}}}};
 }
 
 journey::Journey retention_journey(const nlohmann::json& foundation) {
@@ -282,6 +369,8 @@ journey::Journey retention_journey(const nlohmann::json& foundation) {
         {"read executable defaults", "get_solution", {{"solution", "S-1"}},
          {.checks = {journey::equals("/solution/runnable", true),
                      journey::equals("/solution/policy_template/kill_switch", false),
+                     journey::equals("/solution/levels/0/level", 1),
+                     journey::equals("/solution/levels/3/level", 4),
                      journey::size_equals("/solution/missing_components", 0)}}},
         {"create the project", "create_project", {{"name", "retention"}}},
         {"read the project", "get_project", {{"name", "retention"}}},
@@ -368,6 +457,512 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+journey::Journey planted_conversion_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"lead-scoring-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double converted =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record observed conversion",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "converted"},
+              {"value", converted},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured conversion effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted conversion effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+void land_lifetime_value_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("customer_value");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const double value_signal =
+            static_cast<double>(index % 16) + 1.0;
+        const double engagement =
+            static_cast<double>((index * 7) % 11) / 10.0;
+        const double future_value =
+            200.25 + value_signal * 100.0 + engagement * 50.0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "fixture"},
+             {"name", "Customer " + std::to_string(index + 1)},
+             {"future_value", future_value},
+             {"value_signal", value_signal},
+             {"engagement", engagement},
+             {"tenure_days", 180 + index % 90},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"consent", true},
+             {"channel_eligible", true},
+             {"margin", 0.4},
+             {"do_not_target", false},
+             {"account_closed", false},
+             {"cost", 10.0},
+             {"discount_fairness_gap", 0.0},
+             {"cohort_calibration_error", 0.0}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future customer"},
+         {"future_value", 5000.0},
+         {"value_signal", 50.0},
+         {"engagement", 1.0},
+         {"tenure_days", 365},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"consent", true},
+         {"channel_eligible", true},
+         {"margin", 0.4},
+         {"do_not_target", false},
+         {"account_closed", false},
+         {"cost", 10.0},
+         {"discount_fairness_gap", 0.0},
+         {"cohort_calibration_error", 0.0}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json lifetime_value_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "customer_value"},
+          {"target_table", "lifetime_value_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "future_value"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"value_signal", "engagement", "tenure_days"}}}},
+        {"delivery",
+         {{"endpoint", "https://activation.example.test/audiences"},
+          {"owner", "growth-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey lifetime_value_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"s3-customer-lifetime-value", {}};
+    flow.steps = {
+        {"read S-3 executable defaults", "get_solution",
+         {{"solution", "S-3"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/outcome/name",
+                              "net_value"),
+              journey::equals("/solution/measurement/outcome/window_days",
+                              365),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the lifetime value project", "create_project",
+         {{"name", "customer lifetime value"}}},
+        {"create the S-3 Pipeline", "create_solution",
+         {{"project", "customer lifetime value"},
+          {"solution", "S-3"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "customer_value"},
+            {"M-1",
+             {{"label_column", "future_value"},
+              {"value_horizon_days", 365}}},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "future_value"},
+              {"feature_columns",
+               {"value_signal", "engagement", "tenure_days"}}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"solution_graph", "/graph"},
+          {"experiment", "/experiment_id"},
+          {"monitor", "/monitor_id"},
+          {"readout", "/readout_id"}}},
+        {"run S-3", "run_solution",
+         {{"project", "customer lifetime value"},
+          {"graph", "$solution_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"solution_run", "/run_id"}}},
+        {"read the completed S-3 Run", "get_run",
+         {{"run_id", "$solution_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected S-3 assignments", "get_experiment",
+         {{"experiment", "$experiment"}},
+         {.checks = {journey::at_least("/sizes/assignments", 100),
+                     journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read S-3 action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_lifetime_value_outcomes(
+    const nlohmann::json& entries, const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        if (cell.ends_with("/holdout") ||
+            cell.ends_with("/audience_sync") ||
+            cell.ends_with("/budget_reallocation")) {
+            ++counts[cell];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"s3-planted-net-value", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        if (!counts.contains(cell)) {
+            continue;
+        }
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double net_value =
+            400.0 + centered / counts[cell] + (holdout ? 0.0 : 75.0);
+        outcomes.steps.push_back(
+            {"record planted net value", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_value"},
+              {"value", net_value},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured net-value effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-value effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 75.0) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 75.0 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 75.0;
+                  })}}});
+    return outcomes;
+}
+
+void land_claims_data(Node& node) {
+    const auto database = node.create_database("claims");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("fnol");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int claim_id = index + 1;
+        const double referral_signal =
+            static_cast<double>(index % 20) / 19.0;
+        const bool label =
+            (referral_signal >= 0.55) != (index % 23 == 0);
+        const std::string claim_number =
+            "CLM-" + std::to_string(10000 + claim_id);
+        const std::string loss_date =
+            "2026-08-" + std::to_string(10 + index % 18);
+        const std::string loss_amount =
+            std::to_string(500 + (index % 20) * 250);
+        const std::string document =
+            "claim_number: " + claim_number + "\nloss_date: " +
+            loss_date + "\nloss_amount: " + loss_amount;
+        table->add_row(
+            {{"claim_id", claim_id},
+             {"record_id", claim_id},
+             {"source", "fnol-fixture"},
+             {"name", "Claim " + std::to_string(claim_id)},
+             {"referral_confirmed", label ? 1 : 0},
+             {"referral_signal", referral_signal},
+             {"claim_amount", 500.0 + static_cast<double>(index % 20) * 250.0},
+             {"prior_claims", static_cast<double>(index % 5)},
+             {"document", document},
+             {"document_labels",
+              {{"claim_number", claim_number},
+               {"loss_date", loss_date},
+               {"loss_amount", loss_amount}}},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"fnol_complete", true},
+             {"coverage_confirmed", true},
+             {"identity_verified", true},
+             {"document_confidence_clear", true},
+             {"fairness_review_passed", true},
+             {"catastrophe_override", false},
+             {"manual_only", false}});
+    }
+    table->add_row(
+        {{"claim_id", 9999},
+         {"record_id", 9999},
+         {"source", "fnol-fixture"},
+         {"name", "Future claim"},
+         {"referral_confirmed", 1},
+         {"referral_signal", 1.0},
+         {"claim_amount", 9999.0},
+         {"prior_claims", 9.0},
+         {"document", "claim_number: FUTURE\nloss_date: 2026-10-01\nloss_amount: 9999"},
+         {"document_labels",
+          {{"claim_number", "FUTURE"},
+           {"loss_date", "2026-10-01"},
+           {"loss_amount", "9999"}}},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"fnol_complete", true},
+         {"coverage_confirmed", true},
+         {"identity_verified", true},
+         {"document_confidence_clear", true},
+         {"fairness_review_passed", true},
+         {"catastrophe_override", false},
+         {"manual_only", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json claims_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "claims"},
+          {"source_table", "fnol"},
+          {"target_table", "fnol_snapshot"},
+          {"entity_column", "claim_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "referral_confirmed"},
+          {"feature_columns",
+           {"referral_signal", "claim_amount", "prior_claims"}}}},
+        {"delivery",
+         {{"endpoint", "https://claims.example.test/tasks"},
+          {"owner", "claims-triage"}}},
+        {"roi_model",
+         {{"value_per_outcome", 100.0},
+          {"investment", 200.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey claims_journey(const nlohmann::json& foundation) {
+    journey::Journey flow{"claims-solution", {}};
+    flow.steps = {
+        {"read executable claims defaults", "get_solution",
+         {{"solution", "S-12"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/denial_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the claims project", "create_project",
+         {{"name", "claims triage"}}},
+        {"create the composed claims solution", "create_solution",
+         {{"project", "claims triage"},
+          {"solution", "S-12"},
+          {"level", 1},
+          {"sources",
+           {{"source", "claims"},
+            {"table", "fnol"},
+            {"M-11",
+             {{"document_column", "document"},
+              {"document_id_column", "entity_id"},
+              {"labels_column", "document_labels"},
+              {"fields",
+               {"claim_number", "loss_date", "loss_amount"}},
+              {"review_threshold", 0.8}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"claims_graph", "/graph"},
+          {"claims_policy", "/policy_id"},
+          {"claims_experiment", "/experiment_id"},
+          {"claims_readout", "/readout_id"}}},
+        {"read the claims policy", "get_policy",
+         {{"policy_id", "$claims_policy"}},
+         {.checks = {
+              journey::equals("/current_version", 1),
+              journey::equals(
+                  "/versions/0/config/actions/denial_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "siu_referral"),
+              journey::equals("/versions/0/config/tiers/1/action",
+                              "adjuster_assignment"),
+              journey::equals("/versions/0/config/tiers/2/action",
+                              "fast_track")}}},
+        {"read the claims holdout", "get_experiment",
+         {{"experiment", "$claims_experiment"}},
+         {.checks = {
+              journey::equals("/experiment/allocations/0/fraction", 0.1)}}},
+        {"run claims triage", "run_solution",
+         {{"project", "claims triage"},
+          {"graph", "$claims_graph"},
+          {"delivery_token", "claims-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"claims_run", "/run_id"}}},
+        {"read the completed claims Run", "get_run",
+         {{"run_id", "$claims_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read claim assignments", "get_experiment",
+         {{"experiment", "$claims_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read claim action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
+                                        const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"claims-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.2);
+        outcomes.steps.push_back(
+            {"record claim outcome", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "referral_confirmed"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {}, {{"claims_outcome_id", "/id"}}});
+        outcomes.steps.push_back(
+            {"read claim outcome", "list_ledger", nlohmann::json::object(),
+             {.checks = {journey::any_element(
+                  "/entries", {{"/id", "$claims_outcome_id"}})}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured claims effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted claims effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.2) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.2 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.2;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -403,13 +998,22 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     }
     EXPECT_GT(protected_rows, 0u);
     EXPECT_FALSE(delivery.requests.empty());
+    std::size_t reports = 0;
     for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++reports;
+            EXPECT_TRUE(request.at("payload").contains("driver_report"));
+            continue;
+        }
         const auto decision = policies.get_decision(request.at("payload").at("decision_id"));
         ASSERT_TRUE(decision);
         EXPECT_TRUE(decision->actionable);
         EXPECT_FALSE(decision->holdout);
         EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        EXPECT_LE(request.at("payload").at("reason_codes").size(), 3u);
+        EXPECT_TRUE(request.at("payload").contains("decision_cell"));
     }
+    EXPECT_EQ(reports, 1u);
     const auto results = node.find_database("solution_results");
     ASSERT_TRUE(results);
     ASSERT_EQ(results->tables().size(), 1u);
@@ -420,7 +1024,7 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     EXPECT_EQ(node.find_database("datasets")->find_table("retention_snapshot")->store().size(), 240u);
     const auto monitor = node.find_monitor(binding.at("monitor_id"));
     ASSERT_TRUE(monitor);
-    EXPECT_EQ(monitor->value().guardrails.size(), 3u);
+    EXPECT_EQ(monitor->value().guardrails.size(), 4u);
     for (const auto& guardrail : monitor->value().guardrails) {
         EXPECT_TRUE(guardrail.value.has_value());
     }
@@ -435,6 +1039,766 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       ClaimsTriageProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_claims_data(node);
+    const auto flow = claims_journey(claims_configuration());
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("claims triage");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-12 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish claim referral scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "claim_id");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "referral_score");
+    EXPECT_EQ(graph->record().dump().find("claims-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::set<std::string> selected_paths;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_NE(decision.action, "denial_recommendation");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        EXPECT_TRUE(decision.actionable);
+        EXPECT_EQ(decision.autonomy, "A2");
+        selected_paths.insert(decision.action);
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(selected_paths.empty());
+    for (const std::string& path : selected_paths) {
+        EXPECT_TRUE(path == "fast_track" ||
+                    path == "adjuster_assignment" ||
+                    path == "siu_referral")
+            << path;
+    }
+
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("human_denial_only"), true);
+        EXPECT_EQ(payload.at("document_confidence_clear"), true);
+        EXPECT_EQ(payload.at("fairness_review_passed"), true);
+        EXPECT_NE(payload.at("assigned_path"), "denial_recommendation");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(payload.at("assigned_path"), decision->action);
+        EXPECT_EQ(payload.at("claim_id"), decision->entity_id);
+    }
+
+    const auto claim_results = node.find_database("claims_results");
+    ASSERT_TRUE(claim_results);
+    ASSERT_EQ(claim_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM claims_results." +
+              claim_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("claim_id"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("referral_score"));
+    EXPECT_EQ(node.find_database("claims")
+                  ->find_table("fnol_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "automated_denials" ||
+            guardrail.bound.name == "low_confidence_path_assignments" ||
+            guardrail.bound.name == "fairness_review_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("claims-fixture-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_claim_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       CustomerLifetimeValueDrivesActionsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_lifetime_value_data(node);
+    const journey::Journey flow =
+        lifetime_value_journey(lifetime_value_configuration());
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("customer lifetime value");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-3 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "predicted_value");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Write lifetime value predictions");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t audience_decisions = 0;
+    std::size_t budget_approvals = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.action == "audience_sync" &&
+                   decision.actionable) {
+            ++audience_decisions;
+        } else if (decision.action == "budget_reallocation") {
+            ++budget_approvals;
+            EXPECT_EQ(decision.status, "pending_approval");
+            EXPECT_FALSE(decision.actionable);
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(audience_decisions, 0u);
+    EXPECT_GT(budget_approvals, 0u);
+
+    std::size_t delivered_audiences = 0;
+    std::size_t reports = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++reports;
+            EXPECT_EQ(request.at("payload").at("title"),
+                      "Customer lifetime value allocation report");
+            EXPECT_EQ(request.at("payload")
+                          .at("driver_report")
+                          .at("value_horizon_days"),
+                      365);
+            continue;
+        }
+        EXPECT_EQ(request.at("payload").at("action"), "audience_sync");
+        EXPECT_TRUE(request.at("payload").contains("predicted_value"));
+        EXPECT_EQ(request.at("payload").at("value_horizon_days"), 365);
+        ++delivered_audiences;
+    }
+    EXPECT_EQ(delivered_audiences, audience_decisions);
+    EXPECT_EQ(reports, 1u);
+
+    const auto results = node.find_database("solution_results");
+    ASSERT_TRUE(results);
+    ASSERT_EQ(results->tables().size(), 1u);
+    const ApiResult decisions_read = call(
+        "sql", {{"statement", "SELECT * FROM solution_results." +
+                                  results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decisions_read.ok) << decisions_read.error.message;
+    EXPECT_EQ(decisions_read.value.at("rows").size(), 240u);
+    for (const auto& row : decisions_read.value.at("rows")) {
+        EXPECT_TRUE(row.at("decision_cell").contains("value_band"));
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_lifetime_value_outcomes(
+        ledger.value.at("entries"), binding);
+    const journey::JourneyReport measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+
+TEST_F(SolutionJourney,
+       LeadScoringRoutesCapacityAwareQueuesAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_lead_scoring_data(node);
+    journey::Journey flow{"lead-scoring-solution", {}};
+    flow.steps = {
+        {"read S-2 defaults",
+         "get_solution",
+         {{"solution", "S-2"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name", "converted")}}},
+        {"create lead scoring project",
+         "create_project",
+         {{"name", "lead scoring"}}},
+        {"create S-2 Pipeline",
+         "create_solution",
+         {{"project", "lead scoring"},
+          {"solution", "S-2"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "leads"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "label"},
+              {"feature_columns", {"engagement"}}}}}},
+          {"foundation", lead_scoring_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"lead_graph", "/graph"},
+          {"lead_experiment", "/experiment_id"},
+          {"lead_readout", "/readout_id"}}},
+        {"run S-2 Pipeline",
+         "run_solution",
+         {{"project", "lead scoring"},
+          {"graph", "$lead_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"lead_run", "/run_id"}}},
+        {"read completed lead scoring Run",
+         "get_run",
+         {{"run_id", "$lead_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected routing assignments",
+         "get_experiment",
+         {{"experiment", "$lead_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read lead action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("lead scoring");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-2 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        ASSERT_TRUE(request.at("payload").contains("routing_queue"));
+        EXPECT_FALSE(
+            request.at("payload").at("territory").get<std::string>().empty());
+        EXPECT_TRUE(
+            request.at("payload").at("rep_capacity_available").get<bool>());
+        EXPECT_FALSE(
+            request.at("payload").at("queue_owner").get<std::string>().empty());
+        EXPECT_TRUE(request.at("payload")
+                        .at("decision_cell")
+                        .contains("conversion_band"));
+        EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("lead_scoring_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 4u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       LevelThreeTargetsPersuadablesAndLeavesSleepingDogsAlone) {
+    SolutionDeliveryBoundary delivery;
+    land_retention_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "uplift retention"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "uplift retention"},
+         {"solution", "S-1"},
+         {"level", 3},
+         {"sources",
+          {{"source", "datasets"},
+           {"table", "customers"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "label"},
+             {"feature_columns", {"feature", "uplift_segment"}}}},
+           {"M-6",
+            {{"entity", "entity_id"},
+             {"treatment", "treatment"},
+             {"outcome", "outcome"},
+             {"features", {"feature", "uplift_segment"}},
+             {"as_of", "2026-09-01T00:00:00Z"},
+             {"feature_window_end", "2026-09-01T00:00:00Z"},
+             {"label_window_start", "2026-09-08T00:00:00Z"},
+             {"blackout_gap_seconds", 604800},
+             {"treatment_time", "2026-09-08T00:00:00Z"}}}}},
+         {"foundation", retention_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies").size(), 5u);
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "uplift retention"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 5000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    std::string decision_table;
+    for (const auto& output : status.value.at("outputs")) {
+        if (output.at("name") == "solution decisions") {
+            decision_table = output.at("ref").get<std::string>();
+        }
+    }
+    ASSERT_FALSE(decision_table.empty());
+    const ApiResult decisions = call(
+        "sql", {{"statement", "SELECT * FROM " + decision_table + ";"}});
+    ASSERT_TRUE(decisions.ok) << decisions.error.message;
+    std::size_t persuaded = 0;
+    std::size_t sleeping_dogs = 0;
+    for (const auto& row : decisions.value.at("rows")) {
+        ASSERT_TRUE(row.contains("estimated_uplift"));
+        ASSERT_TRUE(row.contains("uplift_recommended"));
+        if (row.at("estimated_uplift").get<double>() <= 0.0) {
+            ++sleeping_dogs;
+            EXPECT_FALSE(row.at("actionable").get<bool>());
+            if (row.at("holdout").get<bool>()) {
+                EXPECT_EQ(row.at("action"), "");
+            } else {
+                EXPECT_EQ(row.at("action"), "no_contact");
+            }
+        } else if (row.at("uplift_recommended").get<bool>() &&
+                   row.at("actionable").get<bool>()) {
+            ++persuaded;
+        }
+    }
+    EXPECT_GT(sleeping_dogs, 0u);
+    EXPECT_GT(persuaded, 0u);
+}
+
+void land_collections_data(Node& node) {
+    const auto database = node.create_database("collections_data");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("receivables");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const double recovery_signal = static_cast<double>(index % 10);
+        const int rotating_outcome = (index * 7 + index / 10) % 10;
+        const int promise_to_pay =
+            rotating_outcome < 2 + static_cast<int>(recovery_signal / 2.0)
+                ? 1
+                : 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "fixture"},
+             {"name", "Receivable " + std::to_string(index + 1)},
+             {"promise_to_pay", promise_to_pay},
+             {"recovery_signal", recovery_signal},
+             {"balance", 100.0 + index},
+             {"promise_to_pay_at", "2026-08-01T00:00:00.000Z"},
+             {"collections_eligible", index != 7},
+             {"regulatory_contact_allowed", index != 6},
+             {"within_contact_hours", index != 8},
+             {"vulnerable", index == 5},
+             {"open_complaint", false},
+             {"recent_actions", 0},
+             {"owner", "collections-team"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future promise update"},
+         {"promise_to_pay", 1},
+         {"recovery_signal", 99.0},
+         {"balance", 999.0},
+         {"promise_to_pay_at", "2026-10-01T00:00:00.000Z"},
+         {"collections_eligible", true},
+         {"regulatory_contact_allowed", true},
+         {"within_contact_hours", true},
+         {"vulnerable", false},
+         {"open_complaint", false},
+         {"recent_actions", 0},
+         {"owner", "collections-team"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json collections_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "collections_data"},
+          {"source_table", "receivables"},
+          {"target_table", "collections_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "promise_to_pay_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "promise_to_pay"},
+          {"feature_columns", {"recovery_signal", "balance"}}}},
+        {"delivery",
+         {{"endpoint", "https://dialer.example.test/queues"},
+          {"owner", "collections-team"}}},
+        {"roi_model",
+         {{"value_per_outcome", 125.0},
+          {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey collections_journey() {
+    journey::Journey flow{"collections-prioritization", {}};
+    flow.steps = {
+        {"read S-4 executable defaults", "get_solution",
+         {{"solution", "S-4"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/design", "champion_challenger"),
+              journey::size_equals("/solution/action_patterns", 3)}}},
+        {"create the collections project", "create_project",
+         {{"name", "collections prioritization"}}},
+        {"create the composed collections solution", "create_solution",
+         {{"project", "collections prioritization"},
+          {"solution", "S-4"},
+          {"level", 1},
+          {"sources",
+           {{"source", "collections_data"},
+            {"table", "receivables"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "promise_to_pay"},
+              {"feature_columns", {"recovery_signal", "balance"}}}}}},
+          {"foundation", collections_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 3),
+              journey::size_equals("/missing_components", 0)}},
+         {{"collections_graph", "/graph"},
+          {"collections_policy", "/policy_id"},
+          {"collections_experiment", "/experiment_id"},
+          {"collections_readout", "/readout_id"}}},
+        {"read the collections policy", "get_policy",
+         {{"policy_id", "$collections_policy"}},
+         {.checks = {
+              journey::equals("/versions/0/config/contact_cap", 6),
+              journey::equals(
+                  "/versions/0/config/frequency_cap/window_seconds", 604800),
+              journey::equals(
+                  "/versions/0/config/tiers/0/action", "dialer_queue"),
+              journey::equals(
+                  "/versions/0/config/tiers/1/action", "digital_treatment")}}},
+        {"run collections prioritization", "run_solution",
+         {{"project", "collections prioritization"},
+          {"graph", "$collections_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {
+              journey::equals("/engine", "solution"),
+              journey::equals("/preview", false)}},
+         {{"collections_run", "/run_id"}}},
+        {"read the completed collections Run", "get_run",
+         {{"run_id", "$collections_run"}},
+         {.checks = {
+              journey::equals("/status", "succeeded"),
+              journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected collections assignments", "get_experiment",
+         {{"experiment", "$collections_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read collections ledger actions", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_collections_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"collections-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double recovery =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record net recovery", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_recovery"},
+              {"value", recovery},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured net-recovery effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-recovery effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       CollectionsPrioritizationProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_collections_data(node);
+    const auto report =
+        journey::run_journey(collections_journey(), caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("collections prioritization");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-4 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Prioritize collections treatments");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"), "receivable");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "recovery_score");
+    bool found_collections_output = false;
+    for (const auto& run : node.runs()) {
+        for (const auto& output : run->outputs()) {
+            if (output.ref.starts_with(
+                    "collections_results.recovery_priority_")) {
+                found_collections_output = true;
+            }
+        }
+    }
+    EXPECT_TRUE(found_collections_output);
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    const std::set<std::string> blocked = {"6", "7", "8", "9"};
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        if (blocked.contains(decision.entity_id)) {
+            EXPECT_FALSE(decision.actionable) << decision.entity_id;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    std::set<std::string> delivered_actions;
+    for (const auto& request : delivery.requests) {
+        const std::string action =
+            request.at("payload").at("action").get<std::string>();
+        delivered_actions.insert(action);
+        EXPECT_TRUE(action == "dialer_queue" ||
+                    action == "digital_treatment");
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_EQ(delivered_actions,
+              (std::set<std::string>{"dialer_queue",
+                                     "digital_treatment"}));
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto measured = journey::run_journey(
+        planted_collections_outcomes(ledger.value.at("entries"), binding),
+        caller(),
+        pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

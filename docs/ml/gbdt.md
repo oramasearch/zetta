@@ -4,6 +4,8 @@ Histogram gradient-boosted decision trees with **binary logistic** and
 **squared-error** objectives. Binary logistic is the native training engine for
 UC-1 churn (FEAT-6 / ENT-14, #390; part of the native distributed
 accelerated-compute pass, #264), while squared error supports native forecasting.
+S-3 customer lifetime value also uses squared error for continuous net-value
+targets.
 Zetta **trains a model on the customer's own data**, rather than running inference
 over a rented model.
 
@@ -104,7 +106,8 @@ return a `compute::ComputeStatus`.
   from disk / a peer) plus the structural rule that every child index is in range.
   `predict_raw` / `predict_proba` evaluate it.
 - `GbdtMetrics` — `auc` (Mann-Whitney, ties at 0.5), `log_loss` (mean
-  cross-entropy), `accuracy@0.5`, via `evaluate_binary`. The shape stored in a
+  cross-entropy), `accuracy@0.5`, via `evaluate_binary`. Distributed
+  squared-error jobs instead report RMSE and MAE. Both shapes are stored in a
   Model's free-form `metrics`.
 
 ## Running it as a `train` ComputeJob → a Model
@@ -118,16 +121,19 @@ return a `compute::ComputeStatus`.
   loop, combining statistics with the round's `allreduce` (no new wire format — the
   histograms ride the schema-validated `CollectiveMessage`).
 - **Global metrics** are computed once: each node scores the rows it fit, the
-  `(probability, label)` pairs are gathered to the root, evaluated over the union,
+  `(prediction, label)` pairs are gathered to the root, evaluated over the union,
   and the scalars broadcast back — so every node ends with identical metrics.
-  When `holdout_fraction` is set, the held-out pairs ride that same gather and a
-  second set of metrics comes back beside the in-sample ones — see
+  Binary-logistic jobs report AUC, log loss, and accuracy; squared-error jobs
+  report RMSE and MAE. When `holdout_fraction` is set, the held-out pairs ride
+  that same gather and a second set of objective-appropriate metrics comes back
+  beside the in-sample ones — see
   [held-out-metrics.md](held-out-metrics.md) (#953).
 - The deterministic collective **root** registers the trained model as a
-  `Model` (kind `classifier`): the GBDT weights body (the schema-validated JSON) is
-  attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
-  large-object body), with the evaluation metrics in `metrics` and the per-feature
-  gains as the ranked `feature_schema.drivers` (explainability — read by
+  `Model` (kind `classifier` for binary logistic and `regressor` for squared
+  error): the GBDT weights body (the schema-validated JSON) is attached via
+  `set_weights` (fingerprinted + replicated peer-to-peer like any large-object
+  body), with the objective and ranked per-feature gains in `feature_schema` and
+  the matching evaluation metrics in `metrics` (explainability — read by
   `zetta::ml::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
   is produced (at the root, which replicates to peers); deduping per-node
   registrations into a single record on every node is a later slice.
@@ -207,6 +213,8 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
   carrying feature as the dominant driver.
 - The distributed `train` job grows **equivalent trees** single-node vs multi-node
   (identical within a run; equal up to floating-point across shardings).
+- A squared-error `train` job registers a regressor with objective, RMSE, MAE,
+  held-out RMSE, and held-out MAE preserved across the Model boundary.
 - Trained on the synthetic [churn fixture](../use-cases/churn-dataset.md) (via featurization),
   it reaches a strong AUC, produces a registered `Model` whose weights re-validate
   against the schema, and surfaces `failed_payments` as a positive churn driver.

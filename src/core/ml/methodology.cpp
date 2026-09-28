@@ -57,45 +57,182 @@ bool m1_owns(const ir::ExecutionGraph& graph) {
     return zetta::usecases::churn::is_churn_graph(graph);
 }
 
-ir::ExecutionGraph build_m1_shape(const ShapeRequest&) {
+ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
+    const bool lead_scoring = request.solution == "S-2";
+    const bool collections = request.solution == "S-4";
+
+    if (request.solution == "S-3") {
+        const int value_horizon_days =
+            request.hints.value("value_horizon_days", 365);
+        graph.add_node(
+            ir::StepKind::Connect, "Load customer value cohort",
+            nlohmann::json{{"source", request.hints.value("source", "datasets")},
+                           {"table", request.hints.value("table", "customers")},
+                           {"note", "one point-in-time row per customer"}},
+            "load_customers");
+        graph.add_node(
+            ir::StepKind::Clean, "Build lifetime value features",
+            nlohmann::json{{"note", "pre-cutoff value, cost, engagement, and tenure inputs"}},
+            "build_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train lifetime value model",
+            nlohmann::json{{"model_kind", "regression"},
+                           {"algo", "gradient_boosting"},
+                           {"objective", "squared_error"},
+                           {"target", request.hints.value("label_column", "future_value")},
+                           {"value_horizon_days", value_horizon_days},
+                           {"note", "predict net customer value over the declared horizon"}},
+            "train_churn_model");
+        graph.add_node(
+            ir::StepKind::Index, "Rank predicted lifetime value",
+            nlohmann::json{{"kind", "feature"},
+                           {"note", "order customers by predicted future value"}},
+            "index_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Explain lifetime value predictions",
+            nlohmann::json{{"note", "expose predicted value and top drivers"}},
+            "serve_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Write lifetime value predictions",
+            nlohmann::json{{"output", "lifetime_value_predictions"},
+                           {"note", "one predicted-value row per customer"}},
+            "notify_retention");
+        graph.add_edge("load_customers", "build_features");
+        graph.add_edge("build_features", "train_churn_model");
+        graph.add_edge("train_churn_model", "index_scores");
+        graph.add_edge("index_scores", "serve_scores");
+        graph.add_edge("serve_scores", "notify_retention");
+        return graph;
+    }
+
+    if (request.solution == "S-12") {
+        graph.add_node(
+            ir::StepKind::Connect, "Load first notices of loss",
+            nlohmann::json{{"source", request.hints.value("source", "claims")},
+                           {"table", request.hints.value("table", "fnol")},
+                           {"note", "one point-in-time row per claim"}},
+            "load_claims");
+        graph.add_node(
+            ir::StepKind::Clean, "Build claim triage features",
+            nlohmann::json{
+                {"note", "pre-decision FNOL features only; exclude dispositions"}},
+            "build_claim_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train referral-risk model",
+            nlohmann::json{{"model_kind", "gbdt"},
+                           {"algo", "gradient_boosting"},
+                           {"target", "referral_confirmed"},
+                           {"note", "estimate review value, never claim denial"}},
+            "train_referral_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index claim referral scores",
+            nlohmann::json{{"kind", "feature"}},
+            "index_claim_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Serve claim scores and reasons",
+            nlohmann::json{{"note", "expose per-claim score and evidence"}},
+            "serve_claim_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Publish claim referral scores",
+            nlohmann::json{{"result_database", "claims_results"},
+                           {"result_table_prefix", "referral_scores_"},
+                           {"entity_output_column", "claim_id"},
+                           {"score_output_column", "referral_score"},
+                           {"note", "policy assigns paths after scoring"}},
+            "publish_claim_scores");
+
+        graph.add_edge("load_claims", "build_claim_features");
+        graph.add_edge("build_claim_features", "train_referral_model");
+        graph.add_edge("train_referral_model", "index_claim_scores");
+        graph.add_edge("index_claim_scores", "serve_claim_scores");
+        graph.add_edge("serve_claim_scores", "publish_claim_scores");
+        return graph;
+    }
 
     graph.add_node(
-        ir::StepKind::Connect, "Load customer accounts",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "customers"},
-                       {"note", "active accounts to score for churn risk"}},
+        ir::StepKind::Connect,
+        lead_scoring ? "Load lead and opportunity records"
+                         : collections ? "Load receivables"
+                                       : "Load customer accounts",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", lead_scoring ? "leads"
+                         : collections ? "receivables"
+                                       : "customers"},
+            {"note", lead_scoring ? "open leads and opportunities to score for conversion"
+                         : collections ? "eligible receivables to score for recovery priority"
+                                       : "active accounts to score for churn risk"}},
         "load_customers");
     graph.add_node(
-        ir::StepKind::Connect, "Load usage & billing activity",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "events"},
-                       {"note", "engagement + payment signals per account"}},
+        ir::StepKind::Connect,
+        lead_scoring ? "Load pre-qualification engagement"
+                         : collections ? "Load payment and contact history"
+                                       : "Load usage & billing activity",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", lead_scoring ? "lead_events"
+                         : collections ? "collections_events"
+                                       : "events"},
+            {"note", lead_scoring ? "point-in-time engagement signals per lead"
+                         : collections ? "point-in-time payment, delinquency, and contact signals"
+                                       : "engagement + payment signals per account"}},
         "load_activity");
     graph.add_node(
-        ir::StepKind::Clean, "Build churn features",
+        ir::StepKind::Clean,
+        lead_scoring ? "Build conversion features"
+                         : collections ? "Build recovery features"
+                                       : "Build churn features",
         nlohmann::json{
-            {"note", "point-in-time features; keep out post-cutoff leakage"}},
+            {"note", lead_scoring
+                         ? "point-in-time features; exclude post-qualification fields"
+                         : "point-in-time features; keep out post-cutoff leakage"}},
         "build_features");
     graph.add_node(
-        ir::StepKind::Model, "Train churn-risk model",
+        ir::StepKind::Model,
+        lead_scoring ? "Train conversion-propensity model"
+                         : collections ? "Train recovery-priority model"
+                                       : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", "churned"},
-                       {"note", "predict probability each account churns"}},
+                       {"target", lead_scoring ? "converted"
+                         : collections ? "promise_to_pay"
+                                       : "churned"},
+                       {"note", lead_scoring ? "predict probability each lead converts"
+                         : collections ? "predict point-in-time recovery propensity"
+                                       : "predict probability each account churns"}},
         "train_churn_model");
     graph.add_node(
-        ir::StepKind::Index, "Index churn scores",
+        ir::StepKind::Index,
+        lead_scoring ? "Index conversion scores"
+                         : collections ? "Index recovery scores"
+                                       : "Index churn scores",
         nlohmann::json{{"kind", "feature"},
                        {"note", "make scores fast to look up at serve time"}},
         "index_scores");
     graph.add_node(
-        ir::StepKind::Serve, "Serve churn scores & reasons",
-        nlohmann::json{{"note", "expose per-account risk + top drivers"}},
+        ir::StepKind::Serve,
+        lead_scoring ? "Serve conversion scores and reasons"
+                         : collections ? "Serve recovery scores and reasons"
+                                       : "Serve churn scores & reasons",
+        nlohmann::json{
+            {"note", lead_scoring ? "expose per-lead conversion score and top drivers"
+                         : collections ? "expose per-receivable recovery priority and drivers"
+                                       : "expose per-account risk + top drivers"}},
         "serve_scores");
     graph.add_node(
-        ir::StepKind::Act, "Trigger retention outreach",
-        nlohmann::json{{"note", "notify retention on high-risk accounts"}},
+        ir::StepKind::Act,
+        lead_scoring ? "Route sales queue tasks"
+                         : collections ? "Prioritize collections treatments"
+                                       : "Trigger retention outreach",
+        nlohmann::json{
+            {"note", lead_scoring ? "route capacity-aware CRM tasks with SLAs"
+                         : collections ? "publish the governed recovery-priority table"
+                                       : "notify retention on high-risk accounts"},
+             {"result_database", collections ? "collections_results" : "churn_results"},
+             {"result_table_prefix", collections ? "recovery_priority_" : "at_risk_"},
+             {"entity_output_column", collections ? "receivable" : "account"},
+             {"score_output_column", collections ? "recovery_score" : "risk"}},
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");
@@ -247,6 +384,18 @@ api::ApiResult run_m1(RunRequest& request) {
     options.coordinate = request.input.value("coordinate", true);
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
+    for (const auto& model :
+         request.graph->graph().nodes_of_kind(ir::StepKind::Model)) {
+        if (model->attributes.value("objective", std::string{}) ==
+            "squared_error") {
+            options.params.objective = "squared_error";
+            options.calibration.enabled = false;
+            if (!request.input.contains("model_name")) {
+                options.model_name = "customer_lifetime_value";
+            }
+            break;
+        }
+    }
 
     std::set<std::string> prior_runs;
     for (const auto& existing : context.node.runs()) {
@@ -334,7 +483,8 @@ Methodology make_m1_methodology() {
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",
-        "win-back", "predict whether", "classify",   "score"};
+        "win-back", "predict whether", "classify",   "score",
+        "customer lifetime value", "lifetime value", "clv"};
     methodology.inputs = {
         {"entity", true, "entity identifier"},
         {"label", true, "outcome column"},
@@ -342,7 +492,7 @@ Methodology make_m1_methodology() {
     };
     methodology.outputs = {"model", "scores", "drivers", "ranked entities"};
     methodology.metrics = {"ROC-AUC", "PR-AUC", "log loss", "Brier score",
-                           "lift"};
+                           "lift", "RMSE", "MAE"};
     methodology.runnable = true;
     methodology.build_shape = build_m1_shape;
     methodology.owns = m1_owns;
