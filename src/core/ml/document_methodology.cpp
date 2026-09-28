@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -209,7 +210,7 @@ api::ApiResult run_m11(RunRequest& request) {
     }
 
     std::string dataset_error;
-    const std::optional<zetta::data::ResolvedDataset> dataset =
+    std::optional<zetta::data::ResolvedDataset> dataset =
         resolve_m11_dataset(request, dataset_error);
     if (!dataset) {
         return api::ApiResult::failure("engine_error", dataset_error);
@@ -251,6 +252,16 @@ api::ApiResult run_m11(RunRequest& request) {
         params.trocr_directory = checkpoint->get<std::string>();
     }
 
+    data::FeaturePlanOptions feature_options;
+    feature_options.entity_column = params.document_id_column;
+    feature_options.label_column = params.labels_column;
+    feature_options.native_entries.push_back({{params.document_column}, {"document_text"},
+        "native PDF text recovery or TrOCR line recognition with page and box evidence",
+        "declared fields are extracted from document content"});
+    const auto feature_plan = plan_run_features(request, "M-11", *dataset, feature_options);
+    if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+        return api::ApiResult::failure("invalid_input", error);
+    }
     const std::shared_ptr<AsyncDocumentExtractionRun> handle =
         AsyncDocumentExtractionRun::start(context.node, *dataset,
                                           std::move(params));
@@ -261,6 +272,7 @@ api::ApiResult run_m11(RunRequest& request) {
     context.background->adopt(handle, [worker = handle.get()] {
         return worker->done();
     });
+    record_run_features(context.node, handle->run()->id(), feature_plan);
     return api::ApiResult::success(
         {{"run_id", handle->run()->id()},
          {"engine", "document_extraction"},

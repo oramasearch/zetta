@@ -126,6 +126,10 @@ const nlohmann::json& graph_step_annotations_schema() {
           "leaks_target": {
             "description": "Explicit marker that the feature encodes the target — target leakage.",
             "type": "boolean"
+          },
+          "post_treatment": {
+            "description": "The feature is observed after treatment and cannot be an uplift predictor.",
+            "type": "boolean"
           }
         }
       }
@@ -1131,6 +1135,10 @@ CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {
         for (const json& feature : *features) {
             const std::string feature_name = feature.value("name", std::string{});
             const std::string normalized_feature = normalize_type(feature_name);
+            if (feature.value("post_treatment", false)) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is observed after treatment");
+            }
             const std::string normalized_outcome = normalize_type(*outcome);
             const bool outcome_like =
                 normalized_feature == normalized_outcome ||

@@ -1,4 +1,5 @@
 #include "zetta/ml/forecast_methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -244,12 +245,34 @@ api::ApiResult run_forecast_methodology(RunRequest &request) {
   if (!dataset.ok()) {
     return api::ApiResult::failure("invalid_input", dataset.error);
   }
+  data::FeaturePlanOptions feature_options;
+  feature_options.label_column = pipeline->params.target_column;
+  feature_options.time_column = pipeline->params.time_column;
+  feature_options.entity_column = pipeline->params.series_column;
+  for (const auto lag : pipeline->params.forecast.lags) {
+    feature_options.native_entries.push_back({
+        {pipeline->params.target_column, pipeline->params.time_column},
+        {"lag_" + std::to_string(lag)}, "strictly past lag " + std::to_string(lag),
+        "forecast history is ordered within series and evaluated with rolling origins"});
+  }
+  if (pipeline->params.forecast.rolling_window > 0) {
+    const auto window = std::to_string(pipeline->params.forecast.rolling_window);
+    feature_options.native_entries.push_back({
+        {pipeline->params.target_column, pipeline->params.time_column},
+        {"rolling_mean_" + window}, "mean of the prior " + window + " observations",
+        "the current and future target are excluded from each rolling window"});
+  }
+  const auto feature_plan = plan_run_features(request, "M-4", dataset, feature_options);
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
+  }
   auto run = node.create_run(request.project->id(), request.graph->id());
   if (!run) {
     return api::ApiResult::failure("engine_error",
                                    "could not create forecast Run");
   }
   auto work = std::make_shared<ForecastWork>();
+  record_run_features(node, run->id(), feature_plan);
   work->node = &node;
   work->dataset = std::move(dataset);
   work->params = pipeline->params;

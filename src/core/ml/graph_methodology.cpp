@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <optional>
 #include <string>
@@ -184,11 +185,11 @@ api::ApiResult run_graph_methodology(RunRequest &request) {
   }
 
   api::ApiContext &context = *request.context;
-  const data::ResolvedDataset resolved = data::resolve_dataset(
+  data::ResolvedDataset resolved = data::resolve_dataset(
       context.node, path, contract,
       data::default_dataset_sampler(context.node, context.cluster));
   if (!resolved.ok()) {
-    return api::ApiResult::failure("engine_error", resolved.error);
+    return run_dataset_failure(request, "M-12", resolved);
   }
 
   GraphRunOptions options;
@@ -198,12 +199,32 @@ api::ApiResult run_graph_methodology(RunRequest &request) {
   options.project = request.project->id();
   options.graph = request.graph->id();
   options.model_name = request.input.value("model_name", "graph_model");
+  data::FeaturePlanOptions feature_options;
+  if (resolved.contract.feature_columns.size() >= 2) {
+    std::vector<std::string> names = {
+        "in_degree", "out_degree", "weighted_in_degree", "weighted_out_degree",
+        "page_rank", "component", "clustering_coefficient"};
+    for (std::size_t dimension = 0; dimension < options.params.embedding_dimensions; ++dimension) {
+      names.push_back("embedding_" + std::to_string(dimension));
+    }
+    feature_options.native_entries.push_back({
+        {resolved.contract.entity_column, resolved.contract.feature_columns[0],
+         resolved.contract.feature_columns[1], resolved.contract.time_column},
+        std::move(names),
+        "time-bounded weighted graph statistics and native node embeddings",
+        "relationship structure is computed only from edges before prediction_time"});
+  }
+  const auto feature_plan = plan_run_features(request, "M-12", resolved, feature_options);
+  if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+    return api::ApiResult::failure("invalid_input", error);
+  }
   GraphRunResult result = run_graph(context.node, resolved, options);
   if (!result.ok()) {
     return api::ApiResult::failure("engine_error", result.error);
   }
 
   nlohmann::json output;
+  record_run_features(context.node, result.run_id, feature_plan);
   output["run_id"] = result.run_id;
   output["engine"] = "graph";
   output["status"] = "succeeded";

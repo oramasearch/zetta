@@ -7,6 +7,13 @@ It is native C++26: no Python process, foreign ML runtime, hosted model, or
 pretrained checkpoint is used. Weight, tokenizer, vocabulary, and checkpoint
 licences therefore do not apply.
 
+Registry runs enforce the [feature plan](../data/featurization.md) before creating
+a Run, launching distributed training, or publishing any table. Reports record
+the native empirical-marginal/copula sources and configured DP clipping bounds;
+entity and utility label are excluded as predictors. Transform-first data and
+selected leakage return `invalid_input`. Privacy accounting, output disclosure
+checks, and the native trainer are unchanged.
+
 The public model kind is `synthetic_private`. One run produces:
 
 - an evaluated synthetic table containing the feature columns and label, but

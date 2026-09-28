@@ -3,6 +3,12 @@
 Implemented for [#1056](https://github.com/oramasearch/zetta/issues/1056),
 methodology M-17.
 
+The registry run checks the [feature plan](../data/featurization.md) before
+fitting or creating a Run. Reports record `hierarchical_group_statistics` from
+group and observation columns, with the label and entity excluded as direct
+predictors. A required pivot or selected leakage source returns `invalid_input`;
+grouped fitting may read its observation target, but no scalar predictor may.
+
 This slice provides native uncertainty estimates for three cases:
 
 - split-conformal intervals around numeric point predictions;

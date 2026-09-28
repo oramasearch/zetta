@@ -31,6 +31,7 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `logs` | `vector<RunLogEntry>` | Each `{ time, level, message }` — observability + diagnosis. |
 | `outputs` | `vector<RunOutput>` | Each `{ kind, name, ref }`; `kind` ∈ `dataset` / `model` / `index`. |
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |
+| `features` | JSON object | Accepted feature provenance: `used[{name, source[], transform, why}]` and `excluded[{name, why}]`; absent on old records means empty arrays (#1062). |
 
 `status` is grounded in the run events: a run starts `Pending`, moves to
 `Running` (RunStarted), and ends `Succeeded` (RunSucceeded, with outputs +
@@ -63,6 +64,11 @@ artifacts), so `find` / `drop` take the id:
 The **update** half of the slice is the mutators on the `Run` handle. Each bumps
 `updated`, captures `run:<id>` into the CRDT (when replicated), then rewrites
 `run.json`:
+
+`set_features` validates the complete candidate record before persisting it. A
+malformed feature or missing reason returns false and leaves the Run unchanged.
+Methodology callbacks supply this provenance after their data-first preflight;
+[run-report.md](run-report.md) documents its read surface.
 
 ```cpp
 auto run = node.create_run("project-uuid", "graph-1");   // Pending

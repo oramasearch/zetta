@@ -71,6 +71,10 @@
             "description": "The feature's name.",
             "minLength": 1,
             "type": "string"
+          },
+          "post_treatment": {
+            "description": "The feature is observed after treatment and cannot be an uplift predictor.",
+            "type": "boolean"
           }
         },
         "required": [

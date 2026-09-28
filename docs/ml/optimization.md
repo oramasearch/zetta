@@ -134,6 +134,16 @@ and constraints. No plan is published if any member reports a violation.
    `iteration_limit`, `node_limit`, `time_limit_ms`, tolerances, and `seed`.
 5. Read the durable run with `get_run`, then call `get_run_report`.
 
+## Feature-plan precondition
+
+The registry callback checks the [feature plan](../data/featurization.md) before
+solving. It records actual objective coefficients, variable names and integrality,
+plus available bounds, baseline, scenario/quantile markers, and constraint fields.
+There is no learned encoding or numeric scaling. `integer` is a variable-domain
+input, not a supervised target; `row_id` identifies records and is excluded as a
+solver feature. `get_run_report.features` carries these choices and their reasons.
+A required data correction returns `invalid_input` before creating a Run.
+
 ## Verification
 
 ```sh

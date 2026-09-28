@@ -15,6 +15,7 @@
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/synthetic_private.hpp"
 #include "zetta/ml/synthetic_private_job.hpp"
 #include "zetta/node.hpp"
@@ -195,10 +196,23 @@ api::ApiResult run_m20(RunRequest& request) {
     }
     const data::DatasetSampler sampler =
         data::default_dataset_sampler(context.node, context.cluster);
-    const data::ResolvedDataset resolved = data::resolve_dataset(
+    data::ResolvedDataset resolved = data::resolve_dataset(
         context.node, path, overrides, sampler);
     if (!resolved.ok()) {
-        return api::ApiResult::failure("engine_error", resolved.error);
+        resolved.contract = overrides;
+        return run_dataset_failure(request, "M-20", resolved);
+    }
+    const SyntheticPrivateParams params = params_from(*model, request.input);
+    data::FeaturePlanOptions feature_options;
+    for (const auto& source : resolved.contract.feature_columns) {
+        feature_options.native_entries.push_back({{source}, {source},
+            "native empirical marginals and normal-score copula; numeric or ordered-category model input clipped to [" +
+                std::to_string(params.clip_min) + ", " + std::to_string(params.clip_max) + "] for DP GBDT",
+            "protected inputs support evaluated synthetic rows and the bounded private model; the utility target is separate"});
+    }
+    const auto feature_plan = plan_run_features(request, "M-20", resolved, feature_options);
+    if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+        return api::ApiResult::failure("invalid_input", reason);
     }
     const std::shared_ptr<pipeline::Run> run = context.node.create_run(
         request.project->id(), request.graph->id());
@@ -206,6 +220,7 @@ api::ApiResult run_m20(RunRequest& request) {
         return api::ApiResult::failure("engine_error",
                                        "could not create M-20 run record");
     }
+    record_run_features(context.node, run->id(), feature_plan);
     run->set_status(pipeline::RunStatus::Running);
     run->add_log({util::now_iso8601(), "info",
                   "dataset: read: " + path_value});
@@ -217,7 +232,6 @@ api::ApiResult run_m20(RunRequest& request) {
     if (coordinator == nullptr) {
         return fail_run(run, "M-20 requires an attached compute coordinator");
     }
-    const SyntheticPrivateParams params = params_from(*model, request.input);
     const std::string round_tag = "synthetic-private:" + util::new_uuid();
     const std::vector<std::string> roster =
         coordinator->collectives().participants();

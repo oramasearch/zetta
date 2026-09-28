@@ -139,6 +139,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
 | `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
 | `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
+| `analyze_dataset` | read | api:query | sample a landed dataset and report semantic types with evidence, column statistics, grain, candidate keys, join candidates, and leakage candidates |
+| `plan_features` | read | api:query | return a methodology-specific feature/exclusion plan, or a named `transform_required` correction that is never applied automatically |
 | `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
 | `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |

@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -148,7 +149,7 @@ api::ApiResult run_m10(RunRequest& request) {
         }
         overrides = *parsed;
     }
-    const data::ResolvedDataset dataset =
+    data::ResolvedDataset dataset =
         data::resolve_dataset(context.node, *path, overrides,
                               data::default_dataset_sampler(context.node, context.cluster));
     if (!dataset.ok()) {
@@ -198,11 +199,20 @@ api::ApiResult run_m10(RunRequest& request) {
         }
     }
 
+    data::FeaturePlanOptions feature_options;
+    feature_options.native_entries.push_back({{text_column}, {"text_embedding"},
+        "native WordPiece tokenization and BERT embedding",
+        "semantic text representation for retrieval and classifier training"});
+    const auto feature_plan = plan_run_features(request, "M-10", dataset, feature_options);
+    if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+        return api::ApiResult::failure("invalid_input", error);
+    }
     const LanguageRunResult executed = run_language_dataset(
         context.node, context.cluster, request.graph->graph(), dataset, params);
     if (!executed.ok()) {
         return api::ApiResult::failure("engine_error", executed.error);
     }
+    record_run_features(context.node, executed.run_id, feature_plan);
     return api::ApiResult::success({{"run_id", executed.run_id},
                                     {"engine", "language"},
                                     {"status", "succeeded"},

@@ -1,13 +1,16 @@
 #include "zetta/ml/methodology.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
 
 #include "zetta/data/dataset_path.hpp"
+#include "zetta/data/dataset.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/optimization.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -111,6 +114,36 @@ OptimizationParams optimization_params(const nlohmann::json &input) {
   return params;
 }
 
+data::FeaturePlanOptions optimization_feature_options(
+    Node &node, const data::ResolvedDataset &dataset) {
+  data::FeaturePlanOptions options;
+  options.entity_column = "row_id";
+  options.native_entries = {
+      {{"variable"}, {"variable"}, "assemble named decision variables",
+       "constraint coefficients must refer to the same decision variable"},
+      {{"objective"}, {"objective"}, "native linear objective coefficient",
+       "the solver optimizes the declared objective, without scaling its units"},
+      {{"integer"}, {"integer"}, "native variable integrality constraint",
+       "integer is solver metadata, not a supervised label"}};
+  for (const auto &summary : node.datasets()) {
+    if (summary.table_id != dataset.table_id) {
+      continue;
+    }
+    for (const auto *column : {"lower_bound", "upper_bound", "current_value",
+                               "scenario", "quantile", "prediction_kind",
+                               "constraint", "coefficient", "sense", "rhs"}) {
+      if (std::find(summary.columns.begin(), summary.columns.end(), column) ==
+          summary.columns.end()) {
+        continue;
+      }
+      options.native_entries.push_back(
+          {{column}, {column}, "native optimization model assembly and validation",
+           "the solver reads this bound, baseline, uncertainty marker, or constraint field without learned encoding"});
+    }
+  }
+  return options;
+}
+
 api::ApiResult run_m16(RunRequest &request) {
   if (request.context == nullptr || request.project == nullptr ||
       request.graph == nullptr) {
@@ -145,7 +178,18 @@ api::ApiResult run_m16(RunRequest &request) {
   const data::ResolvedDataset dataset =
       data::resolve_dataset(context.node, path, contract, sampler);
   if (!dataset.ok()) {
-    return api::ApiResult::failure("engine_error", dataset.error);
+    return run_dataset_failure(request, "M-16", dataset);
+  }
+
+  // The resolver uses integer as a contract placeholder. The solver consumes
+  // it as variable metadata, so there is no supervised target for planning.
+  auto planned_dataset = dataset;
+  planned_dataset.contract.label_column.clear();
+  const auto feature_plan = plan_run_features(
+      request, "M-16", planned_dataset,
+      optimization_feature_options(context.node, dataset));
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
   }
 
   OptimizationRunOptions options;
@@ -159,6 +203,7 @@ api::ApiResult run_m16(RunRequest &request) {
   if (!run.ok()) {
     return api::ApiResult::failure("engine_error", run.error);
   }
+  record_run_features(context.node, run.run->id(), feature_plan);
 
   nlohmann::json output{
       {"run_id", run.run->id()},

@@ -1,5 +1,6 @@
 #include "zetta/ml/methodology.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -10,6 +11,7 @@
 
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/bandit.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -178,12 +180,13 @@ api::ApiResult run_bandit_methodology(RunRequest &request) {
   if (overrides.feature_columns.empty() && !params.context_columns.empty()) {
     overrides.feature_columns = params.context_columns;
   }
-  const data::ResolvedDataset resolved = data::resolve_dataset(
+  data::ResolvedDataset resolved = data::resolve_dataset(
       request.context->node, data::parse_dataset_path(path_text), overrides,
       data::default_dataset_sampler(request.context->node,
                                     request.context->cluster));
   if (!resolved.ok()) {
-    return api::ApiResult::failure("engine_error", resolved.error);
+    resolved.contract = overrides;
+    return run_dataset_failure(request, "M-15", resolved);
   }
   if (!bandit_algorithm_from_string(request.input.value(
           "algorithm", model->attributes.value("algorithm", "thompson")))) {
@@ -191,12 +194,36 @@ api::ApiResult run_bandit_methodology(RunRequest &request) {
         "invalid_input",
         "bandit: algorithm must be thompson, linucb, or linear_thompson");
   }
+  if (params.context_columns.empty() &&
+      params.policy.algorithm != BanditAlgorithm::Thompson) {
+    params.context_columns = resolved.contract.feature_columns;
+    std::erase(params.context_columns, params.arm_column);
+  }
+  data::FeaturePlanOptions feature_options;
+  feature_options.entity_column = params.decision_column;
+  feature_options.label_column = params.reward_column;
+  feature_options.group_column = params.arm_column;
+  feature_options.native_entries.push_back(
+      {{params.arm_column, params.reward_column}, {"arm_policy_statistics"},
+       "group observed rewards by arm; update native posterior statistics",
+       "the allocation policy learns separate reward statistics for each available arm"});
+  for (const auto &column : params.context_columns) {
+    feature_options.native_entries.push_back(
+        {{column}, {column}, "native numeric context; per-arm policy update",
+         "the bandit runner consumes this decision-time context column"});
+  }
+  const auto feature_plan =
+      plan_run_features(request, "M-15", resolved, feature_options);
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
+  }
   const BanditDatasetResult result =
       run_bandit_dataset(request.context->node, resolved, params,
                          request.project->id(), request.graph->id());
   if (!result.ok()) {
     return api::ApiResult::failure("engine_error", result.error);
   }
+  record_run_features(request.context->node, result.run_id, feature_plan);
   nlohmann::json output;
   output["run_id"] = result.run_id;
   output["engine"] = "bandit";

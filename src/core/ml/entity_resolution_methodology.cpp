@@ -1,4 +1,6 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
+#include "zetta/data/dataset.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -179,11 +181,47 @@ api::ApiResult run_m2(RunRequest &request) {
     }
     contract = *parsed;
   }
-  const data::ResolvedDataset dataset = data::resolve_dataset(
+  data::ResolvedDataset dataset = data::resolve_dataset(
       context.node, path, contract,
       data::default_dataset_sampler(context.node, context.cluster));
   if (!dataset.ok()) {
-    return api::ApiResult::failure("engine_error", dataset.error);
+    return run_dataset_failure(request, "M-2", dataset);
+  }
+
+  EntityResolutionParams params = graph_params(request.graph->graph());
+  data::FeaturePlanOptions feature_options;
+  feature_options.entity_column = params.record_id_column;
+  for (const auto& summary : context.node.datasets()) {
+    if (summary.table_id != dataset.table_id) {
+      continue;
+    }
+    const auto add = [&](const std::string& column, std::vector<std::string> names,
+                         std::string transform) {
+      if (std::find(summary.columns.begin(), summary.columns.end(), column) != summary.columns.end()) {
+        feature_options.native_entries.push_back({{column}, std::move(names), std::move(transform),
+            "pairwise identity evidence for candidate matching"});
+      }
+    };
+    add(params.name_column, {"name_jaro_winkler", "name_token_jaccard"},
+        "normalized Jaro-Winkler and token Jaccard pair similarities");
+    add(params.address_column, {"address_token_jaccard"}, "address token Jaccard similarity");
+    add(params.email_column, {"email_agreement", "email_missing"},
+        "normalized exact email agreement and pair missing flag");
+    add(params.phone_column, {"phone_agreement", "phone_missing"},
+        "normalized exact phone agreement and pair missing flag");
+    add(params.date_column, {"date_similarity", "date_missing"},
+        "exponential date-distance similarity and pair missing flag");
+    add(params.email_verified_column, {"verified_email_constraint"},
+        "reject conflicting verified emails during clustering");
+    add(params.phone_verified_column, {"verified_phone_constraint"},
+        "reject conflicting verified phone numbers during clustering");
+    if (std::find(summary.columns.begin(), summary.columns.end(), params.truth_entity_column) != summary.columns.end()) {
+      feature_options.label_column = params.truth_entity_column;
+    }
+  }
+  const auto feature_plan = plan_run_features(request, "M-2", dataset, feature_options);
+  if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+    return api::ApiResult::failure("invalid_input", error);
   }
 
   const std::shared_ptr<pipeline::Run> run =
@@ -193,10 +231,10 @@ api::ApiResult run_m2(RunRequest &request) {
                                    "M-2 could not create its Run record");
   }
   run->set_status(pipeline::RunStatus::Running);
+  record_run_features(context.node, run->id(), feature_plan);
   run->add_log({util::now_iso8601(), "info",
                 "entity resolution read dataset: " + dataset_name});
 
-  EntityResolutionParams params = graph_params(request.graph->graph());
   const EntityResolutionTableResult table_result = run_entity_resolution(
       context.node, dataset, params, run->id().substr(0, 8), context.cluster);
   if (!table_result.ok()) {

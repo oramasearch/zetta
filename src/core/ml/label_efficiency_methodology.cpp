@@ -1,5 +1,6 @@
 #include "zetta/ml/methodology.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -11,6 +12,7 @@
 #include "zetta/api/background.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ml/label_efficiency_runner.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -300,7 +302,8 @@ api::ApiResult run_m19(RunRequest& request) {
         context.node, path, overrides,
         data::default_dataset_sampler(context.node, context.cluster));
     if (!dataset.ok()) {
-        return api::ApiResult::failure("engine_error", dataset.error);
+        dataset.contract = overrides;
+        return run_dataset_failure(request, "M-19", dataset);
     }
 
     LabelEfficiencyRunOptions options;
@@ -319,6 +322,30 @@ api::ApiResult run_m19(RunRequest& request) {
         supplied != request.input.end() &&
         !apply_params(*supplied, options.params, params_error)) {
         return api::ApiResult::failure("invalid_input", params_error);
+    }
+    data::FeaturePlanOptions feature_options;
+    for (const auto& source : dataset.contract.feature_columns) {
+        feature_options.native_entries.push_back({{source}, {source},
+            "native global mean/standard-deviation normalization for logistic scores and k-center diversity",
+            "active learning uses comparable numeric inputs without using gold labels as predictors"});
+    }
+    for (const auto& function : options.params.labelling_functions) {
+        feature_options.native_entries.push_back({{function.column}, {"weak_vote_" + function.name},
+            "raw numeric threshold " + std::string(to_string(function.rule_operator)) + " " +
+                std::to_string(function.value) + "; emit " + std::to_string(function.label) +
+                ", otherwise " + (function.otherwise_label ? std::to_string(*function.otherwise_label) : "abstain") +
+                "; generative weak-supervision label model",
+            "declared labelling rules contribute votes independently of the held-out gold target"});
+    }
+    const auto feature_plan = plan_run_features(request, "M-19", dataset, feature_options);
+    if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+        return api::ApiResult::failure("invalid_input", reason);
+    }
+    for (const auto& function : options.params.labelling_functions) {
+        if (!std::ranges::contains(dataset.contract.feature_columns, function.column)) {
+            return api::ApiResult::failure("invalid_input",
+                "labelling function '" + function.name + "' needs a selected numeric input: " + function.column);
+        }
     }
     if (options.params.labelling_functions.empty()) {
         return api::ApiResult::failure(
@@ -379,6 +406,7 @@ api::ApiResult run_m19(RunRequest& request) {
             "the M-19 run was submitted but its Run record did not appear");
     }
 
+    record_run_features(context.node, run_id, feature_plan);
     return api::ApiResult::success(
         {{"run_id", run_id},
          {"engine", "label_efficiency"},

@@ -65,7 +65,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        84u); // +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -110,7 +110,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"get_project", "get_run", "get_model", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
-          "list_indexes", "list_datasets", "list_methodologies"}) {
+          "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
+          "list_methodologies"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     const ApiResult methodologies =
@@ -679,6 +680,39 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+}
+
+TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {
+    std::vector<nlohmann::json> rows;
+    for (int index = 0; index < 80; ++index) {
+        rows.push_back({{"customer_id", index + 1},
+                        {"plan", index % 3 == 0 ? "pro" : "basic"},
+                        {"spend", index % 20},
+                        {"signup_at", "2025-01-01"},
+                        {"churned", index % 4 == 0 ? 1 : 0}});
+    }
+    zetta::data::AddDatasetOptions options;
+    options.database = "features";
+    options.table_name = "accounts";
+    options.partitioned = false;
+    const auto added = zetta::data::add_dataset_rows(node, std::move(rows), options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    const auto analyzed = call("analyze_dataset", {{"dataset", "features.accounts"},
+                                                    {"label", "churned"},
+                                                    {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(analyzed.ok) << analyzed.error.message;
+    EXPECT_EQ(analyzed.value.at("grain"), "entity");
+    EXPECT_EQ(analyzed.value.at("columns").size(), 5u);
+
+    const auto planned = call("plan_features", {{"dataset", "features.accounts"},
+                                                {"methodology", "M-1"},
+                                                {"label", "churned"},
+                                                {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(planned.ok) << planned.error.message;
+    EXPECT_EQ(planned.value.at("status"), "ready");
+    EXPECT_FALSE(planned.value.at("entries").empty());
+    EXPECT_TRUE(planned.value.at("transform_required").is_null());
 }
 
 // #1008: upload_dataset lands a file's TEXT from the request through the same

@@ -69,7 +69,10 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   runners and reports retained. S-11 resolves to M-8; M-6 remains selectable
   by methodology ID and model kind. M-17 through M-21 add Bayesian uncertainty,
   stacking, label efficiency, privacy and streaming. Unknown model kinds remain
-  explicit refusals. See [ml/integration.md](ml/integration.md).
+  explicit refusals. All 21 callbacks enforce the
+  [data-first feature plan](data/featurization.md) and report actual used/excluded
+  inputs with reasons; transform-first data is refused before execution (#1062).
+  See [ml/integration.md](ml/integration.md).
   [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
   [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
 

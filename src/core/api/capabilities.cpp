@@ -30,6 +30,7 @@
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/featurize_plan.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -45,6 +46,7 @@
 #include "zetta/ml/anomaly_methodology.hpp"
 #include "zetta/ml/explain_row.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/streaming.hpp"
 #include "zetta/ml/score_table.hpp"
@@ -520,9 +522,10 @@ const nlohmann::json& get_run_report_schema() {
 const nlohmann::json& get_run_report_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"run", "model"}},
+        {"required", {"run", "model", "features"}},
         {"properties",
-         {{"run",
+         {{"features", zetta::pipeline::run_features_schema()},
+          {"run",
            {{"type", "object"},
             {"description", "run id, graph, status, and when it finished"}}},
           {"dataset",
@@ -988,7 +991,7 @@ nlohmann::json forecast_report(Node &node, const zetta::pipeline::Run &run,
     return report;
 }
 
-ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+ApiResult assemble_run_report(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("run_id").get<std::string>();
     const std::shared_ptr<zetta::pipeline::Run> run = context.node.find_run(id);
     if (!run) {
@@ -2311,6 +2314,274 @@ ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
                                 databases + ") — pass \"database\" to pick one");
     }
     return ApiResult::success(dataset_summary_json(matches.front()));
+}
+
+ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context) {
+    auto result = assemble_run_report(input, context);
+    if (!result.ok) {
+        return result;
+    }
+    const auto run = context.node.find_run(input.at("run_id").get<std::string>());
+    for (const auto& output : run->outputs()) {
+        if (output.kind != "model") {
+            continue;
+        }
+        if (const auto model = context.node.find_model(output.ref)) {
+            result.value["features"] = zetta::ml::run_feature_report(*run, *model);
+            break;
+        }
+    }
+    return result;
+}
+
+// --- analyze_dataset / plan_features (#1062) --------------------------------
+
+const nlohmann::json& dataset_reference_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"oneOf", {{{"required", {"dataset"}}},
+                   {{"required", {"dataset_path"}}}}},
+        {"properties",
+         {{"dataset",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a dataset name, or database.table; a bare name must be unique"}}},
+          {"dataset_path",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the canonical dataset_path grammar; this capability reads "
+                            "landed database.table datasets"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "database for a bare dataset name"}}}}}};
+    return schema;
+}
+
+nlohmann::json analysis_options_schema() {
+    return nlohmann::json{
+        {"sample_rows",
+         {{"type", "integer"},
+          {"minimum", 1},
+          {"maximum", 10000},
+          {"description", "maximum rows sampled for evidence (default 256)"}}},
+        {"label",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description", "label column for single-feature leakage checks"}}},
+        {"time_column",
+         {{"type", "string"},
+          {"minLength", 1},
+          {"description", "declared observation/event time column"}}},
+        {"as_of",
+         {{"oneOf", {{{"type", "string"}}, {{"type", "number"}}}},
+          {"description", "point-in-time cutoff for later-timestamp leakage checks"}}}};
+}
+
+const nlohmann::json& analyze_dataset_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json result = dataset_reference_schema();
+        const nlohmann::json options = analysis_options_schema();
+        for (const auto& [name, property] : options.items()) {
+            result["properties"][name] = property;
+        }
+        return result;
+    }();
+    return schema;
+}
+
+nlohmann::json column_analysis_schema() {
+    return nlohmann::json{
+        {"type", "object"},
+        {"required",
+         {"name", "semantic_type", "evidence", "role_candidates", "null_count",
+          "null_rate", "distinct_count", "distinct_ratio", "top_values", "quantiles",
+          "string_lengths", "sentinel_values"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"semantic_type",
+           {{"type", "string"},
+            {"enum", {"boolean", "datetime", "free_text", "identifier",
+                      "categorical", "numeric", "json", "unknown"}}}},
+          {"evidence", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"role_candidates", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"null_count", {{"type", "integer"}}},
+          {"null_rate", {{"type", "number"}}},
+          {"distinct_count", {{"type", "integer"}}},
+          {"distinct_ratio", {{"type", "number"}}},
+          {"top_values", {{"type", "array"}}},
+          {"quantiles", {{"type", "object"}}},
+          {"string_lengths", {{"type", "object"}}},
+          {"sentinel_values", {{"type", "array"}}}}}};
+}
+
+const nlohmann::json& analyze_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"table_id", "database", "table", "rows", "sampled_rows", "columns",
+          "grain", "grain_evidence", "candidate_keys", "joinable_tables",
+          "leakage_candidates"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"table_id", {{"type", "string"}}},
+          {"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"rows", {{"type", "integer"}}},
+          {"sampled_rows", {{"type", "integer"}}},
+          {"columns", {{"type", "array"}, {"items", column_analysis_schema()}}},
+          {"grain",
+           {{"type", "string"},
+            {"enum", {"entity", "event", "time_series", "snapshot", "ambiguous"}}}},
+          {"grain_evidence", {{"type", "string"}}},
+          {"candidate_keys", {{"type", "array"}}},
+          {"joinable_tables", {{"type", "array"}}},
+          {"leakage_candidates", {{"type", "array"}}}}}};
+    return schema;
+}
+
+std::optional<zetta::data::DatasetPath> capability_dataset_path(
+    const nlohmann::json& input, ApiContext& context, std::string& error) {
+    if (input.contains("dataset_path")) {
+        zetta::data::DatasetPath path = zetta::data::parse_dataset_path(
+            input.at("dataset_path").get<std::string>());
+        if (path.kind == zetta::data::DatasetPathKind::Directory) {
+            error = "dataset_path: analysis reads landed database.table datasets, not a "
+                    "filesystem directory";
+            return std::nullopt;
+        }
+        return path;
+    }
+
+    const std::string dataset = input.at("dataset").get<std::string>();
+    if (dataset.find('.') != std::string::npos) {
+        return zetta::data::parse_dataset_path(dataset);
+    }
+    const std::string requested_database = input.value("database", "");
+    std::vector<zetta::data::DatasetSummary> matches;
+    for (zetta::data::DatasetSummary& summary : context.node.datasets()) {
+        if (summary.name != dataset) {
+            continue;
+        }
+        if (!requested_database.empty() && summary.database != requested_database) {
+            continue;
+        }
+        matches.push_back(std::move(summary));
+    }
+    if (matches.empty()) {
+        error = "dataset: no dataset named '" + dataset + "'";
+        return std::nullopt;
+    }
+    if (matches.size() > 1) {
+        error = "dataset: '" + dataset +
+                "' exists in several databases; pass database or database.table";
+        return std::nullopt;
+    }
+    return zetta::data::DatasetPath{zetta::data::DatasetPathKind::Table, {},
+                                    matches.front().database, matches.front().name};
+}
+
+std::optional<std::string> as_of_string(const nlohmann::json& input) {
+    const auto found = input.find("as_of");
+    if (found == input.end()) {
+        return std::nullopt;
+    }
+    return found->is_string() ? std::optional<std::string>{found->get<std::string>()}
+                              : std::optional<std::string>{found->dump()};
+}
+
+ApiResult handle_analyze_dataset(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto path = capability_dataset_path(input, context, error);
+    if (!path) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    zetta::data::AnalysisOptions options;
+    options.sample_rows = input.value("sample_rows", options.sample_rows);
+    options.label_column = input.value("label", "");
+    options.time_column = input.value("time_column", "");
+    options.as_of = as_of_string(input);
+    const zetta::data::DatasetAnalysis analysis = zetta::data::analyze_dataset(
+        context.node, *path, options, {}, context.cluster);
+    if (!analysis.ok()) {
+        return ApiResult::failure("engine_error", analysis.error);
+    }
+    return ApiResult::success(zetta::data::to_json(analysis));
+}
+
+const nlohmann::json& plan_features_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json result = dataset_reference_schema();
+        result["properties"]["methodology"] = {
+            {"type", "string"},
+            {"minLength", 1},
+            {"description", "methodology string such as M-1, segmentation, or forecast"}};
+        result["properties"]["group_column"] = {
+            {"type", "string"},
+            {"minLength", 1},
+            {"description", "ranking query/session group column"}};
+        const nlohmann::json options = analysis_options_schema();
+        for (const auto& [name, property] : options.items()) {
+            result["properties"][name] = property;
+        }
+        for (nlohmann::json& choice : result["oneOf"]) {
+            choice["required"].push_back("methodology");
+        }
+        return result;
+    }();
+    return schema;
+}
+
+const nlohmann::json& plan_features_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"status", "dataset", "methodology", "analysis", "entries", "excluded",
+          "transform_required"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"status", {{"type", "string"}, {"enum", {"ready", "transform_required"}}}},
+          {"dataset", {{"type", "string"}}},
+          {"methodology", {{"type", "string"}}},
+          {"analysis", analyze_dataset_output_schema()},
+          {"entries",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"source_columns", "features", "transform", "reason"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"source_columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"features", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"transform", {{"type", "string"}}},
+                {"reason", {{"type", "string"}}}}}}}}},
+          {"excluded", {{"type", "array"}}},
+          {"transform_required", {{"type", {"object", "null"}}}}}}};
+    return schema;
+}
+
+ApiResult handle_plan_features(const nlohmann::json& input, ApiContext& context) {
+    std::string error;
+    const auto path = capability_dataset_path(input, context, error);
+    if (!path) {
+        return ApiResult::failure("invalid_input", error);
+    }
+    zetta::data::FeaturePlanOptions options;
+    options.methodology = input.at("methodology").get<std::string>();
+    options.label_column = input.value("label", "");
+    options.time_column = input.value("time_column", "");
+    options.group_column = input.value("group_column", "");
+    options.as_of = as_of_string(input);
+    options.sample_rows = input.value("sample_rows", options.sample_rows);
+    const zetta::data::FeaturePlan plan = zetta::data::plan_features(
+        context.node, *path, options, {}, context.cluster);
+    if (!plan.ok()) {
+        return ApiResult::failure("engine_error", plan.error);
+    }
+    return ApiResult::success(zetta::data::to_json(plan));
 }
 
 // --- list_* siblings (#616) ----------------------------------------------------
@@ -7069,6 +7340,10 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
         {"list_datasets",
          "list the datasets (tables) available, with row and column counts"},
         {"get_dataset", "read one dataset's schema: {\"name\": \"<dataset>\"}"},
+        {"analyze_dataset", "read semantic types, distributions, grain, keys, joins, and "
+                            "leakage candidates for a landed dataset"},
+        {"plan_features",
+         "read a methodology-specific feature/exclusion plan or required dataset transform"},
         {"list_models", "list the trained models and their measures"},
         {"get_model", "read one model: its measures, its feature columns, and "
                       "its ranked churn "
@@ -8674,6 +8949,32 @@ void register_core_capabilities(Registry& registry) {
 
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
+
+    registry.add(Capability{
+        "analyze_dataset",
+        "Analyze a dataset",
+        "Read a landed dataset's semantic types, evidence, distributions, grain, candidate "
+        "keys, same-database joins, and leakage candidates. No side effects.",
+        analyze_dataset_schema(),
+        analyze_dataset_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_analyze_dataset});
+
+    registry.add(Capability{
+        "plan_features",
+        "Plan dataset features",
+        "Read a methodology-specific feature and exclusion plan from dataset analysis, or an "
+        "explicit transform_required proposal. No side effects and no transform is applied.",
+        plan_features_schema(),
+        plan_features_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_plan_features});
 }
 
 std::string pipeline_tool_name(const std::string& graph) {

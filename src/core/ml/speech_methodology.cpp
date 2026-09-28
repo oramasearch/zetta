@@ -12,6 +12,7 @@
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/speech.hpp"
+#include "zetta/ml/run_features.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -212,6 +213,18 @@ api::ApiResult run_m14(RunRequest &request) {
       attributes->value("maximum_new_tokens", std::size_t{24});
   params.seed = attributes->value("seed", std::uint64_t{1});
   params.model_name = request.input.value("model_name", params.model_name);
+  data::FeaturePlanOptions feature_options;
+  feature_options.entity_column = params.recording_column;
+  feature_options.label_column = params.label_column;
+  feature_options.native_entries = {
+      {{params.audio_column}, {"audio_log_mel"},
+       "consented WAV decode; 16 kHz resampling; energy segmentation; log-mel spectrogram",
+       "native Whisper consumes audio features, not recording identifiers or reference transcripts"}};
+  const auto feature_plan =
+      plan_run_features(request, "M-14", *dataset, feature_options);
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
+  }
   if (params.checkpoint_model.empty() && params.checkpoint_directory.empty()) {
     return api::ApiResult::failure(
         "invalid_input",
@@ -222,6 +235,7 @@ api::ApiResult run_m14(RunRequest &request) {
   if (!result.ok()) {
     return api::ApiResult::failure("engine_error", result.error);
   }
+  record_run_features(request.context->node, result.run_id, feature_plan);
   return api::ApiResult::success(
       {{"run_id", result.run_id},
        {"engine", "speech"},

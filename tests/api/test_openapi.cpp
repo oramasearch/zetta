@@ -163,10 +163,14 @@ TEST(OpenApi, RunReportSchemaPreservesMethodologyOutputShapes) {
     validator.set_root_schema(report->output_schema);
     nlohmann::json facts = {{"run", nlohmann::json::object()},
                             {"model", nlohmann::json::object()},
+                            {"features", {{"used", nlohmann::json::array()},
+                                          {"excluded", nlohmann::json::array()}}},
                             {"outputs", nlohmann::json::array()}};
     EXPECT_NO_THROW(validator.validate(facts));
     facts["outputs"] = {{"survival", "survival_results.curves"}};
     EXPECT_NO_THROW(validator.validate(facts));
+    facts.erase("features");
+    EXPECT_THROW(validator.validate(facts), std::invalid_argument);
 }
 
 TEST(OpenApi, DocumentMatchesTheRegistry) {

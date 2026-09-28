@@ -1,4 +1,5 @@
 #include "zetta/ml/next_best_action_methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -267,6 +268,28 @@ api::ApiResult run_next_best_action_methodology(RunRequest &request) {
   if (!dataset.ok()) {
     return api::ApiResult::failure("invalid_input", dataset.error);
   }
+  data::FeaturePlanOptions feature_options;
+  for (const auto& column : dataset.contract.feature_columns) {
+    feature_options.native_entries.push_back({{column}, {column},
+        "native numeric input to the response-propensity GBDT",
+        "the pipeline selects this pre-decision predictor"});
+  }
+  feature_options.native_entries.push_back({
+      {dataset.contract.entity_column, pipeline->params.action_column,
+       pipeline->params.interaction_count_column, pipeline->params.interaction_time_column},
+      {"als_affinity"}, "implicit-feedback ALS on training interactions before the temporal holdout",
+      "historical entity-action affinity supplements response propensity"});
+  feature_options.native_entries.push_back({
+      {pipeline->params.value_column, pipeline->params.cost_column,
+       pipeline->params.eligibility_column, pipeline->params.contacts_column,
+       pipeline->params.contact_cap_column},
+      {"expected_value", "eligible_action"},
+      "response probability times value minus cost; eligibility and contact-cap filters",
+      "the native policy ranks only allowed actions by expected net value"});
+  const auto feature_plan = plan_run_features(request, "M-8", dataset, feature_options);
+  if (const auto reason = feature_plan_error(feature_plan); !reason.empty()) {
+    return api::ApiResult::failure("invalid_input", reason);
+  }
   std::shared_ptr<pipeline::Run> run =
       node.create_run(request.project->id(), request.graph->id());
   if (!run) {
@@ -274,6 +297,7 @@ api::ApiResult run_next_best_action_methodology(RunRequest &request) {
                                    "could not create next-best-action Run");
   }
   auto work = std::make_shared<RecommendationWork>();
+  record_run_features(node, run->id(), feature_plan);
   work->node = &node;
   work->dataset = std::move(dataset);
   work->params = pipeline->params;

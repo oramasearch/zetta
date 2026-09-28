@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -203,7 +204,7 @@ api::ApiResult run_m13(RunRequest &request) {
                                    "M-13 graph has no owned vision model step");
   }
   std::string dataset_error;
-  const std::optional<data::ResolvedDataset> dataset = resolve_graph_dataset(
+  std::optional<data::ResolvedDataset> dataset = resolve_graph_dataset(
       context.node, request.graph->graph(), dataset_error);
   if (!dataset) {
     return api::ApiResult::failure("engine_error", dataset_error);
@@ -236,11 +237,21 @@ api::ApiResult run_m13(RunRequest &request) {
     reason = "the acting identity lacks blob:read permission";
     return false;
   };
+  data::FeaturePlanOptions feature_options;
+  feature_options.label_column = params.label_column;
+  feature_options.native_entries.push_back({{params.image_column}, {"image_embedding"},
+      "native PNG/JPEG decoding, normalization and frozen ViT embedding",
+      "the classifier learns from image content with a source-disjoint holdout"});
+  const auto feature_plan = plan_run_features(request, "M-13", *dataset, feature_options);
+  if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+    return api::ApiResult::failure("invalid_input", error);
+  }
   VisionRunResult result =
       run_vision_on_table(context.node, *dataset, params, authorizer);
   if (!result.ok()) {
     return api::ApiResult::failure("engine_error", result.error);
   }
+  record_run_features(context.node, result.run_id, feature_plan);
   return api::ApiResult::success(
       {{"run_id", result.run_id},
        {"engine", "vision"},

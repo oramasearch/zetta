@@ -47,6 +47,7 @@ state, and `get_run_report` puts them together at query time:
 | survival quality | the survival Model's concordance and IPCW Brier metrics |
 | survival outputs | the run's survival and interval-calibration table refs |
 | M-8 recommendation rows and policy facts | the run's tables in `recommendation_results` |
+| used features and exclusions with reasons | the Run's accepted feature plan, plus fitted segmentation encoding metadata |
 | decisions + constraint checks | an optimization run's plan and constraint-trace tables in `optimization_results` |
 | M-17 uncertainty metrics | the Bayesian Model's numeric `metrics` |
 | M-17 source and output tables | the Run's lineage and dataset outputs |
@@ -106,6 +107,73 @@ than failing the whole report. A dataset-less churn run (the built-in demo data)
 covered end to end over REST in `tests/api/test_rest_server.cpp`.
 
 ## What the run has to write down
+
+### Features used and excluded (#1062)
+
+All 21 runnable methodologies include the same provenance shape:
+
+```json
+{
+  "features": {
+    "used": [{
+      "name": "lag_7",
+      "source": ["value", "time"],
+      "transform": "strictly past lag 7",
+      "why": "forecast history is ordered within series and evaluated with rolling origins"
+    }],
+    "excluded": [{
+      "name": "value",
+      "why": "the label is a target or evaluation role, never a contemporaneous feature"
+    }]
+  }
+}
+```
+
+`source` is an array because native transformations can read several columns. The
+label and entity key are reserved roles, not scalar predictors. A structural key
+or historical target can therefore appear as a transformation source while also
+being excluded as a direct feature. Leakage suspects and post-treatment uplift
+columns have explicit exclusion reasons; selecting unsafe inputs refuses the run.
+
+The accepted choices are stored on the Run through the schema-validated
+`set_features` mutator and survive persistence and replication. The report is still
+assembled on read, without a second report document. Segmentation expands the
+record using its fitted encoder's actual names, scaling, and exclusions. Other
+native featurizers record their own executed transforms, not generic suggestions
+that their trainers do not implement. See [featurization.md](../data/featurization.md).
+
+M-14 records `audio_log_mel` from the configured audio-reference column; recording
+IDs, consent metadata, and reference transcripts are not prediction features.
+M-15 records `arm_policy_statistics` sourced from arm and historical reward, plus
+the numeric context columns actually passed to the policy. Reward is not allowed
+as decision-time context, and decision ID remains a reserved role. M-16 records the
+solver's objective, variable domain, and available constraint/scenario inputs,
+with row ID excluded. Its `integer` column is used integrality metadata, not a
+classification label. All three reject a required data transform before creating
+the Run, so a rejected plan cannot produce a trained-model report.
+
+M-17 records `hierarchical_group_statistics` with group and observation sources;
+the observation label is excluded as a direct predictor. M-18 records accepted
+numeric base inputs and `oof_<base-name>` predictions for the native stacker, using
+the fitted model's base names. M-19 records normalized numeric inputs and named
+`weak_vote_<function-name>` threshold votes. M-20 records empirical-marginal/copula
+inputs and the configured clipping bounds used for the private model. Their label
+and entity roles are excluded with reasons.
+
+M-21 records `window_count` and `window_sum_<source>` with entity, event-time and
+numeric-value provenance. The transform states the configured window duration and
+allowed lateness, including the current accepted event; prediction precedes its
+label update. Raw event time and delayed-label availability are excluded as scalar
+predictors. All five callbacks reject transform-first data and selected leakage
+before creating a Run or launching work. Provenance uses the existing replicated
+Run field and report schema; it adds no new report format.
+
+Older/direct-trainer Runs without provenance remain readable. Their report uses
+the fitted Model's feature-name list when present, explicitly saying detailed
+provenance was not recorded; it does not reconstruct historical exclusions from
+today's mutable table.
+
+### Measured outcomes
 
 The feature table is in memory and gone when the run ends, so the facts a report needs
 are recorded as the run goes:
@@ -181,9 +249,11 @@ accuracy a constant answer would score, and **draw `missing` rather than skippin
 
 ## Boundaries
 
-No new JSON format and no new storage. `run.schema.json`'s output `kind` enum gains
-`"report"`; `get_run_report` is a read capability (`GET`), on the REST surface, the MCP
-tool list, and the agent's read-tool allowlist.
+Feature provenance extends `run.schema.json` with an optional, strictly validated
+`features` object; older records default to empty arrays. The output `kind` enum
+includes `"report"`. `get_run_report` remains a read capability (`GET`), on the REST
+surface, the MCP tool list, and the agent's read-tool allowlist. Its OpenAPI response
+requires the same feature-provenance shape.
 
 ## Learning-to-rank reports
 

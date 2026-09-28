@@ -42,10 +42,18 @@ relay it to a person.
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Data evidence before methodology choice**: `analyze_dataset` reports semantic
+  types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
+  into explicit features and exclusions. When the prediction unit is wrong or a
+  required field is absent, the read returns a named `transform_required` correction
+  and proposed SQL or clean step. It never changes the dataset for the agent
+  ([featurization.md](../../data/featurization.md), #1062). All 21 methodology
+  callbacks enforce the plan before training and refuse selected unsafe features;
+  `get_run_report.features` lists used sources/transforms and exclusions with reasons.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
   metrics, and runnable status. `compile_intent` accepts a methodology or
-  solution selector; M-1 through M-16 are runnable, while unsupported work names
+  solution selector; M-1 through M-21 are runnable, while unsupported work names
   its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. M-15 compiles and runs its own

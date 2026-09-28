@@ -136,6 +136,35 @@ TEST(Run, ConfidenceIsClampedTo01) {
     node.stop();
 }
 
+TEST(RunFeaturePlan, FeatureReasonsSurviveRestartAndRejectMalformedUsage) {
+    TempDir directory;
+    std::string run_id;
+    const nlohmann::json usage = {
+        {"used", {{{"name", "spend"}, {"source", {"spend"}},
+                    {"transform", "numeric carry-through"}, {"why", "pre-outcome input"}}}},
+        {"excluded", {{{"name", "label"}, {"why", "target only"}},
+                       {{"name", "entity"}, {"why", "row key only"}}}}};
+    {
+        Node node{config_for(directory)};
+        ASSERT_TRUE(node.start());
+        const auto run = node.create_run();
+        ASSERT_TRUE(run);
+        run_id = run->id();
+        std::string error;
+        ASSERT_TRUE(run->set_features(usage, &error)) << error;
+        auto malformed = usage;
+        malformed["used"][0].erase("why");
+        EXPECT_FALSE(run->set_features(malformed, &error));
+        EXPECT_EQ(run->value().features, usage);
+        node.stop();
+    }
+    Node restored{config_for(directory)};
+    ASSERT_TRUE(restored.start());
+    ASSERT_TRUE(restored.find_run(run_id));
+    EXPECT_EQ(restored.find_run(run_id)->value().features, usage);
+    restored.stop();
+}
+
 TEST(Run, PersistsAcrossRestartViaDisk) {
     TempDir tmp;
     std::string id;

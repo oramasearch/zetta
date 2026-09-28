@@ -1,4 +1,5 @@
 #include "zetta/ml/methodology.hpp"
+#include "zetta/ml/run_features.hpp"
 
 #include <chrono>
 #include <optional>
@@ -143,11 +144,11 @@ api::ApiResult run_survival_methodology(RunRequest& request) {
         return api::ApiResult::failure(
             "invalid_input", "M-5 runs on a resolved database.table dataset");
     }
-    const data::ResolvedDataset resolved = data::resolve_dataset(
+    data::ResolvedDataset resolved = data::resolve_dataset(
         context.node, parsed_path, contract,
         data::default_dataset_sampler(context.node, context.cluster));
     if (!resolved.ok()) {
-        return api::ApiResult::failure("engine_error", resolved.error);
+        return run_dataset_failure(request, "M-5", resolved);
     }
 
     SurvivalDatasetParams params;
@@ -165,6 +166,16 @@ api::ApiResult run_survival_methodology(RunRequest& request) {
     params.training.validation_fraction = request.input.value(
         "validation_fraction", params.training.validation_fraction);
     params.dataset_notes = resolved.notes;
+    std::erase(resolved.contract.feature_columns, params.duration_column);
+    std::erase(resolved.contract.feature_columns, params.feature_time_column);
+    auto feature_plan = plan_run_features(request, "M-5", resolved);
+    if (const auto error = feature_plan_error(feature_plan); !error.empty()) {
+        return api::ApiResult::failure("invalid_input", error);
+    }
+    feature_plan.entries.push_back({{params.duration_column}, {"interval"},
+        "native person-period expansion with interval_width=" +
+            std::to_string(params.training.interval_width),
+        "discrete hazard uses the period index; raw follow-up duration is not a predictor"});
 
     std::set<std::string> prior_runs;
     for (const auto& existing : context.node.runs()) {
@@ -212,6 +223,7 @@ api::ApiResult run_survival_methodology(RunRequest& request) {
             "engine_error", "the survival Run record did not appear in time");
     }
 
+    record_run_features(context.node, run_id, feature_plan);
     return api::ApiResult::success(
         {{"run_id", run_id},
          {"engine", "survival"},
