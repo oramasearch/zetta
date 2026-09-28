@@ -83,7 +83,8 @@ validation groups, and one-participant ownership per group.
 
 ## Running it
 
-Compile M-9 explicitly or through solution S-12. Dataset hints become the
+Compile M-9 explicitly or by a ranking model kind. S-12 resolves to M-1,
+its first-listed catalogue method; ranking is a supporting component. Dataset hints become the
 connect and model configuration:
 
 ```json

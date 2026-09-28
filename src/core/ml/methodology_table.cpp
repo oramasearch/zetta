@@ -19,6 +19,7 @@ Methodology make_m6_methodology();
 Methodology make_m8_methodology();
 Methodology make_m9_methodology();
 Methodology make_graph_methodology();
+Methodology make_m13_methodology();
 
 namespace {
 
@@ -98,13 +99,7 @@ const std::vector<Methodology>& methodologies() {
                 {"structured fields", "evidence links"},
                 {"field accuracy", "F1", "straight-through rate"}, 1050),
         make_graph_methodology(),
-        planned("M-13", "Computer vision", "Language, documents & perception",
-                {"computer_vision", "vision"}, {},
-                {"image", "vision", "detect defect", "segment image"},
-                {input("image", true, "images or video frames"),
-                 input("label", false, "class, box, or mask annotations")},
-                {"classifications", "detections", "masks"},
-                {"mAP", "IoU", "escape rate"}, 1052),
+        make_m13_methodology(),
         planned("M-14", "Speech & audio analytics",
                 "Language, documents & perception", {"speech", "audio"}, {},
                 {"speech", "audio", "transcribe", "diarize"},
@@ -176,10 +171,20 @@ find_methodology(std::string_view id_or_model_kind_or_solution) {
     const std::string wanted = lower(id_or_model_kind_or_solution);
     for (const Methodology& methodology : methodologies()) {
         if (lower(methodology.id) == wanted ||
-            contains_value(methodology.model_kinds, wanted) ||
+            contains_value(methodology.model_kinds, wanted)) {
+            return &methodology;
+        }
+    }
+    // A solution may admit multiple methodologies. Prefer one the engine can
+    // execute, then retain the portfolio-order fallback for planned entries.
+    for (const Methodology& methodology : methodologies()) {
+        if (methodology.runnable &&
             contains_value(methodology.solutions, wanted)) {
             return &methodology;
         }
+    }
+    for (const Methodology& methodology : methodologies()) {
+        if (contains_value(methodology.solutions, wanted)) return &methodology;
     }
     return nullptr;
 }

@@ -66,6 +66,10 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+- For M-13, compile hints name the image table, its image/label/source columns,
+  and a registered ViT backbone. `run` reads that graph-owned table, refuses an
+  unauthorized image before its bytes are read, and `get_run_report` returns
+  source-disjoint accuracy, macro-F1, the confusion matrix, and prediction table.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

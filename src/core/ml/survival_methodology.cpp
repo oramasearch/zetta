@@ -230,7 +230,7 @@ Methodology make_m5_methodology() {
     methodology.name = "Survival / time-to-event";
     methodology.family = "The tabular decision core";
     methodology.model_kinds = {"survival", "time_to_event"};
-    methodology.solutions = {"S-8"};
+    methodology.solutions = {};
     methodology.keywords = {"time to", "when will", "survival",
                             "remaining useful life"};
     methodology.inputs = {

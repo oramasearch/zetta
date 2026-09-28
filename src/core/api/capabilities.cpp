@@ -587,6 +587,13 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"predictions",
+           {{"type", "array"},
+            {"description", "vision prediction rows, capped by `limit`"}}},
+          {"confusion_matrix",
+           {{"type", "array"},
+            {"description",
+             "vision held-out counts indexed by actual then predicted class"}}},
           {"methodology",
            {{"type", "string"},
             {"description", "methodology id for typed reports"}}},
@@ -921,6 +928,60 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "vision") {
+        nlohmann::json model_facts = {{"id", model->id()},
+                                      {"name", model->name()}};
+        for (const char* key :
+             {"accuracy", "macro_f1", "train_rows", "held_out_rows"}) {
+            if (const std::optional<double> value = number(key)) {
+                model_facts[key] = *value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+                break;
+            }
+        }
+        if (const std::optional<double> value = number("images_read")) {
+            dataset["images_read"] = *value;
+        }
+        if (const std::optional<double> value = number("images_excluded")) {
+            dataset["images_excluded"] = *value;
+        }
+        report["dataset"] = std::move(dataset);
+
+        const nlohmann::json& feature_schema = model->feature_schema();
+        if (const auto matrix = feature_schema.find("confusion_matrix");
+            matrix != feature_schema.end() && matrix->is_array()) {
+            report["confusion_matrix"] = *matrix;
+        }
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        if (const std::shared_ptr<zetta::data::Table> table =
+                run_at_risk_table(context.node, *run)) {
+            for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+                if (output.kind == "dataset") {
+                    output_tables.push_back(output.ref);
+                }
+            }
+            nlohmann::json predictions = nlohmann::json::array();
+            const zetta::storage::StorageEngine& store = table->store();
+            for (std::size_t index = 0;
+                 index < store.size() && predictions.size() < limit; ++index) {
+                if (const auto row = store.at(index)) {
+                    predictions.push_back(*row);
+                }
+            }
+            report["predictions"] = std::move(predictions);
+        }
+        report["output_tables"] = std::move(output_tables);
+        return ApiResult::success(std::move(report));
+    }
 
     if (model->kind() == "graph") {
         nlohmann::json model_facts = {{"id", model->id()},

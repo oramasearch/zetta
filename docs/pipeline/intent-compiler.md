@@ -25,8 +25,9 @@ The compiler uses the first applicable signal:
 M-2 is selected explicitly by id/model kind or by its identity-resolution
 keywords; it is not used as a generic fallback.
 
-M-5 is also selected explicitly by `methodology: M-5`, by `solution: S-8`, or
-by its registered time-to-event keywords. It returns a dedicated cohort →
+M-5 is selected explicitly by `methodology: M-5` or by its registered
+time-to-event keywords. S-8 selects M-7 (anomaly detection), its primary
+catalogue method; survival is a supporting component. It returns a dedicated cohort →
 validation → discrete-hazard model → survival/calibration output graph.
 
 An empty intent is `invalid_input`. An unknown methodology or solution is also

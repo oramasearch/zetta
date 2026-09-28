@@ -267,7 +267,7 @@ Methodology make_m9_methodology() {
     methodology.name = "Learning-to-rank";
     methodology.family = "Action & decision";
     methodology.model_kinds = {"ranking", "learning_to_rank", "rank"};
-    methodology.solutions = {"S-12"};
+    methodology.solutions = {};
     methodology.keywords = {"rank", "prioritise", "prioritize", "queue"};
     methodology.inputs = {{"entity", true, "items to order"},
                           {"group", true, "query or queue identifier"},

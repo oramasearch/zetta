@@ -20,6 +20,7 @@ using zetta::pipeline::GraphEdgeTimeCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::ValidationReport;
+using zetta::pipeline::VisionSourceSplitCheck;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -506,11 +507,43 @@ TEST(GraphCheck, RefusesADisconnectedEdgeTimeFilter) {
                    "model");
     EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
 }
+
+TEST(VisionSourceSplitCheck, AcceptsANamedSourceDisjointHoldout) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", true},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesFrameLevelSplits) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", false},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("frames"), std::string::npos) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesAnUnnamedSourceGroup) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "computer_vision"},
+                    {"source_disjoint", true}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("source_column"), std::string::npos)
+        << result.reason;
+}
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 14u);
+    ASSERT_EQ(gate.check_count(), 15u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -524,7 +557,8 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
     EXPECT_EQ(gate.checks()[11]->name(), "rank_correctness");
     EXPECT_EQ(gate.checks()[12]->name(), "graph_edge_time");
-    EXPECT_EQ(gate.checks()[13]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[13]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[14]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {

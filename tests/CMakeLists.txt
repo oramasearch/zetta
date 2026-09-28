@@ -87,6 +87,8 @@ add_executable(zetta-tests
   ml/test_survival.cpp
   ml/test_graph.cpp
   ml/test_graph_partitions.cpp
+  ml/test_vision.cpp
+  ml/test_vision_train_partitions.cpp
   ml/test_model.cpp
   ml/test_next_best_action.cpp
   ml/test_next_best_action_methodology.cpp

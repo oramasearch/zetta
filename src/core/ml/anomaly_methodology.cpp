@@ -353,7 +353,7 @@ Methodology make_anomaly_methodology() {
   result.name = "Anomaly detection";
   result.family = "Time & vigilance";
   result.model_kinds = {"anomaly", "anomaly_detection", "outlier"};
-  result.solutions = {"S-7"};
+  result.solutions = {"S-7", "S-8"};
   result.keywords = {"anomaly", "outlier", "unusual", "spike"};
   result.inputs = {
       {"feature", true, "numeric features or metrics"},

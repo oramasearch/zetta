@@ -210,6 +210,7 @@ if(APPLE)
   list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
 endif()
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
@@ -562,6 +563,7 @@ add_library(zetta-core STATIC
   src/core/ml/graph_job.cpp
   src/core/ml/graph_methodology.cpp
   src/core/ml/graph_runner.cpp
+  src/core/ml/vision_methodology.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp
@@ -689,6 +691,11 @@ add_library(zetta-core STATIC
   src/core/ml/lag_features.cpp
   src/core/ml/temporal_split.cpp
   src/core/ml/gbdt_train_job.cpp
+  src/core/ml/vision.cpp
+  src/core/ml/vision_image.cpp
+  src/core/ml/vision_runner.cpp
+  src/core/ml/vision_train_job.cpp
+  src/core/ml/vision_vit.cpp
   src/core/ml/calibration.cpp
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
@@ -841,6 +848,7 @@ target_link_libraries(zetta-core PRIVATE
   Boost::corosio
   Boost::corosio_openssl
   OpenSSL::Crypto
+  ZLIB::ZLIB
   automerge-cpp::automerge-cpp
   nlohmann_json_schema_validator)
 

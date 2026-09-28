@@ -23,6 +23,7 @@ The reusable annotation and methodology-specific checks are:
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
 | `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
+| `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -152,6 +153,17 @@ feed the graph model through a data-flow edge and declare the same
 `filter_time_column` and cutoff plus
 `exclude_after_prediction_time: true`. Missing, disabled, or mismatched filters
 fail the gate before the graph can run.
+
+### `vision_source_split` — refuse frame-level evaluation
+
+Engages on a Model step whose `model_kind` is `vision` or `computer_vision`.
+It requires `source_disjoint: true` and a non-empty `source_column`. A missing or
+false flag fails because random frame splitting can put nearly identical frames
+from one camera, site, or document in both train and test. A missing source
+column fails because the runner cannot know which rows must stay together.
+
+The M-13 shape emits both annotations. The runtime also performs the split from
+the named column, so the graph promise and the executed behavior agree.
 
 ## Example
 

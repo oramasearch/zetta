@@ -89,9 +89,12 @@ What's inside, by domain (each links to that domain's docs):
   Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
   and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 through M-9 and M-12 run today, M-10 has partial retrieval support, and the others
+  approaches: M-1 through M-9 and M-12/M-13 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
+M-13 runs
+  native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
+  governed large-object reads.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

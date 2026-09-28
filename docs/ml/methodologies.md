@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-9 and M-12 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-9 and M-12/M-13 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -27,9 +27,11 @@ entry:
   `run` callbacks.
 
 `methodologies()` owns the ordered table. `find_methodology()` resolves ids,
-model kinds, and primary solution ids. `methodology_for_graph()` first asks
-implemented ownership callbacks, then resolves the model step's `model_kind` or
-legacy `algo` value.
+model kinds, and primary solution ids. When more than one methodology names a
+solution, a runnable implementation wins over a planned entry, with portfolio
+order as the fallback. `methodology_for_graph()` first asks implemented
+ownership callbacks, then resolves the model step's `model_kind` or legacy
+`algo` value.
 Compile and run refusal messages list runnable entries from the same registry.
 
 The `list_methodologies` read capability exposes every entry as JSON over REST
@@ -174,6 +176,15 @@ filter, compute graph features and embeddings, then write joinable output tables
 Its run callback resolves the pipeline's connect-step table when the caller does
 not override `dataset_path`, executes the native graph runner, and returns the
 Run read by `get_run` and `get_run_report`. See [graph.md](graph.md).
+
+## M-13 vision implementation
+
+`src/core/ml/vision_methodology.cpp` provides M-13's image-table shape,
+ownership predicate, and runner. It resolves the table named by the graph's own
+connect step, enforces the source-disjoint and large-object access rules, calls
+the [native vision runner](vision.md), and returns the durable run id. The same
+run and report reads used by M-1 expose M-13's Model, prediction table, metrics,
+confusion matrix, and read/exclusion counts.
 
 ## Adding a methodology
 

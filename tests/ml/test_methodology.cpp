@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 8 || index == 11;
+        const bool runnable = index <= 8 || index == 11 || index == 12;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
 
         EXPECT_EQ(methodologies[index].runnable, runnable);
@@ -104,6 +104,30 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+    EXPECT_TRUE(methodologies[12].runnable);
+    EXPECT_TRUE(methodologies[12].issue.empty());
+}
+
+TEST(MethodologyRegistry, VisionBuildsItsOwnRunnableShape) {
+    const zetta::ml::Methodology* vision = zetta::ml::find_methodology("M-13");
+    ASSERT_NE(vision, nullptr);
+    const zetta::ir::ExecutionGraph graph = vision->build_shape(
+        {.project = "inspection",
+         .intent = "classify defects",
+         .hints = {{"database", "factory"},
+                   {"table", "frames"},
+                   {"backbone_model", "vit-small"}}});
+    EXPECT_TRUE(vision->owns(graph));
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(), 1u);
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Model).size(), 1u);
+    const auto connect =
+        graph.nodes_of_kind(zetta::ir::StepKind::Connect).front();
+    const auto model = graph.nodes_of_kind(zetta::ir::StepKind::Model).front();
+    EXPECT_EQ(connect->attributes.at("source"), "factory");
+    EXPECT_EQ(connect->attributes.at("table"), "frames");
+    EXPECT_EQ(model->attributes.at("model_kind"), "vision");
+    EXPECT_EQ(model->attributes.at("backbone_model"), "vit-small");
+    EXPECT_EQ(model->attributes.at("source_disjoint"), true);
 }
 
 TEST(MethodologyRegistry, RankBuildsItsOwnRunnableShape) {
@@ -158,8 +182,8 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("M-6")->id, "M-6");
     EXPECT_EQ(zetta::ml::find_methodology("graph")->id, "M-12");
     EXPECT_EQ(zetta::ml::find_methodology("S-10")->id, "M-1");
-    EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
-    EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-5");
+    EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-7");
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
