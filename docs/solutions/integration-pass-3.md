@@ -44,3 +44,52 @@ ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 --gtest_filter='
 
 Schema regeneration produced no changes. The test inventory retains every
 registry and action-journey test from both module branches, without duplicates.
+
+## Full static proof
+
+After merging `dev`, recursive submodule synchronization completed and the
+generated build directory was removed. The fresh native static build passed:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+cmake --build build -j 6 --target zetta-tests
+```
+
+The suite used a fresh local PostgreSQL database created for this run:
+
+```sh
+createdb -h 127.0.0.1 -U stevesperandeo zetta_issue1122_pass3_20260928_1f90d1c4
+ZETTA_PG_TEST_HOST=127.0.0.1 \
+ZETTA_PG_TEST_USER=stevesperandeo \
+ZETTA_PG_TEST_DB=zetta_issue1122_pass3_20260928_1f90d1c4 \
+ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_brief=1 \
+  --gtest_output=xml:build/pass3-static.xml
+```
+
+```text
+[==========] 2590 tests from 522 test suites ran. (501836 ms total)
+[  PASSED  ] 2574 tests.
+[  SKIPPED ] 16 tests.
+```
+
+| Proof area | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| Full static suite | 2574 | 0 | 16 |
+| Solution journeys | 13 | 0 | 0 |
+| Solution registry | 39 | 0 | 0 |
+| Correctness gate and ordered inventories | 14 | 0 | 0 |
+| Schemas and OpenAPI | 7 | 0 | 0 |
+| Local PostgreSQL connector | 5 | 0 | 0 |
+
+Neither #959 nor #1124 required a waiver. The 16 skips are explicit optional
+test conditions: ten need local model checkpoints, three need an opt-in corpus
+or corpus-output path, one needs the generated Motive demo dataset, one needs
+CUDA, and the no-engine fallback case does not apply when the full-text engine
+is compiled in. Schema regeneration, including `schemas/openapi.json`, is
+unchanged. The temporary PostgreSQL database is removed after the proof.
+
+The native log and machine-readable report are `build/pass3-static.log` and
+`build/pass3-static.xml`. All pass-three module integration work is complete.
+Live lake listing/start validation remains a post-deploy part of the wider
+#1122 epic; it is not claimed by this native integration proof. Band-B entries
+remain sketches. No formatter or container command was run.
