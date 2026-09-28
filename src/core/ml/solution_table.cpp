@@ -68,7 +68,7 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(1102);
+    solution.issue = issue(solution.id == "S-1" ? 1110 : 1102);
     return solution;
 }
 
@@ -106,7 +106,8 @@ nlohmann::json source_hints(const nlohmann::json& sources,
         return hints;
     }
     for (const auto& [key, value] : sources.items()) {
-        if (key != "common" && !key.starts_with("M-")) {
+        if (key != "common" && key != "correctness" &&
+            !key.starts_with("M-")) {
             hints[key] = value;
         }
     }
@@ -187,16 +188,23 @@ const std::vector<Solution>& solutions() {
              {"M-3", "foundation", 1}, {"M-5", "attachable", 2},
              {"M-6", "attachable", 3}, {"M-8", "attachable", 4}},
             {"M-2", "M-1", "M-3", "M-5", "M-6", "M-8"},
-            {"tasks in CRM", "driver report"}, {"L1", "optional L3"},
-            {{"score and create tasks", "A2"}, {"concessions and playbook changes", "A1"},
+            {"CRM tasks with owner, SLA, and top-3 reason codes",
+             "capped retention journey triggers", "driver report publication"},
+            {"L1 CRM tasks", "L1 journey triggers", "batch driver report"},
+            {{"score and create CRM tasks", "A2"},
+             {"trigger capped retention journeys", "A2"},
+             {"concessions and playbook changes", "A1"},
              {"threshold tuning inside approved bounds", "A3"}},
             {{"entity", true, "customer, account, or household"},
              {"label", true, "churn event and outcome window"},
              {"time", true, "feature cutoff and label window"},
-             {"treatment", false, "retention action and no-contact cell"}},
+             {"feature", true, "point-in-time behavior, service, and billing drivers"},
+             {"value", true, "customer value or an explicit value tier"},
+             {"treatment", false, "retention action and no-contact cell"},
+             {"owner", false, "account owner for CRM task routing"}},
             "Risk and treatment tiers with eligibility, contact caps, concession approvals, and a kill switch.",
             "Permanent holdout with randomized treatment cells and incremental retention read-back.",
-            {"complaints", "margin", "contact fatigue", "offer fairness", "holdout integrity"},
+            {"complaints", "discount budget", "contact fatigue", "action-execution rate"},
             levels("propensity, reasons, segments, holdout and report",
                    "add survival timing", "add uplift targeting",
                    "add treatment arbitration")),
@@ -496,11 +504,11 @@ nlohmann::json solution_json(const Solution& solution) {
                               {"required", role.required},
                               {"description", role.description}});
     }
-    nlohmann::json capability_levels = nlohmann::json::array();
+    nlohmann::json levels = nlohmann::json::array();
     for (const SolutionCapabilityLevel& level : solution.capability_levels) {
-        capability_levels.push_back({{"level", level.level},
-                                     {"name", level.name},
-                                     {"description", level.description}});
+        levels.push_back({{"level", level.level},
+                          {"name", level.name},
+                          {"description", level.description}});
     }
     nlohmann::json missing = nlohmann::json::array();
     for (const MissingSolutionComponent& component : solution.missing_components) {
@@ -525,7 +533,7 @@ nlohmann::json solution_json(const Solution& solution) {
             {"measurement", zetta::solutions::to_json(solution.templates.measurement)},
             {"minimal_template", solution.templates.minimal},
             {"guardrails", std::move(guardrails)},
-            {"capability_levels", std::move(capability_levels)},
+            {"levels", std::move(levels)},
             {"missing_components", std::move(missing)},
             {"status", solution.status},
             {"runnable", solution.runnable},

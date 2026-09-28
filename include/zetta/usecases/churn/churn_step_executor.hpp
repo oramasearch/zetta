@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "zetta/ddf/data_frame.hpp"
@@ -15,7 +16,7 @@
 
 // The **real** per-step executor for the UC-1 churn pipeline (#396) — the slice
 // that replaces DefaultStepExecutor's logical-ref placeholders with actual
-// distributed accelerated compute, behind the same StepExecutor seam and WITHOUT
+// distributed accelerated compute, behind the same StepExecutor interface and WITHOUT
 // touching the orchestrator (GraphExecutor's walk is unchanged).
 //
 // DefaultStepExecutor (executor.hpp) derives a schema-valid Run from the graph's
@@ -35,13 +36,13 @@
 //   act     -> retention playbook (host-side join of the at-risk list with each
 //                                 entity's dominant SHAP driver — who to contact + why)
 //
-// **Stateful across steps, by design.** The StepExecutor seam is a pure function
+// **Stateful across steps, by design.** The StepExecutor interface is a pure function
 // of one step (`run_step(const ir::Node&) const`), but real churn compute threads
 // artifacts down the pipeline: the feature table feeds training, the trained model
 // feeds scoring + explanation, and the ranked list + drivers feed the playbook. So
 // this executor carries that pipeline state in a pImpl, mutated through a unique_ptr
 // member — `run_step` stays `const` and the orchestrator is untouched. It also holds
-// the dependencies the seam can't supply (the Node, a started JobCoordinator, a
+// the dependencies the interface can't supply (the Node, a started JobCoordinator, a
 // ComputeDevice, the input shards). Because it accumulates state, one instance drives
 // exactly one execution; construct a fresh one per run.
 //
@@ -79,6 +80,7 @@ struct RetentionAction {
     double risk = 0.0;             // its calibrated churn risk (predict_proba)
     std::string dominant_driver;   // the feature with the largest |phi| for this entity
     double dominant_value = 0.0;   // its signed phi (positive = pushed toward churn)
+    std::vector<std::pair<std::string, double>> reason_codes;
 };
 
 // Everything the churn pipeline needs beyond the ExecutionGraph: this node's two

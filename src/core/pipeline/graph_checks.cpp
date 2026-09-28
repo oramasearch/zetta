@@ -533,7 +533,435 @@ std::optional<std::string> snapshot_source_error(
     return std::nullopt;
 }
 
+const json* s1_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-1") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-1 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s1_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-1 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s1_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-1 Pipeline to validate"};
+}
+
+CheckResult s1_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s1_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+const json* object_field(const json& value, const char* name) {
+    if (!value.is_object()) {
+        return nullptr;
+    }
+    const auto found = value.find(name);
+    return found != value.end() && found->is_object() ? &*found : nullptr;
+}
+
+bool has_methodology(const ir::ExecutionGraph& graph,
+                     std::string_view methodology) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object()) {
+        return false;
+    }
+    const auto declared = manifest->attributes.find("methodologies");
+    if (declared == manifest->attributes.end() || !declared->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*declared, [&](const json& entry) {
+        return entry.is_string() &&
+               entry.get_ref<const std::string&>() == methodology;
+    });
+}
+
+const ir::Node* model_kind(const ir::ExecutionGraph& graph,
+                           std::string_view kind) {
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (node && node->attributes.is_object() &&
+            node->attributes.value("model_kind", std::string{}) == kind) {
+            return node.get();
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
+
+CheckResult S1PointInTimeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const auto prediction = profile->find("prediction_time");
+    if (prediction == profile->end()) {
+        return s1_failure(name(),
+                          "S-1 must declare the prediction time T");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    if (!prediction_time) {
+        return s1_failure(name(), "S-1 prediction time T is invalid");
+    }
+    std::size_t sources = 0;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        ++sources;
+        if (node->attributes.value("source_kind", std::string{}) !=
+            "snapshot") {
+            return s1_failure(
+                name(), node_label(*node) +
+                            ": live feature sources are refused; use the "
+                            "point-in-time snapshot layer");
+        }
+        auto cutoff = node->attributes.find("solution_snapshot_as_of");
+        if (cutoff == node->attributes.end()) {
+            cutoff = node->attributes.find("snapshot_as_of");
+        }
+        if (cutoff == node->attributes.end()) {
+            return s1_failure(
+                name(), node_label(*node) +
+                            ": snapshot source has no inclusive cutoff");
+        }
+        const std::optional<solutions::TimePoint> snapshot_time =
+            solutions::parse_time_point(*cutoff);
+        if (!snapshot_time || snapshot_time->kind != prediction_time->kind ||
+            snapshot_time->value > prediction_time->value) {
+            return s1_failure(
+                name(), node_label(*node) +
+                            ": snapshot cutoff must be at or before prediction "
+                            "time T");
+        }
+    }
+    if (sources == 0) {
+        return s1_failure(name(), "S-1 has no methodology snapshot sources");
+    }
+    return s1_success(name(), std::to_string(sources) +
+                                  " S-1 feature sources end in snapshots at "
+                                  "or before T");
+}
+
+CheckResult S1LabelWindowCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const auto feature_end = profile->find("feature_window_end");
+    const auto label_start = profile->find("label_window_start");
+    const auto blackout = profile->find("blackout_gap_seconds");
+    if (feature_end == profile->end() || label_start == profile->end() ||
+        blackout == profile->end() || !blackout->is_number() ||
+        blackout->get<double>() < 0.0) {
+        return s1_failure(
+            name(), "S-1 must declare feature and label windows plus a "
+                    "non-negative blackout gap");
+    }
+    const auto feature_time = solutions::parse_time_point(*feature_end);
+    const auto label_time = solutions::parse_time_point(*label_start);
+    if (!feature_time || !label_time ||
+        feature_time->kind != label_time->kind ||
+        label_time->value <
+            feature_time->value + blackout->get<double>()) {
+        return s1_failure(
+            name(), "S-1 label window (T, T+H] must start after the feature "
+                    "window and its blackout gap");
+    }
+    return s1_success(name(),
+                      "S-1 label window starts after the blackout gap");
+}
+
+CheckResult S1TemporalValidationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation");
+    if (validation == nullptr ||
+        validation->value("split", std::string{}) != "out_of_time" ||
+        validation->value("rolling_windows", 0) < 2 ||
+        !validation->value("stable_across_windows", false)) {
+        return s1_failure(
+            name(), "S-1 requires an out-of-time split with stability shown "
+                    "across at least two rolling windows; random splits are "
+                    "refused");
+    }
+    return s1_success(name(),
+                      "S-1 uses stable rolling out-of-time validation");
+}
+
+CheckResult S1GroupSplitCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation");
+    if (validation == nullptr ||
+        validation->value("group_column", std::string{}).empty() ||
+        !validation->value("group_disjoint", false)) {
+        return s1_failure(
+            name(), "S-1 requires a named customer group and a disjoint "
+                    "group split so one customer cannot straddle train and "
+                    "test");
+    }
+    return s1_success(name(),
+                      "S-1 keeps each customer wholly on one split side");
+}
+
+CheckResult S1CensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const json* labels = object_field(*profile, "labels");
+    if (labels == nullptr || !labels->value("fully_observed", false)) {
+        return s1_failure(
+            name(), "S-1 propensity labels must come only from fully "
+                    "observed outcome windows");
+    }
+    if (level >= 2) {
+        const ir::Node* survival = model_kind(graph, "survival");
+        if (survival == nullptr ||
+            !survival->attributes.value("censoring_handled", false) ||
+            !survival->attributes.value("stop_after_event", false)) {
+            return s1_failure(
+                name(), "S-1 level 2 and above requires the censoring-aware "
+                        "M-5 survival head");
+        }
+    }
+    return s1_success(
+        name(), level >= 2
+                    ? "fully observed propensity labels and M-5 censoring are enforced"
+                    : "propensity labels use fully observed outcome windows");
+}
+
+CheckResult S1CalibrationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const json* sampling = object_field(*profile, "sampling");
+    if (sampling == nullptr) {
+        return s1_failure(name(), "S-1 must declare its sampling policy");
+    }
+    if (!sampling->value("used", false)) {
+        return s1_success(name(), "S-1 uses no sampled training population");
+    }
+    const std::string method =
+        sampling->value("calibration", std::string{});
+    if ((method != "platt" && method != "isotonic") ||
+        !sampling->value("calibration_disjoint", false)) {
+        return s1_failure(
+            name(), "sampled S-1 training requires disjoint Platt or "
+                    "isotonic probability calibration");
+    }
+    return s1_success(name(),
+                      "sampled S-1 probabilities are calibrated disjointly");
+}
+
+CheckResult S1EntityResolutionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const json* entity = object_field(*profile, "entity_resolution");
+    const ir::Node* resolver = model_kind(graph, "entity_resolution");
+    if (entity == nullptr ||
+        entity->value("methodology", std::string{}) != "M-2" ||
+        entity->value("actionable_unit", std::string{}).empty() ||
+        entity->value("duplicate_policy", std::string{}) != "refuse" ||
+        resolver == nullptr) {
+        return s1_failure(
+            name(), "S-1 requires M-2 to resolve a named actionable unit and "
+                    "must refuse duplicate entities");
+    }
+    return s1_success(name(),
+                      "M-2 resolves one duplicate-free actionable entity");
+}
+
+CheckResult S1LeakageReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    const auto blocklist = profile->find("leaky_feature_blocklist");
+    const auto features = profile->find("feature_names");
+    if (blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return s1_failure(
+            name(), "S-1 requires a configurable, non-empty leaky-feature "
+                    "blocklist and declared feature names");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() || entry.get_ref<const std::string&>().empty()) {
+            return s1_failure(name(),
+                              "S-1 leaky-feature blocklist entries must be names");
+        }
+        blocked.insert(normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return s1_failure(name(), "S-1 feature names must be strings");
+        }
+        const std::string normalized =
+            normalize_type(feature.get_ref<const std::string&>());
+        if (blocked.contains(normalized)) {
+            return s1_failure(
+                name(), "S-1 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is on the leaky-feature blocklist");
+        }
+    }
+    const auto threshold = profile->find("too_good_auc_threshold");
+    if (threshold == profile->end() || !threshold->is_number() ||
+        threshold->get<double>() <= 0.0 ||
+        threshold->get<double>() > 0.95) {
+        return s1_failure(
+            name(), "S-1 too-good-AUC review threshold must be configured at "
+                    "or below 0.95");
+    }
+    if (const auto reported = profile->find("reported_auc");
+        reported != profile->end() &&
+        (!reported->is_number() ||
+         reported->get<double>() > threshold->get<double>())) {
+        return s1_failure(
+            name(), "S-1 AUC exceeds the too-good threshold; review target "
+                    "and post-outcome leakage before deployment");
+    }
+    return s1_success(name(),
+                      "S-1 features clear the blocklist and AUC review");
+}
+
+CheckResult S1LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s1_failure(name(), error);
+    }
+    if (level >= 2 && !has_methodology(graph, "M-5")) {
+        return s1_failure(name(), "S-1 level 2 requires M-5 survival timing");
+    }
+    if (level >= 3) {
+        const ir::Node* uplift = model_kind(graph, "uplift");
+        if (!has_methodology(graph, "M-6") || uplift == nullptr ||
+            uplift->attributes.value("randomized_cycles", 0) < 1 ||
+            uplift->attributes.value("sleeping_dogs_action", std::string{}) !=
+                "no_contact" ||
+            !uplift->attributes.value("positive_uplift_only", false)) {
+            return s1_failure(
+                name(), "S-1 level 3 requires M-6, at least one randomized "
+                        "cycle, and first-class no-contact for sleeping dogs");
+        }
+    }
+    if (level >= 4 && !has_methodology(graph, "M-8")) {
+        return s1_failure(name(),
+                          "S-1 level 4 requires M-8 treatment arbitration");
+    }
+    return s1_success(name(),
+                      "S-1 selected level has every required methodology");
+}
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {
     return model_kind == "forecast" || model_kind == "survival" || model_kind == "streaming";

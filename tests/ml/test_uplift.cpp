@@ -99,6 +99,21 @@ TEST(UpliftCausal, HeterogeneousEffectRanksTheResponsiveSegment) {
   EXPECT_GT(result.control_rows, 0u);
   EXPECT_GT(result.held_out_rows, 0u);
   EXPECT_FALSE(result.observational);
+
+  std::size_t persuadables = 0;
+  std::size_t sleeping_dogs = 0;
+  for (const zetta::ml::TreatmentEffect &effect : result.treatment_effects) {
+    if (effect.recommended) {
+      ++persuadables;
+      EXPECT_GT(effect.estimated_uplift, 0.0);
+    }
+    if (effect.estimated_uplift <= 0.0) {
+      ++sleeping_dogs;
+      EXPECT_FALSE(effect.recommended);
+    }
+  }
+  EXPECT_GT(persuadables, 0u);
+  EXPECT_GT(sleeping_dogs, 0u);
 }
 
 TEST(UpliftCausal, TreatmentAndOutcomeMustBeBinary) {

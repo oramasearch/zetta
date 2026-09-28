@@ -58,7 +58,14 @@ std::map<int, ir::ExecutionGraph> solution_stages(const ir::ExecutionGraph& grap
             return {};
         }
         membership[node->id] = index;
-        stages[index].add_node(node->kind, node->name, node->attributes, node->id);
+        nlohmann::json attributes = node->attributes;
+        if (index > 0 && attributes.is_object()) {
+            attributes.erase("methodology");
+            attributes.erase("solution_stage");
+            attributes.erase("preview");
+        }
+        stages[index].add_node(node->kind, node->name,
+                               std::move(attributes), node->id);
     }
     for (const auto& edge : graph.edges()) {
         if (membership.at(edge.from) == membership.at(edge.to)) {
@@ -105,6 +112,14 @@ CorrectnessGate& CorrectnessGate::add_check(std::shared_ptr<Check> check) {
 ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
     ValidationReport report;
     if (graph.find_node("solution_manifest")) {
+        for (const auto& check : checks_) {
+            if (!check->evaluates_composed_graph()) {
+                continue;
+            }
+            const CheckResult result = check->evaluate(graph);
+            report.add("solution/" + result.name, result.status,
+                       result.reason);
+        }
         std::string error;
         const auto stages = solution_stages(graph, error);
         if (!error.empty()) {
@@ -112,6 +127,9 @@ ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
         } else {
             for (const auto& [index, stage] : stages) {
                 for (const auto& check : checks_) {
+                    if (check->evaluates_composed_graph()) {
+                        continue;
+                    }
                     const CheckResult result = check->evaluate(stage);
                     report.add("stage_" + std::to_string(index) + "/" + result.name,
                                result.status, result.reason);
@@ -140,6 +158,15 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
     gate.add_check(std::make_shared<SnapshotLineageCheck>());
+    gate.add_check(std::make_shared<S1PointInTimeCheck>());
+    gate.add_check(std::make_shared<S1LabelWindowCheck>());
+    gate.add_check(std::make_shared<S1TemporalValidationCheck>());
+    gate.add_check(std::make_shared<S1GroupSplitCheck>());
+    gate.add_check(std::make_shared<S1CensoringCheck>());
+    gate.add_check(std::make_shared<S1CalibrationCheck>());
+    gate.add_check(std::make_shared<S1EntityResolutionCheck>());
+    gate.add_check(std::make_shared<S1LeakageReviewCheck>());
+    gate.add_check(std::make_shared<S1LevelCompositionCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

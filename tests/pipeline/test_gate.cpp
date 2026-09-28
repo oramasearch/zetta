@@ -74,7 +74,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
     const ValidationReport report = gate.run(empty_graph);
 
     // Only the non-empty check fails; the other checks have no matching steps.
-    ASSERT_EQ(report.checks.size(), 29u);
+    ASSERT_EQ(report.checks.size(), 38u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -88,7 +88,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
     const ValidationReport report = gate.run(one_step_graph());
 
     // All default checks pass an unannotated single-step graph.
-    ASSERT_EQ(report.checks.size(), 29u);
+    ASSERT_EQ(report.checks.size(), 38u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -96,36 +96,45 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 29u);
+    ASSERT_EQ(gate.check_count(), 38u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
     EXPECT_EQ(gate.checks()[3]->name(), "snapshot_lineage");
-    EXPECT_EQ(gate.checks()[4]->name(), "temporal_validation");
-    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution_profile");
-    EXPECT_EQ(gate.checks()[6]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[7]->name(), "forecast_correctness");
-    EXPECT_EQ(gate.checks()[8]->name(), "survival_censoring");
-    EXPECT_EQ(gate.checks()[9]->name(), "causal_uplift");
-    EXPECT_EQ(gate.checks()[10]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[11]->name(), "next_best_action_correctness");
-    EXPECT_EQ(gate.checks()[12]->name(), "rank_correctness");
-    EXPECT_EQ(gate.checks()[13]->name(), "language_grounding");
-    EXPECT_EQ(gate.checks()[14]->name(), "language_training_access");
-    EXPECT_EQ(gate.checks()[15]->name(), "document_review");
-    EXPECT_EQ(gate.checks()[16]->name(), "graph_edge_time");
-    EXPECT_EQ(gate.checks()[17]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[18]->name(), "speech_consent");
-    EXPECT_EQ(gate.checks()[19]->name(), "speech_pii_redaction");
-    EXPECT_EQ(gate.checks()[20]->name(), "speech_local_audio");
-    EXPECT_EQ(gate.checks()[21]->name(), "bandit_policy");
-    EXPECT_EQ(gate.checks()[22]->name(), "optimization_contract");
-    EXPECT_EQ(gate.checks()[23]->name(), "uncertainty_validation");
-    EXPECT_EQ(gate.checks()[24]->name(), "ensemble_out_of_fold");
-    EXPECT_EQ(gate.checks()[25]->name(), "label_efficiency_gold_isolation");
-    EXPECT_EQ(gate.checks()[26]->name(), "privacy_budget");
-    EXPECT_EQ(gate.checks()[27]->name(), "streaming_correctness");
-    EXPECT_EQ(gate.checks()[28]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[4]->name(), "s1_point_in_time");
+    EXPECT_EQ(gate.checks()[5]->name(), "s1_label_window");
+    EXPECT_EQ(gate.checks()[6]->name(), "s1_temporal_validation");
+    EXPECT_EQ(gate.checks()[7]->name(), "s1_group_split");
+    EXPECT_EQ(gate.checks()[8]->name(), "s1_censoring");
+    EXPECT_EQ(gate.checks()[9]->name(), "s1_calibration");
+    EXPECT_EQ(gate.checks()[10]->name(), "s1_entity_resolution");
+    EXPECT_EQ(gate.checks()[11]->name(), "s1_leakage_review");
+    EXPECT_EQ(gate.checks()[12]->name(), "s1_level_composition");
+    EXPECT_EQ(gate.checks()[13]->name(), "temporal_validation");
+    EXPECT_EQ(gate.checks()[14]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[15]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[16]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[17]->name(), "survival_censoring");
+    EXPECT_EQ(gate.checks()[18]->name(), "causal_uplift");
+    EXPECT_EQ(gate.checks()[19]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[20]->name(), "next_best_action_correctness");
+    EXPECT_EQ(gate.checks()[21]->name(), "rank_correctness");
+    EXPECT_EQ(gate.checks()[22]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[23]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[24]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[25]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[26]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[27]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[28]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[29]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[30]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[31]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[32]->name(), "uncertainty_validation");
+    EXPECT_EQ(gate.checks()[33]->name(), "ensemble_out_of_fold");
+    EXPECT_EQ(gate.checks()[34]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[35]->name(), "privacy_budget");
+    EXPECT_EQ(gate.checks()[36]->name(), "streaming_correctness");
+    EXPECT_EQ(gate.checks()[37]->name(), "entity_resolution");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

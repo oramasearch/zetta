@@ -81,8 +81,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    no-contact ledger entries. Connector delivery retains its own acknowledgement,
    retry, kill-switch, idempotency and ledger behavior.
 5. Expose a `solution_results` decisions table as a parent Run output, plus
-   methodology artifacts and stage lineage. Observe S-1 complaint fraction,
-   committed action cost, and monthly contact count in its monitor.
+   methodology artifacts and stage lineage. S-1 rows also carry top-three
+   reason codes and risk × value × driver cells. Observe complaint fraction,
+   committed action cost, monthly contact count, and action-execution rate in
+   its monitor. Publish the S-1 driver report through the report action pattern.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -112,3 +114,7 @@ coverage remains in `ActionIntegrationFixture.*`.
 Policy regression coverage tests all three tiers, every exclusion (including
 absent evidence), above-cap A1 discounts and persisted monthly frequency caps.
 The registry test validates every S policy template against the engine schema.
+`SolutionJourney.LevelThreeTargetsPersuadablesAndLeavesSleepingDogsAlone`
+builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
+proves positive-uplift recommendations can reach policy execution and every
+non-positive effect remains non-actionable, including protected holdouts.

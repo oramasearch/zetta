@@ -104,9 +104,11 @@ What's inside, by domain (each links to that domain's docs):
   modules and eight Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
-  S-1 has the complete retention template; S-2 through S-12 have explicitly
-  minimal editable defaults. Snapshot cutoffs, delivery destinations and ROI
-  economics remain caller-supplied.
+  S-1 is runnable at all four levels with eight named domain refusals,
+  top-three reason codes, risk × value × driver cells, governed CRM/journey
+  delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
+  readout. S-2 through S-12 have explicitly minimal editable defaults. Snapshot
+  cutoffs, delivery destinations and ROI economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

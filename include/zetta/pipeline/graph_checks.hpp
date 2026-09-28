@@ -235,6 +235,72 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-1's domain adaptations (#1110). These inspect the complete composed
+// Pipeline because the manifest, point-in-time sources, and level-specific
+// methodology stages jointly establish the retention contract.
+class S1PointInTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s1_point_in_time"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LabelWindowCheck final : public Check {
+public:
+    std::string name() const override { return "s1_label_window"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1TemporalValidationCheck final : public Check {
+public:
+    std::string name() const override { return "s1_temporal_validation"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1GroupSplitCheck final : public Check {
+public:
+    std::string name() const override { return "s1_group_split"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1CensoringCheck final : public Check {
+public:
+    std::string name() const override { return "s1_censoring"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1CalibrationCheck final : public Check {
+public:
+    std::string name() const override { return "s1_calibration"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1EntityResolutionCheck final : public Check {
+public:
+    std::string name() const override { return "s1_entity_resolution"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LeakageReviewCheck final : public Check {
+public:
+    std::string name() const override { return "s1_leakage_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S1LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s1_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

@@ -483,12 +483,15 @@ UpliftResult evaluate_uplift(const UpliftModelBundle &models,
   std::size_t recommended = 0;
   for (const UpliftScoredRow &row : rows) {
     const bool row_eligible = eligible(row, params);
-    const bool recommend = row_eligible && recommended < recommendation_count;
+    const double estimated_uplift =
+        learner_score(row, result.selected_learner);
+    const bool recommend = row_eligible && estimated_uplift > 0.0 &&
+                           recommended < recommendation_count;
     if (recommend) {
       ++recommended;
     }
     result.treatment_effects.push_back(TreatmentEffect{
-        row.entity, learner_score(row, result.selected_learner), row.propensity,
+        row.entity, estimated_uplift, row.propensity,
         row.treatment, row.outcome, row_eligible, recommend});
   }
   result.status = compute::ComputeStatus::success();

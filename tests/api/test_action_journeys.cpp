@@ -247,15 +247,26 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(table);
     table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(3));
     for (int index = 0; index < 240; ++index) {
+        const bool persuadable = index < 120;
+        const int treatment = index % 2;
+        const int outcome = persuadable ? treatment : 1 - treatment;
         table->add_row({{"entity", index + 1}, {"record_id", index + 1},
                        {"source", "fixture"}, {"name", "Customer " + std::to_string(index + 1)},
                        {"label", index % 10 != 0 ? 1 : 0}, {"feature", index % 13 + 0.5},
+                       {"uplift_segment", persuadable ? 1.0 : 0.0},
+                       {"treatment", treatment}, {"outcome", outcome},
+                       {"duration", static_cast<double>(30 + index % 60)},
+                       {"start_time", static_cast<double>(index)},
+                       {"feature_time", static_cast<double>(index)},
                        {"time", "2026-08-01T00:00:00.000Z"},
                        {"in_collections", false}, {"open_complaint", false},
                        {"vulnerable", false}});
     }
     table->add_row({{"entity", 9999}, {"record_id", 9999}, {"source", "fixture"},
                    {"name", "Future customer"}, {"label", 1}, {"feature", 999.0},
+                   {"uplift_segment", 1.0}, {"treatment", 1}, {"outcome", 1},
+                   {"duration", 30.0}, {"start_time", 240.0},
+                   {"feature_time", 240.0},
                    {"time", "2026-10-01T00:00:00.000Z"},
                    {"in_collections", false}, {"open_complaint", false}, {"vulnerable", false}});
     const auto written = zetta::data::write_partitioned(node, *database, *table);
@@ -268,7 +279,9 @@ nlohmann::json retention_configuration() {
                       {"target_table", "retention_snapshot"}, {"entity_column", "entity"},
                       {"time_column", "time"}, {"as_of", "2026-09-01T00:00:00.000Z"}}},
         {"dataset", {{"entity_column", "entity_id"}, {"label_column", "label"},
-                     {"feature_columns", {"feature"}}}},
+                     {"time_column", "start_time"},
+                     {"as_of", 239.0},
+                     {"feature_columns", {"feature", "uplift_segment"}}}},
         {"delivery", {{"endpoint", "https://crm.example.test/tasks"}, {"owner", "retention-team"}}},
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
 }
@@ -281,6 +294,8 @@ journey::Journey retention_journey(const nlohmann::json& foundation) {
         {"read executable defaults", "get_solution", {{"solution", "S-1"}},
          {.checks = {journey::equals("/solution/runnable", true),
                      journey::equals("/solution/policy_template/kill_switch", false),
+                     journey::equals("/solution/levels/0/level", 1),
+                     journey::equals("/solution/levels/3/level", 4),
                      journey::size_equals("/solution/missing_components", 0)}}},
         {"create the project", "create_project", {{"name", "retention"}}},
         {"read the project", "get_project", {{"name", "retention"}}},
@@ -402,13 +417,22 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     }
     EXPECT_GT(protected_rows, 0u);
     EXPECT_FALSE(delivery.requests.empty());
+    std::size_t reports = 0;
     for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++reports;
+            EXPECT_TRUE(request.at("payload").contains("driver_report"));
+            continue;
+        }
         const auto decision = policies.get_decision(request.at("payload").at("decision_id"));
         ASSERT_TRUE(decision);
         EXPECT_TRUE(decision->actionable);
         EXPECT_FALSE(decision->holdout);
         EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        EXPECT_LE(request.at("payload").at("reason_codes").size(), 3u);
+        EXPECT_TRUE(request.at("payload").contains("decision_cell"));
     }
+    EXPECT_EQ(reports, 1u);
     const auto results = node.find_database("solution_results");
     ASSERT_TRUE(results);
     ASSERT_EQ(results->tables().size(), 1u);
@@ -419,7 +443,7 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     EXPECT_EQ(node.find_database("datasets")->find_table("retention_snapshot")->store().size(), 240u);
     const auto monitor = node.find_monitor(binding.at("monitor_id"));
     ASSERT_TRUE(monitor);
-    EXPECT_EQ(monitor->value().guardrails.size(), 3u);
+    EXPECT_EQ(monitor->value().guardrails.size(), 4u);
     for (const auto& guardrail : monitor->value().guardrails) {
         EXPECT_TRUE(guardrail.value.has_value());
     }
@@ -437,6 +461,94 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       LevelThreeTargetsPersuadablesAndLeavesSleepingDogsAlone) {
+    SolutionDeliveryBoundary delivery;
+    land_retention_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "uplift retention"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "uplift retention"},
+         {"solution", "S-1"},
+         {"level", 3},
+         {"sources",
+          {{"source", "datasets"},
+           {"table", "customers"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "label"},
+             {"feature_columns", {"feature", "uplift_segment"}}}},
+           {"M-6",
+            {{"entity", "entity_id"},
+             {"treatment", "treatment"},
+             {"outcome", "outcome"},
+             {"features", {"feature", "uplift_segment"}},
+             {"as_of", "2026-09-01T00:00:00Z"},
+             {"feature_window_end", "2026-09-01T00:00:00Z"},
+             {"label_window_start", "2026-09-08T00:00:00Z"},
+             {"blackout_gap_seconds", 604800},
+             {"treatment_time", "2026-09-08T00:00:00Z"}}}}},
+         {"foundation", retention_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies").size(), 5u);
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "uplift retention"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 5000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    std::string decision_table;
+    for (const auto& output : status.value.at("outputs")) {
+        if (output.at("name") == "solution decisions") {
+            decision_table = output.at("ref").get<std::string>();
+        }
+    }
+    ASSERT_FALSE(decision_table.empty());
+    const ApiResult decisions = call(
+        "sql", {{"statement", "SELECT * FROM " + decision_table + ";"}});
+    ASSERT_TRUE(decisions.ok) << decisions.error.message;
+    std::size_t persuaded = 0;
+    std::size_t sleeping_dogs = 0;
+    for (const auto& row : decisions.value.at("rows")) {
+        ASSERT_TRUE(row.contains("estimated_uplift"));
+        ASSERT_TRUE(row.contains("uplift_recommended"));
+        if (row.at("estimated_uplift").get<double>() <= 0.0) {
+            ++sleeping_dogs;
+            EXPECT_FALSE(row.at("actionable").get<bool>());
+            if (row.at("holdout").get<bool>()) {
+                EXPECT_EQ(row.at("action"), "");
+            } else {
+                EXPECT_EQ(row.at("action"), "no_contact");
+            }
+        } else if (row.at("uplift_recommended").get<bool>() &&
+                   row.at("actionable").get<bool>()) {
+            ++persuaded;
+        }
+    }
+    EXPECT_GT(sleeping_dogs, 0u);
+    EXPECT_GT(persuaded, 0u);
 }
 
 void append_speech_u16(std::string &bytes, std::uint16_t value) {
