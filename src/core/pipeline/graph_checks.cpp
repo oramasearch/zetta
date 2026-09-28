@@ -613,6 +613,71 @@ const ir::Node* model_kind(const ir::ExecutionGraph& graph,
     return nullptr;
 }
 
+const json* s4_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies,
+                                   std::string& error) {
+    applies = false;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-4") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto level = manifest->attributes.find("level");
+    if (level == manifest->attributes.end() ||
+        !level->is_number_integer()) {
+        error = "S-4 manifest must declare an integer level";
+        return nullptr;
+    }
+    const auto profile = manifest->attributes.find("s4_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-4 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s4_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-4 Pipeline to validate"};
+}
+
+CheckResult s4_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s4_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool has_boolean_policy_predicate(const json& policy,
+                                  const char* rule_name,
+                                  std::string_view field,
+                                  bool expected) {
+    const auto rules = policy.find(rule_name);
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        if (!rule.is_object()) {
+            return false;
+        }
+        const auto named_field = rule.find("field");
+        const auto operation = rule.find("operator");
+        const auto value = rule.find("value");
+        return named_field != rule.end() && named_field->is_string() &&
+               named_field->get_ref<const std::string&>() == field &&
+               operation != rule.end() && operation->is_string() &&
+               operation->get_ref<const std::string&>() == "eq" &&
+               value != rule.end() && value->is_boolean() &&
+               value->get<bool>() == expected;
+    });
+}
+
 }  // namespace
 
 CheckResult S1PointInTimeCheck::evaluate(
@@ -961,6 +1026,132 @@ CheckResult S1LevelCompositionCheck::evaluate(
     }
     return s1_success(name(),
                       "S-1 selected level has every required methodology");
+}
+
+CheckResult S4RegulatoryContactCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = s4_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return s4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s4_failure(name(), error);
+    }
+    const json* regulatory = object_field(*profile, "regulatory_contact");
+    const json* policy = object_field(*profile, "policy");
+    const json* frequency =
+        policy == nullptr ? nullptr : object_field(*policy, "frequency_cap");
+    if (regulatory == nullptr ||
+        policy == nullptr ||
+        regulatory->value("eligibility_field", std::string{}) !=
+            "collections_eligible" ||
+        regulatory->value("contact_allowed_field", std::string{}) !=
+            "regulatory_contact_allowed" ||
+        regulatory->value("contact_hours_field", std::string{}) !=
+            "within_contact_hours" ||
+        policy->value("contact_cap", 0) < 1 ||
+        frequency == nullptr ||
+        frequency->value("max_actions", 0) != 1 ||
+        frequency->value("window_seconds", 0) < 86400 ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "collections_eligible", true) ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "regulatory_contact_allowed", true) ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "within_contact_hours", true) ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "collections_eligible", false) ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "regulatory_contact_allowed", false) ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "within_contact_hours", false)) {
+        return s4_failure(
+            name(),
+            "S-4 requires policy-enforced collections eligibility, permitted "
+            "contact hours, and a one-contact regulatory frequency cap");
+    }
+    return s4_success(
+        name(),
+        "S-4 regulatory eligibility and contact limits are policy enforced");
+}
+
+CheckResult S4VulnerableCustomerCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = s4_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return s4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s4_failure(name(), error);
+    }
+    const json* vulnerable = object_field(*profile, "vulnerable_customer");
+    const json* policy = object_field(*profile, "policy");
+    if (vulnerable == nullptr ||
+        policy == nullptr ||
+        vulnerable->value("field", std::string{}) != "vulnerable" ||
+        !vulnerable->value("excluded_when_true", false) ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "vulnerable", false) ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "vulnerable", true)) {
+        return s4_failure(
+            name(),
+            "S-4 must exclude vulnerable customers and block contact when "
+            "vulnerability evidence is missing");
+    }
+    return s4_success(
+        name(),
+        "S-4 vulnerable-customer exclusion blocks true or missing evidence");
+}
+
+CheckResult S4PromiseToPayPointInTimeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = s4_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return s4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s4_failure(name(), error);
+    }
+    const json* labels = object_field(*profile, "promise_to_pay_labels");
+    if (labels == nullptr ||
+        labels->value("semantics", std::string{}) != "promise_to_pay" ||
+        labels->value("label_column", std::string{}).empty() ||
+        labels->value("observation_time_column", std::string{}).empty() ||
+        !labels->value("point_in_time", false) ||
+        !labels->value("future_updates_excluded", false)) {
+        return s4_failure(
+            name(),
+            "S-4 promise-to-pay labels must name their observation time and "
+            "exclude status updates after the prediction cutoff");
+    }
+    const auto prediction = profile->find("prediction_time");
+    const auto snapshot = labels->find("snapshot_as_of");
+    if (prediction == profile->end() || snapshot == labels->end()) {
+        return s4_failure(
+            name(), "S-4 promise-to-pay labels require a prediction cutoff");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> snapshot_time =
+        solutions::parse_time_point(*snapshot);
+    if (!prediction_time || !snapshot_time ||
+        prediction_time->kind != snapshot_time->kind ||
+        snapshot_time->value > prediction_time->value) {
+        return s4_failure(
+            name(),
+            "S-4 promise-to-pay label snapshot must be at or before the "
+            "prediction cutoff");
+    }
+    return s4_success(
+        name(),
+        "S-4 promise-to-pay labels are frozen at the prediction cutoff");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

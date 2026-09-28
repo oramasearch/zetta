@@ -24,10 +24,20 @@ policy versions. The policy's named action settings may specify authority,
 approval-above amount, contact/frequency caps, and SLA. An action absent from
 the configured map cannot be referenced by a tier.
 
-S-2 through S-12 intentionally provide minimal starter policies derived from
-their catalogue actions. They require explicit eligibility, suppress excluded
-entities, set a zero spending budget, use conservative authority for high-stakes
-work, and leave the kill switch off. Their module issues refine these defaults.
+S-4 defines priority/standard/defer score floors of 0.7/0.4/0.0. Priority
+receivables route to an A2 dialer queue, standard receivables receive an A2
+digital treatment, and defer is no contact. A settlement is A1, requires
+approval, and cannot spend against the zero starter budget. The policy requires
+explicit regulatory eligibility, permitted contact hours, and a non-vulnerable
+customer. It caps lifetime contacts at six and rolling contacts at one per
+seven days. Its champion/challenger design protects a 10% holdout and splits
+treatment between dialer and digital cells.
+
+S-2, S-3, and S-5 through S-12 intentionally provide minimal starter policies
+derived from their catalogue actions. They require explicit eligibility,
+suppress excluded entities, set a zero spending budget, use conservative
+authority for high-stakes work, and leave the kill switch off. Their module
+issues refine these defaults.
 These numbers are editable configuration, not calibration claims or customer
 economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails

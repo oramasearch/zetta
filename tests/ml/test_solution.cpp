@@ -67,6 +67,49 @@ zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s4_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-4");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] = "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s4_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"policy", solution->templates.policy},
+        {"regulatory_contact",
+         {{"eligibility_field", "collections_eligible"},
+          {"contact_allowed_field", "regulatory_contact_allowed"},
+          {"contact_hours_field", "within_contact_hours"},
+          {"contact_cap", 6},
+          {"frequency_cap",
+           {{"max_actions", 1}, {"window_seconds", 604800}}}}},
+        {"vulnerable_customer",
+         {{"field", "vulnerable"},
+          {"excluded_when_true", true}}},
+        {"promise_to_pay_labels",
+         {{"semantics", "promise_to_pay"},
+          {"label_column", "promise_to_pay"},
+          {"observation_time_column", "promise_to_pay_at"},
+          {"snapshot_as_of", "2024-01-01T00:00:00Z"},
+          {"point_in_time", true},
+          {"future_updates_excluded", true}}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -79,6 +122,15 @@ const zetta::pipeline::CheckResult* check_result(
 }
 
 void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s4_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -109,7 +161,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
                 zetta::solutions::decision_policy_config_schema());
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
-            EXPECT_EQ(solution.templates.minimal, solution.id != "S-1");
+            EXPECT_EQ(solution.templates.minimal,
+                      solution.id != "S-1" && solution.id != "S-4");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -196,6 +249,31 @@ TEST(SolutionRegistry, ChurnEntryCarriesTheCompleteReferenceContract) {
               (nlohmann::json{{"level", 1},
                               {"name", "CL-1"},
                               {"description", "propensity, reasons, segments, holdout and report"}}));
+}
+
+TEST(SolutionRegistry, CollectionsEntryCarriesTheCompleteExecutableContract) {
+    const zetta::ml::Solution* collections =
+        zetta::ml::find_solution("S-4");
+    ASSERT_NE(collections, nullptr);
+    EXPECT_TRUE(collections->runnable);
+    EXPECT_EQ(collections->issue,
+              "https://github.com/oramasearch/zetta/issues/1113");
+    EXPECT_FALSE(collections->templates.minimal);
+    EXPECT_EQ(collections->action_patterns,
+              (std::vector<std::string>{"policy-engine treatment selection",
+                                        "digital treatment delivery",
+                                        "dialer queue tasks"}));
+    EXPECT_EQ(collections->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"dialer_queue",
+                                        "digital_treatment"}));
+    ASSERT_EQ(collections->templates.guardrails.size(), 5u);
+    EXPECT_EQ(collections->templates.measurement.design,
+              "champion_challenger");
+    EXPECT_EQ(collections->templates.measurement.outcome, "net_recovery");
+    EXPECT_EQ(collections->templates.policy.at("contact_cap"), 6);
+    EXPECT_EQ(collections->templates.policy.at("frequency_cap")
+                  .at("window_seconds"),
+              604800);
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -307,6 +385,32 @@ TEST(SolutionRegistry, S1EveryLevelBuildsAndLevelThreeProtectsSleepingDogs) {
         }
     }
     expect_s1_failure(graph, "s1_level_composition");
+}
+
+TEST(SolutionRegistry, S4EveryLevelBuildsAndDomainChecksRefuseWrongCases) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto report =
+            zetta::pipeline::default_gate().run(bound_s4_graph(level));
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+    }
+
+    auto regulatory = bound_s4_graph();
+    regulatory.find_node("solution_manifest")
+        ->attributes["s4_correctness"]["policy"]["contact_cap"] = 0;
+    expect_s4_failure(regulatory, "s4_regulatory_contact");
+
+    auto vulnerable = bound_s4_graph();
+    vulnerable.find_node("solution_manifest")
+        ->attributes["s4_correctness"]["policy"]["eligibility_rules"] =
+            nlohmann::json::array();
+    expect_s4_failure(vulnerable, "s4_vulnerable_customer");
+
+    auto promise = bound_s4_graph();
+    promise.find_node("solution_manifest")
+        ->attributes["s4_correctness"]["promise_to_pay_labels"]
+                   ["future_updates_excluded"] = false;
+    expect_s4_failure(promise, "s4_promise_to_pay_point_in_time");
 }
 
 } // namespace

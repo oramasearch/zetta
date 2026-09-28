@@ -54,7 +54,9 @@ Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. M-1 defaults to its `account` / `risk` score table.
-Inputs and score scales for other modules remain their catalogue module's
+S-4 narrows that default to M-1's `Prioritize collections treatments` output
+in `collections_results`, using `receivable` and `recovery_score` columns.
+Inputs and score scales for remaining modules remain their catalogue module's
 responsibility; their templates are deliberately minimal.
 
 ## Run and read back
@@ -118,3 +120,10 @@ The registry test validates every S policy template against the engine schema.
 builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
 proves positive-uplift recommendations can reach policy execution and every
 non-positive effect remains non-actionable, including protected holdouts.
+
+`SolutionJourney.CollectionsPrioritizationProtectsHoldoutAndRecoversPlantedEffect`
+builds S-4 over a partitioned receivables table, excludes a future promise
+update, refuses contact for vulnerable and regulator-ineligible rows, delivers
+both digital treatments and dialer tasks through the action outbox, records a
+planted 0.15 net-recovery effect, and verifies that the readout recovers it
+inside the confidence interval.

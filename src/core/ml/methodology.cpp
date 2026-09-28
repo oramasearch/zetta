@@ -57,45 +57,76 @@ bool m1_owns(const ir::ExecutionGraph& graph) {
     return zetta::usecases::churn::is_churn_graph(graph);
 }
 
-ir::ExecutionGraph build_m1_shape(const ShapeRequest&) {
+ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
+    const bool collections = request.solution == "S-4";
 
     graph.add_node(
-        ir::StepKind::Connect, "Load customer accounts",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "customers"},
-                       {"note", "active accounts to score for churn risk"}},
+        ir::StepKind::Connect,
+        collections ? "Load receivables" : "Load customer accounts",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", collections ? "receivables" : "customers"},
+            {"note", collections
+                         ? "eligible receivables to score for recovery priority"
+                         : "active accounts to score for churn risk"}},
         "load_customers");
     graph.add_node(
-        ir::StepKind::Connect, "Load usage & billing activity",
-        nlohmann::json{{"source", "warehouse"},
-                       {"table", "events"},
-                       {"note", "engagement + payment signals per account"}},
+        ir::StepKind::Connect,
+        collections ? "Load payment and contact history"
+                    : "Load usage & billing activity",
+        nlohmann::json{
+            {"source", "warehouse"},
+            {"table", collections ? "collections_events" : "events"},
+            {"note", collections
+                         ? "point-in-time payment, delinquency, and contact signals"
+                         : "engagement + payment signals per account"}},
         "load_activity");
     graph.add_node(
-        ir::StepKind::Clean, "Build churn features",
+        ir::StepKind::Clean,
+        collections ? "Build recovery features" : "Build churn features",
         nlohmann::json{
             {"note", "point-in-time features; keep out post-cutoff leakage"}},
         "build_features");
     graph.add_node(
-        ir::StepKind::Model, "Train churn-risk model",
+        ir::StepKind::Model,
+        collections ? "Train recovery-priority model"
+                    : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", "churned"},
-                       {"note", "predict probability each account churns"}},
+                       {"target", collections ? "promise_to_pay" : "churned"},
+                       {"note", collections
+                                    ? "predict point-in-time recovery propensity"
+                                    : "predict probability each account churns"}},
         "train_churn_model");
     graph.add_node(
-        ir::StepKind::Index, "Index churn scores",
+        ir::StepKind::Index,
+        collections ? "Index recovery scores" : "Index churn scores",
         nlohmann::json{{"kind", "feature"},
                        {"note", "make scores fast to look up at serve time"}},
         "index_scores");
     graph.add_node(
-        ir::StepKind::Serve, "Serve churn scores & reasons",
-        nlohmann::json{{"note", "expose per-account risk + top drivers"}},
+        ir::StepKind::Serve,
+        collections ? "Serve recovery scores and reasons"
+                    : "Serve churn scores & reasons",
+        nlohmann::json{{"note", collections
+                                    ? "expose per-receivable recovery priority and drivers"
+                                    : "expose per-account risk + top drivers"}},
         "serve_scores");
     graph.add_node(
-        ir::StepKind::Act, "Trigger retention outreach",
-        nlohmann::json{{"note", "notify retention on high-risk accounts"}},
+        ir::StepKind::Act,
+        collections ? "Prioritize collections treatments"
+                    : "Trigger retention outreach",
+        nlohmann::json{
+            {"note", collections
+                         ? "publish the governed recovery-priority table"
+                         : "notify retention on high-risk accounts"},
+            {"result_database", collections ? "collections_results"
+                                             : "churn_results"},
+            {"result_table_prefix", collections ? "recovery_priority_"
+                                                 : "at_risk_"},
+            {"entity_output_column", collections ? "receivable" : "account"},
+            {"score_output_column", collections ? "recovery_score" : "risk"}},
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");

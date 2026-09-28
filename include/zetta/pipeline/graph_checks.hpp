@@ -301,6 +301,30 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-4 collections correctness adaptations (#1113). Regulatory eligibility
+// and frequency limits, vulnerable-customer protection, and point-in-time
+// promise-to-pay labels are deployment refusals on the composed Pipeline.
+class S4RegulatoryContactCheck final : public Check {
+public:
+    std::string name() const override { return "s4_regulatory_contact"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4VulnerableCustomerCheck final : public Check {
+public:
+    std::string name() const override { return "s4_vulnerable_customer"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S4PromiseToPayPointInTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s4_promise_to_pay_point_in_time"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

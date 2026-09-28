@@ -175,7 +175,9 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                 if (stage.methodology->id == state->binding.at("decision_source").at("methodology").get<std::string>()) {
                     scored_outputs = snapshot.outputs;
                 }
-                if (state->binding.value("solution", std::string{}) == "S-1" &&
+                const std::string solution =
+                    state->binding.value("solution", std::string{});
+                if ((solution == "S-1" || solution == "S-4") &&
                     state->binding.value("level", 1) >= 3 &&
                     stage.methodology->id == "M-6") {
                     for (const zetta::pipeline::RunOutput& output :

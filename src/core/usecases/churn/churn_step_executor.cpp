@@ -46,6 +46,15 @@ std::string step_label(const ir::Node& step) {
     return step.name.empty() ? step.id : step.name;
 }
 
+std::string string_attribute(const ir::Node& step, const std::string& key,
+                             const std::string& fallback) {
+    const auto attribute = step.attributes.find(key);
+    if (attribute == step.attributes.end() || !attribute->is_string()) {
+        return fallback;
+    }
+    return attribute->get<std::string>();
+}
+
 // This node's slice of the global feature table: the rows whose entity is in
 // `keep`. The global table has one row per entity ascending, so the slice stays
 // sorted and the slices across nodes union back to the exact global table (the
@@ -606,20 +615,31 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         state.playbook.push_back(std::move(action));
     }
 
-    // Materialize the at-risk list as a REAL queryable table (#915). The pipeline
-    // computed the thing the whole use case exists for — who is most likely to churn
-    // and why — and it used to live only in this executor's memory, so SQL, the
-    // Studio Results tab, and the agent could not read it back. It is now a table in
-    // `churn_results`, named per pipeline and replaced on each run (a run supersedes
-    // its predecessor; keeping every run's copy would just accumulate stale lists).
+    const std::string result_database =
+        string_attribute(step, "result_database", kChurnResultsDatabase);
+    const std::string table_prefix =
+        string_attribute(step, "result_table_prefix", "at_risk_");
+    const std::string entity_column =
+        string_attribute(step, "entity_output_column", "account");
+    const std::string score_column =
+        string_attribute(step, "score_output_column", "risk");
+
+    // Materialize the ranked list as a real queryable table (#915). The output
+    // contract is supplied by the methodology shape so another domain can reuse
+    // the native scoring runner without publishing churn-named data.
     std::string at_risk_table;
     node_.run_on_owner([&] {
-        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
-        if (!database) database = node_.create_database(kChurnResultsDatabase);
-        if (!database) return;
+        std::shared_ptr<data::Database> database =
+            node_.find_database(result_database);
+        if (!database) {
+            database = node_.create_database(result_database);
+        }
+        if (!database) {
+            return;
+        }
         const std::string name =
-            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
-                                                : config_.graph.substr(0, 8));
+            table_prefix + (config_.graph.empty() ? std::string("pipeline")
+                                                  : config_.graph.substr(0, 8));
         database->drop_table(name);  // replace the previous run's list
         std::shared_ptr<data::Table> table = database->create_table(name);
         if (!table) return;
@@ -635,8 +655,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             ++position;
             std::vector<std::pair<std::string, nlohmann::json>> cells = {
                 {"rank", position},
-                {"account", action.entity},
-                {"risk", action.risk},
+                {entity_column, action.entity},
+                {score_column, action.risk},
                 {"dominant_driver", action.dominant_driver},
                 {"driver_effect", action.dominant_value}};
             for (const std::string& column : evidence) {
@@ -654,7 +674,7 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             }
             table->add_row(std::move(row));
         }
-        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+        at_risk_table = result_database + std::string(".") + name;
     });
 
     zetta::pipeline::StepOutcome outcome;
