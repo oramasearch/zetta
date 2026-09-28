@@ -85,9 +85,8 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 8 || (index >= 10 && index <= 12);
+        const bool runnable = index <= 12;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
                   runnable);
@@ -102,8 +101,8 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_TRUE(methodologies.front().runnable);
     EXPECT_FALSE(methodologies.front().partial);
     EXPECT_EQ(methodologies.front().id, "M-1");
-    EXPECT_FALSE(methodologies[9].runnable);
-    EXPECT_TRUE(methodologies[9].partial);
+    EXPECT_TRUE(methodologies[9].runnable);
+    EXPECT_FALSE(methodologies[9].partial);
     EXPECT_TRUE(methodologies[10].runnable);
     EXPECT_EQ(methodologies[10].model_kinds.front(), "document_extraction");
     EXPECT_TRUE(methodologies[12].runnable);
@@ -170,6 +169,31 @@ TEST(MethodologyRegistry, PrimarySolutionsHaveOneOwner) {
                                   << " and " << methodology.id;
         }
     }
+}
+
+TEST(MethodologyRegistry, LanguageBuildsItsOwnGroundedPipeline) {
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology("M-10");
+    ASSERT_NE(methodology, nullptr);
+    ASSERT_TRUE(methodology->runnable);
+    const zetta::ir::ExecutionGraph graph = methodology->build_shape(
+        {.project = "language",
+         .intent = "answer from documents",
+         .hints = {{"dataset_path", "knowledge.chunks"}}});
+    EXPECT_TRUE(methodology->owns(graph));
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(), 1U);
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Model).size(), 1U);
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Serve).size(), 1U);
+    const auto connect =
+        graph.nodes_of_kind(zetta::ir::StepKind::Connect).front();
+    EXPECT_EQ(connect->attributes.at("source"), "knowledge");
+    EXPECT_EQ(connect->attributes.at("table"), "chunks");
+    const auto model =
+        graph.nodes_of_kind(zetta::ir::StepKind::Model).front();
+    EXPECT_EQ(model->attributes.at("model_kind"), "language");
+    EXPECT_TRUE(model->attributes.at("governance_check"));
+    EXPECT_TRUE(model->attributes.at("citations_required"));
+    EXPECT_TRUE(model->attributes.at("refuse_without_retrieval"));
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {

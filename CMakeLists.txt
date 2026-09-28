@@ -679,6 +679,10 @@ add_library(zetta-core STATIC
   src/core/ml/rank_train_job.cpp
   src/core/ml/rank_runner.cpp
   src/core/ml/rank_methodology.cpp
+  src/core/ml/language.cpp
+  src/core/ml/language_train_job.cpp
+  src/core/ml/language_runner.cpp
+  src/core/ml/language_methodology.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/anomaly.cpp

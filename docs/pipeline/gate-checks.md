@@ -22,6 +22,8 @@ The reusable annotation and methodology-specific checks are:
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
+| `LanguageGroundingCheck` | `language_grounding` | an M-10 graph that does not require citations on every answer sentence or does not refuse empty retrieval |
+| `LanguageTrainingAccessCheck` | `language_training_access` | an M-10 graph whose source and model do not require runtime caller-read authorization |
 | `DocumentReviewCheck` | `document_review` | document extraction without confidence, source evidence, a valid review threshold, and a downstream review queue |
 | `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 | `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
@@ -55,6 +57,17 @@ applies eligibility and contact caps as hard constraints before budgeted
 best-action selection. Missing stages, extra transforms, altered outputs, unknown
 attributes, overlapping column roles, and invalid training parameters fail with a
 specific reason.
+
+### M-10 grounding and training access
+
+The language checks engage only when a model step names `model_kind: language`
+or another M-10 alias. `language_grounding` requires boolean
+`citations_required` and `refuse_without_retrieval` attributes on the model.
+`language_training_access` requires `governance_check` on that model and
+`caller_read_required` on an upstream connect step. The runtime then authorizes
+every effective entity, label, feature, text, query, and relevant-id column
+before it reads rows. These graph flags do not replace runtime authorization;
+they make an edited plan that omits it fail verification.
 
 ## How a check reads a step
 

@@ -86,6 +86,8 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<AnomalyGraphCheck>());
     gate.add_check(std::make_shared<NextBestActionGraphCheck>());
     gate.add_check(std::make_shared<RankCorrectnessCheck>());
+    gate.add_check(std::make_shared<LanguageGroundingCheck>());
+    gate.add_check(std::make_shared<LanguageTrainingAccessCheck>());
     gate.add_check(std::make_shared<DocumentReviewCheck>());
     gate.add_check(std::make_shared<GraphEdgeTimeCheck>());
     gate.add_check(std::make_shared<VisionSourceSplitCheck>());

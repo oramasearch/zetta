@@ -37,7 +37,7 @@ the step-by-step workflow; this page is the reference it points at.
 
 | Layer | Header | What it gives you |
 |---|---|---|
-| Autodiff engine | `autograd/tensor.hpp` | `Tensor`/`Node`/`backward()` + the op library (matmul, add/mul/scale, gelu/silu, row_softmax, rms_norm, transpose, embedding, patch_embedding, cross_entropy, rope, col_slice/concat_cols, row_slice, `(sequence_)policy_gradient_loss`) |
+| Autodiff engine | `autograd/tensor.hpp` | `Tensor`/`Node`/`backward()` + the op library (matmul, add/mul/scale, gelu/silu, row_softmax, rms_norm, layer_norm, transpose, embedding, patch_embedding, cross_entropy, rope, col_slice/concat_cols, row_slice, `(sequence_)policy_gradient_loss`) |
 | Model blocks | `autograd/transformer.hpp` | `grouped_query_attention` (GQA + QK-norm + RoPE), `swiglu_feed_forward`, `Transformer`, `Adam`, `zero_grad` |
 | A whole model | `autograd/qwen.hpp` | `QwenModel` (Qwen3-parity, HF-named params), `load_qwen_model`/`save_qwen_model`, `generate` |
 | Checkpoints | `autograd/safetensors.hpp` | host-float `.safetensors` read/write (F32 + BF16) |

@@ -26,8 +26,8 @@ landing; the runner never invents text for an unsupported PDF stream.
 PDF text operators retain page and approximate text coordinates. Scans are
 normalized, divided into horizontal ink regions, projected into image patches,
 and recognized by an encoder-decoder. Declared fields are selected from exact
-key-value pairs first, then nearby or fuzzy keys. M-10 embeddings can replace
-the edit-distance fallback once its runner is available.
+key-value pairs first, then nearby or fuzzy keys. M-10 embeddings are available independently in the integrated registry; wiring
+them into M-11's edit-distance fallback remains deferred.
 
 The run writes two tables under `document_results`:
 

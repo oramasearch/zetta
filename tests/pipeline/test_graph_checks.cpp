@@ -17,6 +17,8 @@ using zetta::pipeline::CausalUpliftCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
 using zetta::pipeline::GraphEdgeTimeCheck;
+using zetta::pipeline::LanguageGroundingCheck;
+using zetta::pipeline::LanguageTrainingAccessCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::ValidationReport;
@@ -539,11 +541,63 @@ TEST(VisionSourceSplitCheck, RefusesAnUnnamedSourceGroup) {
     EXPECT_NE(result.reason.find("source_column"), std::string::npos)
         << result.reason;
 }
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutCitationPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("citations"), std::string::npos);
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutEmptyRetrievalPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("refuse"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUncheckedTrainingText) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text",
+                   {{"caller_read_required", true}}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("authorize"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUnguardedTextSource) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text", {}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"governance_check", true},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("caller-read"), std::string::npos);
+}
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 16u);
+    ASSERT_EQ(gate.check_count(), 18u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -556,10 +610,12 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[9]->name(), "anomaly_correctness");
     EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
     EXPECT_EQ(gate.checks()[11]->name(), "rank_correctness");
-    EXPECT_EQ(gate.checks()[12]->name(), "document_review");
-    EXPECT_EQ(gate.checks()[13]->name(), "graph_edge_time");
-    EXPECT_EQ(gate.checks()[14]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[15]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[12]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[13]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[14]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[15]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[16]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[17]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {

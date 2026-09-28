@@ -18,6 +18,7 @@ Methodology make_m5_methodology();
 Methodology make_m6_methodology();
 Methodology make_m8_methodology();
 Methodology make_m9_methodology();
+Methodology make_m10_methodology();
 Methodology make_m11_methodology();
 Methodology make_graph_methodology();
 Methodology make_m13_methodology();
@@ -82,15 +83,7 @@ const std::vector<Methodology>& methodologies() {
         make_anomaly_methodology(),
         make_m8_methodology(),
         make_m9_methodology(),
-        planned("M-10", "NLP / embeddings / RAG / fine-tuning",
-                "Language, documents & perception",
-                {"nlp", "embedding", "embeddings", "rag", "fine_tuning",
-                 "retrieval"},
-                {}, {"text", "semantic search", "retrieve", "rag", "language"},
-                {input("text", true, "documents or utterances"),
-                 input("label", false, "task labels or golden answers")},
-                {"embeddings", "search results", "generated text"},
-                {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
+        make_m10_methodology(),
         make_m11_methodology(),
         make_graph_methodology(),
         make_m13_methodology(),

@@ -128,6 +128,25 @@ public:
     std::string name() const override {
         return "document_review";
     }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 language outputs may never answer without retrieved evidence, and every
+// answer sentence must carry a citation. The executable graph records both
+// invariants explicitly so an edited plan cannot silently weaken them.
+class LanguageGroundingCheck final : public Check {
+public:
+    std::string name() const override { return "language_grounding"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 may not train on text outside the caller's read scope. This graph-level
+// check requires the model and its source to opt into the runtime authorization
+// check; the methodology runner then performs that check before reading rows.
+class LanguageTrainingAccessCheck final : public Check {
+public:
+    std::string name() const override { return "language_training_access"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

@@ -190,6 +190,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     next_best_action_methodology.hpp  zetta::ml — M-8 graph contract, registry callbacks, coordinated-launch installation, and run adapter (#1047)
     next_best_action_table.hpp  zetta::ml::run_next_best_action_on_table — load owned resolved-dataset partitions and write recommendation/report tables with lineage (#1047)
     rank.hpp                zetta::ml — M-9 LambdaMART parameters/data/metrics, whole-group split, distributed job, resolved-table runner, and async run handle (#1048)
+    language.hpp            zetta::ml — native WordPiece/BERT text encoder, cosine retrieval, citation-enforced grounded answers, and versioned linear classifier head (M-10; #1049)
+    language_train_job.hpp  zetta::ml::run_language_classifier_job — allreduce per-partition classifier sufficient statistics through JobRound (#1049)
+    language_runner.hpp     zetta::ml::run_language_dataset — resolved-dataset M-10 runner that writes versioned embedding, retrieval, and answer tables with lineage and metrics (#1049)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -206,7 +209,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
     playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator interface (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
   autograd/
-    tensor.hpp              zetta::autograd::Node/Tensor/backward + the full op library (matmul, matmul_transposed_b [x·Wᵀ, HF-layout weights, no transpose materialized], sum, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, transpose, embedding, cross_entropy, row_slice, policy_gradient_loss, sequence_policy_gradient_loss, rope, col_slice, concat_cols) — native reverse-mode autodiff; matmul host kernel spreads over the runtime thread pool; no foreign runtime (ADR-17) (FEAT-12; #555)
+    tensor.hpp              zetta::autograd::Node/Tensor/backward + the full op library (matmul, matmul_transposed_b [x·Wᵀ, HF-layout weights, no transpose materialized], sum, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, layer_norm, transpose, embedding, cross_entropy, row_slice, policy_gradient_loss, sequence_policy_gradient_loss, rope, col_slice, concat_cols) — native reverse-mode autodiff; matmul host kernel spreads over the runtime thread pool; no foreign runtime (ADR-17) (FEAT-12; #555/#1049)
     transformer.hpp         zetta::autograd — decoder blocks (causal_self_attention, grouped_query_attention with GQA/QK-norm/RoPE base, feed_forward, swiglu_feed_forward), the Transformer model, Adam, zero_grad (FEAT-12; #555)
     qwen.hpp                zetta::autograd::QwenConfig/QwenModel + parse_qwen_config/load_qwen_model — Qwen3-parity decoder keyed by Hugging Face tensor names, so a safetensors checkpoint loads by name (set_weight); generate/generate_greedy autoregressive decode; load_qwen_model reads a HF checkpoint dir (config.json + model.safetensors) (FEAT-12; #555)
     safetensors.hpp         zetta::autograd — host-float .safetensors reader/writer (parse/serialize + file I/O), decodes F32 + BF16 to host floats; no MLX, the always-compiled checkpoint path (FEAT-12; #555)
@@ -400,7 +403,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     run_progress.cpp        project_run_progress — derive per-step run status from the GraphExecutor log grammar + attribute outputs to producing steps (#626)
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check
-    graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
+    graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309), M-10 grounding/training-access checks (#1049), and annotation JSON-Schema validation
     forecast_graph_check.cpp
                             zetta::pipeline::ForecastGraphCheck — refuse invalid forecast shapes, non-temporal splits, future features, calibration and missing baselines (#1043)
     run.cpp                 zetta::pipeline::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
@@ -459,6 +462,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     uplift_job.cpp          JobRound allreduce/gather/broadcast adapter for distributed uplift training (#1045)
     uplift_runner.cpp       resolved-table execution, output tables, model weights, report facts, and lineage (#1045)
     uplift_methodology.cpp  M-6 registry shape, ownership, table resolution, and run callback (#1045)
+    language_methodology.cpp M-10 registry shape, graph ownership, dataset resolution, column authorization, and language-runner adapter (#1049)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
     anomaly.cpp             zetta::ml — isolation-tree training/scoring, partition-summary median/MAD reductions, causal KPI trend/season/residual scoring, exact threshold policy (#1046)
     anomaly_job.cpp         zetta::ml::run_anomaly_job — JobRound collective adapter and compact result wire over existing collectives (#1046)
@@ -484,6 +488,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     forecast_runner.cpp     zetta::ml — verify per-series ownership, bridge JobRound allreduce into forecasting, load resolved owned partitions, and write root model/table outputs with lineage (#1043)
     forecast_methodology.cpp / forecast_execution.cpp
                             M-4's own shape, validated roles/options, table resolution, coroutine launch and durable Run lifecycle (#1043)
+    language.cpp            zetta::ml — WordPiece tokenization, BERT encoder/checkpoint loading, normalized embeddings, deterministic retrieval, grounded-answer enforcement, and classifier math (#1049)
+    language_train_job.cpp  distributed classifier-statistics reduction and versioned-head finalization through the compute job coordinator (#1049)
+    language_runner.cpp     resolved table read, embedding/retrieval/answer execution, metrics, Model registration, and output-table lineage (#1049)
     gbdt_train_job.cpp      run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast); opt-in checkpoint/restart (resume the partial model, allreduce-min the cluster resume round, checkpoint each round via TrainHooks; #468) (zetta-core; #390/#391)
     gbdt_score.cpp          zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
     gbdt_score_job.cpp      run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
@@ -498,7 +505,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     golden_oracle.cpp       load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
     playbook.cpp            zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   autograd/
-    tensor.cpp              zetta::autograd — Node/Tensor + backward (topo-order reverse-mode) and the op library (matmul, transpose, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, embedding, cross_entropy); reference host kernels, gradient-checked (zetta-core; #555)
+    tensor.cpp              zetta::autograd — Node/Tensor + backward (topo-order reverse-mode) and the op library (matmul, transpose, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, layer_norm, embedding, cross_entropy); reference host kernels, gradient-checked (zetta-core; #555/#1049)
     transformer.cpp         zetta::autograd::causal_self_attention/grouped_query_attention/feed_forward/swiglu_feed_forward — the decoder blocks composed from the autograd ops (per-head RoPE·QK-norm·scaled SDPA under a causal mask, SwiGLU MLP); backprop flows through via the graph (zetta-core; #555)
     qwen.cpp                zetta::autograd::QwenModel + QwenInference (KV-cached plain-float generation, O(seq)/token, matches forward) + parse_qwen_config — assembles the Qwen3 stack (embed → RMSNorm/GQA+QK-norm/RMSNorm/SwiGLU per layer → norm → lm_head) with HF-named params; transposes HF [out,in] Linear weights into the autograd's matmul layout; to_safetensors/load_safetensors round-trip a checkpoint by name; generate_greedy/generate autoregressively decode; parse_qwen_config reads a HF config.json; load_qwen_model reads config.json + model.safetensors (single-file or sharded via model.safetensors.index.json) from a directory; save_qwen_model/serialize_qwen_config write a checkpoint dir back out (ship a post-trained checkpoint) (zetta-core; #555)
     safetensors.cpp         zetta::autograd — host safetensors parse/serialize (8-byte LE header length + JSON header + contiguous LE data), F32/BF16 decode, non-throwing bounds checks; no foreign runtime (zetta-core; #555)
@@ -686,6 +693,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_next_best_action_methodology.cpp  M-8 ownership and graph-check refusals for unsafe evaluation, column, policy and structure changes (#1047)
   ml/test_graph.cpp / ml/test_graph_partitions.cpp  graph reference values, cutoff and seed rules, partition equivalence, and real three-member allreduce coverage (#1051)
   ml/test_document_extraction.cpp generated PDF, deterministic tiny TrOCR, review routing, resolved-table outputs, and opt-in real-checkpoint coverage (#1050)
+  ml/test_language.cpp      tiny native BERT determinism/normalization, retrieval/RAG rules, distributed classifier statistics, runner outputs, and skipped-by-default real-checkpoint coverage (#1049)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

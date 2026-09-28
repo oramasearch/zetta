@@ -20,3 +20,6 @@ decays. A number with no date is not evidence.
 - [base-agent v10 validation (2026-07-27)](base-agent-v10-validation-2026-07-27.md) — 98.75% on the
   canary, and a demo smoke test that PASSED when it should not have: it checks mode and shape, not
   whether an answer is true, so a fluent non-sequitur scores as success.
+- [M-10 language validation (2026-09-27)](language-validation-2026-09-27.md) — native tiny-BERT
+  retrieval reached recall@1 1.0 and groundedness 1.0; distributed classifier statistics matched
+  the single-node oracle across three members.

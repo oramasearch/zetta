@@ -30,7 +30,7 @@ const nlohmann::json& graph_step_annotations_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "title": "zetta.GraphStepAnnotations",
-  "description": "The correctness annotations the gate's concrete checks (#309) read from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles (schema_type check) and point-in-time / target-leakage metadata (data_leakage check). Only the named fields are constrained; a node may carry any other attributes. Mirrored verbatim by the inline schema in src/core/graph_checks.cpp (the runtime source of truth) — keep the two in sync.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
   "type": "object",
   "properties": {
     "schema": {
@@ -121,6 +121,22 @@ const nlohmann::json& graph_step_annotations_schema() {
       "description": "The camera, site, document, or other source-group column used for a vision holdout.",
       "type": "string",
       "minLength": 1
+    },
+    "citations_required": {
+      "description": "Requires every grounded-answer sentence to cite retrieved evidence.",
+      "type": "boolean"
+    },
+    "refuse_without_retrieval": {
+      "description": "Requires the language path to refuse when no relevant chunk was retrieved.",
+      "type": "boolean"
+    },
+    "governance_check": {
+      "description": "Requires runtime authorization before language training reads text.",
+      "type": "boolean"
+    },
+    "caller_read_required": {
+      "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
     }
   }
 }
@@ -264,6 +280,46 @@ std::string join_types(const std::vector<std::string>& types) {
         out += type;
     }
     return out;
+}
+
+bool true_field(const json& object, std::string_view name) {
+    if (!object.is_object()) return false;
+    const auto found = object.find(name);
+    return found != object.end() && found->is_boolean() && found->get<bool>();
+}
+
+bool language_model(const ir::Node& node) {
+    if (node.kind != ir::StepKind::Model || !node.attributes.is_object()) {
+        return false;
+    }
+    const auto field = node.attributes.find("model_kind");
+    if (field == node.attributes.end() || !field->is_string()) return false;
+    const std::string kind = normalize_type(field->get<std::string>());
+    return kind == "language" || kind == "nlp" || kind == "embedding" ||
+           kind == "embeddings" || kind == "rag" ||
+           kind == "fine_tuning" || kind == "retrieval";
+}
+
+bool upstream_requires_caller_read(const ir::ExecutionGraph& graph,
+                                   const ir::NodeId& start) {
+    std::unordered_set<ir::NodeId> visited;
+    std::vector<ir::NodeId> frontier;
+    frontier.push_back(start);
+    while (!frontier.empty()) {
+        const ir::NodeId id = frontier.back();
+        frontier.pop_back();
+        if (!visited.insert(id).second) continue;
+        for (const ir::Edge& edge : graph.edges_into(id)) {
+            if (edge.kind != ir::EdgeKind::DataFlow) continue;
+            const std::shared_ptr<ir::Node> source = graph.find_node(edge.from);
+            if (source && source->kind == ir::StepKind::Connect &&
+                true_field(source->attributes, "caller_read_required")) {
+                return true;
+            }
+            frontier.push_back(edge.from);
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -733,6 +789,54 @@ CheckResult RankCorrectnessCheck::evaluate(
                 : std::to_string(checked) +
                       " rank model(s) require groups, whole-group splits, and "
                       "ranking-time features"};
+}
+
+CheckResult LanguageGroundingCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "citations_required")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires citations on every answer sentence"};
+        }
+        if (!true_field(node->attributes, "refuse_without_retrieval")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must refuse when retrieval is empty or irrelevant"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires grounded citations and refusal"};
+}
+
+CheckResult LanguageTrainingAccessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (!language_model(*node)) continue;
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        if (!true_field(node->attributes, "governance_check")) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 must authorize every training column before reading text"};
+        }
+        if (!upstream_requires_caller_read(graph, node->id)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": M-10 requires an upstream source with caller-read enforcement"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every language model requires caller-authorized training text"};
 }
 
 CheckResult DocumentReviewCheck::evaluate(
