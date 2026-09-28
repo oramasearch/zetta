@@ -3058,6 +3058,7 @@ fs::path Node::audit_dir() const {
 
 void Node::load_audit_events() {
     audit_events_.clear();
+    audit_events_by_id_.clear();
     const fs::path root = audit_dir();
     std::error_code ec;
     if (!fs::exists(root, ec)) return;
@@ -3083,8 +3084,10 @@ void Node::load_audit_events() {
                                             : error.c_str());
             continue;
         }
-        audit_events_.push_back(std::make_shared<zetta::governance::AuditEvent>(
-            entry.path().stem().string(), *value, root));
+        auto event = std::make_shared<zetta::governance::AuditEvent>(
+            entry.path().stem().string(), *value, root);
+        audit_events_by_id_.emplace(event->id(), event);
+        audit_events_.push_back(std::move(event));
     }
     // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
     // ties on identical stamps.
@@ -3109,8 +3112,8 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
 
 std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     std::string id, zetta::governance::AuditEventValue value) {
-    for (const auto& event : audit_events_) {
-        if (event->id() == id) return event;  // already present (append-only)
+    if (auto known = audit_events_by_id_.find(id); known != audit_events_by_id_.end()) {
+        return known->second;  // already present (append-only)
     }
     const fs::path dir = audit_dir();
     std::error_code ec;
@@ -3119,7 +3122,15 @@ std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     auto event = std::make_shared<zetta::governance::AuditEvent>(std::move(id), std::move(value),
                                               dir);
     event->persist_meta();
-    audit_events_.push_back(event);
+    // Insert at its chronological place, keeping the trail sorted without a
+    // re-sort (#1070). A local event (stamped now) lands at the end; a peer's
+    // merged-in event finds its place by binary search. Events sharing a stamp
+    // (the clock is per-second) keep the order they arrived in.
+    const auto place = std::upper_bound(
+        audit_events_.begin(), audit_events_.end(), event,
+        [](const auto& a, const auto& b) { return a->time() < b->time(); });
+    audit_events_.insert(place, event);
+    audit_events_by_id_.emplace(event->id(), event);
     return event;
 }
 
@@ -4181,20 +4192,19 @@ void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
     // document has that we don't (a peer's, merged in via gossip) and never
     // removes or edits one. Each value is validated at the boundary — a
     // malformed CRDT value is ignored, not trusted into the trail.
+    //
+    // Every reconcile walks every audit key in the document, so this pass must
+    // stay O(n): an id already in the trail is skipped before its value is
+    // parsed, and a new one is inserted in order (materialize_audit_event), so
+    // the trail is never re-sorted (#1070).
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kAuditPrefix);
-        if (id.empty()) continue;
+        if (id.empty() || audit_events_by_id_.contains(id)) continue;
         if (std::optional<zetta::governance::AuditEventValue> parsed =
                 zetta::governance::parse_audit_event_value(value)) {
             materialize_audit_event(std::move(id), std::move(*parsed));
         }
     }
-    // Keep the trail in chronological order after merging peer events in.
-    std::sort(audit_events_.begin(), audit_events_.end(),
-              [](const auto& a, const auto& b) {
-                  if (a->time() != b->time()) return a->time() < b->time();
-                  return a->id() < b->id();
-              });
 }
 
 IntegrityReport Node::check_integrity() const {
