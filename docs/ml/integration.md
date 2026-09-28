@@ -31,6 +31,10 @@ M-13 are runnable; later methodologies retain their unsupported status and issue
   keeps feature names, drivers and exclusion notes from the shared report
   path; its journey checks those features and drivers. Output references
   accept arrays for forecasting/recommendation and objects for survival.
+- Vision reports select the run's `image predictions` output through
+  `run_named_table`, matching the shared helper introduced by the earlier
+  integration. The audit of removed helper names found no other stale calls;
+  churn/ranking retain `run_result_table` and uplift retains its named outputs.
 - The forecast branch's equivalent registry commit does not create duplicate
   entries. Documentation rows match the combined registry. Generated schemas
   are regenerated from code, not combined by hand.

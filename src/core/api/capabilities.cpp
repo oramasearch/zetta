@@ -1110,7 +1110,7 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
 
         nlohmann::json output_tables = nlohmann::json::array();
         if (const std::shared_ptr<zetta::data::Table> table =
-                run_at_risk_table(context.node, *run)) {
+                run_named_table(context.node, *run, "image predictions")) {
             for (const zetta::pipeline::RunOutput& output : run->outputs()) {
                 if (output.kind == "dataset") {
                     output_tables.push_back(output.ref);
