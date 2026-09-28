@@ -6549,6 +6549,10 @@
                           "description": "graph runs: component sizes, degree distribution, PageRank top nodes, edge cutoff counts, and held-out node-task accuracy",
                           "type": "object"
                         },
+                        "meta_model_weights": {
+                          "description": "M-18 base-model weights in the regularized logistic stacker",
+                          "type": "array"
+                        },
                         "methodology": {
                           "description": "methodology id for typed reports",
                           "type": "string"
@@ -6570,8 +6574,15 @@
                           "type": "array"
                         },
                         "outputs": {
-                          "description": "language methodology output table names and fully qualified refs; absent for tabular reports",
-                          "type": "array"
+                          "description": "forecast, recommendation, language, privacy and streaming output references; survival uses an object of horizon and interval-calibration table references",
+                          "oneOf": [
+                            {
+                              "type": "array"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
                         },
                         "policy": {
                           "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
@@ -6584,6 +6595,10 @@
                         "predictions": {
                           "description": "vision prediction rows, capped by `limit`",
                           "type": "array"
+                        },
+                        "privacy": {
+                          "description": "M-20 fidelity, DCR, membership, TSTR, and epsilon/delta spend",
+                          "type": "object"
                         },
                         "ranked_queue": {
                           "description": "learning-to-rank rows: group, entity, score, rank, and observed relevance, capped by `limit`",
@@ -6605,9 +6620,17 @@
                           "description": "segment sizes, shares, original-unit centers and descriptive labels",
                           "type": "array"
                         },
+                        "topics": {
+                          "description": "streaming input and score-output topic addresses",
+                          "type": "object"
+                        },
                         "transcripts": {
                           "description": "redacted speech segments with recording, time bounds, text, and confidence",
                           "type": "array"
+                        },
+                        "uncertainty": {
+                          "description": "M-17 nominal and empirical coverage, interval width, hold-out row count, and the exchangeability assumption",
+                          "type": "object"
                         }
                       },
                       "required": [
@@ -10488,9 +10511,22 @@
                     "minimum": 0,
                     "type": "integer"
                   },
+                  "burn_in": {
+                    "description": "M-17 Gibbs draws discarded before measurement",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "classifier_regularization": {
                     "description": "M-10 only: non-negative regularization for the linear classifier head",
                     "minimum": 0,
+                    "type": "number"
+                  },
+                  "clip_max": {
+                    "description": "M-20 public upper feature bound",
+                    "type": "number"
+                  },
+                  "clip_min": {
+                    "description": "M-20 public lower feature bound",
                     "type": "number"
                   },
                   "confidence": {
@@ -10552,6 +10588,11 @@
                     "maximum": 1,
                     "type": "number"
                   },
+                  "delta": {
+                    "description": "M-20 total differential-privacy delta",
+                    "minimum": 0,
+                    "type": "number"
+                  },
                   "document_column": {
                     "description": "M-11: source column containing text, PDF, or PGM bytes",
                     "minLength": 1,
@@ -10571,6 +10612,11 @@
                     "description": "M-10 only: local directory containing the pinned MiniLM config, vocab.txt, and model.safetensors (tests never download it)",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "epsilon": {
+                    "description": "M-20 total differential-privacy epsilon",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
                   },
                   "exploration_floor": {
                     "exclusiveMinimum": 0,
@@ -10596,6 +10642,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "group_column": {
+                    "description": "M-17 hierarchical group column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "holdout_fraction": {
                     "description": "hold this fraction of rows OUT of training and measure the model on them separately (e.g. 0.3). Without it the run's only metrics are in-sample — scored on the rows it trained on — and flatter",
                     "maximum": 1,
@@ -10611,10 +10662,117 @@
                     "exclusiveMinimum": 0,
                     "type": "number"
                   },
+                  "label_efficiency": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "diversity_weight": {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "gold_fraction": {
+                        "exclusiveMaximum": 1,
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "initial_labels": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "label_model_iterations": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "labelling_functions": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "column": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "label": {
+                              "enum": [
+                                0,
+                                1
+                              ],
+                              "type": "integer"
+                            },
+                            "name": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "operator": {
+                              "enum": [
+                                "less",
+                                "less_equal",
+                                "greater",
+                                "greater_equal",
+                                "equal"
+                              ],
+                              "type": "string"
+                            },
+                            "otherwise_label": {
+                              "enum": [
+                                0,
+                                1,
+                                null
+                              ],
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "column",
+                            "value",
+                            "label"
+                          ],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
+                      "logistic_iterations": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "logistic_learning_rate": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "queue_size": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "uncertainty": {
+                        "enum": [
+                          "margin",
+                          "entropy"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
                   "labels_column": {
                     "description": "M-11: optional object of labelled field values",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "max_depth": {
+                    "description": "M-20 DP GBDT maximum depth",
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "max_intervals": {
                     "description": "survival horizon in intervals (default 12)",
@@ -10636,6 +10794,25 @@
                     "description": "the registered model or solver-result name",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "noise": {
+                    "description": "M-20 DP histogram mechanism",
+                    "enum": [
+                      "gaussian",
+                      "laplace"
+                    ],
+                    "type": "string"
+                  },
+                  "nominal_coverage": {
+                    "description": "M-17 requested interval coverage",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "num_trees": {
+                    "description": "M-20 DP GBDT tree count",
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "optimization": {
                     "additionalProperties": false,
@@ -10676,6 +10853,11 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "posterior_draws": {
+                    "description": "M-17 retained Gibbs draws",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "project": {
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
@@ -10711,8 +10893,61 @@
                     "type": "number"
                   },
                   "seed": {
-                    "description": "deterministic seed for document and bandit runs",
+                    "description": "deterministic seed for document, bandit, Bayesian, and privacy runs",
                     "minimum": 0,
+                    "type": "integer"
+                  },
+                  "streaming": {
+                    "$schema": "http://json-schema.org/draft-07/schema#",
+                    "additionalProperties": false,
+                    "properties": {
+                      "allowed_lateness": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "input_topic": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "l2_regularization": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "label_time_column": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "learning_rate": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "metric_window": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "output_topic": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "persist_every": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "window_duration": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      }
+                    },
+                    "title": "zetta.StreamingParams",
+                    "type": "object"
+                  },
+                  "synthetic_rows": {
+                    "description": "M-20 synthetic row count (default: source rows)",
+                    "minimum": 1,
                     "type": "integer"
                   },
                   "targeting_fraction": {
@@ -10811,6 +11046,10 @@
                         },
                         "note": {
                           "description": "structural runs: that nothing was trained, and whether a given dataset was read",
+                          "type": "string"
+                        },
+                        "output_table": {
+                          "description": "M-17 posterior estimate table",
                           "type": "string"
                         },
                         "plan_table": {

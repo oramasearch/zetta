@@ -72,6 +72,11 @@ commits. All 21 portfolio methodologies are runnable.
 - The combined run schema declares the shared document/bandit `seed` only
   once, with its existing non-negative integer contract. Optimization retains
   its separate nested solver seed and all LP/MIP controls.
+- Round four shares that seed with Bayesian and privacy runs. Reports declare
+  `outputs` once, retaining array and object forms; a schema regression checks
+  both and the new uncertainty, stacker, privacy and topic fields. Ensemble
+  ranked rows explicitly select the `blended scores` table through the shared
+  named-output helper, never the separate meta-weight table.
 
 M-10 and M-11 add independent LayerNorm and patch-embedding autograd operations;
 both implementations and their gradient checks are retained. Report schemas keep
@@ -114,3 +119,10 @@ Round-three schema regeneration passed all 46 schema and 3 OpenAPI tests.
 The artifacts now include speech privacy annotations/transcripts, bandit policy
 and decision-table references, and optimization controls/plan/constraint facts.
 The registry documentation and compiler/API naming regression checks also pass.
+
+Round-four regeneration passed all 47 schema and 4 OpenAPI tests, including the
+array/object report-output regression. The registry/compiler proof passed all
+36 tests. The generated artifacts retain every earlier report and annotation,
+add uncertainty, stacker, privacy and topic fields, and register streaming model
+and parameter boundaries. The full proof and per-file audit are recorded in
+the round-four issue comment.

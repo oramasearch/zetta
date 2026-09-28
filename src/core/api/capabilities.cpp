@@ -565,11 +565,6 @@ const nlohmann::json& get_run_report_output_schema() {
             {"description",
              "graph runs: component sizes, degree distribution, PageRank top "
              "nodes, edge cutoff counts, and held-out node-task accuracy"}}},
-          {"outputs",
-           {{"type", "array"},
-            {"description",
-             "language methodology output table names and fully qualified refs; "
-             "absent for tabular reports"}}},
           {"metrics",
            {{"type", "object"},
             {"description", "bandit reward, regret, exploration, and row metrics"}}},
@@ -592,7 +587,8 @@ const nlohmann::json& get_run_report_output_schema() {
           {"outputs",
            {{"oneOf", {{{"type", "array"}}, {{"type", "object"}}}},
             {"description",
-             "forecast/recommendation output references, or survival and interval-calibration table references"}}},
+             "forecast, recommendation, language, privacy and streaming output references; "
+             "survival uses an object of horizon and interval-calibration table references"}}},
           {"forecast",
            {{"type", "array"},
             {"description",
@@ -1831,7 +1827,9 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
     if (is_survival) {
         // Survival runs expose their horizon tables above, not a churn ranking.
     } else if (const std::shared_ptr<zetta::data::Table> table =
-            run_result_table(context.node, *run)) {
+            model->kind() == "ensemble"
+                ? run_named_table(context.node, *run, "blended scores")
+                : run_result_table(context.node, *run)) {
         std::vector<nlohmann::json> rows;
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t index = 0; index < store.size(); ++index) {

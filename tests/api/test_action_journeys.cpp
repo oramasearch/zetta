@@ -2022,6 +2022,8 @@ TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
              journey::exists("/model/best_single_held_out_auc"),
              journey::size_equals("/meta_model_weights", 2),
              journey::size_equals("/output_tables", 2),
+             journey::size_at_least("/at_risk", 1),
+             journey::exists("/at_risk/0/risk"),
              journey::equals("/dataset/source", "datasets.ensemble_training")}}},
     };
     const journey::JourneyReport report =
