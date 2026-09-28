@@ -230,6 +230,44 @@ TEST(DecisionPolicy, CollectionsTemplateEnforcesTreatmentsAndProtectionEvidence)
     EXPECT_FALSE(missing->actionable);
 }
 
+TEST(DecisionPolicy, ReplenishmentTemplateBoundsAutomaticReleaseByQuantity) {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    DecisionPolicyStore store{replication};
+    std::string error;
+    const Json config =
+        zetta::solutions::solution_policy_template("S-6", 4);
+    const auto policy = store.create("S-6", config, "owner", &error);
+    ASSERT_TRUE(policy) << error;
+    Json order = {{"entity_id", "within-bound"},
+                  {"score", 20.0},
+                  {"cost", 50.0},
+                  {"order_quantity", 100.0},
+                  {"eligible", true},
+                  {"lead_time_confirmed", true},
+                  {"inventory_hold", false},
+                  {"supplier_blocked", false}};
+    const auto bounded = store.decide(policy->id, order, "owner", &error);
+    ASSERT_TRUE(bounded) << error;
+    EXPECT_EQ(bounded->action, "release_order");
+    EXPECT_EQ(bounded->autonomy, "A2");
+    EXPECT_TRUE(bounded->actionable);
+
+    order["entity_id"] = "approval";
+    order["order_quantity"] = 101.0;
+    const auto approval = store.decide(policy->id, order, "owner", &error);
+    ASSERT_TRUE(approval) << error;
+    EXPECT_EQ(approval->autonomy, "A1");
+    EXPECT_EQ(approval->status, "pending_approval");
+    EXPECT_FALSE(approval->actionable);
+
+    order["entity_id"] = "hard-bound";
+    order["order_quantity"] = 501.0;
+    const auto blocked = store.decide(policy->id, order, "owner", &error);
+    ASSERT_TRUE(blocked) << error;
+    EXPECT_EQ(blocked->status, "blocked");
+    EXPECT_FALSE(blocked->actionable);
+}
+
 TEST(DecisionPolicy, A1WaitsForApprovalAndRecordsPolicyVersion) {
     zetta::test::TempDir directory;
     ReplicationManager replication{zetta::util::new_uuid()};

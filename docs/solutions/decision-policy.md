@@ -41,7 +41,7 @@ A config contains:
 | `kill_switch` | When true, every decision is blocked before any other rule. |
 | `threshold` | Minimum score for an action. |
 | `tiers[]` | Named score floors and their selected action; the highest matching floor wins. |
-| `actions` | Optional named action settings: autonomy, SLA seconds, approval-above cost, contact cap and frequency cap. Every tier action must have a setting when this map is present. |
+| `actions` | Optional named action settings: autonomy, SLA seconds, approval-above value and optional entity field, contact cap and frequency cap. Every tier action must have a setting when this map is present. |
 | `budget.limit` | Maximum committed cost for one policy version. |
 | `contact_cap` | Blocks when the entity's contact count has reached the cap. |
 | `frequency_cap` | Maximum actions in the configured window; enforce both supplied counts and persisted authorized/pending decisions for the entity. |
@@ -55,8 +55,11 @@ the kill-switch, exclusions, eligibility, contact cap, frequency cap, budget and
 threshold. A blocked decision retains its tier, evidence and policy version.
 The optional `tiers[].allowed_actions` list permits an explicitly requested
 alternative, such as a high-risk retention discount; unlisted requests cannot
-override the tier. `actions.<name>.approval_above` promotes a cost above the cap
-to A1. `no_contact` never authorizes delivery. Named rule `name` and `role`
+override the tier. `actions.<name>.approval_above` promotes a value above the
+cap to A1. The value comes from the entity's numeric
+`actions.<name>.approval_field` when configured and otherwise from `cost`;
+missing or non-numeric named evidence also requires A1 approval. `no_contact`
+never authorizes delivery. Named rule `name` and `role`
 metadata identify catalogue predicates while `field` remains the executable
 data binding. Missing eligibility evidence blocks.
 

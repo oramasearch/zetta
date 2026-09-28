@@ -38,6 +38,7 @@ The reusable annotation and methodology-specific checks are:
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 | `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
+| `S6*Check` family | `s6_service_budget_constraints`, `s6_lead_time_realism`, `s6_order_approval`, `s6_level_composition` | an S-6 graph without service/budget verification, lead-time coverage, bounded approval, or the methodologies and action authority required by its level |
 
 | `S5*Check` family | `s5_rolling_origin`, `s5_future_covariates`, `s5_hierarchy_consistency`, `s5_level_composition` | an S-5 graph with non-temporal validation, future covariates, a hierarchy that does not end at the forecast leaf, or a missing required methodology stage |
 
@@ -152,6 +153,22 @@ M-2, M-4, and M-3 at every level and M-5 at levels 3 and 4.
 `sources.correctness` hierarchy settings. `run_solution` checks the stored
 profile again. See [S-5](../solutions/S-5.md) for its data, policy, actions,
 measurement, and readout boundary.
+
+### S-6 composed solution checks
+
+The S-6 checks engage only for a bound S-6 manifest. The service/budget check
+requires a positive budget, a service target in `(0, 1]`, named service and
+budget constraints, and M-16 independent constraint verification. The
+lead-time check requires positive frozen lead-time evidence and an M-4 horizon
+that covers it. The order check requires ordered automatic and hard quantity
+bounds, A1 approval above the automatic bound, and hard-bound enforcement.
+The level check requires M-4 and M-16 throughout, M-5 from level 3, the action
+authority selected for that level, and a configured kill switch at level 4.
+
+`create_solution` derives the profile from the complete policy template, M-4
+hints, and optional `sources.correctness` overrides. `run_solution` checks the
+stored profile again. See [S-6](../solutions/S-6.md) for the data, policy,
+action, and measurement contract.
 
 ### S-7 composed solution checks
 

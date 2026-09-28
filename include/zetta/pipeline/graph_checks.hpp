@@ -447,6 +447,39 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-6's domain adaptations (#1115) validate the complete replenishment
+// Pipeline: service and spend constraints, realistic lead-time coverage, and
+// approval protection above the automatic-release quantity bound.
+class S6ServiceBudgetCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s6_service_budget_constraints";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6LeadTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s6_lead_time_realism"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6OrderApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "s6_order_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s6_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-7's domain adaptations (#1116). Driver language must remain
 // associational, anomaly delivery must obey an explicit alert budget, and KPI
 // scoring must use causal seasonal baselines rather than future observations.

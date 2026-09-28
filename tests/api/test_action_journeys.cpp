@@ -1466,6 +1466,82 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_replenishment_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("inventory_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    int row_id = 1;
+    for (int item = 1; item <= 64; ++item) {
+        const int order_quantity = 25 + item % 50;
+        const double start_time =
+            30.0 + static_cast<double>(item % 5);
+        for (int period = 0; period < 36; ++period) {
+            const double demand =
+                20.0 + static_cast<double>(item % 7) +
+                static_cast<double>(period) * 0.2 +
+                static_cast<double>(period % 7);
+            const int constraint_index = period % 4;
+            const std::string constraint =
+                constraint_index == 0 ? "service_level"
+                : constraint_index == 1 ? "budget"
+                : constraint_index == 2 ? "lead_time"
+                                        : "receiving_capacity";
+            const std::string sense =
+                constraint_index == 0 ? ">=" : "<=";
+            const double right_hand_side =
+                constraint_index == 0 ? 1.0
+                : constraint_index == 1 ? 640.0
+                : constraint_index == 2 ? 128.0
+                                        : 64.0;
+            table->add_row(
+                {{"row_id", row_id},
+                 {"item_location_id", item},
+                 {"item_id", "sku-" + std::to_string(item)},
+                 {"location_id", "west-dc"},
+                 {"supplier_id", "supplier-a"},
+                 {"timestamp", static_cast<double>(period)},
+                 {"demand_quantity", demand},
+                 {"demand_signal", demand / 10.0},
+                 {"variable", "order-" + std::to_string(item)},
+                 {"objective", 100.0 - static_cast<double>(item % 9)},
+                 {"lower_bound", 0.0},
+                 {"upper_bound", 1.0},
+                 {"integer", false},
+                 {"current_value", 0.0},
+                 {"scenario", "base"},
+                 {"constraint", constraint},
+                 {"coefficient", 1.0},
+                 {"sense", sense},
+                 {"rhs", right_hand_side},
+                 {"event", item % 3 == 0 ? 1 : 0},
+                 {"start_time", start_time},
+                 {"feature_time", start_time - 1.0},
+                 {"duration", 14.0 + static_cast<double>(item % 10)},
+                 {"eligible", true},
+                 {"lead_time_confirmed", true},
+                 {"inventory_hold", false},
+                 {"supplier_blocked", false},
+                 {"order_quantity", order_quantity},
+                 {"lead_time_days", 7.0},
+                 {"service_level_target", 0.95},
+                 {"service_level", 0.98},
+                 {"inventory_exposure", 1200.0 + item},
+                 {"order_volatility", 0.1},
+                 {"cost", 10.0},
+                 {"contacts", 0},
+                 {"recent_actions", 0},
+                 {"owner", "inventory-planning"}});
+            ++row_id;
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -1501,6 +1577,36 @@ nlohmann::json lead_scoring_configuration() {
         {"roi_model",
          {{"value_per_outcome", 250.0},
           {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json replenishment_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "inventory_history"},
+          {"target_table", "replenishment_snapshot"},
+          {"entity_column", "item_location_id"},
+          {"time_column", "timestamp"},
+          {"as_of", 35.0}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "event"},
+          {"time_column", "start_time"},
+          {"as_of", 35.0},
+          {"feature_columns", {"demand_signal"}}}},
+        {"decision_source",
+         {{"methodology", "M-4"},
+          {"entity_column", "series"},
+          {"score_column", "point_forecast"},
+          {"output_name", "forecast"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://erp.example.test/replenishment"},
+          {"owner", "inventory-planning"}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 400.0},
           {"currency", "USD"}}}};
 }
 
@@ -2106,6 +2212,66 @@ journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+journey::Journey planted_service_level_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"replenishment-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double service_level =
+            0.75 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed service level",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "service_level"},
+              {"value", service_level},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured replenishment effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted service-level effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.12;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -2550,6 +2716,165 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_replenishment_data(node);
+    journey::Journey flow{"replenishment-solution", {}};
+    flow.steps = {
+        {"read S-6 defaults",
+         "get_solution",
+         {{"solution", "S-6"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "service_level")}}},
+        {"create replenishment project",
+         "create_project",
+         {{"name", "replenishment"}}},
+        {"create S-6 Pipeline",
+         "create_solution",
+         {{"project", "replenishment"},
+          {"solution", "S-6"},
+          {"level", 4},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "inventory_history"},
+            {"M-4",
+             {{"source", "datasets"},
+              {"table", "inventory_history"},
+              {"time_column", "timestamp"},
+              {"target_column", "demand_quantity"},
+              {"series_column", "item_location_id"},
+              {"horizon", 7},
+              {"seasonal_period", 7},
+              {"lags", {1, 7}},
+              {"rolling_window", 7},
+              {"backtest_folds", 3},
+              {"num_trees", 10},
+              {"max_depth", 2}}},
+            {"M-5",
+             {{"duration_column", "duration"},
+              {"event_indicator", "event"}}},
+            {"correctness",
+             {{"service_level_target", 0.95},
+              {"lead_time_days", 7.0},
+              {"automatic_release_max_quantity", 100.0},
+              {"hard_order_max_quantity", 500.0}}}}},
+          {"foundation", replenishment_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"replenishment_graph", "/graph"},
+          {"replenishment_experiment", "/experiment_id"}}},
+        {"run S-6 Pipeline",
+         "run_solution",
+         {{"project", "replenishment"},
+          {"graph", "$replenishment_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"replenishment_run", "/run_id"}}},
+        {"read completed replenishment Run",
+         "get_run",
+         {{"run_id", "$replenishment_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected replenishment assignments",
+         "get_experiment",
+         {{"experiment", "$replenishment_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 32),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read replenishment action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 32)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("replenishment");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-6 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& pipeline = graph->graph();
+    bool forecast_reads_history = false;
+    for (const auto& source :
+         pipeline.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (source->attributes.value("methodology", std::string{}) == "M-4") {
+            forecast_reads_history =
+                source->attributes.value("table", std::string{}) ==
+                "inventory_history";
+        }
+    }
+    EXPECT_TRUE(forecast_reads_history);
+    const auto& binding = pipeline.find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("payload").at("action"), "release_order");
+        const auto& proposal = request.at("payload").at("order_proposal");
+        EXPECT_LE(proposal.at("order_quantity").get<double>(), 100.0);
+        EXPECT_EQ(proposal.at("lead_time_days"), 7.0);
+        EXPECT_FALSE(proposal.at("item_id").get<std::string>().empty());
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("replenishment_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 64u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_service_level_outcomes(
+        ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(

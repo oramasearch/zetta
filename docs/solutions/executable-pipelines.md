@@ -64,6 +64,10 @@ S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
+S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
+the declared lead-time horizon into one decision score per item-location. Its
+M-4 stage reads the configured bounded history table; M-16 and M-5 read the
+latest decision snapshot.
 S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
 anomaly score. Forum decisions copy the real flag, threshold, period, top
 candidate driver, deviation, and contributor list.
@@ -91,7 +95,8 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. All stage Connect nodes read this snapshot. Wrapper stage
+   each child Run. Stage Connect nodes read this snapshot except S-6 M-4, which
+   reads its configured bounded history table. Wrapper stage
    annotations are removed while reconstructing the child graph, so they are
    never interpreted as methodology parameters. An ISO cutoff is carried into
    feature planning from the snapshot annotation, not inferred.
@@ -199,6 +204,13 @@ S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
 checks protected-series suppression in both task and report actions, records
 planted forecast errors, observes all five guardrails, and verifies the FVA
 readout reports its current claim boundary.
+
+`SolutionJourney.ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect`
+builds and runs level-4 S-6 over partitioned demand history. It executes M-4,
+M-16, and M-5, aggregates the real lead-time forecast, protects the permanent
+holdout, checks bounded ERP release payloads and all five guardrails, records
+centered service-level outcomes with a 0.12 effect, and verifies that the
+readout estimate and 95% confidence interval recover the planted effect.
 
 `SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
 and runs S-7 over a partitioned seasonal KPI table with planted spikes and

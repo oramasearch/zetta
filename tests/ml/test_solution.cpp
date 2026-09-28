@@ -266,6 +266,39 @@ zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s6_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-6");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level,
+                                    {{"M-4", {{"horizon", 7}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s6_correctness"] = {
+        {"service_level_target", 0.95},
+        {"budget_limit", 10000.0},
+        {"required_constraints", {"service_level", "budget"}},
+        {"lead_time_days", 7.0},
+        {"lead_time_source", "snapshot"},
+        {"forecast_horizon_days", 7.0},
+        {"automatic_release_max_quantity", 100.0},
+        {"hard_order_max_quantity", 500.0},
+        {"approval_field", "order_quantity"},
+        {"approval_above", 100.0},
+        {"hard_order_bound_enforced", true},
+        {"approval_required", true},
+        {"level_action", level <= 1 ? "draft_order"
+                          : level >= 4 ? "release_order"
+                                       : "erp_replenishment_task"},
+        {"kill_switch_configured", true}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s7_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-7");
     if (solution == nullptr) {
@@ -536,9 +569,11 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
             EXPECT_EQ(solution.templates.minimal,
-                      solution.id != "S-1" && solution.id != "S-2" &&
-                      solution.id != "S-3" && solution.id != "S-4" &&
-                      solution.id != "S-12" && solution.id != "S-5" && solution.id != "S-9" && solution.id != "S-8" && solution.id != "S-7");
+                       solution.id != "S-1" && solution.id != "S-2" &&
+                       solution.id != "S-3" && solution.id != "S-4" &&
+                       solution.id != "S-5" && solution.id != "S-6" &&
+                       solution.id != "S-7" && solution.id != "S-8" &&
+                       solution.id != "S-9" && solution.id != "S-12");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -652,6 +687,41 @@ TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
               "A1");
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, ReplenishmentEntryCarriesExecutableDefaults) {
+    const zetta::ml::Solution* replenishment =
+        zetta::ml::find_solution("S-6");
+    ASSERT_NE(replenishment, nullptr);
+    EXPECT_TRUE(replenishment->runnable);
+    EXPECT_EQ(replenishment->issue,
+              "https://github.com/oramasearch/zetta/issues/1115");
+    EXPECT_FALSE(replenishment->templates.minimal);
+    EXPECT_EQ(replenishment->templates.measurement.design, "holdout");
+    EXPECT_EQ(replenishment->templates.measurement.outcome,
+              "service_level");
+    EXPECT_EQ(replenishment->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"replenishment_action"}));
+    ASSERT_EQ(replenishment->templates.guardrails.size(), 5u);
+    EXPECT_EQ(replenishment->templates.guardrails.front().metric,
+              "replenishment_spend");
+    EXPECT_EQ(replenishment->templates.guardrails.at(1).direction,
+              "minimum");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 1)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "draft_order");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 2)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "erp_replenishment_task");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 4)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "release_order");
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -1105,6 +1175,68 @@ TEST(SolutionRegistry, S5EveryLevelBuildsWithItsDeclaredComposition) {
     missing_foundation.find_node("solution_manifest")
         ->attributes["methodologies"] = {"M-4", "M-3"};
     expect_s5_failure(missing_foundation, "s5_level_composition");
+}
+
+TEST(SolutionRegistry, S6CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_s6_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto service = bound_s6_graph();
+    service.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["required_constraints"] = {"budget"};
+    const auto service_report = zetta::pipeline::default_gate().run(service);
+    const auto* service_check = check_result(
+        service_report, "solution/s6_service_budget_constraints");
+    ASSERT_NE(service_check, nullptr);
+    EXPECT_EQ(service_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto budget = bound_s6_graph();
+    budget.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["budget_limit"] = 0.0;
+    const auto budget_report = zetta::pipeline::default_gate().run(budget);
+    const auto* budget_check = check_result(
+        budget_report, "solution/s6_service_budget_constraints");
+    ASSERT_NE(budget_check, nullptr);
+    EXPECT_EQ(budget_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto lead_time = bound_s6_graph();
+    lead_time.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["forecast_horizon_days"] = 6.0;
+    const auto lead_time_report =
+        zetta::pipeline::default_gate().run(lead_time);
+    const auto* lead_time_check = check_result(
+        lead_time_report, "solution/s6_lead_time_realism");
+    ASSERT_NE(lead_time_check, nullptr);
+    EXPECT_EQ(lead_time_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto approval = bound_s6_graph();
+    approval.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["approval_required"] = false;
+    const auto approval_report =
+        zetta::pipeline::default_gate().run(approval);
+    const auto* approval_check = check_result(
+        approval_report, "solution/s6_order_approval");
+    ASSERT_NE(approval_check, nullptr);
+    EXPECT_EQ(approval_check->status, zetta::pipeline::CheckStatus::Fail);
+}
+
+TEST(SolutionRegistry, S6EveryLevelBuildsThroughItsMethodologyCallbacks) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_s6_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 3u : 2u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
 }
 
 TEST(SolutionRegistry, KpiAnomalyEntryCarriesTheCompleteContract) {

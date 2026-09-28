@@ -61,6 +61,15 @@ locked-override rows are suppressed. The lifetime cap is 52, the rolling
 seven-day cap is one, and the default budget is zero. Every tier keeps a 10%
 permanent holdout; planner reports omit protected series.
 
+S-6 defines replenish/no-order tiers. The replenish action is selected by
+level: A0 draft at level 1, A2 ERP task at levels 2–3, and A2 bounded release
+at level 4. `approval_field: order_quantity` changes release authority to A1
+above 100 units, while the 500-unit eligibility bound blocks larger orders.
+Eligibility also requires confirmed lead time; inventory holds and supplier
+blocks suppress action. The budget is 10,000 currency units, the rolling cap is
+one action per 30 days, and the lifetime cap is 52. Its permanent 10% holdout
+measures `service_level` against the `replenishment_action` cell.
+
 S-8 defines imminent/elevated/monitor hazard floors of 0.65/0.25/0.0. Imminent
 assets receive an A0 draft work order; elevated assets receive an A2 inspection
 work order; optional scheduling is A1. Eligibility requires an approved asset
@@ -79,7 +88,7 @@ to one action in seven days and nurture to one in fourteen. Its deterministic
 experiment keeps 10% as permanent holdout and assigns the remainder to
 `journey_sent`.
 
-S-6, S-10, and S-11 intentionally provide minimal starter policies derived from
+S-10 and S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -91,6 +100,9 @@ S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
 S-5 uses the `planner_report` treatment cell and observes FVA, interval
 coverage, freshness, stockout censoring, and override auditability.
+
+S-6 observes replenishment spend, service level, inventory exposure, order
+volatility, and unapproved over-bound orders.
 
 S-7 defines critical/anomaly score floors of 0.8/0.0. Flagged rows create an A2
 decision-forum report with a one-day SLA; critical rows may be changed to an A1

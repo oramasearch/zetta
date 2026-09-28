@@ -73,10 +73,11 @@ Solution band_a(
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
                            : solution.id == "S-5" ? 1114
-                           : solution.id == "S-12" ? 1121
+                           : solution.id == "S-6" ? 1115
                            : solution.id == "S-7" ? 1116
                            : solution.id == "S-8" ? 1117
                            : solution.id == "S-9" ? 1118
+                           : solution.id == "S-12" ? 1121
                                                    : 1102);
     return solution;
 }
@@ -322,14 +323,21 @@ const std::vector<Solution>& solutions() {
             "Balance availability, working capital, capacity, and spend constraints.",
             {{"M-4", "primary", 1}, {"M-16", "foundation", 1},
              {"M-5", "attachable", 3}},
-            {"M-4", "M-16", "M-5"}, {"tasks in ERP", "bounded closed loop"}, {"L1"},
+            {"M-4", "M-16", "M-5"},
+            {"draft purchase and transfer orders", "owned tasks in ERP",
+             "bounded closed-loop release"},
+            {"L1 ERP tasks", "bounded batch release"},
             {{"draft purchase or transfer orders", "A0"}, {"release inside policy", "A2"},
              {"policy changes", "A1"}},
-            {{"time", true, "demand and inventory history"}, {"label", true, "demand quantity"},
+            {{"entity", true, "item and location replenishment key"},
+             {"time", true, "demand and inventory history"},
+             {"label", true, "demand quantity"},
              {"variable", true, "order and transfer decisions"},
-             {"constraint", true, "capacity, lead time, budget, and service bounds"}},
+             {"constraint", true, "capacity, lead time, budget, and service bounds"},
+             {"cost", true, "unit, order, and working-capital cost"},
+             {"owner", false, "planner or buyer accountable for the ERP task"}},
             "Order proposals constrained by service targets, lead times, capacity, spend caps, and segregation of duties.",
-            "Phased release comparison with acceptance rate, edit distance, service, and inventory outcomes.",
+            "Protected holdout inside a phased release, with acceptance, edit distance, service, and inventory outcomes.",
             {"spend cap", "service level", "inventory exposure", "order volatility", "segregation of duties"},
             levels("forecast plus draft plan", "add ERP tasks",
                    "add time-to-stockout", "add bounded automatic release")),
@@ -723,6 +731,11 @@ ComposedSolution compose_solution(const Solution& solution, int level,
 ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
                                         int stage) {
     ir::ExecutionGraph result;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    const bool strips_composition_annotations =
+        manifest &&
+        manifest->attributes.value("solution", std::string{}) == "S-6";
     for (const auto& node : graph.nodes()) {
         if (!node->attributes.is_object() ||
             node->attributes.value("solution_stage", 0) != stage) {
@@ -732,7 +745,13 @@ ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
         attributes.erase("methodology");
         attributes.erase("solution_stage");
         attributes.erase("preview");
-        result.add_node(node->kind, node->name, std::move(attributes), node->id);
+        if (strips_composition_annotations) {
+            attributes.erase("source_kind");
+            attributes.erase("snapshot_as_of");
+            attributes.erase("solution_snapshot_as_of");
+        }
+        result.add_node(node->kind, node->name, std::move(attributes),
+                        node->id);
     }
     for (const ir::Edge& edge : graph.edges()) {
         if (result.has_node(edge.from) && result.has_node(edge.to)) {

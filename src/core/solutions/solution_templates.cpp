@@ -17,6 +17,12 @@ Json predicate(const std::string& field, bool value) {
             {"operator", "eq"}, {"value", value}};
 }
 
+Json numeric_predicate(const std::string& field, const std::string& operation,
+                       double value) {
+    return {{"name", field}, {"role", "entity"}, {"field", field},
+            {"operator", operation}, {"value", value}};
+}
+
 struct DefaultAction {
     const char* id;
     const char* action;
@@ -295,6 +301,45 @@ void demand_forecast_defaults(SolutionTemplates& result) {
         {"unaudited_override_fraction", 0.0, "maximum"}};
 }
 
+void replenishment_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "replenish"}, {"minimum_score", 1.0},
+         {"action", "draft_order"},
+         {"allowed_actions", {"draft_order", "erp_replenishment_task",
+                              "release_order", "no_contact"}}},
+        {{"name", "no_order"}, {"minimum_score", 0.0},
+         {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"draft_order", {{"autonomy", "A0"}, {"sla_seconds", 86400},
+                         {"frequency_cap", frequency(1)}}},
+        {"erp_replenishment_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"release_order",
+         {{"autonomy", "A2"}, {"approval_field", "order_quantity"},
+          {"approval_above", 100.0}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["budget"] = {{"limit", 10000.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("lead_time_confirmed", true),
+        numeric_predicate("order_quantity", "lte", 500.0)};
+    result.policy["exclusion_rules"] = {
+        predicate("inventory_hold", true), predicate("supplier_blocked", true)};
+    result.experiment.holdouts = {{"replenish", 0.1}, {"no_order", 0.1}};
+    result.experiment.treatment_cells = {"replenishment_action"};
+    result.guardrails = {
+        {"replenishment_spend", 10000.0, "maximum"},
+        {"service_level", 0.95, "minimum"},
+        {"inventory_exposure", 5000.0, "maximum"},
+        {"order_volatility", 0.5, "maximum"},
+        {"unapproved_over_bound_orders", 0.0, "maximum"}};
+    result.measurement = {"holdout", "service_level", "fraction", 30};
+}
+
 void kpi_anomaly_defaults(SolutionTemplates& result) {
     result.minimal = false;
     result.policy["tiers"] = {
@@ -433,21 +478,39 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 lifetime_value_defaults(result);
             } else if (solution_id == "S-4") {
                 collections_defaults(result);
-            } else if (solution_id == "S-12") {
-                claims_triage_defaults(result);
             } else if (solution_id == "S-5") {
                 demand_forecast_defaults(result);
+            } else if (solution_id == "S-6") {
+                replenishment_defaults(result);
             } else if (solution_id == "S-7") {
                 kpi_anomaly_defaults(result);
             } else if (solution_id == "S-8") {
                 predictive_maintenance_defaults(result);
             } else if (solution_id == "S-9") {
                 automated_outbound_defaults(result);
+            } else if (solution_id == "S-12") {
+                claims_triage_defaults(result);
             }
             return result;
         }
     }
     return {};
+}
+
+Json solution_policy_template(const std::string& solution_id, int level) {
+    Json policy = solution_templates(solution_id).policy;
+    if (solution_id != "S-6") {
+        return policy;
+    }
+    const std::string action = level <= 1 ? "draft_order"
+                               : level >= 4 ? "release_order"
+                                            : "erp_replenishment_task";
+    for (Json& tier : policy["tiers"]) {
+        if (tier.at("name") == "replenish") {
+            tier["action"] = action;
+        }
+    }
+    return policy;
 }
 
 Json to_json(const SolutionExperimentTemplate& value) {
