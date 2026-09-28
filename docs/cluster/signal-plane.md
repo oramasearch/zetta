@@ -72,6 +72,7 @@ replies with a clear `"no handler"` error rather than hanging the caller.
 
 ### Threading model
 
+- **Swapping a handler waits out calls still inside the old one (#1131).** Off the network thread, `set_signal_handler` returns only after any dispatch that already loaded the previous handler has finished, so a component that restores its predecessor may then be destroyed safely. That is the restore-then-destroy order every chained handler (select, fulltext, collectives, the scheduler, the coordinated-launch listener) follows at stop. Called on the network thread, from inside a dispatch, it does not wait.
 - **Handlers run on the cluster's network thread.** Keep them cheap and
   thread-safe; offload heavy work to another executor — e.g. the
   [work-stealing scheduler](../compute/work-stealing-scheduler.md), whose `steal` /
