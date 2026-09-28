@@ -120,3 +120,10 @@ The registry test validates every S policy template against the engine schema.
 builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
 proves positive-uplift recommendations can reach policy execution and every
 non-positive effect remains non-actionable, including protected holdouts.
+
+`SolutionJourney.ClaimsTriageProtectsHoldoutAndRecoversPlantedEffect` builds
+S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
+`claim_id`/`referral_score` table, delivers only fast-track, adjuster, or SIU
+tasks, observes all five claim guardrails, records synthetic outcomes, and
+recovers the planted effect inside the readout interval. The future claim and
+protected holdouts never reach the connector.

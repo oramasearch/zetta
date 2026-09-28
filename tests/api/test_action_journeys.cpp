@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -286,6 +287,101 @@ nlohmann::json retention_configuration() {
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
 }
 
+void land_claims_data(Node& node) {
+    const auto database = node.create_database("claims");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("fnol");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int claim_id = index + 1;
+        const double referral_signal =
+            static_cast<double>(index % 20) / 19.0;
+        const bool label =
+            (referral_signal >= 0.55) != (index % 23 == 0);
+        const std::string claim_number =
+            "CLM-" + std::to_string(10000 + claim_id);
+        const std::string loss_date =
+            "2026-08-" + std::to_string(10 + index % 18);
+        const std::string loss_amount =
+            std::to_string(500 + (index % 20) * 250);
+        const std::string document =
+            "claim_number: " + claim_number + "\nloss_date: " +
+            loss_date + "\nloss_amount: " + loss_amount;
+        table->add_row(
+            {{"claim_id", claim_id},
+             {"record_id", claim_id},
+             {"source", "fnol-fixture"},
+             {"name", "Claim " + std::to_string(claim_id)},
+             {"referral_confirmed", label ? 1 : 0},
+             {"referral_signal", referral_signal},
+             {"claim_amount", 500.0 + static_cast<double>(index % 20) * 250.0},
+             {"prior_claims", static_cast<double>(index % 5)},
+             {"document", document},
+             {"document_labels",
+              {{"claim_number", claim_number},
+               {"loss_date", loss_date},
+               {"loss_amount", loss_amount}}},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"fnol_complete", true},
+             {"coverage_confirmed", true},
+             {"identity_verified", true},
+             {"document_confidence_clear", true},
+             {"fairness_review_passed", true},
+             {"catastrophe_override", false},
+             {"manual_only", false}});
+    }
+    table->add_row(
+        {{"claim_id", 9999},
+         {"record_id", 9999},
+         {"source", "fnol-fixture"},
+         {"name", "Future claim"},
+         {"referral_confirmed", 1},
+         {"referral_signal", 1.0},
+         {"claim_amount", 9999.0},
+         {"prior_claims", 9.0},
+         {"document", "claim_number: FUTURE\nloss_date: 2026-10-01\nloss_amount: 9999"},
+         {"document_labels",
+          {{"claim_number", "FUTURE"},
+           {"loss_date", "2026-10-01"},
+           {"loss_amount", "9999"}}},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"fnol_complete", true},
+         {"coverage_confirmed", true},
+         {"identity_verified", true},
+         {"document_confidence_clear", true},
+         {"fairness_review_passed", true},
+         {"catastrophe_override", false},
+         {"manual_only", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json claims_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "claims"},
+          {"source_table", "fnol"},
+          {"target_table", "fnol_snapshot"},
+          {"entity_column", "claim_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "referral_confirmed"},
+          {"feature_columns",
+           {"referral_signal", "claim_amount", "prior_claims"}}}},
+        {"delivery",
+         {{"endpoint", "https://claims.example.test/tasks"},
+          {"owner", "claims-triage"}}},
+        {"roi_model",
+         {{"value_per_outcome", 100.0},
+          {"investment", 200.0},
+          {"currency", "USD"}}}};
+}
+
 journey::Journey retention_journey(const nlohmann::json& foundation) {
     journey::Journey flow{"solution-foundation", {}};
     flow.steps = {
@@ -340,6 +436,83 @@ journey::Journey retention_journey(const nlohmann::json& foundation) {
     return flow;
 }
 
+journey::Journey claims_journey(const nlohmann::json& foundation) {
+    journey::Journey flow{"claims-solution", {}};
+    flow.steps = {
+        {"read executable claims defaults", "get_solution",
+         {{"solution", "S-12"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/denial_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the claims project", "create_project",
+         {{"name", "claims triage"}}},
+        {"create the composed claims solution", "create_solution",
+         {{"project", "claims triage"},
+          {"solution", "S-12"},
+          {"level", 1},
+          {"sources",
+           {{"source", "claims"},
+            {"table", "fnol"},
+            {"M-11",
+             {{"document_column", "document"},
+              {"document_id_column", "entity_id"},
+              {"labels_column", "document_labels"},
+              {"fields",
+               {"claim_number", "loss_date", "loss_amount"}},
+              {"review_threshold", 0.8}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"claims_graph", "/graph"},
+          {"claims_policy", "/policy_id"},
+          {"claims_experiment", "/experiment_id"},
+          {"claims_readout", "/readout_id"}}},
+        {"read the claims policy", "get_policy",
+         {{"policy_id", "$claims_policy"}},
+         {.checks = {
+              journey::equals("/current_version", 1),
+              journey::equals(
+                  "/versions/0/config/actions/denial_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "siu_referral"),
+              journey::equals("/versions/0/config/tiers/1/action",
+                              "adjuster_assignment"),
+              journey::equals("/versions/0/config/tiers/2/action",
+                              "fast_track")}}},
+        {"read the claims holdout", "get_experiment",
+         {{"experiment", "$claims_experiment"}},
+         {.checks = {
+              journey::equals("/experiment/allocations/0/fraction", 0.1)}}},
+        {"run claims triage", "run_solution",
+         {{"project", "claims triage"},
+          {"graph", "$claims_graph"},
+          {"delivery_token", "claims-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"claims_run", "/run_id"}}},
+        {"read the completed claims Run", "get_run",
+         {{"run_id", "$claims_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read claim assignments", "get_experiment",
+         {{"experiment", "$claims_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read claim action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
 journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
                                             const nlohmann::json& binding) {
     std::map<std::string, std::size_t> counts;
@@ -379,6 +552,69 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
                                    estimate.at("confidence_interval").at("lower").template get<double>() <= 0.2 &&
                                    estimate.at("confidence_interval").at("upper").template get<double>() >= 0.2;
                         })}}});
+    return outcomes;
+}
+
+journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
+                                        const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"claims-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.2);
+        outcomes.steps.push_back(
+            {"record claim outcome", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "referral_confirmed"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {}, {{"claims_outcome_id", "/id"}}});
+        outcomes.steps.push_back(
+            {"read claim outcome", "list_ledger", nlohmann::json::object(),
+             {.checks = {journey::any_element(
+                  "/entries", {{"/id", "$claims_outcome_id"}})}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured claims effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted claims effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.2) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.2 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.2;
+                  })}}});
     return outcomes;
 }
 
@@ -458,6 +694,128 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       ClaimsTriageProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_claims_data(node);
+    const auto flow = claims_journey(claims_configuration());
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("claims triage");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-12 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish claim referral scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "claim_id");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "referral_score");
+    EXPECT_EQ(graph->record().dump().find("claims-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::set<std::string> selected_paths;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_NE(decision.action, "denial_recommendation");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        EXPECT_TRUE(decision.actionable);
+        EXPECT_EQ(decision.autonomy, "A2");
+        selected_paths.insert(decision.action);
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(selected_paths.empty());
+    for (const std::string& path : selected_paths) {
+        EXPECT_TRUE(path == "fast_track" ||
+                    path == "adjuster_assignment" ||
+                    path == "siu_referral")
+            << path;
+    }
+
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("human_denial_only"), true);
+        EXPECT_EQ(payload.at("document_confidence_clear"), true);
+        EXPECT_EQ(payload.at("fairness_review_passed"), true);
+        EXPECT_NE(payload.at("assigned_path"), "denial_recommendation");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(payload.at("assigned_path"), decision->action);
+        EXPECT_EQ(payload.at("claim_id"), decision->entity_id);
+    }
+
+    const auto claim_results = node.find_database("claims_results");
+    ASSERT_TRUE(claim_results);
+    ASSERT_EQ(claim_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM claims_results." +
+              claim_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("claim_id"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("referral_score"));
+    EXPECT_EQ(node.find_database("claims")
+                  ->find_table("fnol_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "automated_denials" ||
+            guardrail.bound.name == "low_confidence_path_assignments" ||
+            guardrail.bound.name == "fairness_review_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("claims-fixture-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_claim_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

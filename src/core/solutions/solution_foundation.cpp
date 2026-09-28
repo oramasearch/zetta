@@ -644,6 +644,15 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
         entity.value("reason_codes", Json::array());
     spec.payload["decision_cell"] =
         entity.value("decision_cell", Json::object());
+    if (binding.value("solution", std::string{}) == "S-12") {
+        spec.payload["claim_id"] = decision.entity_id;
+        spec.payload["assigned_path"] = decision.action;
+        spec.payload["human_denial_only"] = true;
+        spec.payload["document_confidence_clear"] =
+            entity.value("document_confidence_clear", false);
+        spec.payload["fairness_review_passed"] =
+            entity.value("fairness_review_passed", false);
+    }
     spec.idempotency_key = decision.id;
     spec.model_version = run_id;
     spec.agent_version = "solution-foundation-v1";
@@ -857,6 +866,9 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     }
     double complaints = 0.0;
     double maximum_contacts = 0.0;
+    double automated_denials = 0.0;
+    double low_confidence_path_assignments = 0.0;
+    double fairness_review_failures = 0.0;
     std::size_t actionable = 0;
     std::size_t delivered = 0;
     std::map<std::string, std::size_t> driver_counts;
@@ -911,6 +923,15 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         decisions->add_row(std::move(decision_row));
         if (decision->actionable) {
             ++actionable;
+            if (s12_adverse_action(decision->action)) {
+                automated_denials += 1.0;
+            }
+            if (!entity.value("document_confidence_clear", false)) {
+                low_confidence_path_assignments += 1.0;
+            }
+            if (!entity.value("fairness_review_passed", false)) {
+                fairness_review_failures += 1.0;
+            }
         }
         if (!deliver_decision(node, *decision, entity,
                               policy->current()->config,
@@ -948,15 +969,46 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         }
     }
     if (const auto monitor = node.find_monitor(binding.at("monitor_id"))) {
-        monitor->observe_guardrail("complaints", complaints / entities.size());
-        monitor->observe_guardrail("discount_budget", cost);
-        monitor->observe_guardrail("contact_fatigue", maximum_contacts);
-        monitor->observe_guardrail(
-            "action_execution_rate",
+        const double execution_rate =
             actionable == 0
                 ? 1.0
                 : static_cast<double>(delivered) /
-                      static_cast<double>(actionable));
+                      static_cast<double>(actionable);
+        if (binding.value("solution", std::string{}) == "S-12") {
+            monitor->observe_guardrail("automated_denials",
+                                       automated_denials);
+            monitor->observe_guardrail(
+                "low_confidence_path_assignments",
+                low_confidence_path_assignments);
+            monitor->observe_guardrail("fairness_review_failures",
+                                       fairness_review_failures);
+            for (const pipeline::RunOutput& output : scores) {
+                if (output.kind != "model") {
+                    continue;
+                }
+                const std::shared_ptr<ml::Model> model =
+                    node.find_model(output.ref);
+                if (!model || model->kind() != "document_extraction") {
+                    continue;
+                }
+                const Json& metrics = model->metrics();
+                if (metrics.contains("field_precision") &&
+                    metrics.at("field_precision").is_number()) {
+                    monitor->observe_guardrail(
+                        "field_extraction_accuracy",
+                        metrics.at("field_precision").get<double>());
+                }
+            }
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else {
+            monitor->observe_guardrail("complaints",
+                                       complaints / entities.size());
+            monitor->observe_guardrail("discount_budget", cost);
+            monitor->observe_guardrail("contact_fatigue", maximum_contacts);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        }
     }
     std::string publication_id;
     if (binding.value("solution", std::string{}) == "S-1" &&

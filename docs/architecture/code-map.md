@@ -763,7 +763,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
   solutions/test_decision_policy.cpp policy constraints, versioning, replication/restart, A1 approval, kill-switch, table output, capability journey, and request p99 (#1104)
   solutions/test_monitor.cpp shifted-input PSI, guardrail bounds, score/calibration/cohort metrics, pub/sub events, persistence, replication, and malformed boundaries (#1106)
-  ml/test_solution.cpp      20-entry solution catalogue, portfolio mapping, template schema validation, methodology availability, level selection, and callback composition (#1102/#1128)
+  ml/test_solution.cpp      20-entry solution catalogue, S-1/S-12 domain refusals, portfolio mapping, template validation, level selection, and callback composition (#1102/#1110/#1121/#1128)
   solutions/test_action_integration.cpp loopback webhook retries/idempotency, dead letters, CRM plugins, replicated outbox, holdout suppression, kill-switch stop, report publication, and ledger evidence (#1109)
   solutions/test_roi_readout.cpp planted-effect confidence interval, no-holdout refusal, policy approval and override accounting, version selection, ROI arithmetic, guardrails, and schema rejection (#1108)
   ml/test_survival.cpp      survival censor labels, known-hazard ranking, monotone curves, determinism, and multi-member partition equivalence (#1044)
