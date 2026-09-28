@@ -171,6 +171,67 @@ struct Uc1Journey : ActionJourneys {
     }
 };
 
+TEST_F(Uc1Journey, SolutionPreviewComposesAndRunsEveryMethodologyStage) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("customers");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 120; ++index) {
+        table->add_row({{"entity", index + 1},
+                        {"record_id", index + 1},
+                        {"source", "fixture"},
+                        {"name", "Customer " + std::to_string(index + 1)},
+                        {"label", index % 2},
+                        {"feature", static_cast<double>(index % 13)},
+                        {"time", index}});
+    }
+    const auto written = zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+
+    journey::Journey flow{"solution-preview", {}};
+    flow.steps = {
+        {"discover the full solution catalogue", "list_solutions",
+         nlohmann::json::object(),
+         {.checks = {journey::size_equals("/solutions", 20),
+                     journey::any_element("/solutions", {{"/id", "B-8"},
+                                                            {"/status", "sketch"}})}}},
+        {"read the selected solution", "get_solution", {{"solution", "S-1"}},
+         {.checks = {journey::equals("/solution/id", "S-1"),
+                     journey::equals("/solution/runnable", false),
+                     journey::size_equals("/solution/missing_components", 7)}}},
+        {"create the project", "create_project", {{"name", "retention preview"}}},
+        {"compose the level-one solution", "create_solution",
+         {{"project", "retention preview"},
+          {"solution", "S-1"},
+          {"level", 1},
+          {"sources", {{"source", "datasets"}, {"table", "customers"}}}},
+         {.checks = {journey::equals("/preview", true),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 7)}},
+         {{"solution_graph", "/graph"}}},
+        {"read the composed Pipeline back", "get_project",
+         {{"name", "retention preview"}},
+         {.checks = {journey::any_element("/graphs", {{"/name", "$solution_graph"}})}}},
+        {"run the methodology preview in order", "run_solution",
+         {{"project", "retention preview"}, {"graph", "$solution_graph"}},
+         {.checks = {journey::equals("/engine", "solution_preview"),
+                     journey::equals("/preview", true),
+                     journey::not_empty("/run_id")}},
+         {{"solution_run", "/run_id"}}},
+        {"poll the composed preview and read its lineage", "get_run",
+         {{"run_id", "$solution_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 3),
+                     journey::not_empty("/logs")}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
 void append_speech_u16(std::string &bytes, std::uint16_t value) {
   bytes.push_back(static_cast<char>(value & 0xff));
   bytes.push_back(static_cast<char>((value >> 8) & 0xff));

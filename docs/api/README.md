@@ -147,6 +147,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
+| `list_solutions` | read | api:query | all 12 catalogue solutions and eight sketches, with composition, product contract, capability levels, missing components, and runnable status |
+| `get_solution` | read | api:query | one complete solution or sketch entry by id |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
@@ -163,11 +165,13 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | resolve an optional methodology or solution (otherwise registered keywords), refuse unavailable work with its issue, and store the runnable methodology's editable graph |
+| `create_solution` | action | orchestration:create_solution | compose a selected solution level through methodology callbacks and store the replicated preview Pipeline, returning every missing production component |
 | `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
 | `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
 | `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
 | `run` | job | orchestration:run | resolve model graphs through the methodology registry and dispatch their runner, including M-5 survival, M-12 graph ML and M-21 streaming over their connect-step tables; M-16 accepts bounded LP/MIP controls and returns solver status plus plan/constraint table handles; refuse unknown or unavailable model kinds; graphs without a model remain structural |
+| `run_solution` | job | orchestration:run_solution | run a composed preview's methodology stages in order, returning a durable Run whose lineage names every stage; production-foundation steps remain explicitly skipped |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `upload_dataset` | action | orchestration:add_dataset | load a csv/jsonl file's TEXT sent in the request (≤ 16 MiB) through add_dataset's parsing + placement — for callers that cannot write the node's filesystem (#1008, [add-dataset.md](../data/add-dataset.md)) |
 | `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |

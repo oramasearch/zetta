@@ -64,7 +64,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        90u); // +4 solution registry capabilities (#1102), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -110,7 +110,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
          {"get_project", "get_run", "get_model", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
           "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
-          "list_methodologies"}) {
+          "list_methodologies", "list_solutions", "get_solution"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     const ApiResult methodologies =
@@ -119,6 +119,12 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     ASSERT_EQ(methodologies.value.at("methodologies").size(), 21u);
     EXPECT_EQ(methodologies.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(methodologies.value.at("methodologies").front().at("runnable"));
+    const ApiResult solutions = call("list_solutions", nlohmann::json::object());
+    ASSERT_TRUE(solutions.ok);
+    ASSERT_EQ(solutions.value.at("solutions").size(), 20u);
+    EXPECT_EQ(solutions.value.at("solutions").front().at("id"), "S-1");
+    EXPECT_FALSE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an
@@ -128,7 +134,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
-          "update_workspace_profile", "create_plan", "update_plan"}) {
+          "update_workspace_profile", "create_plan", "update_plan",
+          "create_solution", "run_solution"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,
@@ -137,6 +144,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
         EXPECT_EQ(entry->required_operation.action, name);
     }
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("run_solution")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
