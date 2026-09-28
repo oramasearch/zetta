@@ -169,6 +169,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   ml/
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+    next_best_action.hpp    zetta::ml — M-8 propensity GBDTs, implicit-feedback ALS, chronological holdout, constrained policy, and IPS/DR evaluation (#1047)
+    next_best_action_job.hpp  zetta::ml::run_next_best_action_job — distributed M-8 lifecycle over JobRound allreduce (#1047)
+    next_best_action_table.hpp  zetta::ml::run_next_best_action_on_table — load owned resolved-dataset partitions and write recommendation/report tables with lineage (#1047)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -421,6 +424,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+    next_best_action.cpp    native propensity composition, implicit-feedback ALS, chronological hit rate, constrained selection, and IPS/DR evaluation (#1047)
+    next_best_action_job.cpp  run the M-8 trainer as a recorded distributed job through the coordinator (#1047)
+    next_best_action_table.cpp  resolved-table adapter and recommendation/report/model materialization with lineage (#1047)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)

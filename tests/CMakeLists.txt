@@ -84,6 +84,8 @@ add_executable(zetta-tests
   pipeline/test_run.cpp
   ml/test_methodology.cpp
   ml/test_model.cpp
+  ml/test_next_best_action.cpp
+  ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
   index/test_index.cpp

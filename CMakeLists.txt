@@ -653,6 +653,9 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/next_best_action.cpp
+  src/core/ml/next_best_action_job.cpp
+  src/core/ml/next_best_action_table.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/lag_features.cpp
