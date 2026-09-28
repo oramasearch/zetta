@@ -47,6 +47,7 @@ add_executable(zetta-tests
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
   pipeline/test_graph_checks.cpp
+  solutions/test_snapshot.cpp
   usecases/churn/test_entity_resolution_check.cpp
   usecases/churn/test_entity_resolution.cpp
   util/test_duration.cpp
@@ -82,9 +83,12 @@ add_executable(zetta-tests
   cloud/test_cloud_provider.cpp
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
+  solutions/test_monitor.cpp
+  solutions/test_roi_readout.cpp
   ml/test_ensemble.cpp
   ml/test_ensemble_train_partitions.cpp
   ml/test_methodology.cpp
+  ml/test_solution.cpp
   ml/test_entity_resolution.cpp
   ml/test_entity_resolution_partitions.cpp
   ml/test_survival.cpp
@@ -107,6 +111,9 @@ add_executable(zetta-tests
   ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
+  solutions/test_decision_policy.cpp
+  solutions/test_experiment.cpp
+  solutions/test_action_integration.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
@@ -147,6 +154,7 @@ add_executable(zetta-tests
   testkit/test_testkit.cpp
   testkit/test_example_scripts.cpp
   governance/test_audit.cpp
+  solutions/test_audit_ledger.cpp
   observability/test_activity.cpp
   pipeline/test_intent_compiler.cpp
   pipeline/test_graph_plan.cpp

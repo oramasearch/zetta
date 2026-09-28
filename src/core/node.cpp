@@ -225,6 +225,7 @@ ReplicationReconcileBatches make_reconcile_batches(
 Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
+      experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
@@ -395,8 +396,10 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_monitors();
     load_workspace_profiles();
     load_plans();
+    experiment_manager_.load();
     load_indexes();
     load_jobs();
     load_dataset_partitions();
@@ -407,6 +410,7 @@ bool Node::start() {
     load_user_roles();
     load_policies();
     load_audit_events();
+    load_ledger_entries();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -423,14 +427,16 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
+        "%zu deployments, %zu runs, %zu models, %zu experiments, %zu monitors, "
+        "%zu indexes, %zu jobs, "
         "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
-        "%zu audit events)\n",
+        "%zu audit events, %zu ledger entries)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        indexes_.size(), jobs_.size(), dataset_partitions_.size(),
+        experiment_manager_.experiments().size(), monitors_.size(), indexes_.size(),
+        jobs_.size(), dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
-        audit_events_.size());
+        audit_events_.size(), ledger_entries_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -1563,6 +1569,186 @@ bool Node::materialize_drop_model(const std::string& id) {
     fs::remove_all((*it)->dir(), ec);
     models_.erase(it);
     return true;
+}
+
+// ----- solution monitors (#1106) -------------------------------------------
+
+void Node::load_monitors() {
+    monitors_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code filesystem_error;
+    fs::create_directories(root, filesystem_error);
+    for (const auto& entry : fs::directory_iterator(root, filesystem_error)) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+        const fs::path metadata_path = entry.path() / "monitor.json";
+        if (!fs::exists(metadata_path)) {
+            continue;
+        }
+        std::ifstream input(metadata_path);
+        const nlohmann::json metadata = nlohmann::json::parse(
+            input,
+            nullptr,
+            /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::solutions::MonitorValue> value =
+            metadata.is_discarded()
+                ? std::nullopt
+                : zetta::solutions::parse_monitor_value(metadata, &error);
+        if (!value) {
+            std::printf(
+                "zetta: skipping invalid solution monitor %s (%s)\n",
+                entry.path().filename().string().c_str(),
+                metadata.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        monitors_.push_back(std::make_shared<zetta::solutions::Monitor>(
+            entry.path().filename().string(),
+            *value,
+            entry.path(),
+            replication_,
+            [this](const zetta::solutions::MonitorBreach& breach) {
+                publish_monitor_breach(breach);
+            }));
+    }
+    std::sort(
+        monitors_.begin(),
+        monitors_.end(),
+        [](const auto& left, const auto& right) {
+            if (left->created() != right->created()) {
+                return left->created() < right->created();
+            }
+            return left->id() < right->id();
+        });
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::create_monitor(
+    zetta::solutions::MonitorSpec spec,
+    std::string* error) {
+    if (find_monitor(spec.solution)) {
+        if (error != nullptr) {
+            *error = "a monitor already exists for solution '" +
+                     spec.solution + "'";
+        }
+        return nullptr;
+    }
+    const std::string id = zetta::util::new_uuid();
+    std::optional<zetta::solutions::MonitorValue> value =
+        zetta::solutions::make_monitor_value(
+            std::move(spec),
+            zetta::util::now_iso8601(),
+            error);
+    if (!value) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(
+            catalog::monitor_key(id),
+            zetta::solutions::to_json(*value));
+    }
+    return materialize_monitor(id, std::move(*value));
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::materialize_monitor(
+    std::string id,
+    zetta::solutions::MonitorValue value) {
+    if (auto existing = find_monitor(id)) {
+        return existing;
+    }
+    const fs::path directory = fs::path(config_.data_dir) / id;
+    std::error_code error;
+    fs::create_directories(directory, error);
+    if (error) {
+        return nullptr;
+    }
+    auto monitor = std::make_shared<zetta::solutions::Monitor>(
+        std::move(id),
+        std::move(value),
+        directory,
+        replication_,
+        [this](const zetta::solutions::MonitorBreach& breach) {
+            publish_monitor_breach(breach);
+        });
+    monitor->persist_meta();
+    monitors_.push_back(monitor);
+    std::sort(
+        monitors_.begin(),
+        monitors_.end(),
+        [](const auto& left, const auto& right) {
+            if (left->created() != right->created()) {
+                return left->created() < right->created();
+            }
+            return left->id() < right->id();
+        });
+    return monitor;
+}
+
+std::shared_ptr<zetta::solutions::Monitor> Node::find_monitor(
+    const std::string& id_or_solution) const {
+    for (const auto& monitor : monitors_) {
+        if (monitor->id() == id_or_solution ||
+            monitor->solution() == id_or_solution) {
+            return monitor;
+        }
+    }
+    return nullptr;
+}
+
+bool Node::drop_monitor(const std::string& id) {
+    if (!find_monitor(id)) {
+        return false;
+    }
+    if (replication_ != nullptr) {
+        replication_->remove(catalog::monitor_key(id));
+    }
+    return materialize_drop_monitor(id);
+}
+
+bool Node::materialize_drop_monitor(const std::string& id) {
+    const auto found = std::find_if(
+        monitors_.begin(),
+        monitors_.end(),
+        [&](const std::shared_ptr<zetta::solutions::Monitor>& monitor) {
+            return monitor->id() == id;
+        });
+    if (found == monitors_.end()) {
+        return false;
+    }
+    std::error_code error;
+    fs::remove_all((*found)->dir(), error);
+    monitors_.erase(found);
+    return true;
+}
+
+void Node::publish_monitor_breach(
+    const zetta::solutions::MonitorBreach& breach) {
+    if (pubsub_ == nullptr) {
+        return;
+    }
+    const zetta::pubsub::Identity engine{
+        zetta::pubsub::Address{"service", "solution-monitor"},
+        {},
+    };
+    const zetta::pubsub::Address topic{"topic", "solution-events"};
+    if (!pubsub_->topic_settings(topic)) {
+        zetta::pubsub::TopicSettings settings;
+        settings.exposed = false;
+        std::string reason;
+        if (!pubsub_->create_topic(engine, topic, settings, &reason) &&
+            !pubsub_->topic_settings(topic)) {
+            return;
+        }
+    }
+    nlohmann::json payload = zetta::solutions::to_json(breach);
+    payload["type"] = "monitor_breach";
+    zetta::pubsub::PublishRequest request;
+    request.to = {topic};
+    request.encoding = zetta::pubsub::Encoding::Json;
+    request.mime_type = "application/json";
+    request.payload = payload.dump();
+    request.correlation_id = breach.monitor_id;
+    pubsub_->publish(engine, std::move(request));
 }
 
 // ----- workspace profiles (#886) --------------------------------------------
@@ -3343,6 +3529,123 @@ std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     return event;
 }
 
+// ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----
+
+fs::path Node::ledger_dir() const {
+    return fs::path(config_.data_dir) / "ledger";
+}
+
+void Node::load_ledger_entries() {
+    ledger_entries_.clear();
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    if (!fs::exists(root, error_code)) {
+        return;
+    }
+    for (const auto& entry : fs::directory_iterator(root, error_code)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        std::ifstream input(entry.path());
+        const nlohmann::json document = nlohmann::json::parse(
+            input, nullptr, /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::solutions::LedgerEntryValue> value =
+            document.is_discarded()
+                ? std::nullopt
+                : zetta::solutions::parse_audit_ledger_entry(document, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid ledger entry %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        document.is_discarded() ? "unparseable JSON"
+                                                : error.c_str());
+            continue;
+        }
+        ledger_entries_.push_back(
+            std::make_shared<zetta::solutions::LedgerEntry>(
+                entry.path().stem().string(), *value, root));
+    }
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_action(
+    zetta::solutions::ActionLedgerValue value) {
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_outcome(
+    zetta::solutions::OutcomeLedgerValue value) {
+    const std::shared_ptr<zetta::solutions::LedgerEntry> action =
+        find_ledger_entry(value.action_id);
+    if (!action || action->kind() != zetta::solutions::LedgerEntryKind::Action) {
+        return nullptr;
+    }
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::find_ledger_entry(
+    const std::string& id) const {
+    for (const auto& entry : ledger_entries_) {
+        if (entry->id() == id) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::materialize_ledger_entry(
+    std::string id, zetta::solutions::LedgerEntryValue value) {
+    if (const auto existing = find_ledger_entry(id)) {
+        return existing;
+    }
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    fs::create_directories(root, error_code);
+    if (error_code) {
+        return nullptr;
+    }
+    auto entry = std::make_shared<zetta::solutions::LedgerEntry>(
+        std::move(id), std::move(value), root);
+    entry->persist_meta();
+    ledger_entries_.push_back(entry);
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+    return entry;
+}
+
 zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
                                const zetta::governance::Operation& operation) const {
     auto key = find_access_key(key_id);
@@ -3605,6 +3908,12 @@ void Node::migrate_to_replication() {
                               model->metadata());
         }
     }
+    for (const auto& monitor : monitors_) {
+        if (!already_replicated(catalog::monitor_key(monitor->id()))) {
+            replication_->set(catalog::monitor_key(monitor->id()),
+                              monitor->metadata());
+        }
+    }
     for (const auto& profile : workspace_profiles_) {
         if (!already_replicated(catalog::workspace_profile_key(profile->id()))) {
             replication_->set(catalog::workspace_profile_key(profile->id()),
@@ -3616,6 +3925,7 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::plan_key(plan->id()), plan->metadata());
         }
     }
+    experiment_manager_.migrate_to_replication();
     for (const auto& index : indexes_) {
         if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
@@ -3651,6 +3961,12 @@ void Node::migrate_to_replication() {
                               event->metadata());
         }
     }
+    for (const auto& entry : ledger_entries_) {
+        if (!already_replicated(catalog::ledger_key(entry->id()))) {
+            replication_->set(catalog::ledger_key(entry->id()),
+                              entry->metadata());
+        }
+    }
 }
 
 // ----- replication: apply the document to the local projection --------------
@@ -3667,8 +3983,10 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
     reconcile_models(snapshot);
+    reconcile_monitors(snapshot);
     reconcile_workspace_profiles(snapshot);
     reconcile_plans(snapshot);
+    experiment_manager_.reconcile(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);
@@ -3680,6 +3998,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_user_roles(snapshot);
     reconcile_policies(snapshot);
     reconcile_audit_events(snapshot);
+    reconcile_ledger_entries(snapshot);
 }
 
 void Node::reconcile_replication_changes(
@@ -4278,6 +4597,38 @@ void Node::reconcile_models(
     }
 }
 
+void Node::reconcile_monitors(const nlohmann::json& snapshot) {
+    std::map<std::string, zetta::solutions::MonitorValue> monitors;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kMonitorPrefix);
+        if (id.empty()) {
+            continue;
+        }
+        std::optional<zetta::solutions::MonitorValue> parsed =
+            zetta::solutions::parse_monitor_value(value);
+        if (parsed) {
+            monitors.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& monitor : monitors_) {
+        local_ids.push_back(monitor->id());
+    }
+    for (const std::string& id : local_ids) {
+        if (!monitors.contains(id)) {
+            materialize_drop_monitor(id);
+        }
+    }
+    for (auto& [id, value] : monitors) {
+        auto monitor = find_monitor(id);
+        if (!monitor) {
+            materialize_monitor(id, std::move(value));
+        } else if (monitor->metadata() != zetta::solutions::to_json(value)) {
+            monitor->apply_value(std::move(value));
+        }
+    }
+}
+
 void Node::reconcile_workspace_profiles(
     const nlohmann::json& snapshot,
     const std::vector<std::string>* changed_keys) {
@@ -4585,6 +4936,20 @@ void Node::reconcile_audit_events(
         if (std::optional<zetta::governance::AuditEventValue> parsed =
                 zetta::governance::parse_audit_event_value(value)) {
             materialize_audit_event(std::move(id), std::move(*parsed));
+        }
+    }
+}
+
+void Node::reconcile_ledger_entries(const nlohmann::json& snapshot) {
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kLedgerPrefix);
+        if (id.empty()) {
+            continue;
+        }
+        const std::optional<zetta::solutions::LedgerEntryValue> parsed =
+            zetta::solutions::parse_audit_ledger_entry(value);
+        if (parsed) {
+            materialize_ledger_entry(std::move(id), *parsed);
         }
     }
 }

@@ -23,6 +23,7 @@ using zetta::pipeline::LanguageGroundingCheck;
 using zetta::pipeline::LanguageTrainingAccessCheck;
 using zetta::pipeline::EnsembleOutOfFoldCheck;
 using zetta::pipeline::SchemaTypeCheck;
+using zetta::pipeline::SnapshotLineageCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
 using zetta::pipeline::SpeechConsentCheck;
 using zetta::pipeline::SpeechLocalAudioCheck;
@@ -43,6 +44,8 @@ ExecutionGraph clean_graph() {
     ExecutionGraph graph;
     graph.add_node(StepKind::Connect, "load_orders",
                    json{{"source", "postgres"},
+                        {"source_kind", "snapshot"},
+                        {"snapshot_as_of", "2024-01-01"},
                         {"schema", {{"customer_id", "int"},
                                     {"revenue", "float"},
                                     {"signup_date", "timestamp"}}}},
@@ -51,6 +54,9 @@ ExecutionGraph clean_graph() {
     graph.add_node(
         StepKind::Model, "churn_model",
         json{{"as_of", "2024-01-01"},
+             {"feature_window_end", "2024-01-01"},
+             {"label_window_start", "2024-01-08"},
+             {"blackout_gap_seconds", 604800},
              {"label", "churned"},
              {"requires", {{"customer_id", "int"}, {"revenue", "float"}}},
              {"features",
@@ -196,6 +202,43 @@ TEST(DataLeakageCheck, CleanGraphPasses) {
     EXPECT_EQ(check.name(), "data_leakage");
     const CheckResult result = check.evaluate(clean_graph());
     EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(SnapshotLineageCheck, CleanGraphPasses) {
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(clean_graph());
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesFeatureLineageFromALiveTable) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-load")->attributes["source_kind"] = "live";
+    graph.find_node("n-load")->attributes.erase("snapshot_as_of");
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("live-table"), std::string::npos)
+        << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesSnapshotAfterPredictionTime) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-load")->attributes["snapshot_as_of"] = "2024-01-02";
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("after prediction"), std::string::npos)
+        << result.reason;
+}
+
+TEST(SnapshotLineageCheck, RefusesLabelWindowInsideBlackoutGap) {
+    ExecutionGraph graph = clean_graph();
+    graph.find_node("n-model")->attributes["label_window_start"] =
+        "2024-01-07";
+
+    const CheckResult result = SnapshotLineageCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("blackout gap"), std::string::npos)
+        << result.reason;
 }
 
 TEST(DataLeakageCheck, FeatureAfterCutoffFailsWithReason) {
@@ -655,35 +698,36 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 28u);
+    ASSERT_EQ(gate.check_count(), 29u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "temporal_validation");
-    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution_profile");
-    EXPECT_EQ(gate.checks()[5]->name(), "segmentation");
-    EXPECT_EQ(gate.checks()[6]->name(), "forecast_correctness");
-    EXPECT_EQ(gate.checks()[7]->name(), "survival_censoring");
-    EXPECT_EQ(gate.checks()[8]->name(), "causal_uplift");
-    EXPECT_EQ(gate.checks()[9]->name(), "anomaly_correctness");
-    EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
-    EXPECT_EQ(gate.checks()[11]->name(), "rank_correctness");
-    EXPECT_EQ(gate.checks()[12]->name(), "language_grounding");
-    EXPECT_EQ(gate.checks()[13]->name(), "language_training_access");
-    EXPECT_EQ(gate.checks()[14]->name(), "document_review");
-    EXPECT_EQ(gate.checks()[15]->name(), "graph_edge_time");
-    EXPECT_EQ(gate.checks()[16]->name(), "vision_source_split");
-    EXPECT_EQ(gate.checks()[17]->name(), "speech_consent");
-    EXPECT_EQ(gate.checks()[18]->name(), "speech_pii_redaction");
-    EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
-    EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
-    EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
-    EXPECT_EQ(gate.checks()[22]->name(), "uncertainty_validation");
-    EXPECT_EQ(gate.checks()[23]->name(), "ensemble_out_of_fold");
-    EXPECT_EQ(gate.checks()[24]->name(), "label_efficiency_gold_isolation");
-    EXPECT_EQ(gate.checks()[25]->name(), "privacy_budget");
-    EXPECT_EQ(gate.checks()[26]->name(), "streaming_correctness");
-    EXPECT_EQ(gate.checks()[27]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "snapshot_lineage");
+    EXPECT_EQ(gate.checks()[4]->name(), "temporal_validation");
+    EXPECT_EQ(gate.checks()[5]->name(), "entity_resolution_profile");
+    EXPECT_EQ(gate.checks()[6]->name(), "segmentation");
+    EXPECT_EQ(gate.checks()[7]->name(), "forecast_correctness");
+    EXPECT_EQ(gate.checks()[8]->name(), "survival_censoring");
+    EXPECT_EQ(gate.checks()[9]->name(), "causal_uplift");
+    EXPECT_EQ(gate.checks()[10]->name(), "anomaly_correctness");
+    EXPECT_EQ(gate.checks()[11]->name(), "next_best_action_correctness");
+    EXPECT_EQ(gate.checks()[12]->name(), "rank_correctness");
+    EXPECT_EQ(gate.checks()[13]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[14]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[15]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[16]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[17]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[18]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[19]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[20]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[21]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[22]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[23]->name(), "uncertainty_validation");
+    EXPECT_EQ(gate.checks()[24]->name(), "ensemble_out_of_fold");
+    EXPECT_EQ(gate.checks()[25]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[26]->name(), "privacy_budget");
+    EXPECT_EQ(gate.checks()[27]->name(), "streaming_correctness");
+    EXPECT_EQ(gate.checks()[28]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {

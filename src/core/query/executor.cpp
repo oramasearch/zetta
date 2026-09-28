@@ -90,6 +90,8 @@ namespace {
 //    plaintext is shown once at creation and never stored).
 //  - `audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
+//  - `ledger` — the immutable, replicated score, decision, action, and outcome
+//    reward stream (Node::ledger_entries(); #1107).
 //  - `activity` — the merged, newest-first activity feed (#622): the audit trail
 //    + runs composed chronologically at query time
 //    (zetta::observability::activity_entries), each row with its actor, surface
@@ -163,6 +165,7 @@ constexpr std::string_view kUserRolesTable = "user_roles";
 constexpr std::string_view kPoliciesTable = "policies";
 constexpr std::string_view kTokensTable = "tokens";
 constexpr std::string_view kAuditTable = "audit";
+constexpr std::string_view kLedgerTable = "ledger";
 constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
@@ -230,6 +233,8 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kKeysTable,
                     "the access keys the principals own: scope + capabilities, "
                     "no secret material"},
+    SystemTableInfo{kLedgerTable,
+                    "the immutable score, decision, action and outcome reward ledger"},
     SystemTableInfo{kModelsTable,
                     "the model registry: trained models + their kind, "
                     "metrics, weights fingerprint"},
@@ -1502,6 +1507,16 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
     return rows;
 }
 
+std::vector<nlohmann::json> ledger_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& entry : node.ledger_entries()) {
+        nlohmann::json row = entry->metadata();
+        row["ledger_id"] = entry->id();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 // One JSON row per activity entry for the system.activity table — the merged,
 // newest-first "what happened on this cluster" feed (#622): the audit trail +
 // runs, composed at query time by zetta::observability::activity_entries
@@ -2613,6 +2628,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));
+                    }
+                    if (sys == kLedgerTable) {
+                        return select_over_rows(s, ledger_rows(node_));
                     }
                     if (sys == kActivityTable) {
                         return select_over_rows(s, activity_rows(node_));

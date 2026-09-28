@@ -29,7 +29,7 @@ relay it to a person.
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
-  JSON Schema in the system (capability schemas + all 62 schema-as-code
+  JSON Schema in the system (capability schemas + all 92 schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
   same table the build enforces.
@@ -38,10 +38,26 @@ relay it to a person.
   shape including per-node spans of distributed work — an agent can always
   answer "what actually happened?"
   ([../architecture/observability.md](../../architecture/observability.md)).
+- **Solution health is queryable**: `get_monitor` reads current input and score
+  drift, calibration, realized cohort performance, declared guardrails, active
+  breaches, and the durable retrain request by solution name or monitor UUID.
+  MCP and REST return the same schema-validated record, and the agent tool is
+  read-only ([monitor.md](../../solutions/monitor.md), #1106).
+- **Solution value is evidence-backed**: `get_roi_readout` reads the configured
+  graph's correctness result, aggregate experiment lift with confidence
+  intervals, customer-supplied economics, guardrails, agent operations, and a
+  redacted audit extract. Without measured holdout outcomes it explicitly
+  refuses an incrementality or ROI claim
+  ([roi-readout.md](../../solutions/roi-readout.md), #1108).
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
   itself.
+- **Experiments before actions**: `create_experiment` defines seeded allocation
+  tiers, `assign` records the entity before returning any proposed action and
+  suppresses model-driven action for protected tiers, and `get_experiment`
+  exposes balance, exemption erosion, and the assignment rows used by uplift
+  training ([experiments.md](../../solutions/experiments.md), #1105).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a
@@ -63,6 +79,18 @@ relay it to a person.
   Default pipeline names also identify the method: M-3 returns
   `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
   Explicit caller names are unchanged.
+- **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
+  `list_solutions` and `get_solution` expose all twelve catalogue modules and eight
+  sketches with plain product copy, portfolio-number composition, data roles,
+  autonomy, policy, measurement, guardrails, levels, and missing components.
+  `create_solution` uses typed defaults to create a callback-built Pipeline,
+  versioned policy, experiment, monitor and ROI definition on an existing project.
+  Explicit snapshot, data-role, delivery and economics settings are required.
+  `run_solution` executes the snapshot and methodology stages, then the policy's
+  combined holdout protection, governed delivery, ledger and monitoring path.
+  It returns `preview: false`; read-backs include child Run lineage and a decision
+  table. S-1 has full retention defaults; S-2 through S-12 are marked minimal.
+  See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
   then run the stored pipeline and poll its Run. The report carries temporal
@@ -79,6 +107,12 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+- **Versioned decision policy** (#1104): `create_policy`, `get_policy`, and
+  `update_policy` manage immutable policy versions; `decide` applies hard
+  thresholds, tiers, budgets, caps, eligibility/exclusions, autonomy, and the
+  kill-switch to one entity or a scored table. A1 results stay non-actionable
+  until `approve_decision`, and every result names its policy version. See
+  [the decision-policy contract](../../solutions/decision-policy.md).
 - For M-13, compile hints name the image table, its image/label/source columns,
   and a registered ViT backbone. `run` reads that graph-owned table, refuses an
   unauthorized image before its bytes are read, and `get_run_report` returns

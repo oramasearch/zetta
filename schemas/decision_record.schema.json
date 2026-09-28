@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string"
+    },
+    "actionable": {
+      "type": "boolean"
+    },
+    "approved_at": {
+      "type": "string"
+    },
+    "approved_by": {
+      "type": "string"
+    },
+    "autonomy": {
+      "enum": [
+        "A0",
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "type": "string"
+    },
+    "cell": {
+      "type": "string"
+    },
+    "cost": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "created": {
+      "type": "string"
+    },
+    "entity_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "experiment": {
+      "type": "string"
+    },
+    "holdout": {
+      "type": "boolean"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "policy_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "policy_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "reasons": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "score": {
+      "type": "number"
+    },
+    "status": {
+      "enum": [
+        "blocked",
+        "manual",
+        "pending_approval",
+        "allowed",
+        "approved"
+      ],
+      "type": "string"
+    },
+    "tier": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "policy_id",
+    "policy_version",
+    "entity_id",
+    "score",
+    "cost",
+    "tier",
+    "experiment",
+    "cell",
+    "action",
+    "autonomy",
+    "status",
+    "actionable",
+    "reasons",
+    "evidence",
+    "created",
+    "approved_at",
+    "approved_by"
+  ],
+  "title": "zetta.DecisionRecord",
+  "type": "object"
+}

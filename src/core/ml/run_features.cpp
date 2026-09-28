@@ -160,6 +160,23 @@ data::FeaturePlan plan_run_features(RunRequest& request, const std::string& meth
     if (!options.as_of && !dataset.contract.time_column.empty() && methodology != "M-21") {
         options.as_of = std::to_string(dataset.contract.as_of);
     }
+    if (!options.as_of) {
+        const auto cutoff = request.input.find("solution_snapshot_as_of");
+        if (cutoff != request.input.end() && (cutoff->is_string() || cutoff->is_number())) {
+            options.as_of = cutoff->is_string() ? cutoff->get<std::string>() : cutoff->dump();
+            options.time_column = "as_of";
+        }
+    }
+    if (!options.as_of) {
+        for (const auto& source : request.graph->graph().nodes_of_kind(ir::StepKind::Connect)) {
+            if (source->attributes.value("source_kind", "") == "snapshot" &&
+                source->attributes.contains("snapshot_as_of")) {
+                options.as_of = source->attributes.at("snapshot_as_of").get<std::string>();
+                options.time_column = "as_of";
+                break;
+            }
+        }
+    }
     const auto path = data::parse_dataset_path(dataset.database + "." + dataset.table);
     data::AnalysisOptions analysis_options;
     analysis_options.label_column = options.label_column;

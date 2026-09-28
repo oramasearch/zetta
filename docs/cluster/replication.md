@@ -292,12 +292,23 @@ are a materialized *projection* of it.** Concretely:
     outputs, lineage }` — one execution of a deployed graph (a top-level entity).
     The value is **validated against a JSON Schema** before it is trusted, at
     both entry points (disk + a peer's CRDT value). See [runs.md](../pipeline/runs.md).
+  - `ledger:<entry_uuid>` → one immutable action or outcome record. Actions
+    preserve score, decision, actor, model/policy/agent versions, experiment
+    cell, cost, and evidence timestamps; outcomes reference their action. Each
+    value is schema-validated before materialization under
+    `<data_dir>/ledger/`. See [audit-ledger.md](../solutions/audit-ledger.md).
   - `model:<model_uuid>` → `{ name, kind, project, run, feature_schema, metrics,
     created, weights: { size, sha256 } }` — a trained model (a top-level entity).
     Like a large object, only the **metadata** rides in the document; the
     serialized **weights body** stays on disk and transfers peer-to-peer over the
     LO body transfer path, verified against `weights.size` + `weights.sha256`. The value is
     **JSON-Schema validated** at both entry points. See [models.md](../ml/models.md).
+  - `experiment:<experiment_uuid>` → `{ name, seed, allocations, created }` and
+    `experiment_assignment:<experiment_uuid>:<entity_digest>` → the entity's
+    allocation, tier, propensity, hash bucket, exception fields, and assignment
+    time. Each assignment owns a key, so different peers retain concurrent
+    assignments. Both values are JSON-Schema validated. See
+    [experiments.md](../solutions/experiments.md).
   - `part:<part_uuid>` → `{ table, blob_ref, row_range: { start, end }, stats,
     owner_nodes, created }` — a dataset partition: where a slice of a table's data
     lives (a top-level entity). The catalog is **replicate-to-all**, so every node

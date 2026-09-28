@@ -28,7 +28,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested` / `cloud_inspected` / `dataset_added` (#624). |
+| `action` | `AuditAction` | Closed event vocabulary, including graph, data, job, key, provisioning, consent, decision-policy creation/update, and decision approval actions. |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
@@ -48,7 +48,7 @@ the reverse `materialize_*` paths used by reconciliation never emit (a peer's
 action arrives already-audited as its own replicated `audit:` event, so each
 action is recorded exactly once, on the node where it happened):
 
-| Action | Seam | Event |
+| Action | Boundary | Event |
 |---|---|---|
 | **Graph change** | `Project::create_graph` / `drop_graph` | `graph_created` / `graph_dropped`, `target` = graph name, `actor` = the project's owner key. |
 | **Deploy** | `Node::deploy_graph` | `graph_deployed` (on a successful placement), `target` = graph name, `detail` = node/edge counts + the placed node. |
@@ -56,6 +56,8 @@ action is recorded exactly once, on the node where it happened):
 | **Compute job** | `Node::create_job` / `ComputeJob::set_status` | `job_created` (on create) / `job_finished` (on the first terminal transition), `target` = job id, `allowed` = success (for `job_finished`), `detail` = the job kind / note. See [compute-jobs.md](../compute/compute-jobs.md). |
 | **Burst identity** | `BurstIdentityManager::mint` / `revoke` | `key_issued` (per minted identity) / `key_revoked` (per revoked one), `target` = the access key id, `detail` = the job + burst node. See [burst-identity.md](../cloud/burst-identity.md). |
 | **Provision burst** | `BurstApprovalGate::provision` | `provision_requested`, emitted **only** when a burst exceeds the cap, `allowed` = approved (vs. blocked pending approval), `target` = the burst size, `detail` = which cap axis was exceeded + the outcome. See [burst-approval-gate.md](../cloud/burst-approval-gate.md). |
+| **Decision policy** | `DecisionPolicyStore::create` / `update` | `decision_policy_created` / `decision_policy_updated`, `target` = policy id, `actor` = capability caller, `detail` = committed version. |
+| **Decision approval** | `DecisionPolicyStore::approve` | `decision_approved`, emitted only for a pending A1 item, `target` = decision id, `actor` = approver, `detail` = original policy id and version. See [decision-policy.md](../solutions/decision-policy.md). |
 
 Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
 (it appends to the trail). `zetta::governance::authorize(const AccessKey&, const Resource&)`

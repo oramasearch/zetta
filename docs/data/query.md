@@ -258,7 +258,7 @@ it never triggers a cloud call** — it only reflects inspects the user already 
 (and consented to) in the Cloud Inspector panel, so it is empty until then; the
 cache is ephemeral (in-memory, not replicated). Both are qualified-name only.
 
-Four more tables surface the run + governance state as read views (RULE-7 — the
+Five more tables surface run, governance, and solution state as read views (RULE-7 — the
 queryable counterpart of the GUI Runs / Admin panels, so SQL and the GUI never
 diverge), each computed at query time from the live `Node` accessors:
 
@@ -274,13 +274,20 @@ diverge), each computed at query time from the live `Node` accessors:
   carries no secret material, so this exposes nothing the Admin panel doesn't.
 - **`system.audit`** — the immutable audit trail (`Node::audit_events()`).
   Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
+- **`system.ledger`** — the immutable, replicated solutions reward ledger
+  (`Node::ledger_entries()`). Action rows carry score, decision, action, actor,
+  versions, experiment cell, cost, currency, and timestamps. Outcome rows carry
+  their referenced `action_id`, outcome value, source, currency, and timestamps.
+  Every row also carries `ledger_id` and `kind`. See
+  [audit-ledger.md](../solutions/audit-ledger.md).
 
 ```sql
 SELECT run_id, status FROM system.runs WHERE status = 'failed';
 SELECT action, actor, target FROM system.audit WHERE allowed = false;
+SELECT * FROM system.ledger WHERE subject = 'account-42';
 ```
 
-All four are qualified-name only.
+All five are qualified-name only.
 
 Layered over those sources is **`system.activity`** — the merged, newest-first
 activity feed (#622; [../gui/activity-feed.md](../gui/activity-feed.md)): the

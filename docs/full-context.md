@@ -41,7 +41,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   contracts; surface changes update the affected page same-commit).
 - **Foundations (conventions)**:
   [architecture/coding-conventions.md](architecture/coding-conventions.md) —
-  namespaces==directories, no-throw boundaries, schema-as-code, seams;
+  namespaces==directories, no-throw boundaries, schema-as-code, interfaces;
   **coroutines-first**, **observability-first**
   ([architecture/observability.md](architecture/observability.md): intent ·
   plan · performance · result shape on every operation), **distributed-first**
@@ -63,6 +63,19 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Solution monitoring (#1106)** — a replicated monitor per solution records
+  input and score PSI, calibration, closed-window cohort performance, and
+  declared guardrails. New breach transitions publish to
+  `topic:solution-events`; configured monitors also set a durable retrain
+  request. See [solutions/monitor.md](solutions/monitor.md).
+
+- **Point-in-time solution foundation (#1103)** — `snapshot` materializes
+  replicated `(entity_id, as_of)` tables, the public row-level as-of join picks
+  only snapshots visible at each decision time, and `snapshot_lineage` blocks
+  live feature sources, future cutoffs, and feature/label windows that violate
+  their configured blackout. See
+  [solutions/point-in-time-snapshots.md](solutions/point-in-time-snapshots.md).
+
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
   intent compilation, and run dispatch. All 21 methodologies are runnable on the
   methodology integration branch (#1082), with all method-specific checks,
@@ -75,6 +88,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   See [ml/integration.md](ml/integration.md).
   [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
   [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
+
+- **Decision-policy engine (#1104)** — native versioned policy config between
+  scores and actions, with thresholds, tiers, budgets, caps, eligibility,
+  exclusions, A0–A3 approval behavior, and a kill-switch. Policies and decisions
+  replicate through the node catalog; all decisions retain their exact policy
+  version. Five registry capabilities expose single-entity and table decisions,
+  bounded tuning, and A1 approval over MCP and REST. See
+  [solutions/decision-policy.md](solutions/decision-policy.md).
 
 - **In review (PR [#1035](https://github.com/oramasearch/zetta/pull/1035), stacked on the
   design PR [#1023](https://github.com/oramasearch/zetta/pull/1023)) — pub/sub stage 1**
@@ -334,7 +355,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   multi-node + one root Model replicated everywhere over a real replicated
   3-member loopback cluster
   ([docs/compute/coordinated-launch.md](compute/coordinated-launch.md)).
-  Near-data (#531) cross-process launch on this seam is the follow-on.
+  Near-data (#531) cross-process launch on this boundary is the follow-on.
 - **Observability build-out (#640, closed) — PR #665 in flight**: all six
   slices on one branch — system.traces/spans/crashes read views over the
   Node-owned span ring (`Node::span_recorder()`, RULE-7 one source), crash
@@ -381,7 +402,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([api/llms-endpoints.md](api/llms-endpoints.md)).
 - **#646 spec index built** (and the #469 fold completed with it):
   `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
-  serve the OpenAPI document + every capability schema + all 62 boundary
+  serve the OpenAPI document + every capability schema + all 86 boundary
   schemas from their C++ accessors; the shared table is
   `zetta::schemas::boundary_schemas()`, drift-checked by `test_schemas`
   ([api/specs-index.md](api/specs-index.md)).

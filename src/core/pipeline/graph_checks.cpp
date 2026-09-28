@@ -14,6 +14,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ml/methodology.hpp"
+#include "zetta/solutions/snapshot.hpp"
 
 namespace zetta::pipeline {
 
@@ -47,6 +48,31 @@ const nlohmann::json& graph_step_annotations_schema() {
       "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "source_kind": {
+      "description": "Whether a terminal feature source is an immutable point-in-time snapshot or a live table. Feature lineage accepts only snapshot.",
+      "type": "string",
+      "enum": ["snapshot", "live"]
+    },
+    "snapshot_as_of": {
+      "description": "The inclusive cutoff used to materialize a terminal snapshot source.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "feature_window_end": {
+      "description": "The final instant any feature window may observe; it must not be after prediction as_of.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "label_window_start": {
+      "description": "The first instant from which labels may be observed.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "blackout_gap_seconds": {
+      "description": "Minimum interval between feature_window_end and label_window_start.",
+      "type": "number",
+      "minimum": 0
     },
     "label": {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
@@ -393,6 +419,118 @@ CheckResult require_speech_flag(const ir::ExecutionGraph& graph,
         }
     }
     return {std::move(name), CheckStatus::Pass, std::move(success)};
+}
+
+struct SnapshotBoundary {
+    solutions::TimePoint prediction;
+    std::string prediction_text;
+};
+
+std::optional<std::string> snapshot_window_error(
+    const ir::Node& model, SnapshotBoundary& boundary) {
+    const std::optional<std::string> prediction =
+        string_field(model.attributes, "as_of");
+    const std::optional<std::string> feature_end =
+        string_field(model.attributes, "feature_window_end");
+    const std::optional<std::string> label_start =
+        string_field(model.attributes, "label_window_start");
+    const auto blackout = model.attributes.find("blackout_gap_seconds");
+    if (!prediction || !feature_end || !label_start ||
+        blackout == model.attributes.end() || !blackout->is_number()) {
+        return node_label(model) +
+               ": feature lineage requires as_of, feature_window_end, "
+               "label_window_start, and blackout_gap_seconds";
+    }
+
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> feature_end_time =
+        solutions::parse_time_point(*feature_end);
+    const std::optional<solutions::TimePoint> label_start_time =
+        solutions::parse_time_point(*label_start);
+    if (!prediction_time || !feature_end_time || !label_start_time) {
+        return node_label(model) +
+               ": feature and label windows must use valid ISO-8601 times";
+    }
+    if (feature_end_time->value > prediction_time->value) {
+        return node_label(model) + ": feature_window_end " + *feature_end +
+               " is after prediction as_of " + *prediction;
+    }
+    const double gap = blackout->get<double>();
+    if (label_start_time->value < feature_end_time->value + gap) {
+        return node_label(model) + ": label_window_start " + *label_start +
+               " violates the configured blackout gap of " +
+               std::to_string(gap) + " seconds";
+    }
+
+    boundary = SnapshotBoundary{*prediction_time, *prediction};
+    return std::nullopt;
+}
+
+std::vector<std::shared_ptr<ir::Node>> terminal_data_sources(
+    const ir::ExecutionGraph& graph, const ir::NodeId& start) {
+    std::unordered_set<ir::NodeId> visited;
+    std::vector<ir::NodeId> frontier{start};
+    std::vector<std::shared_ptr<ir::Node>> terminals;
+    while (!frontier.empty()) {
+        const ir::NodeId current = frontier.back();
+        frontier.pop_back();
+        if (!visited.insert(current).second) {
+            continue;
+        }
+        bool has_predecessor = false;
+        for (const ir::Edge& edge : graph.edges_into(current)) {
+            if (edge.kind != ir::EdgeKind::DataFlow) {
+                continue;
+            }
+            has_predecessor = true;
+            frontier.push_back(edge.from);
+        }
+        if (!has_predecessor && current != start) {
+            terminals.push_back(graph.find_node(current));
+        }
+    }
+    return terminals;
+}
+
+std::optional<std::string> snapshot_source_error(
+    const ir::ExecutionGraph& graph, const ir::Node& model,
+    const SnapshotBoundary& boundary) {
+    const std::vector<std::shared_ptr<ir::Node>> terminals =
+        terminal_data_sources(graph, model.id);
+    if (terminals.empty()) {
+        return node_label(model) +
+               ": feature lineage has no terminal snapshot source";
+    }
+    for (const std::shared_ptr<ir::Node>& source : terminals) {
+        if (!source || source->kind != ir::StepKind::Connect ||
+            !source->attributes.is_object()) {
+            return node_label(model) +
+                   ": feature lineage terminates at a non-source step";
+        }
+        const std::optional<std::string> source_kind =
+            string_field(source->attributes, "source_kind");
+        const std::optional<std::string> snapshot_as_of =
+            string_field(source->attributes, "snapshot_as_of");
+        if (!source_kind || *source_kind != "snapshot" || !snapshot_as_of) {
+            return node_label(*source) +
+                   ": live-table feature lineage is refused; materialize and "
+                   "reference a snapshot source";
+        }
+        const std::optional<solutions::TimePoint> snapshot_time =
+            solutions::parse_time_point(*snapshot_as_of);
+        if (!snapshot_time ||
+            snapshot_time->kind != boundary.prediction.kind) {
+            return node_label(*source) +
+                   ": snapshot_as_of must use the model's time representation";
+        }
+        if (snapshot_time->value > boundary.prediction.value) {
+            return node_label(*source) + ": snapshot_as_of " +
+                   *snapshot_as_of + " is after prediction as_of " +
+                   boundary.prediction_text;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -1086,6 +1224,50 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult SnapshotLineageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
+    };
+    const auto pass = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Pass, std::move(reason)};
+    };
+
+    for (const auto& node : graph.nodes()) {
+        if (auto error = validate_annotations(node->attributes)) {
+            return fail(node_label(*node) +
+                        ": malformed correctness annotations — " + *error);
+        }
+    }
+
+    std::size_t checked = 0;
+    for (const std::shared_ptr<ir::Node>& model : graph.nodes()) {
+        if (!model || model->kind != ir::StepKind::Model ||
+            !model->attributes.is_object()) {
+            continue;
+        }
+        const auto features = model->attributes.find("features");
+        if (features == model->attributes.end() || !features->is_array() ||
+            features->empty()) {
+            continue;
+        }
+        ++checked;
+        SnapshotBoundary boundary;
+        if (const auto error = snapshot_window_error(*model, boundary)) {
+            return fail(*error);
+        }
+        if (const auto error = snapshot_source_error(graph, *model, boundary)) {
+            return fail(*error);
+        }
+    }
+
+    if (checked == 0) {
+        return pass("no model step declares features that require snapshot lineage");
+    }
+    return pass(std::to_string(checked) +
+                " feature-bearing model step(s) terminate in valid snapshots");
 }
 
 CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {

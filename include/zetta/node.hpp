@@ -33,6 +33,7 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/solutions/monitor.hpp"
 #include "zetta/workspace/workspace_profile.hpp"
 #include "zetta/billing/plan.hpp"
 #include "zetta/cluster/node_metrics.hpp"
@@ -40,6 +41,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/audit_ledger.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
@@ -49,6 +51,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/solutions/experiment.hpp"
 
 namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
@@ -351,6 +354,22 @@ public:
     std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
 
+    // One replicated drift and guardrail monitor per solution (#1106). create
+    // validates histogram baselines and declared bounds, stamps its timestamps,
+    // and refuses a duplicate solution. find accepts either the monitor uuid or
+    // the solution name. Monitor mutations publish new breach transitions to
+    // the node's internal solution-events topic.
+    std::shared_ptr<zetta::solutions::Monitor> create_monitor(
+        zetta::solutions::MonitorSpec spec,
+        std::string* error = nullptr);
+    std::shared_ptr<zetta::solutions::Monitor> find_monitor(
+        const std::string& id_or_solution) const;
+    bool drop_monitor(const std::string& id);
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors() const {
+        return monitors_;
+    }
+    std::size_t monitor_count() const { return monitors_.size(); }
+
     // CRUD for Workspace Profiles (the "Discover Opportunities" input — see
     // workspace_profile.hpp / docs/workspace/; #886). A top-level replicated
     // entity keyed by id (like models); the registry is workspace_profiles() +
@@ -377,6 +396,17 @@ public:
     bool drop_plan(const std::string& id);
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans() const { return plans_; }
     std::size_t plan_count() const { return plans_.size(); }
+
+    // The shared holdout / experiment manager (#1105): replicated experiment
+    // definitions and per-entity assignments, decide-before-action enforcement,
+    // balance checks, erosion, and uplift-training rows. The Node's owner-thread
+    // rule applies to every call.
+    zetta::solutions::ExperimentManager& experiment_manager() {
+        return experiment_manager_;
+    }
+    const zetta::solutions::ExperimentManager& experiment_manager() const {
+        return experiment_manager_;
+    }
 
     // The node's CRDT document manager (null when standalone/unreplicated). Exposed
     // so a new replicated entity kind — agents (`agent:<id>`) — can capture + read
@@ -670,6 +700,22 @@ public:
         return audit_events_;
     }
     std::size_t audit_event_count() const { return audit_events_.size(); }
+
+    // The solutions reward ledger (#1107). Both methods append a fresh,
+    // immutable record; outcomes reference an existing action and never update
+    // it. There is deliberately no mutation or deletion API.
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_action(
+        zetta::solutions::ActionLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_outcome(
+        zetta::solutions::OutcomeLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> find_ledger_entry(
+        const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>> ledger_entries() const {
+        return ledger_entries_;
+    }
+    std::size_t ledger_entry_count() const {
+        return ledger_entries_.size();
+    }
 
     // The capability decision (ENT-22): `operation` is allowed iff the key holds
     // a matching, unexpired capability as of the current time. Deny-by-default —
@@ -972,6 +1018,9 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild monitors_ by scanning config_.data_dir. Called from start().
+    void load_monitors();
+
     // Rebuild workspace_profiles_ by scanning config_.data_dir. Called from start().
     void load_workspace_profiles();
 
@@ -994,6 +1043,10 @@ private:
     // start(). Malformed event files are skipped at the boundary (schema).
     void load_audit_events();
     std::filesystem::path audit_dir() const;
+
+    // Rebuild the immutable solutions ledger from data_dir/ledger.
+    void load_ledger_entries();
+    std::filesystem::path ledger_dir() const;
 
     // Rebuild principals_ by scanning config_.data_dir. Called from start().
     void load_principals();
@@ -1049,6 +1102,7 @@ private:
                         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_models(const nlohmann::json& snapshot,
                           const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_monitors(const nlohmann::json& snapshot);
     void reconcile_workspace_profiles(
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
@@ -1070,6 +1124,7 @@ private:
     void reconcile_audit_events(
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
+    void reconcile_ledger_entries(const nlohmann::json& snapshot);
     void reconcile_users(const nlohmann::json& snapshot,
                          const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_roles(const nlohmann::json& snapshot,
@@ -1101,6 +1156,11 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<zetta::solutions::Monitor> materialize_monitor(
+        std::string id,
+        zetta::solutions::MonitorValue value);
+    bool materialize_drop_monitor(const std::string& id);
+    void publish_monitor_breach(const zetta::solutions::MonitorBreach& breach);
     std::shared_ptr<zetta::workspace::WorkspaceProfile> materialize_workspace_profile(
         std::string id, zetta::workspace::WorkspaceProfileValue value);
     bool materialize_drop_workspace_profile(const std::string& id);
@@ -1141,6 +1201,8 @@ private:
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
                                                         zetta::governance::AuditEventValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> materialize_ledger_entry(
+        std::string id, zetta::solutions::LedgerEntryValue value);
 
     NodeConfig config_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -1159,9 +1221,11 @@ private:
     std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::solutions::Monitor>> monitors_; // sorted (created, id)
     std::vector<std::shared_ptr<zetta::workspace::WorkspaceProfile>>
         workspace_profiles_;                                          // sorted (created, id)
     std::vector<std::shared_ptr<zetta::billing::Plan>> plans_;         // sorted (created, id)
+    zetta::solutions::ExperimentManager experiment_manager_;
     std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<zetta::data::DatasetPartition>>
@@ -1200,6 +1264,8 @@ private:
     // that O(n^2) per changed tick.
     std::unordered_map<std::string, std::shared_ptr<zetta::governance::AuditEvent>>
         audit_events_by_id_;
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>>
+        ledger_entries_;  // sorted (recorded_at, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
