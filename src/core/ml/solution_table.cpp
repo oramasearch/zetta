@@ -68,7 +68,9 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(solution.id == "S-1" ? 1110 : 1102);
+    solution.issue = issue(solution.id == "S-1" ? 1110
+                           : solution.id == "S-12" ? 1121
+                                                     : 1102);
     return solution;
 }
 

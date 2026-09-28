@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <utility>
@@ -67,6 +68,46 @@ zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-12");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"source", "claims"},
+         {"table", "fnol"},
+         {"M-11", {{"fields", {"claim_number", "loss_date", "loss_amount"}},
+                    {"review_threshold", 0.8}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00.000Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s12_correctness"] = {
+        {"policy", solution->templates.policy},
+        {"fairness_review",
+         {{"cohort_review_required", true},
+          {"referral_rate_review_required", true},
+          {"owner", "claims-governance"},
+          {"blocked_feature_names", {"race", "ethnicity", "sex", "gender"}},
+          {"feature_names", {"claim_amount", "prior_claims"}}}},
+        {"document_confidence",
+         {{"minimum_review_threshold", 0.8},
+          {"low_confidence_routes_to_review", true},
+          {"fast_track_requires_clear", true}}}};
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -80,6 +121,15 @@ const zetta::pipeline::CheckResult* check_result(
 
 void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s12_failure(const zetta::ir::ExecutionGraph& graph,
+                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
     ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
@@ -109,7 +159,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
                 zetta::solutions::decision_policy_config_schema());
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
-            EXPECT_EQ(solution.templates.minimal, solution.id != "S-1");
+            EXPECT_EQ(solution.templates.minimal,
+                      solution.id != "S-1" && solution.id != "S-12");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -196,6 +247,38 @@ TEST(SolutionRegistry, ChurnEntryCarriesTheCompleteReferenceContract) {
               (nlohmann::json{{"level", 1},
                               {"name", "CL-1"},
                               {"description", "propensity, reasons, segments, holdout and report"}}));
+}
+
+TEST(SolutionRegistry, ClaimsEntryCarriesTheCompleteExecutableContract) {
+    const zetta::ml::Solution* claims = zetta::ml::find_solution("S-12");
+    ASSERT_NE(claims, nullptr);
+    EXPECT_TRUE(claims->runnable);
+    EXPECT_FALSE(claims->templates.minimal);
+    EXPECT_EQ(claims->issue,
+              "https://github.com/oramasearch/zetta/issues/1121");
+    EXPECT_EQ(claims->action_patterns,
+              (std::vector<std::string>{"path assignment", "referral tasks"}));
+    EXPECT_EQ(claims->templates.measurement.design, "holdout");
+    EXPECT_EQ(claims->templates.measurement.outcome,
+              "referral_confirmed");
+    EXPECT_EQ(claims->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(claims->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"path_assignment", "referral_task"}));
+    ASSERT_TRUE(claims->templates.policy.at("actions").contains(
+        "denial_recommendation"));
+    EXPECT_EQ(claims->templates.policy.at("actions")
+                  .at("denial_recommendation")
+                  .at("autonomy"),
+              "A0");
+    EXPECT_EQ(claims->templates.policy.at("tiers").at(0).at("action"),
+              "siu_referral");
+    EXPECT_EQ(claims->templates.policy.at("tiers").at(1).at("action"),
+              "adjuster_assignment");
+    EXPECT_EQ(claims->templates.policy.at("tiers").at(2).at("action"),
+              "fast_track");
+    ASSERT_EQ(claims->templates.guardrails.size(), 5u);
+    EXPECT_EQ(claims->templates.guardrails.front().metric,
+              "automated_denials");
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -307,6 +390,56 @@ TEST(SolutionRegistry, S1EveryLevelBuildsAndLevelThreeProtectsSleepingDogs) {
         }
     }
     expect_s1_failure(graph, "s1_level_composition");
+}
+
+TEST(SolutionRegistry, S12CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_s12_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto denial = bound_s12_graph();
+    denial.find_node("solution_manifest")
+        ->attributes["s12_correctness"]["policy"]["tiers"][0]["action"] =
+        "deny_claim";
+    expect_s12_failure(denial, "s12_no_automated_denial");
+
+    auto fairness = bound_s12_graph();
+    fairness.find_node("solution_manifest")
+        ->attributes["s12_correctness"]["fairness_review"]
+                   ["cohort_review_required"] = false;
+    expect_s12_failure(fairness, "s12_fairness_review");
+
+    auto confidence = bound_s12_graph();
+    for (const auto& model :
+         confidence.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) ==
+            "document_extraction") {
+            model->attributes["review_threshold"] = 0.79;
+        }
+    }
+    expect_s12_failure(confidence, "s12_document_confidence");
+
+    auto composition = bound_s12_graph(3);
+    auto& methodologies = composition.find_node("solution_manifest")
+                               ->attributes["methodologies"];
+    methodologies.erase(
+        std::find(methodologies.begin(), methodologies.end(), "M-3"));
+    expect_s12_failure(composition, "s12_level_composition");
+}
+
+TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_s12_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const auto& methods = manifest->attributes.at("methodologies");
+        EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
+                      methods.end(),
+                  level >= 3);
+    }
 }
 
 } // namespace

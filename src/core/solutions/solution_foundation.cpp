@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -223,6 +224,47 @@ void bind_s1_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_s12_correctness(ir::ExecutionGraph& graph,
+                          const ml::Solution& solution,
+                          const Json& settings,
+                          const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "S-12") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_protected_fields = {
+        "race", "ethnicity", "sex", "gender", "disability",
+        "religion", "national_origin"};
+    manifest->attributes["s12_correctness"] = {
+        {"policy", solution.templates.policy},
+        {"fairness_review",
+         {{"cohort_review_required",
+           common.value("cohort_review_required", true)},
+          {"referral_rate_review_required",
+           common.value("referral_rate_review_required", true)},
+          {"owner", common.value("fairness_review_owner",
+                                  "claims-governance")},
+          {"blocked_feature_names",
+           common.value("protected_feature_blocklist",
+                        default_protected_fields)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"document_confidence",
+         {{"minimum_review_threshold",
+           common.value("minimum_document_review_threshold", 0.8)},
+          {"low_confidence_routes_to_review",
+           common.value("low_confidence_routes_to_review", true)},
+          {"fast_track_requires_clear",
+           common.value("fast_track_requires_clear", true)}}}};
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -297,6 +339,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["level"] = {
         {"type", "integer"}, {"minimum", 1}, {"maximum", 4}};
     schema["properties"]["s1_correctness"] = {{"type", "object"}};
+    schema["properties"]["s12_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -334,6 +377,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_sources(composed.graph, *snapshot);
     bind_s1_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
+    bind_s12_correctness(composed.graph, *solution, settings,
+                         input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -367,8 +412,18 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     }
     binding["level"] = level;
     if (!binding.contains("decision_source")) {
-        binding["decision_source"] = {{"methodology", "M-1"},
-                                       {"entity_column", "account"}, {"score_column", "risk"}};
+        if (solution->id == "S-12") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "claim_id"},
+                {"score_column", "referral_score"},
+                {"output_name", "Publish claim referral scores"}};
+        } else {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "account"},
+                {"score_column", "risk"}};
+        }
     }
     if (solution->id == "S-1") {
         binding["s1_correctness"] = composed.graph.find_node("solution_manifest")
@@ -376,6 +431,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         if (level >= 3) {
             binding["measurement"]["design"] = "uplift_cells";
         }
+    } else if (solution->id == "S-12") {
+        binding["s12_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("s12_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -606,6 +665,62 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
     return true;
 }
 
+bool s12_adverse_action(std::string action) {
+    std::transform(action.begin(), action.end(), action.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return action.find("denial") != std::string::npos ||
+           action.find("deny") != std::string::npos ||
+           action.find("reject") != std::string::npos;
+}
+
+bool s12_required_rule(const Json& config, const std::string& field) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == "eq" &&
+            rule.value("value", Json(false)) == Json(true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validate_s12_runtime_policy(const Json& binding,
+                                        const Json& config) {
+    if (binding.value("solution", std::string{}) != "S-12") {
+        return {};
+    }
+    bool has_manual_denial = false;
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (tier.is_object() &&
+            s12_adverse_action(tier.value("action", std::string{}))) {
+            return "S-12 refuses a policy that selects automated denial";
+        }
+    }
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!s12_adverse_action(action)) {
+            continue;
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A0") {
+            return "S-12 adverse outcomes must remain A0 human-only";
+        }
+        has_manual_denial = true;
+    }
+    if (!has_manual_denial) {
+        return "S-12 policy must retain an A0 denial recommendation";
+    }
+    if (!s12_required_rule(config, "document_confidence_clear") ||
+        !s12_required_rule(config, "fairness_review_passed")) {
+        return "S-12 policy must require document confidence and fairness review evidence";
+    }
+    return {};
+}
+
 } // namespace
 
 ApiResult finish_solution_run(Node& node, const Json& binding,
@@ -734,6 +849,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     const auto policy = policies.get(binding.at("policy_id"));
     if (!policy) {
         return ApiResult::failure("not_found", "solution policy no longer exists");
+    }
+    if (const std::string policy_error =
+            validate_s12_runtime_policy(binding, policy->current()->config);
+        !policy_error.empty()) {
+        return ApiResult::failure("invalid_input", policy_error);
     }
     double complaints = 0.0;
     double maximum_contacts = 0.0;

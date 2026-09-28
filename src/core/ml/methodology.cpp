@@ -57,8 +57,52 @@ bool m1_owns(const ir::ExecutionGraph& graph) {
     return zetta::usecases::churn::is_churn_graph(graph);
 }
 
-ir::ExecutionGraph build_m1_shape(const ShapeRequest&) {
+ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
+
+    if (request.solution == "S-12") {
+        graph.add_node(
+            ir::StepKind::Connect, "Load first notices of loss",
+            nlohmann::json{{"source", request.hints.value("source", "claims")},
+                           {"table", request.hints.value("table", "fnol")},
+                           {"note", "one point-in-time row per claim"}},
+            "load_claims");
+        graph.add_node(
+            ir::StepKind::Clean, "Build claim triage features",
+            nlohmann::json{
+                {"note", "pre-decision FNOL features only; exclude dispositions"}},
+            "build_claim_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train referral-risk model",
+            nlohmann::json{{"model_kind", "gbdt"},
+                           {"algo", "gradient_boosting"},
+                           {"target", "referral_confirmed"},
+                           {"note", "estimate review value, never claim denial"}},
+            "train_referral_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index claim referral scores",
+            nlohmann::json{{"kind", "feature"}},
+            "index_claim_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Serve claim scores and reasons",
+            nlohmann::json{{"note", "expose per-claim score and evidence"}},
+            "serve_claim_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Publish claim referral scores",
+            nlohmann::json{{"result_database", "claims_results"},
+                           {"result_table_prefix", "referral_scores_"},
+                           {"entity_output_column", "claim_id"},
+                           {"score_output_column", "referral_score"},
+                           {"note", "policy assigns paths after scoring"}},
+            "publish_claim_scores");
+
+        graph.add_edge("load_claims", "build_claim_features");
+        graph.add_edge("build_claim_features", "train_referral_model");
+        graph.add_edge("train_referral_model", "index_claim_scores");
+        graph.add_edge("index_claim_scores", "serve_claim_scores");
+        graph.add_edge("serve_claim_scores", "publish_claim_scores");
+        return graph;
+    }
 
     graph.add_node(
         ir::StepKind::Connect, "Load customer accounts",

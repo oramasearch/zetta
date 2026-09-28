@@ -729,7 +729,7 @@ schemas/                    generated, drift-checked JSON schemas (the C++ embed
   CLAUDE.md                 directory rule-card (tree-scoped rules)
 docs/                       domain-organized system docs (see docs/README.md)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
-  solutions/                runtime solution foundations: index plus audit-ledger, decision-policy, experiments, monitors, snapshots, action-integration, and ROI-readout contracts
+  solutions/                runtime solution foundations plus S-1 and S-12 executable module contracts; S-12.md covers claims data, paths, levels, refusals, holdout, actions, and readout (#1121)
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)

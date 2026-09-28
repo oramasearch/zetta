@@ -53,9 +53,11 @@ project UUID and graph name.
 Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name`.
 It selects a real output table from that child Run, never a fabricated score or
-a substitute classifier. M-1 defaults to its `account` / `risk` score table.
-Inputs and score scales for other modules remain their catalogue module's
-responsibility; their templates are deliberately minimal.
+a substitute classifier. M-1 defaults to its `account` / `risk` score table for
+S-1. S-12 instead binds the real claim output named `Publish claim referral
+scores`, with `claim_id` and `referral_score` columns in `claims_results`.
+Inputs and score scales for the remaining modules stay their catalogue module's
+responsibility while their templates are minimal.
 
 ## Run and read back
 

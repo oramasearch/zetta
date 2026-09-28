@@ -24,7 +24,7 @@ policy versions. The policy's named action settings may specify authority,
 approval-above amount, contact/frequency caps, and SLA. An action absent from
 the configured map cannot be referenced by a tier.
 
-S-2 through S-12 intentionally provide minimal starter policies derived from
+S-2 through S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -33,6 +33,15 @@ economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 Guardrails and outcome/design definitions are typed alongside the policy.
+
+S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40
+select SIU referral and adjuster assignment; lower scores select fast track.
+FNOL, coverage, identity, document-confidence, and fairness-review predicates
+must all be explicitly true. Catastrophe and manual-only flags suppress model
+routing. Fast-track work above 5,000 cost units moves to A1 approval, while
+denial remains an A0 recommendation at every amount. Its three tiers each use
+a deterministic 10% holdout, with path-assignment and referral-task treatment
+cells measured on 45-day `referral_confirmed` outcomes.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly

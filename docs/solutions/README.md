@@ -7,6 +7,9 @@ and policy decisions to actions and measured outcomes.
 - [S-1.md](S-1.md) — runnable churn and retention module: data roles,
   levels, policy and holdout defaults, action payloads, run sequence, and every
   domain refusal (#1110).
+- [S-12.md](S-12.md) — runnable claims triage and fraud-referral module: FNOL
+  data, claim paths, A0-only denial, fairness and document checks, holdout, and
+  execution (#1121).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -119,9 +122,19 @@ Re-scoring an entity does not move its cell when its risk tier changes. Cell
 names include the project/graph scope so unrelated experiments cannot share
 ledger evidence accidentally.
 
+### S-12 executable defaults
+
+S-12 assigns `fast_track`, `adjuster_assignment`, or `siu_referral` using
+0.0/0.40/0.75 score floors. All three are governed A2 path tasks;
+`denial_recommendation` is A0 human-only and is never a default tier action.
+FNOL completeness, coverage, identity, document confidence, and
+fairness-review evidence are mandatory. Catastrophe and manual-only flags block
+delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
+10% tier holdout measures `referral_confirmed` over 45 days.
+
 ### Minimal defaults
 
-**S-2 through S-12 are minimal**, marked `minimal_template: true`. Their module
+**S-2 through S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -141,7 +154,6 @@ require an owner-approved policy change before spending.
 | S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
 | S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
-| S-12 | referral task / A0 | phased / referral_confirmed | automated denials: 0 |
 
 Minimal guardrails are registered but remain unobserved until their metric
 producer supplies evidence; absence of an observation is not a healthy reading.
@@ -158,6 +170,8 @@ calls each registered `build_shape`, tags its nodes, and connects the stages
 with control edges. A missing selected shape or runner is refused explicitly.
 For S-1, the composed gate also enforces the eight domain checks and the selected
 level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
+For S-12, it refuses automated denial, missing fairness review, weak document
+thresholds, missing claim-score bindings, and incomplete level composition.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

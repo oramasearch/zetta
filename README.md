@@ -107,7 +107,10 @@ What's inside, by domain (each links to that domain's docs):
   S-1 is runnable at all four levels with eight named domain refusals,
   top-three reason codes, risk × value × driver cells, governed CRM/journey
   delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
-  readout. S-2 through S-12 have explicitly minimal editable defaults. Snapshot
+  readout. S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
+  SIU paths, A0-only denial, document-confidence and fairness refusals, action
+  tasks, holdout, and ROI readout. S-2 through S-11 have explicitly minimal
+  editable defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
