@@ -41,5 +41,6 @@ header only ([events.md](events.md)).
 - [node.md](node.md) — the node owns pub/sub: start and stop, the governance-backed
   authorizer, the `table:` drain, `system.pubsub_topics`, spans (#1029, #1031, #1032, #1034).
 - [exposure.md](exposure.md) — `create_topic`, `drop_topic`, `list_topics`,
-  `publish_event`, `receive_events`; exposed topics, coroutine long polls, and
-  trainer-owned `run-metrics.<run>` topics (#1033, #1076, #1137).
+  `publish_event`, `receive_events`; exposed topics, coroutine long polls,
+  independent accepts with explicit capacity, and trainer-owned
+  `run-metrics.<run>` topics (#1033, #1076, #1137).

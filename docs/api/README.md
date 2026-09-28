@@ -11,7 +11,7 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   audit-on-authorize, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping, the consent challenge, and awaitable REST reads (#1076).
+  the error mapping, the consent challenge, awaitable reads and independent connection admission (#1076).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
 - [../pubsub/crud.md](../pubsub/crud.md) — topic and message CRUD examples,

@@ -10,13 +10,17 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <cstdio>
 #include <map>
 #include <thread>
 #include <utility>
 
-#include <boost/beast2/http_server.hpp>
+#include <boost/beast2/http_worker.hpp>
 #include <boost/capy/io/push_to.hpp>
+#include <boost/capy/write.hpp>
 #include <boost/corosio/io_context.hpp>
+#include <boost/corosio/tcp_acceptor.hpp>
+#include <boost/corosio/socket_option.hpp>
 #include <boost/http/field.hpp>
 #include <boost/http/json/json_sink.hpp>
 #include <boost/http/request_parser.hpp>
@@ -638,8 +642,32 @@ struct ApiServer::Impl {
     // consent-gated add_nodes capability. Empty = no targets wired.
     ProvisionerResolver provisioners;
 
+    struct Connection : boost::beast2::http_worker {
+        boost::corosio::tcp_socket socket;
+
+        Connection(boost::corosio::tcp_socket accepted,
+                   boost::http::router<boost::http::route_params> router,
+                   boost::http::shared_parser_config parser_config,
+                   boost::http::shared_serializer_config serializer_config)
+            : http_worker(std::move(router), std::move(parser_config),
+                          std::move(serializer_config)),
+              socket(std::move(accepted)) {
+            rp.req_body = boost::capy::any_buffer_source(parser.source_for(socket));
+            rp.res_body = boost::capy::any_buffer_sink(serializer.sink_for(socket));
+            stream = boost::capy::any_read_stream(&socket);
+        }
+    };
+
     boost::corosio::io_context io_context;
-    std::unique_ptr<boost::beast2::http_server> server;
+    boost::corosio::tcp_acceptor acceptor{io_context};
+    std::optional<boost::http::router<boost::http::route_params>> router;
+    boost::http::shared_parser_config parser_config;
+    boost::http::shared_serializer_config serializer_config;
+    // These containers belong to the IO executor, including during shutdown.
+    std::map<std::uint64_t, std::shared_ptr<Connection>> connections;
+    std::vector<std::shared_ptr<Connection>> idle_connections;
+    std::vector<std::weak_ptr<runtime::async_event>> poll_events;
+    std::uint64_t next_connection = 0;
     std::thread io_thread;
     std::atomic<bool> is_running{false};
     std::atomic<bool> io_work_held{false};
@@ -653,6 +681,108 @@ struct ApiServer::Impl {
           cluster(owning_cluster),
           options(std::move(server_options)) {
         register_core_capabilities(capability_registry);
+    }
+
+    runtime::task<> serve_connection(std::uint64_t id,
+                                    std::shared_ptr<Connection> connection) {
+        try {
+            co_await connection->do_http_session();
+        } catch (const std::exception& error) {
+            if (is_running.load()) {
+                std::fprintf(stderr, "zetta: HTTP session failed: %s\n", error.what());
+            }
+        }
+        connection->socket.close();
+        connections.erase(id);
+        if (is_running.load() && idle_connections.size() < options.idle_connection_cache) {
+            idle_connections.push_back(std::move(connection));
+        }
+    }
+
+    runtime::task<> reject_connection(boost::corosio::tcp_socket& socket) {
+        const std::string body = wire_dump(rest_envelope(
+            ApiResult::failure("busy", "HTTP connection limit reached")));
+        const std::string response =
+            "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n"
+            "Content-Type: application/json\r\nRetry-After: 1\r\nContent-Length: " +
+            std::to_string(body.size()) + "\r\n\r\n" + body;
+        // This small transport-level rejection is bounded even for a peer that
+        // does not read. It does not wait for any admitted session to finish.
+        [[maybe_unused]] auto sent = co_await runtime::timeout(
+            boost::capy::write(socket, boost::capy::const_buffer(
+                response.data(), response.size())),
+            std::chrono::milliseconds(50));
+        socket.close();
+    }
+
+    runtime::task<> accept_connections() {
+        bool reported_error = false;
+        bool reported_capacity = false;
+        std::size_t accepted_in_batch = 0;
+        while (is_running.load()) {
+            boost::corosio::tcp_socket accepted(io_context);
+            auto [error] = co_await acceptor.accept(accepted);
+            if (!is_running.load()) co_return;
+            if (error) {
+                if (!reported_error) {
+                    std::fprintf(stderr, "zetta: HTTP accept failed: %s\n",
+                                 error.message().c_str());
+                    reported_error = true;
+                }
+                // Descriptor/resource exhaustion must not become a tight loop
+                // that prevents existing sessions from finishing and closing.
+                [[maybe_unused]] auto delayed =
+                    co_await runtime::delay(std::chrono::milliseconds(10));
+                continue;
+            }
+            reported_error = false;
+            if (++accepted_in_batch == 32) {
+                accepted_in_batch = 0;
+                co_await runtime::yield();
+                if (!is_running.load()) co_return;
+            }
+            if (connections.size() >= options.max_connections) {
+                if (!reported_capacity) {
+                    std::fprintf(stderr,
+                                 "zetta: HTTP connection limit %zu reached; replying 503\n",
+                                 options.max_connections);
+                    reported_capacity = true;
+                }
+                co_await reject_connection(accepted);
+                continue;
+            }
+            reported_capacity = false;
+            std::shared_ptr<Connection> connection;
+            if (idle_connections.empty()) {
+                connection = std::make_shared<Connection>(
+                    std::move(accepted), *router, parser_config, serializer_config);
+            } else {
+                connection = std::move(idle_connections.back());
+                idle_connections.pop_back();
+                connection->socket = std::move(accepted);
+            }
+            const auto id = next_connection++;
+            connections.emplace(id, connection);
+            runtime::run_async(io_context.get_executor())(
+                serve_connection(id, std::move(connection)));
+        }
+    }
+
+    runtime::task<> stop_accepting_connections() {
+        acceptor.close();
+        co_return;
+    }
+
+    runtime::task<> stop_connections() {
+        for (const auto& [id, connection] : connections) {
+            connection->socket.close();
+        }
+        for (const auto& registered : poll_events) {
+            if (auto event = registered.lock()) event->set();
+        }
+        poll_events.clear();
+        idle_connections.clear();
+        co_return;
     }
 
     // Dispatch one JSON-RPC request document. Returns the response body, or
@@ -912,6 +1042,10 @@ struct ApiServer::Impl {
             if (capability->awaitable_read) {
                 auto wait_event =
                     std::make_shared<zetta::runtime::async_event>();
+                std::erase_if(poll_events, [](const auto& event) {
+                    return event.expired();
+                });
+                poll_events.push_back(wait_event);
                 co_await bridge.run_on_owner([&] {
                     ApiContext context{node, cluster, identity.acting_key, trace,
                                        &node.span_recorder(), &background};
@@ -923,7 +1057,7 @@ struct ApiServer::Impl {
                 if (capability->awaitable_read->should_wait(call_result)) {
                     const auto wait_for =
                         capability->awaitable_read->wait_for(input);
-                    if (wait_for.count() > 0) {
+                    if (wait_for.count() > 0 && is_running.load()) {
                         [[maybe_unused]] auto wait_result =
                             co_await zetta::runtime::timeout(
                                 wait_event->wait(), wait_for);
@@ -3446,7 +3580,6 @@ ApiServer::~ApiServer() { stop(); }
 
 bool ApiServer::start() {
     namespace http = boost::http;
-    namespace beast2 = boost::beast2;
     namespace corosio = boost::corosio;
 
     Impl& impl = *impl_;
@@ -3852,38 +3985,52 @@ bool ApiServer::start() {
         return impl.serve_unrouted(route);
     });
 
-    impl.server = std::make_unique<beast2::http_server>(
-        impl.io_context, impl.options.worker_coroutines, std::move(router),
-        http::make_parser_config([] {
-            http::parser_config config(/*server=*/true);
-            config.body_limit = kMaxRequestBodyBytes;
-            return config;
-        }()),
-        http::make_serializer_config(http::serializer_config()));
-
-    corosio::ipv4_address address(impl.options.listen_address);
-    auto bind_error = impl.server->bind(
-        corosio::endpoint(address, impl.options.port));
-    if (bind_error) {
-        impl.failure_reason = "bind failed: " + bind_error.message();
+    if (impl.options.max_connections == 0 || impl.options.listen_backlog <= 0) {
+        impl.failure_reason = "max_connections and listen_backlog must be positive";
         return false;
     }
-    impl.bound_port = impl.server->local_endpoint().port();
+    impl.router.emplace(std::move(router));
+    impl.parser_config = http::make_parser_config([] {
+        http::parser_config config(/*server=*/true);
+        config.body_limit = kMaxRequestBodyBytes;
+        return config;
+    }());
+    impl.serializer_config = http::make_serializer_config(http::serializer_config());
+
+    corosio::ipv4_address address(impl.options.listen_address);
+    impl.acceptor.open();
+    impl.acceptor.set_option(corosio::socket_option::reuse_address(true));
+    auto bind_error = impl.acceptor.bind(corosio::endpoint(address, impl.options.port));
+    if (!bind_error) bind_error = impl.acceptor.listen(impl.options.listen_backlog);
+    if (bind_error) {
+        impl.failure_reason = "bind failed: " + bind_error.message();
+        impl.acceptor.close();
+        return false;
+    }
+    impl.bound_port = impl.acceptor.local_endpoint().port();
+    std::fprintf(stderr,
+                 "zetta: HTTP listening on %s:%u (max_connections=%zu, "
+                 "idle_connection_cache=%zu, listen_backlog=%d)\n",
+                 impl.options.listen_address.c_str(), static_cast<unsigned>(impl.bound_port),
+                 impl.options.max_connections, impl.options.idle_connection_cache,
+                 impl.options.listen_backlog);
+    impl.io_context.restart();
     // Keep run() alive while an offloaded request has no completion queued on
     // this executor. Shutdown releases this only after those request
     // coroutines have finished (#1077).
     impl.io_context.get_executor().on_work_started();
     impl.io_work_held.store(true);
-    impl.server->start();
-    impl.io_thread = std::thread([&impl] { impl.io_context.run(); });
     impl.is_running.store(true);
+    runtime::run_async(impl.io_context.get_executor())(impl.accept_connections());
+    impl.io_thread = std::thread([&impl] { impl.io_context.run(); });
     return true;
 }
 
 void ApiServer::stop_accepting() {
     Impl& impl = *impl_;
     if (!impl.is_running.exchange(false)) return;
-    impl.server->stop();
+    runtime::run_async(impl.io_context.get_executor())(
+        impl.stop_accepting_connections());
 }
 
 void ApiServer::stop() {
@@ -3891,10 +4038,11 @@ void ApiServer::stop() {
     stop_accepting();
     if (!impl.io_thread.joinable()) return;
 
-    // tcp_server::stop requests cancellation but its connection coroutines
-    // still have to unwind on the live io_context. Keep both owner queues
-    // moving while they do: an offloaded request can return through the API
-    // bridge and its authorization can return through Node::run_on_owner.
+    runtime::run_async(impl.io_context.get_executor())(impl.stop_connections());
+    // Closing admitted sockets requests cancellation but their session
+    // coroutines still have to unwind on the live io_context. Keep both owner
+    // queues moving while they do: an offloaded request can return through the
+    // API bridge and its authorization can return through Node::run_on_owner.
     // Destroying the io_context with either hop suspended can deadlock while
     // its stop callback is being removed (#1077).
     const auto deadline =
@@ -3923,7 +4071,6 @@ void ApiServer::stop() {
     if (impl.io_thread.joinable()) impl.io_thread.join();
     impl.bridge.drain();
     impl.node.drain_owner_work();
-    if (drained) impl.server->join();
 }
 
 bool ApiServer::running() const { return impl_->is_running.load(); }
