@@ -7,6 +7,7 @@
 #include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/compute/job_coordinator.hpp"
+#include "zetta/ml/synthetic_private_job.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
@@ -539,6 +540,7 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_synthetic_private_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,

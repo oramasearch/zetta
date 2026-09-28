@@ -169,6 +169,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   ml/
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+    synthetic_private.hpp   zetta::ml::run_synthetic_private — distributed empirical Gaussian-copula synthesis, DCR/membership/TSTR evaluation, DP histogram GBDT, and per-run privacy accounting (M-20; #1059)
+    synthetic_private_job.hpp  zetta::ml::run_synthetic_private_job — owned-partition M-20 ComputeJob plus coordinated-launch registration; only aggregate statistics and DP histograms cross members (#1059)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -421,6 +423,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+    synthetic_private.cpp   M-20 empirical Gaussian-copula synthesis, DCR/membership/TSTR evaluation, and formally accounted DP histogram GBDT (#1059)
+    synthetic_private_job.cpp  M-20 owned-partition ComputeJob and coordinated-launch runner; combines partition statistics and DP training rounds across members (#1059)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -607,6 +611,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
+  ml/test_synthetic_private.cpp  M-20 copula fidelity, no-copy privacy evaluation, budget refusal, accounting, and DP utility tests (#1059)
+  ml/test_synthetic_private_partitions.cpp  M-20 multi-member owned-partition statistics/model equivalence and near-data instrumentation test (#1059)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

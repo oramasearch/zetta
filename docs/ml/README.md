@@ -16,6 +16,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [synthetic_private.md](synthetic_private.md) — M-20 native Gaussian-copula synthesis, disclosure-risk evaluation, TSTR utility, and differentially private histogram GBDT with per-run accounting (#1059).
 
 ## Methodology portfolio
 
