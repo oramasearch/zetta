@@ -39,6 +39,9 @@
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed
 //                          graph — a top-level entity; see run.hpp)
+//   study:<study_uuid> -> { spec, status, trials, spent_cost, stop_reason,
+//                          promoted_model, created, updated }  (one AutoML
+//                          search; each nested trial names its Run; #1138)
 //   model:<model_uuid> -> { name, kind, project, run, feature_schema, metrics,
 //                          created, weights:{ size, sha256 } }  (a trained model
 //                          — a top-level entity; the serialized weights body is
@@ -154,6 +157,7 @@ inline constexpr std::string_view kInputPrefix = "input:";
 inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
+inline constexpr std::string_view kStudyPrefix = "study:";
 inline constexpr std::string_view kModelPrefix = "model:";
 inline constexpr std::string_view kMonitorPrefix = "monitor:";
 inline constexpr std::string_view kWorkspaceProfilePrefix = "profile:";
@@ -209,6 +213,9 @@ inline std::string deployment_key(const std::string& deployment_id) {
 }
 inline std::string run_key(const std::string& run_id) {
     return std::string(kRunPrefix) + run_id;
+}
+inline std::string study_key(const std::string& study_id) {
+    return std::string(kStudyPrefix) + study_id;
 }
 inline std::string model_key(const std::string& model_id) {
     return std::string(kModelPrefix) + model_id;

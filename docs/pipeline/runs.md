@@ -139,6 +139,14 @@ out of the public header surface). Validation failures are routed through the
 library's error-handler callback (not exceptions), so they never cross the
 library boundary as a thrown type.
 
+## AutoML trials
+
+Every [AutoML study](../ml/studies.md) trial is one Run. The Run carries the
+sampled parameters, study id, seed, intermediate objective series, logs, final
+status, and produced Model lineage. This keeps pruning, comparison, audit, and
+promotion on the existing execution record instead of creating a second trial
+recording system (#1138).
+
 ## GUI panel
 
 The headed app (`src/gui/app.cpp`) shows runs in a collapsing **Runs / Outputs /

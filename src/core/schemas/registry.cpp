@@ -61,6 +61,7 @@
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/ml/next_best_action_methodology.hpp"
 #include "zetta/ml/playbook.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
@@ -108,6 +109,7 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::solutions::as_of_join_spec_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
+        {"study", "study.schema.json", &zetta::ml::study_value_schema},
         {"entity_resolution_launch", "entity_resolution_launch.schema.json",
          &zetta::ml::entity_resolution_launch_schema},
         {"segmentation_config", "segmentation_config.schema.json",

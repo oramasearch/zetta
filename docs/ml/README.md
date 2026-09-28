@@ -16,6 +16,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [run-metrics.md](run-metrics.md) — replicated step series, params, summaries, typed chart data, downsampling, live topics, and DP curve suppression (#1137).
+- [studies.md](studies.md) — Run-backed AutoML studies with typed and conditional search spaces, grid/random/TPE sampling, median/ASHA pruning, enforced budgets, analysis, promotion, live events, and REST/MCP parity (#1138).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic and squared error): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
 - [anomaly.md](anomaly.md) — runnable M-7/S-7: label-free distributed isolation forest + robust deviations and causal KPI residual scoring; exact alert budgets, correctness gates, table lineage, and registry run reports (#1046).
 - [forecast.md](forecast.md) — runnable M-4: native multi-series forecasting, temporal backtests, seasonal-naive FVA, intervals, distributed table execution and report read-back (`forecast`, #1043).

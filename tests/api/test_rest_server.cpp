@@ -44,6 +44,7 @@
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/version.hpp"
@@ -504,6 +505,85 @@ TEST_F(RestServerFixture, RunMetricCapabilitiesWorkOverRest) {
                                ["values"]
                                    .size(),
               2u);
+}
+
+TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
+    const nlohmann::json input = {
+        {"name", "rest-study"},
+        {"methodology", "M-1"},
+        {"objective",
+         {{"metric", "validation.auc"},
+          {"direction", "maximize"},
+          {"validation_split", "validation"}}},
+        {"budgets",
+         {{"max_trials", 4},
+          {"max_wall_time_ms", 0},
+          {"max_parallel_trials", 1},
+          {"cost_cap", 0.0}}},
+        {"from_defaults", true}};
+    const auto created = request("POST", "/v1/create_study", input.dump());
+    ASSERT_EQ(created.status, 200) << created.body;
+    const std::string study_id =
+        json_of(created).at("value").at("id").get<std::string>();
+    EXPECT_EQ(request("GET", "/v1/get_study?study=" + study_id).status,
+              200);
+    EXPECT_EQ(request("GET", "/v1/list_studies").status, 200);
+    EXPECT_EQ(request("GET", "/v1/get_study_analysis?study=" + study_id)
+                  .status,
+              200);
+
+    const auto study = node.find_study(study_id);
+    const auto stopped_run = node.create_run("", "rest-study-trial");
+    ASSERT_TRUE(study);
+    ASSERT_TRUE(stopped_run);
+    zetta::ml::StudyTrial stopped_trial;
+    stopped_trial.run = stopped_run->id();
+    stopped_trial.seed = 1;
+    ASSERT_TRUE(study->add_trial(std::move(stopped_trial)));
+    EXPECT_EQ(request("GET", "/v1/list_trials?study=" + study_id).status,
+              200);
+    const auto stopped = request(
+        "POST", "/v1/stop_trial",
+        nlohmann::json{{"study", study_id}, {"run", stopped_run->id()}}
+            .dump());
+    EXPECT_EQ(stopped.status, 200) << stopped.body;
+
+    const auto promoted_run = node.create_run("", "rest-study-trial");
+    ASSERT_TRUE(promoted_run);
+    zetta::ml::StudyTrial promoted_trial;
+    promoted_trial.number = 1;
+    promoted_trial.run = promoted_run->id();
+    promoted_trial.seed = 2;
+    ASSERT_TRUE(study->add_trial(std::move(promoted_trial)));
+    ASSERT_TRUE(study->finish_trial(promoted_run->id(),
+                                    zetta::ml::TrialState::Complete, 0.91,
+                                    1.0));
+    zetta::ml::ModelValue model_value;
+    model_value.name = "rest-study-model";
+    model_value.kind = "classifier";
+    model_value.run = promoted_run->id();
+    const auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    const auto promoted = request(
+        "POST", "/v1/promote_trial",
+        nlohmann::json{{"study", study_id}, {"run", promoted_run->id()}}
+            .dump());
+    ASSERT_EQ(promoted.status, 200) << promoted.body;
+    EXPECT_EQ(json_of(promoted).at("value").at("model"), model->id());
+    const auto active_run = node.create_run("", "rest-study-trial");
+    ASSERT_TRUE(active_run);
+    zetta::ml::StudyTrial active_trial;
+    active_trial.number = 2;
+    active_trial.run = active_run->id();
+    active_trial.seed = 3;
+    ASSERT_TRUE(study->add_trial(std::move(active_trial)));
+    const auto study_stopped = request(
+        "POST", "/v1/stop_study",
+        nlohmann::json{{"study", study_id}}.dump());
+    EXPECT_EQ(study_stopped.status, 200) << study_stopped.body;
+    EXPECT_EQ(study->value().trials.back().state,
+              zetta::ml::TrialState::Failed);
+    EXPECT_EQ(active_run->status(), zetta::pipeline::RunStatus::Failed);
 }
 
 // The error mapping over the wire: schema-invalid input -> 400 with the

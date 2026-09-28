@@ -27,6 +27,8 @@
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/role.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
@@ -280,6 +282,93 @@ TEST_F(McpServerFixture, RunMetricToolsListAndCallsMatchTheRegistry) {
     EXPECT_TRUE(waited["result"]["structuredContent"]["value"]["events"]
                     .empty());
     EXPECT_GE(waited_for, std::chrono::milliseconds(10));
+}
+
+TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
+    const auto listed = rpc(
+        R"({"jsonrpc":"2.0","id":22,"method":"tools/list"})");
+    ASSERT_TRUE(listed["result"]["tools"].is_array()) << listed.dump();
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    for (const char* name : {"create_study", "get_study", "list_studies",
+                             "list_trials", "stop_study", "stop_trial",
+                             "promote_trial", "get_study_analysis"}) {
+        const auto capability = registry.find(name);
+        ASSERT_TRUE(capability) << name;
+        const auto tool = std::ranges::find_if(
+            listed["result"]["tools"], [&](const nlohmann::json& candidate) {
+                return candidate.value("name", std::string{}) == name;
+            });
+        ASSERT_NE(tool, listed["result"]["tools"].end()) << name;
+        EXPECT_EQ((*tool)["inputSchema"], capability->input_schema) << name;
+        EXPECT_EQ((*tool)["outputSchema"], capability->output_schema) << name;
+    }
+
+    const auto caller = journey_caller();
+    const nlohmann::json input = {
+        {"name", "mcp-study"},
+        {"methodology", "M-1"},
+        {"objective",
+         {{"metric", "validation.auc"},
+          {"direction", "maximize"},
+          {"validation_split", "validation"}}},
+        {"budgets",
+         {{"max_trials", 4},
+          {"max_wall_time_ms", 0},
+          {"max_parallel_trials", 1},
+          {"cost_cap", 0.0}}},
+        {"from_defaults", true}};
+    const auto created = caller("create_study", input);
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string study_id = created.value.at("id");
+    EXPECT_TRUE(caller("get_study", {{"study", study_id}}).ok);
+    EXPECT_TRUE(caller("list_studies", nlohmann::json::object()).ok);
+    EXPECT_TRUE(caller("get_study_analysis", {{"study", study_id}}).ok);
+
+    const auto study = node.find_study(study_id);
+    const auto stopped_run = node.create_run("", "mcp-study-trial");
+    ASSERT_TRUE(study);
+    ASSERT_TRUE(stopped_run);
+    zetta::ml::StudyTrial stopped_trial;
+    stopped_trial.run = stopped_run->id();
+    stopped_trial.seed = 1;
+    ASSERT_TRUE(study->add_trial(std::move(stopped_trial)));
+    EXPECT_TRUE(caller("list_trials", {{"study", study_id}}).ok);
+    EXPECT_TRUE(caller("stop_trial",
+                       {{"study", study_id}, {"run", stopped_run->id()}})
+                    .ok);
+
+    const auto promoted_run = node.create_run("", "mcp-study-trial");
+    ASSERT_TRUE(promoted_run);
+    zetta::ml::StudyTrial promoted_trial;
+    promoted_trial.number = 1;
+    promoted_trial.run = promoted_run->id();
+    promoted_trial.seed = 2;
+    ASSERT_TRUE(study->add_trial(std::move(promoted_trial)));
+    ASSERT_TRUE(study->finish_trial(promoted_run->id(),
+                                    zetta::ml::TrialState::Complete, 0.91,
+                                    1.0));
+    zetta::ml::ModelValue model_value;
+    model_value.name = "mcp-study-model";
+    model_value.kind = "classifier";
+    model_value.run = promoted_run->id();
+    const auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    const auto promoted = caller(
+        "promote_trial", {{"study", study_id}, {"run", promoted_run->id()}});
+    ASSERT_TRUE(promoted.ok) << promoted.error.message;
+    EXPECT_EQ(promoted.value.at("model"), model->id());
+    const auto active_run = node.create_run("", "mcp-study-trial");
+    ASSERT_TRUE(active_run);
+    zetta::ml::StudyTrial active_trial;
+    active_trial.number = 2;
+    active_trial.run = active_run->id();
+    active_trial.seed = 3;
+    ASSERT_TRUE(study->add_trial(std::move(active_trial)));
+    EXPECT_TRUE(caller("stop_study", {{"study", study_id}}).ok);
+    EXPECT_EQ(study->value().trials.back().state,
+              zetta::ml::TrialState::Failed);
+    EXPECT_EQ(active_run->status(), zetta::pipeline::RunStatus::Failed);
 }
 
 TEST_F(McpServerFixture, ToolsCallRunsOnTheOwningLoopAndCarriesTrace) {

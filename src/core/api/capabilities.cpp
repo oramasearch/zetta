@@ -9538,6 +9538,7 @@ void register_core_capabilities(Registry& registry) {
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
     register_run_metrics_capabilities(registry);
+    register_study_capabilities(registry);
     register_solution_capabilities(registry);
 
     // Versioned score-to-action policy (#1104).

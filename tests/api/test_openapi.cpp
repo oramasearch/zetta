@@ -308,6 +308,34 @@ TEST(OpenApi, RunMetricCapabilitiesHaveRestSchemaParity) {
     }
 }
 
+TEST(OpenApi, StudyCapabilitiesHaveRestSchemaParity) {
+    const Registry registry = core_registry();
+    const nlohmann::json document = zetta::api::openapi_document(registry);
+    for (const char* name : {"create_study", "get_study", "list_studies",
+                             "list_trials", "stop_study", "stop_trial",
+                             "promote_trial", "get_study_analysis"}) {
+        const auto capability = registry.find(name);
+        ASSERT_TRUE(capability) << name;
+        const std::string method =
+            capability->kind == CapabilityKind::Read ? "get" : "post";
+        const nlohmann::json& operation =
+            document["paths"]["/v1/" + std::string(name)][method];
+        EXPECT_EQ(operation["responses"]["200"]["content"]
+                           ["application/json"]["schema"]["properties"]
+                           ["value"],
+                  capability->output_schema)
+            << name;
+        if (method == "post") {
+            nlohmann::json actual = operation["requestBody"]["content"]
+                                             ["application/json"]["schema"]
+                                             ["properties"];
+            actual.erase("intent");
+            EXPECT_EQ(actual, capability->input_schema["properties"])
+                << name;
+        }
+    }
+}
+
 // The acceptance rule (#618): a registry entry added once appears in the REST
 // route table and the OpenAPI document with no further wiring. (The MCP
 // tools/list side of the same rule is covered by the protocol tests.)

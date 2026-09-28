@@ -41,6 +41,8 @@ MCP/HTTP work.
   exposed topics and long polls that suspend without holding threads.
 - [../ml/run-metrics.md](../ml/run-metrics.md) — the five run-metric capabilities,
   their REST and MCP request/response examples, and live topic reads (#1137).
+- [../ml/studies.md](../ml/studies.md) — the eight study capabilities, Run-backed
+  trials, promotion permission, analysis, and bounded live progress reads (#1138).
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
@@ -159,6 +161,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
+| `get_study` | read | api:query | one study's objective, search space, sampler, pruner, budgets, usage, state, and Run trials |
+| `list_studies` | read | api:query | all studies with their current budget and lifecycle state |
+| `list_trials` | read | api:query | one study's Run trials, optionally filtered by running/pruned/failed/complete state |
+| `get_study_analysis` | read | api:query | best trial, optimization history, parameter importances, parallel-coordinate rows, and confidence leaderboard |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
@@ -166,6 +172,10 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
 | `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `create_study` | action | orchestration:create_study | create a gated Run-backed AutoML study with typed search space, sampler, pruner, and budgets |
+| `stop_study` | action | orchestration:stop_study | stop a study and its active trial Runs |
+| `stop_trial` | action | orchestration:stop_trial | stop one active trial Run without stopping its study |
+| `promote_trial` | action | orchestration:promote_trial (`studies:promote`) | register a complete trial's existing Model as the Study's promoted project version |
 | `create_policy` | action | orchestration:create_policy | create version 1 of a replicated decision policy |
 | `update_policy` | action | orchestration:update_policy | append a replacement version or apply bounded numeric tuning |
 | `decide` | action | orchestration:decide | apply a policy to one scored entity or a scored table and persist versioned decisions |

@@ -502,6 +502,7 @@ add_library(zetta-core STATIC
   src/core/api/capabilities.cpp
   src/core/api/pubsub_capabilities.cpp
   src/core/api/run_metrics_capabilities.cpp
+  src/core/api/study_capabilities.cpp
   src/core/api/decision_policy_capabilities.cpp
   src/core/api/solution_capabilities.cpp
   src/core/api/action_capabilities.cpp
@@ -571,6 +572,7 @@ add_library(zetta-core STATIC
   src/core/ml/ensemble_runner.cpp
   src/core/ml/ensemble_train_job.cpp
   src/core/ml/methodology.cpp
+  src/core/ml/study.cpp
   src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/solution_table.cpp
