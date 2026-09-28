@@ -73,7 +73,9 @@ ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='OpenApi.*'
 `OpenApi.*` additionally selects the committed OpenAPI artifact test, which is
 not selected by `*Schema*`. Regeneration combines LambdaMART's objective enum, all method-specific graph
 annotations, and every method's report properties; the issue comment records
-the current proof output. Run one suite at a time. Postgres-backed tests use
+the current proof output. Round-two regeneration passed all 46 schema tests
+and all 3 OpenAPI tests, including graph, vision, document, and language report
+fields plus vision and language correctness annotations. Run one suite at a time. Postgres-backed tests use
 a fresh local database. Full-suite-only unrelated failures must pass alone;
 record both outputs and host load in the issue comment. Linux proof is deferred
 when the off-host helper is unavailable. Image builds are deferred on this host;
