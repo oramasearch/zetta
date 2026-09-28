@@ -18,6 +18,13 @@ Methodology make_m5_methodology();
 Methodology make_m6_methodology();
 Methodology make_m8_methodology();
 Methodology make_m9_methodology();
+Methodology make_m10_methodology();
+Methodology make_m11_methodology();
+Methodology make_graph_methodology();
+Methodology make_m13_methodology();
+Methodology make_m14_methodology();
+Methodology make_m15_methodology();
+Methodology make_m16_methodology();
 
 namespace {
 
@@ -79,60 +86,13 @@ const std::vector<Methodology>& methodologies() {
         make_anomaly_methodology(),
         make_m8_methodology(),
         make_m9_methodology(),
-        planned("M-10", "NLP / embeddings / RAG / fine-tuning",
-                "Language, documents & perception",
-                {"nlp", "embedding", "embeddings", "rag", "fine_tuning",
-                 "retrieval"},
-                {}, {"text", "semantic search", "retrieve", "rag", "language"},
-                {input("text", true, "documents or utterances"),
-                 input("label", false, "task labels or golden answers")},
-                {"embeddings", "search results", "generated text"},
-                {"recall at k", "MRR", "F1", "groundedness"}, 1049, true),
-        planned("M-11", "Document intelligence",
-                "Language, documents & perception",
-                {"document_intelligence", "ocr", "document"}, {},
-                {"extract document", "ocr", "invoice", "form"},
-                {input("text", true, "document image or text"),
-                 input("label", false, "field annotations")},
-                {"structured fields", "evidence links"},
-                {"field accuracy", "F1", "straight-through rate"}, 1050),
-        planned("M-12", "Graph ML", "Identity & structure",
-                {"graph_ml", "graph"}, {},
-                {"graph", "network", "link prediction"},
-                {input("entity", true, "graph nodes"),
-                 input("group", true, "relationships or edges"),
-                 input("time", false, "edge observation time")},
-                {"node scores", "links", "graph embeddings"},
-                {"average precision", "AUC", "lift"}, 1051),
-        planned("M-13", "Computer vision", "Language, documents & perception",
-                {"computer_vision", "vision"}, {},
-                {"image", "vision", "detect defect", "segment image"},
-                {input("image", true, "images or video frames"),
-                 input("label", false, "class, box, or mask annotations")},
-                {"classifications", "detections", "masks"},
-                {"mAP", "IoU", "escape rate"}, 1052),
-        planned("M-14", "Speech & audio analytics",
-                "Language, documents & perception", {"speech", "audio"}, {},
-                {"speech", "audio", "transcribe", "diarize"},
-                {input("audio", true, "audio recordings"),
-                 input("label", false, "transcripts or task labels")},
-                {"transcripts", "speaker segments", "audio scores"},
-                {"word error rate", "F1"}, 1053),
-        planned("M-15", "Bandits & sequential decisioning", "Action & decision",
-                {"bandit", "bandits", "sequential_decisioning"}, {},
-                {"bandit", "explore", "sequential decision"},
-                {input("entity", true, "decision context"),
-                 input("treatment", true, "available actions"),
-                 input("label", true, "observed reward")},
-                {"action policy", "propensities"},
-                {"cumulative reward", "regret", "policy value"}, 1054),
-        planned("M-16", "Optimization / operations research",
-                "Action & decision", {"optimization", "operations_research"},
-                {}, {"optimize", "schedule", "allocate", "constraints"},
-                {input("feature", true, "objective inputs"),
-                 input("group", true, "constraints and resources")},
-                {"plan", "allocation", "constraint trace"},
-                {"objective value", "constraint violations"}, 1055),
+        make_m10_methodology(),
+        make_m11_methodology(),
+        make_graph_methodology(),
+        make_m13_methodology(),
+        make_m14_methodology(),
+        make_m15_methodology(),
+        make_m16_methodology(),
         planned(
             "M-17",
             "Bayesian / probabilistic modeling & uncertainty quantification",
@@ -182,10 +142,20 @@ find_methodology(std::string_view id_or_model_kind_or_solution) {
     const std::string wanted = lower(id_or_model_kind_or_solution);
     for (const Methodology& methodology : methodologies()) {
         if (lower(methodology.id) == wanted ||
-            contains_value(methodology.model_kinds, wanted) ||
+            contains_value(methodology.model_kinds, wanted)) {
+            return &methodology;
+        }
+    }
+    // A solution may admit multiple methodologies. Prefer one the engine can
+    // execute, then retain the portfolio-order fallback for planned entries.
+    for (const Methodology& methodology : methodologies()) {
+        if (methodology.runnable &&
             contains_value(methodology.solutions, wanted)) {
             return &methodology;
         }
+    }
+    for (const Methodology& methodology : methodologies()) {
+        if (contains_value(methodology.solutions, wanted)) return &methodology;
     }
     return nullptr;
 }

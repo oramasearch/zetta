@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "zetta/ml/methodology.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/intent_compiler.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -86,6 +87,23 @@ TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
     EXPECT_NE(error.find("1060"), std::string::npos);
 }
 
+TEST(IntentCompilerTest, NamesEveryRunnablePipelineAfterItsMethodology) {
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        if (!methodology.runnable) {
+            continue;
+        }
+        zetta::pipeline::IntentCompileOptions options;
+        options.methodology = methodology.id;
+        const auto compiled = compile_intent("Build the selected pipeline", options);
+        ASSERT_TRUE(compiled) << methodology.id;
+        EXPECT_EQ(compiled->methodology, methodology.id);
+        EXPECT_EQ(compiled->name, methodology.id == "M-1"
+                                      ? "churn skeleton"
+                                      : methodology.name + " pipeline");
+        EXPECT_NE(compiled->name, "generic skeleton");
+    }
+}
+
 TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     zetta::pipeline::IntentCompileOptions options;
     options.solution = "S-1";
@@ -124,6 +142,59 @@ TEST(IntentCompilerTest, SurvivalBuildsItsOwnRunnableShape) {
     EXPECT_TRUE(compiled->graph.has_node("write_survival_table"));
     EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
     EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
+}
+
+TEST(IntentCompilerTest, GraphMethodologyBuildsItsOwnPipeline) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-12";
+    options.hints = {{"source", "fraud"},
+                     {"table", "payments"},
+                     {"prediction_time", 100.0}};
+    const auto compiled =
+        compile_intent("Learn risk from payment relationships", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-12");
+    EXPECT_TRUE(compiled->graph.has_node("load_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("filter_graph_edges"));
+    EXPECT_TRUE(compiled->graph.has_node("train_graph_model"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph.find_node("train_graph_model")
+                  ->attributes.at("model_kind"),
+              "graph");
+    const auto report = zetta::pipeline::default_gate().run(compiled->graph);
+    EXPECT_TRUE(report.passed());
+}
+
+TEST(IntentCompilerTest, FraudPrimarySolutionSelectsM1) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    options.hints = {{"prediction_time", 100.0}};
+    const auto compiled = compile_intent("Review transaction fraud", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-1");
+    EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
+}
+
+TEST(IntentCompilerTest, DocumentMethodologyBuildsItsOwnRunnableShape) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.methodology = "M-11";
+    options.hints = {{"source", "documents"},
+                     {"table", "invoices"},
+                     {"fields", {"invoice_number", "total"}},
+                     {"review_threshold", 0.85}};
+    const auto compiled = compile_intent("extract invoice fields", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-11");
+    ASSERT_EQ(compiled->graph.nodes_of_kind(StepKind::Model).size(), 1u);
+    const auto model = compiled->graph.nodes_of_kind(StepKind::Model).front();
+    EXPECT_EQ(model->attributes.at("model_kind"), "document_extraction");
+    EXPECT_EQ(model->attributes.at("fields").size(), 2u);
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Act).front()
+                  ->attributes.at("route"),
+              "review_queue");
+    EXPECT_EQ(compiled->graph.nodes_of_kind(StepKind::Clean).front()
+                  ->attributes.at("ocr"),
+              "trocr");
 }
 
 TEST(IntentCompilerTest, SegmentationKeywordBuildsItsOwnShape) {

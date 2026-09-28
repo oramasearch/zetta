@@ -1,7 +1,7 @@
 # Graph correctness checks
 
-The first **concrete** correctness checks that plug into the
-[correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
+The concrete correctness checks that plug into the
+[correctness gate](gate.md). They implement
 the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
@@ -22,6 +22,16 @@ The reusable annotation and methodology-specific checks are:
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
+| `LanguageGroundingCheck` | `language_grounding` | an M-10 graph that does not require citations on every answer sentence or does not refuse empty retrieval |
+| `LanguageTrainingAccessCheck` | `language_training_access` | an M-10 graph whose source and model do not require runtime caller-read authorization |
+| `DocumentReviewCheck` | `document_review` | document extraction without confidence, source evidence, a valid review threshold, and a downstream review queue |
+| `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
+| `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
+| `SpeechConsentCheck` | `speech_consent` | a speech model that does not require an explicit boolean consent field |
+| `SpeechPiiRedactionCheck` | `speech_pii_redaction` | a speech model that could store unfiltered transcript text |
+| `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
+| `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
+| `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -52,6 +62,17 @@ applies eligibility and contact caps as hard constraints before budgeted
 best-action selection. Missing stages, extra transforms, altered outputs, unknown
 attributes, overlapping column roles, and invalid training parameters fail with a
 specific reason.
+
+### M-10 grounding and training access
+
+The language checks engage only when a model step names `model_kind: language`
+or another M-10 alias. `language_grounding` requires boolean
+`citations_required` and `refuse_without_retrieval` attributes on the model.
+`language_training_access` requires `governance_check` on that model and
+`caller_read_required` on an upstream connect step. The runtime then authorizes
+every effective entity, label, feature, text, query, and relevant-id column
+before it reads rows. These graph flags do not replace runtime authorization;
+they make an edited plan that omits it fail verification.
 
 ## How a check reads a step
 
@@ -143,6 +164,36 @@ name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
 Features named like the outcome, equal to the treatment column, or carrying a
 `data_as_of` later than `treatment_time` fail before execution.
 
+### `graph_edge_time` — graph rows available at prediction time
+
+This check engages only for `graph` and `graph_ml` model steps. The model must
+declare `time_column` and a finite `prediction_time`. An enabled clean step must
+feed the graph model through a data-flow edge and declare the same
+`filter_time_column` and cutoff plus
+`exclude_after_prediction_time: true`. Missing, disabled, or mismatched filters
+fail the gate before the graph can run.
+
+### `vision_source_split` — refuse frame-level evaluation
+
+Engages on a Model step whose `model_kind` is `vision` or `computer_vision`.
+It requires `source_disjoint: true` and a non-empty `source_column`. A missing or
+false flag fails because random frame splitting can put nearly identical frames
+from one camera, site, or document in both train and test. A missing source
+column fails because the runner cannot know which rows must stay together.
+
+The M-13 shape emits both annotations. The runtime also performs the split from
+the named column, so the graph promise and the executed behavior agree.
+
+### Speech correctness checks
+
+Model steps with `model_kind: speech` or `audio` must set
+`consent_required: true`, name a non-empty `consent_column`, set
+`redact_pii: true`, and set `audio_local_only: true`. These declarations make a
+compiled graph that weakens any M-14 privacy rule fail before execution. The
+speech runner independently validates row consent before reading a blob and
+filters text before table insertion; graph annotations are not treated as proof
+that the underlying data complied.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -177,6 +228,16 @@ The applicable checks pass and the gate allows deploy. Change `revenue` to `"str
 source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
 
+### `bandit_policy` — safe allocation constraints
+
+The bandit check engages on model steps whose `model_kind` is `bandit`,
+`bandits`, or `sequential_decisioning`. Such a step must declare numeric
+`exploration_floor` and `default_arm_cap` values. Every arm-specific cap must
+be between the floor and one. When `arms` are declared on the graph, their
+floors must fit within total probability one and their effective caps must be
+able to carry total probability one. The runtime repeats these checks after
+run-time arms are resolved from parameters or the input table.
+
 ```cpp
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/serialization.hpp"
@@ -203,6 +264,22 @@ wrong shape (`requires` as an array, a `features` entry without a `name`, an
 reason (`step "model" (n-model): malformed correctness annotations — /requires:
 …`). This is the issue's *"a mistyped graph fails with a clear reason"* applied to
 the annotations themselves.
+
+## `optimization_contract` — no unchecked or point-forecast plan
+
+An M-16 model step (`model_kind: "optimization"` or
+`"operations_research"`) must set all three contract flags to `true`:
+
+- `scenario_input`: the objective or constraints come from scenario or
+  quantile predictions, never one point prediction;
+- `verify_constraints`: the runner independently checks every bound and
+  constraint after solving and suppresses any violating plan; and
+- `report_solver_status`: every run reports termination status and MIP gap.
+
+The methodology's own compiler emits these flags. An edited or imported graph
+that removes any flag is refused before run. The runner enforces the same rules
+again at the table and solution boundaries; the graph check makes the unsafe
+shape impossible to deploy in the first place (#1055).
 
 ## Where it fits
 

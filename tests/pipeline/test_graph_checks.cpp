@@ -14,11 +14,19 @@
 using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CausalUpliftCheck;
+using zetta::pipeline::BanditPolicyCheck;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
+using zetta::pipeline::GraphEdgeTimeCheck;
+using zetta::pipeline::LanguageGroundingCheck;
+using zetta::pipeline::LanguageTrainingAccessCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::SurvivalCensoringCheck;
+using zetta::pipeline::SpeechConsentCheck;
+using zetta::pipeline::SpeechLocalAudioCheck;
+using zetta::pipeline::SpeechPiiRedactionCheck;
 using zetta::pipeline::ValidationReport;
+using zetta::pipeline::VisionSourceSplitCheck;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -433,11 +441,219 @@ TEST(CausalUpliftGraphCheck, UnsafeOverlapBoundsAreRefused) {
     EXPECT_EQ(result.status, CheckStatus::Fail);
     EXPECT_NE(result.reason.find("overlap"), std::string::npos);
 }
+TEST(GraphCheck, EdgeTimeFilterPassesWhenItMatchesTheModelCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "edges", json::object(), "source");
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("source", "filter");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
+
+TEST(GraphCheck, RefusesAGraphWithoutAPredictionCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"}, {"time_column", "time"}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisabledEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", false}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesAFilterUsingAnotherCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 11.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisconnectedEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "unrelated filter",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(VisionSourceSplitCheck, AcceptsANamedSourceDisjointHoldout) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", true},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesFrameLevelSplits) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "vision"},
+                    {"source_disjoint", false},
+                    {"source_column", "camera_id"}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("frames"), std::string::npos) << result.reason;
+}
+
+TEST(VisionSourceSplitCheck, RefusesAnUnnamedSourceGroup) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "vision",
+                   {{"model_kind", "computer_vision"},
+                    {"source_disjoint", true}});
+    const CheckResult result = VisionSourceSplitCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("source_column"), std::string::npos)
+        << result.reason;
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutCitationPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("citations"), std::string::npos);
+}
+
+TEST(LanguageGroundingGraphCheck, RefusesAnswersWithoutEmptyRetrievalPolicy) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true}},
+                   "language");
+    const CheckResult result = LanguageGroundingCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("refuse"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUncheckedTrainingText) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text",
+                   {{"caller_read_required", true}}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("authorize"), std::string::npos);
+}
+
+TEST(LanguageTrainingAccessGraphCheck, RefusesUnguardedTextSource) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "text", {}, "text");
+    graph.add_node(StepKind::Model, "language",
+                   {{"model_kind", "language"},
+                    {"governance_check", true},
+                    {"citations_required", true},
+                    {"refuse_without_retrieval", true}},
+                   "language");
+    graph.add_edge("text", "language");
+    const CheckResult result = LanguageTrainingAccessCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("caller-read"), std::string::npos);
+}
+// ---- bandit_policy ----------------------------------------------------------
+
+TEST(BanditPolicyCheck, RefusesMissingExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"default_arm_cap", 1.0}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("exploration_floor"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesAnArmCapBelowTheExplorationFloor) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 1.0},
+                        {"arm_caps", {{"guardrail", 0.05}}}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("guardrail"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, RefusesCapsThatCannotCarryTotalProbability) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"a", "b"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.4},
+                        {"arm_caps", json::object()}},
+                   "policy");
+    const CheckResult result = BanditPolicyCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("total probability"), std::string::npos);
+}
+
+TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "policy",
+                   json{{"model_kind", "bandit"},
+                        {"arms", {"control", "best", "guardrail"}},
+                        {"exploration_floor", 0.1},
+                        {"default_arm_cap", 0.8},
+                        {"arm_caps", {{"guardrail", 0.2}}}},
+                   "policy");
+    EXPECT_EQ(BanditPolicyCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 13u);
+    ASSERT_EQ(gate.check_count(), 23u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -450,7 +666,17 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[9]->name(), "anomaly_correctness");
     EXPECT_EQ(gate.checks()[10]->name(), "next_best_action_correctness");
     EXPECT_EQ(gate.checks()[11]->name(), "rank_correctness");
-    EXPECT_EQ(gate.checks()[12]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[12]->name(), "language_grounding");
+    EXPECT_EQ(gate.checks()[13]->name(), "language_training_access");
+    EXPECT_EQ(gate.checks()[14]->name(), "document_review");
+    EXPECT_EQ(gate.checks()[15]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[16]->name(), "vision_source_split");
+    EXPECT_EQ(gate.checks()[17]->name(), "speech_consent");
+    EXPECT_EQ(gate.checks()[18]->name(), "speech_pii_redaction");
+    EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
+    EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
+    EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[22]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -485,6 +711,122 @@ TEST(RankGraphCheck, FeaturesUnavailableAtRankingTimeFail) {
         zetta::pipeline::RankCorrectnessCheck{}.evaluate(graph);
     EXPECT_EQ(result.status, CheckStatus::Fail);
     EXPECT_NE(result.reason.find("ranking_time"), std::string::npos);
+}
+
+namespace {
+
+ExecutionGraph document_graph(nlohmann::json attributes) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "documents", {}, "documents");
+    graph.add_node(StepKind::Model, "extract", std::move(attributes),
+                   "extract");
+    graph.add_node(StepKind::Act, "review", json{{"route", "review_queue"}},
+                   "review");
+    graph.add_edge("documents", "extract");
+    graph.add_edge("extract", "review");
+    return graph;
+}
+
+json valid_document_attributes() {
+    return {{"model_kind", "document_extraction"},
+            {"confidence_required", true},
+            {"retain_evidence", true},
+            {"route_low_confidence_to_review", true},
+            {"review_threshold", 0.8}};
+}
+
+}  // namespace
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutConfidence) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMistypedConfidenceRuleWithoutThrowing) {
+    json attributes = valid_document_attributes();
+    attributes["confidence_required"] = "yes";
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("confidence"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesFieldsWithoutSourceEvidence) {
+    json attributes = valid_document_attributes();
+    attributes["retain_evidence"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("page and box"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesSilentLowConfidenceAcceptance) {
+    json attributes = valid_document_attributes();
+    attributes["route_low_confidence_to_review"] = false;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("routed to review"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesMissingReviewQueueStep) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "extract", valid_document_attributes(),
+                   "extract");
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("review_queue"), std::string::npos);
+}
+
+TEST(DocumentReviewCheck, RefusesInvalidReviewThreshold) {
+    json attributes = valid_document_attributes();
+    attributes["review_threshold"] = 1.1;
+    const CheckResult result =
+        zetta::pipeline::DocumentReviewCheck{}.evaluate(
+            document_graph(std::move(attributes)));
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("between 0 and 1"), std::string::npos);
+}
+
+TEST(SpeechGraphCheck, RefusesMissingConsentContract) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"redact_pii", true},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechConsentCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesDisabledPiiRedaction) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", false},
+                        {"audio_local_only", true}});
+    EXPECT_EQ(SpeechPiiRedactionCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "speech",
+                   json{{"model_kind", "speech"},
+                        {"consent_required", true},
+                        {"consent_column", "consent"},
+                        {"redact_pii", true},
+                        {"audio_local_only", false}});
+    EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -581,11 +923,76 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
               implemented.end())
         << "M-5 survival ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"),
+              implemented.end()) << "M-12 graph ML ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
+              implemented.end())
+        << "M-16 optimization ships today";
+    for (const char* shipped : {"speech", "audio", "bandit"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
-         {"graph"}) {
+         {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
+}
+
+namespace {
+
+zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
+  zetta::ir::ExecutionGraph graph;
+  graph.add_node(zetta::ir::StepKind::Connect, "scenario table", {}, "source");
+  graph.add_node(zetta::ir::StepKind::Model, "optimization",
+                 std::move(attributes), "model");
+  graph.add_edge("source", "model");
+  return graph;
+}
+
+} // namespace
+
+TEST(OptimizationGraphCheck, CompleteContractPasses) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(OptimizationGraphCheck, PointForecastShapeIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("scenario or quantile"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, UnverifiedPlanIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("independently verify"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("solver status"), std::string::npos)
+      << result.reason;
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------
@@ -803,8 +1210,15 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
               implemented.end());
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "survival"),
               implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "bandit"),
+              implemented.end());
+    for (const char* shipped : {"speech", "audio", "optimization"}) {
+        EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
+                  implemented.end()) << shipped;
+    }
     for (const char* unshipped :
-         {"graph"}) {
+         {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }

@@ -581,8 +581,9 @@ P approve_plan '{"project":"churn","graph":"churn skeleton"}'
 P gate         '{"project":"churn","graph":"churn skeleton"}'
 ```
 
-**Measured — verdict `pass`, `block_deploy: false`, four checks:** `non_empty_graph`,
-`schema_type`, `data_leakage`, `entity_resolution`. Read the *reasons*, not just the
+**Measured — verdict `pass`, `block_deploy: false`, six checks:** `non_empty_graph`,
+`schema_type`, `data_leakage`, `language_grounding`, `language_training_access`, and
+`entity_resolution`. Read the *reasons*, not just the
 statuses: on a skeleton with no declared features, `data_leakage` passes because there was
 nothing to check — *"no ML step declares features to check for leakage"*. That is an
 honest pass, not a clean bill of health, and the report says so.

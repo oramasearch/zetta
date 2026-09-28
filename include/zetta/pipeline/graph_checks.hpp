@@ -17,12 +17,13 @@
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
 // gate failure (RULE-1 — no deploy without a passing gate).
 //
-// Both validate the annotations they read against the JSON Schema at the boundary
+// Both validate the annotations they read against the JSON Schema at the
+// boundary
 // (`graph_step_annotations_schema()` below), so malformed annotations
-// fail fast with a precise reason rather than being silently misread. A step that
-// carries none of the relevant annotations is simply skipped (it passes), so
-// these checks are opt-in per step and never penalise a graph that doesn't use
-// them.
+// fail fast with a precise reason rather than being silently misread. A step
+// that carries none of the relevant annotations is simply skipped (it passes),
+// so these checks are opt-in per step and never penalise a graph that doesn't
+// use them.
 namespace zetta::pipeline {
 
 // M-4's executable shape and mandatory correctness contract, including a
@@ -117,6 +118,45 @@ public:
 class NextBestActionGraphCheck final : public Check {
 public:
     std::string name() const override { return "next_best_action_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-11 document extraction must never accept a field without a confidence,
+// source evidence, and an explicit low-confidence review route.
+class DocumentReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "document_review";
+    }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 language outputs may never answer without retrieved evidence, and every
+// answer sentence must carry a citation. The executable graph records both
+// invariants explicitly so an edited plan cannot silently weaken them.
+class LanguageGroundingCheck final : public Check {
+public:
+    std::string name() const override { return "language_grounding"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-10 may not train on text outside the caller's read scope. This graph-level
+// check requires the model and its source to opt into the runtime authorization
+// check; the methodology runner then performs that check before reading rows.
+class LanguageTrainingAccessCheck final : public Check {
+public:
+    std::string name() const override { return "language_training_access"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-16 requires scenario inputs, independent verification and solver status.
+class OptimizationContractCheck final : public Check {
+public:
+    std::string name() const override {
+        return "optimization_contract";
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
@@ -162,6 +202,63 @@ public:
 class RankCorrectnessCheck final : public Check {
 public:
     std::string name() const override { return "rank_correctness"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-12 edge-time check (#1051): graph learning must name a prediction cutoff
+// and an explicit filter over the same edge-time column. A graph that omits,
+// disables, or disagrees about that filter is refused before execution.
+class GraphEdgeTimeCheck final : public Check {
+public:
+    std::string name() const override { return "graph_edge_time"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Vision source-split check (#1052): a vision model must declare that holdout
+// assignment is made by a named source column. Frame-level random splitting can
+// put near-identical frames from one camera, site, or document in both sets and
+// report a score that does not measure generalization to a new source.
+class VisionSourceSplitCheck final : public Check {
+public:
+    std::string name() const override { return "vision_source_split"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class SpeechConsentCheck final : public Check {
+public:
+    std::string name() const override {
+        return "speech_consent";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class SpeechPiiRedactionCheck final : public Check {
+public:
+    std::string name() const override {
+        return "speech_pii_redaction";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class SpeechLocalAudioCheck final : public Check {
+public:
+    std::string name() const override {
+        return "speech_local_audio";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// Bandit-policy check (#1054, M-15): every bandit model step declares a
+// positive exploration floor and feasible default/per-arm caps. This rejects
+// a graph that could starve an arm or exceed a guardrail allocation before it
+// can run.
+class BanditPolicyCheck final : public Check {
+public:
+    std::string name() const override {
+        return "bandit_policy";
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

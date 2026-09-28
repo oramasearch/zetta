@@ -45,10 +45,16 @@ relay it to a person.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
   metrics, and runnable status. `compile_intent` accepts a methodology or
-  solution selector; unsupported work names its implementation issue. `run`
+  solution selector; M-1 through M-16 are runnable, while unsupported work names
+  its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
-  pipeline's methodology and runnable status. See
+  pipeline's methodology and runnable status. M-15 compiles and runs its own
+  bandit shape against the connect step's table, then reports policy metrics
+  and its output tables. See
   [the registry contract](../../ml/methodologies.md).
+  Default pipeline names also identify the method: M-3 returns
+  `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
+  Explicit caller names are unchanged.
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
   then run the stored pipeline and poll its Run. The report carries temporal
@@ -65,6 +71,10 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+- For M-13, compile hints name the image table, its image/label/source columns,
+  and a registered ViT backbone. `run` reads that graph-owned table, refuses an
+  unauthorized image before its bytes are read, and `get_run_report` returns
+  source-disjoint accuracy, macro-F1, the confusion matrix, and prediction table.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

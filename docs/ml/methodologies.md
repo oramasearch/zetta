@@ -6,9 +6,10 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-9 are runnable. M-10 is marked partial
-because retrieval and indexes ship, but it does not yet provide a methodology
-runner. The other entries link to their implementation issues.
+callbacks for runnable implementations. M-1 through M-16 are runnable. M-10 builds
+its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
+writes its native model, metrics, tables, and lineage. The other entries link to
+their implementation issues.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -27,9 +28,11 @@ entry:
   `run` callbacks.
 
 `methodologies()` owns the ordered table. `find_methodology()` resolves ids,
-model kinds, and primary solution ids. `methodology_for_graph()` first asks
-implemented ownership callbacks, then resolves the model step's `model_kind` or
-legacy `algo` value.
+model kinds, and primary solution ids. When more than one methodology names a
+solution, a runnable implementation wins over a planned entry, with portfolio
+order as the fallback. `methodology_for_graph()` first asks implemented
+ownership callbacks, then resolves the model step's `model_kind` or legacy
+`algo` value.
 Compile and run refusal messages list runnable entries from the same registry.
 
 The `list_methodologies` read capability exposes every entry as JSON over REST
@@ -165,6 +168,66 @@ or an explicit `dataset_path`, then calls the shared resolved-dataset runner.
 
 The objective, distributed job, output table, metrics, correctness refusals,
 and API example are documented in [rank.md](rank.md).
+
+## M-11 document implementation
+
+`src/core/ml/document_methodology.cpp` supplies M-11's document-specific
+connect, text-recovery, field-extraction, and review-routing shape. Its runner
+resolves that graph's own input table and writes extracted-field and review
+tables with model and run lineage. See
+[document_extraction.md](document_extraction.md) for its input contract,
+correctness rules, checkpoint licence, and operating instructions.
+
+## M-12 graph implementation
+
+`src/core/ml/graph_methodology.cpp` owns `graph` and `graph_ml` model steps. Its
+shape is relationship-specific: connect an edge table, enforce a prediction-time
+filter, compute graph features and embeddings, then write joinable output tables.
+Its run callback resolves the pipeline's connect-step table when the caller does
+not override `dataset_path`, executes the native graph runner, and returns the
+Run read by `get_run` and `get_run_report`. See [graph.md](graph.md).
+
+## M-13 vision implementation
+
+`src/core/ml/vision_methodology.cpp` provides M-13's image-table shape,
+ownership predicate, and runner. It resolves the table named by the graph's own
+connect step, enforces the source-disjoint and large-object access rules, calls
+the [native vision runner](vision.md), and returns the durable run id. The same
+run and report reads used by M-1 expose M-13's Model, prediction table, metrics,
+confusion matrix, and read/exclusion counts.
+
+## M-14 speech implementation
+
+M-14 owns `speech` and `audio` model steps. Its shape loads one recording table,
+decodes and prepares local audio, runs native Whisper, and writes a redacted
+transcript table. Its callback resolves the connect step's own database and
+table before calling the speech runner; it never substitutes a built-in dataset
+or structural execution. Consent, transcript privacy filtering, and node-local
+audio are gate requirements and runner invariants. See
+[speech.md](speech.md).
+
+## M-15 bandit implementation
+
+`src/core/ml/bandit_methodology.cpp` provides M-15 independently:
+
+- `build_shape` builds connect → context preparation → bandit model → policy
+  output → propensity-log output;
+- `owns` recognizes the M-15 model kinds; and
+- `run` resolves the connect step's table when no explicit dataset is supplied,
+  runs the native policy, persists the policy and decision tables, and records
+  their lineage and metrics on the Run and Model records.
+
+S-11 resolves to M-8, its primary catalogue method. M-15 supports sequential
+allocation but is selected by methodology ID or its bandit model kinds, not S-11.
+
+## M-16 optimization implementation
+
+`src/core/ml/methodology_optimization.cpp` owns the optimization shape and
+adapter described in [optimization.md](optimization.md). It resolves the
+pipeline's connect-step table when `run` omits `dataset_path`, calls the native
+solver, and publishes the plan, constraint trace, solver-result record, and run
+report with lineage. S-4 remains owned by M-1, the catalogue's first method for collections
+prioritization; select optimization by M-16 or its model kinds.
 
 ## Adding a methodology
 

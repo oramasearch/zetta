@@ -6521,28 +6521,48 @@
                           "description": "figures that are PRESENT but must not be read as results — a holdout too small to mean anything, a perfect score. `missing` says what the run cannot tell you; this says what it can and you should not believe",
                           "type": "array"
                         },
+                        "confusion_matrix": {
+                          "description": "vision held-out counts indexed by actual then predicted class",
+                          "type": "array"
+                        },
                         "dataset": {
                           "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Anomaly detection records source, rows read/excluded, roles and unused columns. Forecasting records selected/excluded columns and rows/partitions/bytes read. Absent when the model records no dataset facts",
                           "type": "object"
                         },
+                        "decisions_table": {
+                          "description": "bandit propensity-log table reference",
+                          "type": "string"
+                        },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
+                          "type": "array"
+                        },
+                        "fields": {
+                          "description": "M-11 extracted fields with confidence, page, box, and review status",
                           "type": "array"
                         },
                         "forecast": {
                           "description": "forecast-table rows with series, timestamp, point_forecast, lower and upper; ordered by series then timestamp before applying limit",
                           "type": "array"
                         },
+                        "graph": {
+                          "description": "graph runs: component sizes, degree distribution, PageRank top nodes, edge cutoff counts, and held-out node-task accuracy",
+                          "type": "object"
+                        },
                         "methodology": {
                           "description": "methodology id for typed reports",
                           "type": "string"
+                        },
+                        "metrics": {
+                          "description": "bandit reward, regret, exploration, and row metrics",
+                          "type": "object"
                         },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates. Anomaly detection reports threshold, budget, alert rate and optional precision at k. Forecast models carry rolling-origin errors, seasonal-naive comparison and interval coverage. Next-best-action models return hit rate, IPS/DR and importance-weight diagnostics",
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates. Anomaly detection reports threshold, budget, alert rate and optional precision at k. Forecast models carry rolling-origin errors, seasonal-naive comparison and interval coverage. Next-best-action models return hit rate, IPS/DR and importance-weight diagnostics. Language reports expose recall_at_k, MRR, groundedness, and embedder_version",
                           "type": "object"
                         },
                         "output_tables": {
@@ -6550,19 +6570,20 @@
                           "type": "array"
                         },
                         "outputs": {
-                          "description": "forecast/recommendation output references, or survival and interval-calibration table references",
-                          "oneOf": [
-                            {
-                              "type": "array"
-                            },
-                            {
-                              "type": "object"
-                            }
-                          ]
+                          "description": "language methodology output table names and fully qualified refs; absent for tabular reports",
+                          "type": "array"
                         },
                         "policy": {
                           "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
                           "type": "object"
+                        },
+                        "policy_table": {
+                          "description": "bandit allocation-policy table reference",
+                          "type": "string"
+                        },
+                        "predictions": {
+                          "description": "vision prediction rows, capped by `limit`",
+                          "type": "array"
                         },
                         "ranked_queue": {
                           "description": "learning-to-rank rows: group, entity, score, rank, and observed relevance, capped by `limit`",
@@ -6572,12 +6593,20 @@
                           "description": "M-8 entity-action rows ordered by entity then rank, including expected value, chosen action and why",
                           "type": "array"
                         },
+                        "review_queue": {
+                          "description": "M-11 review-table reference and routed-field count",
+                          "type": "object"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
                         },
                         "segments": {
                           "description": "segment sizes, shares, original-unit centers and descriptive labels",
+                          "type": "array"
+                        },
+                        "transcripts": {
+                          "description": "redacted speech segments with recording, time bounds, text, and confidence",
                           "type": "array"
                         }
                       },
@@ -10417,9 +10446,63 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "algorithm": {
+                    "description": "M-15 policy algorithm",
+                    "enum": [
+                      "thompson",
+                      "linucb",
+                      "linear_thompson"
+                    ],
+                    "type": "string"
+                  },
+                  "answer_tokens": {
+                    "description": "M-10 only: native-Qwen completion token limit",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "arm_caps": {
+                    "additionalProperties": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 1,
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "arm_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "arms": {
+                    "description": "M-15 arm names; inferred from the table when omitted",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "baseline_arm": {
+                    "type": "string"
+                  },
                   "bootstrap_samples": {
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "classifier_regularization": {
+                    "description": "M-10 only: non-negative regularization for the linear classifier head",
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "confidence": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "context_columns": {
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "type": "array"
                   },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
@@ -10460,15 +10543,53 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the table the pipeline's first connect step names (its `source` + `table` attributes), when this node holds it, with the model step's `target` as the label; otherwise the built-in demo dataset",
                     "type": "string"
                   },
+                  "decision_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "default_arm_cap": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
+                  "document_column": {
+                    "description": "M-11: source column containing text, PDF, or PGM bytes",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "document_id_column": {
+                    "description": "M-11: stable source document identifier column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "duration_column": {
                     "description": "survival duration column (default duration)",
                     "minLength": 1,
                     "type": "string"
                   },
+                  "embedder_directory": {
+                    "description": "M-10 only: local directory containing the pinned MiniLM config, vocab.txt, and model.safetensors (tests never download it)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "exploration_floor": {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "type": "number"
+                  },
                   "feature_time_column": {
                     "description": "survival feature cutoff column (default feature_time)",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "fields": {
+                    "description": "M-11: declared field names to extract",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
                   },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
@@ -10490,15 +10611,65 @@
                     "exclusiveMinimum": 0,
                     "type": "number"
                   },
+                  "labels_column": {
+                    "description": "M-11: optional object of labelled field values",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "max_intervals": {
                     "description": "survival horizon in intervals (default 12)",
                     "minimum": 1,
                     "type": "integer"
                   },
+                  "max_tokens": {
+                    "description": "M-10 only: WordPiece token limit per text",
+                    "minimum": 2,
+                    "type": "integer"
+                  },
+                  "minimum_relevance": {
+                    "description": "M-10 only: refuse an answer below this cosine score",
+                    "maximum": 1,
+                    "minimum": -1,
+                    "type": "number"
+                  },
                   "model_name": {
-                    "description": "the registered model's name (default churn_model)",
+                    "description": "the registered model or solver-result name",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "optimization": {
+                    "additionalProperties": false,
+                    "description": "M-16 native LP/MIP solver controls",
+                    "properties": {
+                      "feasibility_tolerance": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "integrality_tolerance": {
+                        "exclusiveMinimum": 0,
+                        "type": "number"
+                      },
+                      "iteration_limit": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "maximize": {
+                        "type": "boolean"
+                      },
+                      "node_limit": {
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "seed": {
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "time_limit_ms": {
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "type": "object"
                   },
                   "outcome_column": {
                     "description": "M-6 binary observed outcome column",
@@ -10510,7 +10681,37 @@
                     "minLength": 1,
                     "type": "string"
                   },
+                  "query_column": {
+                    "description": "M-10 only: labelled evaluation query column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "qwen_directory": {
+                    "description": "M-10 only: optional local native-Qwen checkpoint used to compose answers; without it the grounded path returns an extractive answer",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "relevant_id_column": {
+                    "description": "M-10 only: integer id of the planted relevant chunk",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "review_threshold": {
+                    "description": "M-11: route lower-confidence fields to review",
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "reward_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "ridge": {
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
                   "seed": {
+                    "description": "deterministic seed for document and bandit runs",
                     "minimum": 0,
                     "type": "integer"
                   },
@@ -10519,6 +10720,11 @@
                     "maximum": 1,
                     "type": "number"
                   },
+                  "text_column": {
+                    "description": "M-10 only: text column (default the dataset contract's first feature)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",
                     "minimum": 0,
@@ -10526,6 +10732,11 @@
                   },
                   "treatment_column": {
                     "description": "M-6 binary treatment column",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "trocr_directory": {
+                    "description": "M-11: pinned native TrOCR checkpoint directory",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -10568,6 +10779,10 @@
                     "value": {
                       "additionalProperties": false,
                       "properties": {
+                        "constraint_table": {
+                          "description": "M-16 independent constraint verification table",
+                          "type": "string"
+                        },
                         "dataset": {
                           "description": "table datasets only: the resolved column contract the run trained under",
                           "type": "object"
@@ -10591,8 +10806,15 @@
                           "description": "structural runs only, on failure",
                           "type": "string"
                         },
+                        "model_id": {
+                          "type": "string"
+                        },
                         "note": {
                           "description": "structural runs: that nothing was trained, and whether a given dataset was read",
+                          "type": "string"
+                        },
+                        "plan_table": {
+                          "description": "M-16 decision table; absent without a feasible plan",
                           "type": "string"
                         },
                         "poll": {
@@ -10601,6 +10823,10 @@
                         },
                         "run_id": {
                           "description": "the durable engine handle — poll get_run / system.runs",
+                          "type": "string"
+                        },
+                        "solver_status": {
+                          "description": "M-16 solver termination status",
                           "type": "string"
                         },
                         "status": {

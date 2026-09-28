@@ -44,7 +44,8 @@ What's inside, by domain (each links to that domain's docs):
   `connect→clean→model→index→serve→act` step graph, persisted + replicated as
   JSON). Three compilers produce graphs — NL intent, n8n workflow JSON, and a
   simulated-Python frontend — every graph passes the **correctness gate**
-  (schema/type, data-leakage/point-in-time, entity-resolution checks) before it
+  (schema/type, data-leakage/point-in-time, optimization-contract,
+  entity-resolution checks) before it
   can deploy, and a **deployment controller** reconciles desired→actual and
   self-heals failed runs. Runs record status, logs, outputs, and lineage. The
   **AI Solution Library** ships ready-to-deploy blueprints behind a one-button
@@ -86,10 +87,15 @@ What's inside, by domain (each links to that domain's docs):
   M-8 adds native per-action propensity GBDTs, implicit-feedback ALS,
   hard eligibility/contact-cap policy selection, recommendation tables, and
   IPS/DR policy reporting through `get_run_report`.
+  Native [graph ML](docs/ml/graph.md) adds time-bounded relationship features
+  and node embeddings over partitioned edges.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 through M-9 run today, M-10 has partial retrieval support, and the others
-  name their implementation issues. Intent compilation and run dispatch use
+  approaches: M-1 through M-16 run today; the others name their implementation
+  issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
+  M-13 runs
+  native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
+  governed large-object reads.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
