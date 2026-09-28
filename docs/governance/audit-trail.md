@@ -1,5 +1,12 @@
 # Audit trail
 
+Pub/sub CRUD (#1136) adds `pubsub_topic_updated`, `pubsub_event_updated`, and
+`pubsub_event_deleted`. The node adapter appends these on the owner thread.
+Event detail contains sequence, revision and before/after payload SHA-256
+hashes (null after deletion); actor, target and time use the standard envelope.
+No payload is copied into the audit. The activity feed names the corresponding
+topic/event change. See [pub/sub CRUD](../pubsub/crud.md#audit-and-durability).
+
 An **audit trail** records an immutable, append-only `AuditEvent` for every
 governed action — a **graph change**, a **deploy**, a **data-access** decision,
 a **compute-job lifecycle** event, or an **access-key issue/revoke** (e.g. a

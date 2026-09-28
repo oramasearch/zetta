@@ -11,7 +11,7 @@ describe what is built.
 **Boundaries of stage 1:** one node (the cluster is stage 2, designed later), no
 partitions, thread-based subscribers (every queue has its own mutex and condition
 variables), no durability guarantee (restart survival is best effort and logged), no
-rate limits. The REST long poll is the exception: it suspends a coroutine on a topic
+rate limits. REST and MCP long polls are the exception: they suspend a coroutine on a topic
 event without holding a thread (#1076). New JSON formats: the on-disk event frame
 header only ([events.md](events.md)).
 
@@ -20,7 +20,9 @@ header only ([events.md](events.md)).
   payloads (inline vs shared heap), MIME interning, envelope checks, the on-disk frame (#1025).
 - [stores.md](stores.md) — `EventStore`; the `TopicRingStack` (a deque of ring buffers,
   stack-then-ring locking, free list, spill and read-back, flush and restore); the
-  `std::queue`-backed `QueueStore` (#1026).
+  deque-backed work `QueueStore` (#1026, #1136).
+- [crud.md](crud.md) — node-local topic/message CRUD, non-consuming browse, revisions,
+  explicit redelivery, scopes, hash-only auditing, store durability and REST/MCP parity (#1136).
 - [topics.md](topics.md) — the `PubSub` facade; topics as runtime objects; auto-creation;
   subscriptions (start position, groups, retention, gap notices); inboxes; the wildcard
   cache (#1027, #1028).

@@ -16,9 +16,9 @@ namespace zetta { class Node; }
 namespace zetta::pubsub {
 
 // An Authorizer backed by the node's central governance model (D7):
-//  - `user:<id or name>` principals are checked with Node::authorize_user for
-//    the pubsub:* permission, then, for topic targets, with the object tier
-//    (Resource::topic, prefix grants);
+//  - `user:<id or name>` principals are checked with the object tier for
+//    topics/inboxes (global operation rights or Resource::topic prefix grants),
+//    and Node::authorize_user for other targets;
 //  - `service:` principals are engine-internal and allowed;
 //  - anything else is denied (deny by default).
 // Decisions read users and roles on the node's owner thread (run_on_owner).
@@ -26,6 +26,7 @@ namespace zetta::pubsub {
 // governance yet: bounds() returns none and may_act_for() allows, so the
 // checks run at every link and a later governance slice fills them in.
 std::shared_ptr<Authorizer> make_node_authorizer(zetta::Node& node);
+void connect_audit_trail(PubSub& pubsub, zetta::Node& node);
 
 // The `table:` drain (D35): `table:<database>.<table>` inserts the event's JSON
 // payload (an object) as one row, on the node's owner thread. An insert does

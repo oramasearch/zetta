@@ -136,7 +136,7 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
 
     // The canonical list carries the #746 atoms, blob:read (#747), the three
     // Orchestration atoms (#799), and the five pub/sub atoms (#1029).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 18u);
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 21u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

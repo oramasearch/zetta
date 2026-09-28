@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "topic.hpp"
+#include "zetta/util/sha256.hpp"
 
 namespace zetta::pubsub {
 namespace {
@@ -80,7 +81,14 @@ nlohmann::json settings_to_json(const TopicSettings& settings) {
     if (settings.disk_cap_bytes) json["disk_cap_bytes"] = *settings.disk_cap_bytes;
     if (settings.overflow) json["overflow"] = to_string(*settings.overflow);
     if (settings.default_ttl) json["default_ttl_ms"] = settings.default_ttl->count();
-    if (settings.dispatch) json["dispatch"] = settings.dispatch == DispatchMode::Inline ? "inline" : "per_key";
+    if (settings.dispatch) {
+        json["dispatch"] = *settings.dispatch == DispatchMode::Inline ? "inline" :
+            *settings.dispatch == DispatchMode::Auto ? "auto" :
+            *settings.dispatch == DispatchMode::Pool ? "pool" : "per_key";
+    }
+    for (const auto* field : {"memory_cap_bytes", "disk_cap_bytes", "overflow", "default_ttl_ms", "dispatch"}) {
+        if (!json.contains(field)) json[field] = nullptr;
+    }
     const auto& delivery = settings.delivery;
     nlohmann::json delivery_json = nlohmann::json::object();
     if (delivery.recipients) {
@@ -92,7 +100,24 @@ nlohmann::json settings_to_json(const TopicSettings& settings) {
     if (delivery.guarantee) delivery_json["guarantee"] = to_string(*delivery.guarantee);
     if (delivery.ack_deadline) delivery_json["ack_deadline_ms"] = delivery.ack_deadline->count();
     if (delivery.reply) delivery_json["reply"] = to_string(*delivery.reply);
+    for (const auto* field : {"recipients", "ordering", "priority", "guarantee", "ack_deadline_ms", "reply"}) {
+        if (!delivery_json.contains(field)) delivery_json[field] = nullptr;
+    }
+    if (!delivery_json.contains("count")) delivery_json["count"] = 1;
     json["delivery"] = delivery_json;
+    json["retention_ms"] = settings.retention ? nlohmann::json(settings.retention->count()) : nlohmann::json();
+    json["max_events"] = settings.max_events ? nlohmann::json(*settings.max_events) : nlohmann::json();
+    nlohmann::json bounds = {{"allowed_recipient_modes", nlohmann::json::array()}};
+    for (const auto mode : settings.bounds.allowed_recipient_modes) {
+        bounds["allowed_recipient_modes"].push_back(to_string(mode));
+    }
+    if (settings.bounds.max_priority) bounds["max_priority"] = *settings.bounds.max_priority;
+    if (settings.bounds.max_recipients) bounds["max_recipients"] = *settings.bounds.max_recipients;
+    if (settings.bounds.max_guarantee) bounds["max_guarantee"] = to_string(*settings.bounds.max_guarantee);
+    for (const auto* field : {"max_priority", "max_recipients", "max_guarantee"}) {
+        if (!bounds.contains(field)) bounds[field] = nullptr;
+    }
+    json["bounds"] = std::move(bounds);
     return json;
 }
 
@@ -134,8 +159,30 @@ TopicSettings settings_from_json(const nlohmann::json& json) {
     if (auto value = number("default_ttl_ms"); value && *value > 0) {
         settings.default_ttl = std::chrono::milliseconds(*value);
     }
+    if (auto value = number("retention_ms"); value && *value >= 0) {
+        settings.retention = std::chrono::milliseconds(*value);
+    }
+    if (auto value = number("max_events"); value && *value >= 0) settings.max_events = *value;
+    if (json.contains("bounds") && json["bounds"].is_object()) {
+        const auto& bounds = json["bounds"];
+        if (bounds.contains("max_priority") && !bounds["max_priority"].is_null()) {
+            settings.bounds.max_priority = bounds["max_priority"].get<std::uint8_t>();
+        }
+        if (bounds.contains("max_recipients") && !bounds["max_recipients"].is_null()) {
+            settings.bounds.max_recipients = bounds["max_recipients"].get<std::uint32_t>();
+        }
+        if (bounds.contains("max_guarantee") && bounds["max_guarantee"].is_string()) {
+            settings.bounds.max_guarantee = guarantee_from_string(bounds["max_guarantee"].get<std::string>());
+        }
+        for (const auto& mode : bounds.value("allowed_recipient_modes", nlohmann::json::array())) {
+            settings.bounds.allowed_recipient_modes.push_back(mode == "one" ? Recipients::Mode::One :
+                mode == "count" ? Recipients::Mode::Count : Recipients::Mode::All);
+        }
+    }
     if (auto value = text("dispatch")) {
-        settings.dispatch = *value == "inline" ? DispatchMode::Inline : DispatchMode::PerKey;
+        settings.dispatch = *value == "inline" ? DispatchMode::Inline :
+            *value == "auto" ? DispatchMode::Auto :
+            *value == "pool" ? DispatchMode::Pool : DispatchMode::PerKey;
     }
     if (json.contains("delivery") && json["delivery"].is_object()) {
         const auto& delivery = json["delivery"];
@@ -146,7 +193,7 @@ TopicSettings settings_from_json(const nlohmann::json& json) {
             recipients.mode = mode == "one" ? Recipients::Mode::One
                               : mode == "count" ? Recipients::Mode::Count
                                                 : Recipients::Mode::All;
-            if (delivery.contains("count") && delivery["count"].is_number_unsigned()) {
+            if (delivery.contains("count") && delivery["count"].is_number_integer()) {
                 recipients.count = delivery["count"].get<std::uint32_t>();
             }
             options.recipients = recipients;
@@ -155,7 +202,7 @@ TopicSettings settings_from_json(const nlohmann::json& json) {
             options.ordering = delivery["ordering"].get<std::string>() == "priority" ? Ordering::Priority
                                                                                      : Ordering::Fifo;
         }
-        if (delivery.contains("priority") && delivery["priority"].is_number_unsigned()) {
+        if (delivery.contains("priority") && delivery["priority"].is_number_integer()) {
             options.priority = delivery["priority"].get<std::uint8_t>();
         }
         if (delivery.contains("guarantee") && delivery["guarantee"].is_string()) {
@@ -186,6 +233,14 @@ bool matches_prefix(const std::vector<std::string>& prefixes, const std::string&
 
 }  // namespace
 
+nlohmann::json topic_settings_json(const TopicSettings& settings) {
+    return settings_to_json(settings);
+}
+
+TopicSettings parse_topic_settings(const nlohmann::json& value) {
+    return settings_from_json(value);
+}
+
 std::string_view to_string(OverflowPolicy policy) {
     switch (policy) {
         case OverflowPolicy::Unbounded: return "unbounded";
@@ -200,6 +255,7 @@ std::string_view to_string(OverflowPolicy policy) {
 
 std::string_view to_string(PubSubOperation operation) {
     switch (operation) {
+        case PubSubOperation::Read: return "topics:read";
         case PubSubOperation::Publish: return "pubsub:publish";
         case PubSubOperation::Subscribe: return "pubsub:subscribe";
         case PubSubOperation::Create: return "pubsub:create";
@@ -259,13 +315,19 @@ std::filesystem::path PubSub::spill_directory_for(const Address& topic) const {
     return config_.data_directory / "pubsub" / "spill" / encode_name(topic.to_string());
 }
 
-void PubSub::persist_definition(const Topic& topic) const {
-    if (config_.data_directory.empty()) return;
+bool PubSub::persist_definition(const Topic& topic, const TopicSettings* replacement) const {
+    if (config_.data_directory.empty()) return true;
     nlohmann::json definition = {{"address", topic.address().to_string()},
-                                 {"settings", settings_to_json(topic.settings())}};
+                                 {"settings", settings_to_json(replacement ? *replacement : topic.settings())}};
     if (topic.inbox_owner()) definition["inbox_owner"] = topic.inbox_owner()->to_string();
-    write_file_atomically(topics_directory() / encode_name(topic.address().to_string()) / "definition.json",
-                          definition.dump(2));
+    return write_file_atomically(topics_directory() / encode_name(topic.address().to_string()) / "definition.json",
+                                 definition.dump(2));
+}
+
+bool PubSub::persist_sequence(const Topic& topic) const {
+    if (config_.data_directory.empty() || topic.settings().lifecycle == TopicLifecycle::Ephemeral) return true;
+    return write_file_atomically(topics_directory() / encode_name(topic.address().to_string()) / "state.json",
+                                 nlohmann::json{{"next_sequence", topic.next_sequence()}}.dump());
 }
 
 void PubSub::start() {
@@ -465,7 +527,88 @@ void PubSub::shutdown(std::optional<std::chrono::milliseconds> budget) {
 std::shared_ptr<Topic> PubSub::find_topic(const Address& topic) const {
     std::lock_guard lock(mutex_);
     auto found = topics_.find(topic);
-    return found == topics_.end() ? nullptr : found->second;
+    if (found != topics_.end()) return found->second;
+    for (const auto& [owner, inbox] : inboxes_) {
+        if (inbox->address() == topic) return inbox;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<Topic> PubSub::crud_topic(const Identity& identity, const Address& address,
+                                        PubSubOperation operation, std::string* reason) const {
+    auto topic = find_topic(address);
+    if (!topic || !topic->settings().exposed || address.is_wildcard()) {
+        if (reason) *reason = "topic does not exist or is not exposed";
+        return nullptr;
+    }
+    if (!authorizer_->authorize(identity.principal, operation, address)) {
+        if (reason) *reason = identity.principal.to_string() + " may not access " + address.to_string();
+        return nullptr;
+    }
+    return topic;
+}
+
+std::optional<nlohmann::json> PubSub::get_topic(const Identity& identity, const Address& address,
+                                              std::string* reason) {
+    const auto topic = crud_topic(identity, address, PubSubOperation::Read, reason);
+    if (!topic) return std::nullopt;
+    return topic->inspect();
+}
+
+std::optional<nlohmann::json> PubSub::browse_topic(const Identity& identity, const Address& address,
+                                                 std::optional<std::uint64_t> from_sequence,
+                                                 std::size_t limit, bool backward, std::string* reason,
+                                                 std::shared_ptr<runtime::async_event> waiter) {
+    const auto topic = crud_topic(identity, address, PubSubOperation::Read, reason);
+    if (!topic) return std::nullopt;
+    if (waiter) topic->register_waiter(waiter);
+    return topic->browse(from_sequence, std::clamp<std::size_t>(limit, 1, 1000), backward);
+}
+
+void PubSub::audit_changes(const Identity& identity, const Address& topic, const TopicMutation& mutation) {
+    for (const auto& change : mutation.changes) {
+        nlohmann::json detail = {{"sequence", change.before.sequence},
+            {"before_sha256", zetta::util::sha256_hex(change.before.payload.bytes())},
+            {"after_sha256", change.after ? nlohmann::json(zetta::util::sha256_hex(change.after->payload.bytes())) : nlohmann::json()},
+            {"revision", change.after ? change.after->revision : change.before.revision}};
+        audit(change.after ? "pubsub_event_updated" : "pubsub_event_deleted", identity.principal, topic, detail.dump());
+    }
+}
+
+TopicMutation PubSub::update_topic(const Identity& identity, const Address& address, const nlohmann::json& patch) {
+    std::string reason;
+    const auto topic = crud_topic(identity, address, PubSubOperation::Manage, &reason);
+    if (!topic) return {false, reason, {}};
+    const auto before = topic_settings_json(topic->settings());
+    auto result = topic->update_settings(patch);
+    audit_changes(identity, address, result);
+    if (before == topic_settings_json(topic->settings())) return result;
+    audit("pubsub_topic_updated", identity.principal, address,
+        nlohmann::json{{"before_sha256", zetta::util::sha256_hex(before.dump())},
+            {"after_sha256", zetta::util::sha256_hex(topic_settings_json(topic->settings()).dump())},
+            {"trimmed", result.changes.size()}}.dump());
+    return result;
+}
+
+TopicMutation PubSub::update_event(const Identity& identity, const Address& address, std::uint64_t sequence,
+                                  std::string payload, std::uint64_t expected_revision, bool redeliver) {
+    std::string reason;
+    const auto topic = crud_topic(identity, address, PubSubOperation::Publish, &reason);
+    if (!topic) return {false, reason, {}};
+    auto result = topic->update_event(sequence, std::move(payload), expected_revision, identity.principal, redeliver);
+    audit_changes(identity, address, result);
+    return result;
+}
+
+TopicMutation PubSub::delete_events(const Identity& identity, const Address& address,
+                                   const std::vector<std::uint64_t>& sequences,
+                                   std::optional<std::uint64_t> before_sequence) {
+    std::string reason;
+    const auto topic = crud_topic(identity, address, PubSubOperation::Publish, &reason);
+    if (!topic) return {false, reason, {}};
+    auto result = topic->delete_events(sequences, before_sequence);
+    audit_changes(identity, address, result);
+    return result;
 }
 
 bool PubSub::create_topic(const Identity& identity, const Address& address, TopicSettings settings,
@@ -477,8 +620,18 @@ bool PubSub::create_topic(const Identity& identity, const Address& address, Topi
         if (reason != nullptr) *reason = text;
         return false;
     };
-    if (address.kind != "topic" || address.is_wildcard()) {
+    if ((address.kind != "topic" && address.kind != "inbox") || address.is_wildcard()) {
         return fail("a topic address is topic:<name> with no wildcard, not '" + address.to_string() + "'");
+    }
+    std::optional<Address> inbox_owner;
+    if (address.kind == "inbox") {
+        const auto separator = address.name.find('.');
+        if (separator != std::string::npos) {
+            inbox_owner = parse_address(address.name.substr(0, separator) + ":" + address.name.substr(separator + 1));
+        }
+        if (!inbox_owner || inbox_owner->is_wildcard() || inbox_owner->kind == "topic" || inbox_owner->kind == "inbox") {
+            return fail("an inbox address is inbox:<owner kind>.<owner name>");
+        }
     }
     if (!authorizer_->authorize(identity.principal, PubSubOperation::Create, address)) {
         audit("create_refused", identity.principal, address, "no pubsub:create");
@@ -487,9 +640,12 @@ bool PubSub::create_topic(const Identity& identity, const Address& address, Topi
     std::shared_ptr<Topic> topic;
     {
         std::lock_guard lock(mutex_);
-        if (topics_.contains(address)) return fail(address.to_string() + " already exists");
-        topic = std::make_shared<Topic>(this, address, settings);
-        topics_[address] = topic;
+        if (topics_.contains(address) || (inbox_owner && inboxes_.contains(*inbox_owner))) {
+            return fail(address.to_string() + " already exists");
+        }
+        topic = std::make_shared<Topic>(this, address, settings, inbox_owner);
+        if (inbox_owner) inboxes_[*inbox_owner] = topic;
+        else topics_[address] = topic;
     }
     if (settings.dispatch) dispatcher_->pin(address.to_string(), settings.dispatch);
     persist_definition(*topic);
@@ -509,14 +665,24 @@ bool PubSub::drop_topic(const Identity& identity, const Address& address, std::s
     {
         std::lock_guard lock(mutex_);
         auto found = topics_.find(address);
-        if (found == topics_.end()) {
+        if (found != topics_.end()) {
+            topic = found->second;
+            topics_.erase(found);
+        } else {
+            for (auto entry = inboxes_.begin(); entry != inboxes_.end(); ++entry) {
+                if (entry->second->address() != address) continue;
+                topic = entry->second;
+                inboxes_.erase(entry);
+                break;
+            }
+        }
+        if (!topic) {
             if (reason != nullptr) *reason = address.to_string() + " does not exist";
             return false;
         }
-        topic = found->second;
-        topics_.erase(found);
     }
-    topic->close_all("topic dropped");
+    const auto removed = topic->retire();
+    audit_changes(identity, address, removed);
     topic->detach();
     dispatcher_->remove_key(address.to_string());
     std::error_code error;
@@ -862,7 +1028,7 @@ void PubSub::deliver_to(const Identity& identity, const Event& event, const Addr
         return;
     }
     // Topic: bounded by governance, then appended (or queued on the dispatcher).
-    if (target.kind == "topic") {
+    if (target.kind == "topic" || target.kind == "inbox") {
         std::string reason;
         auto topic = find_or_auto_create(identity, target, &reason);
         if (!topic) {
@@ -880,9 +1046,14 @@ void PubSub::deliver_to(const Identity& identity, const Event& event, const Addr
         Event copy = event;
         copy.envelope.topics_chain.push_back(target);
         const auto requested = resolve_delivery(copy.delivery, {}, settings.delivery);
-        const auto bounded = apply_bounds(
+        auto bounded = apply_bounds(
             requested, trusted ? DeliveryBounds{} : authorizer_->bounds(identity.principal, target),
             settings.over_bound);
+        if (!bounded.rejected) {
+            auto topic_bounds = apply_bounds(bounded.effective, settings.bounds, settings.over_bound);
+            topic_bounds.clamped.insert(topic_bounds.clamped.end(), bounded.clamped.begin(), bounded.clamped.end());
+            bounded = std::move(topic_bounds);
+        }
         if (bounded.rejected) {
             result.refused.emplace_back(target, bounded.reason);
             audit("publish_rejected", identity.principal, target, bounded.reason);

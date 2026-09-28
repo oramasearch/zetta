@@ -29,7 +29,39 @@ Every field follows the standing rule. `delivery` (the topic's delivery layer),
 `ring_capacity`, `inline_threshold`, `priority_levels` and `priority_aging`, memory and
 disk caps, `overflow`, `over_bound` (clamp or reject), `producer_queue` (appends go
 through the dispatcher, D23), `dispatch` (pin to a thread of its own or inline),
-`exposed` (D22), `topics_chain_max`, `default_ttl`.
+`exposed` (D22), `topics_chain_max`, `default_ttl`, held-event `retention`,
+`max_events`, and topic `bounds`. The complete CRUD contract and examples are
+in [crud.md](crud.md). All are accepted under `create_topic.settings` and
+returned by create/get/update. API durations use the `_ms` names below.
+
+| Settings field | Default | Mutable |
+|---|---|---|
+| `lifecycle` | `default` (`ephemeral` never persists events) | no |
+| `store` | `ring_stack` (`queue` is a shared work queue) | no |
+| `ring_capacity` | 4096 slots | no |
+| `inline_threshold` | 256 payload bytes | no |
+| `priority_levels` | 1; queue stores normalize to 1 | no |
+| `producer_queue` | false | no |
+| `dispatch` | null (node policy); `auto`, `per_key`, `pool`, `inline` | no |
+| `exposed` | false | no |
+| `priority_aging_ms` | 5000 | yes |
+| `memory_cap_bytes`, `disk_cap_bytes` | null (node limits) | yes |
+| `overflow` | null (guarantee default); `unbounded`, `skip_ahead`, `disconnect`, `hold_publisher`, `reject_new`, `spill_to_disk` | yes |
+| `over_bound` | `clamp`; alternatively `reject` | yes |
+| `topics_chain_max` | 32 | yes |
+| `default_ttl_ms` | null; expiration for future publishes | yes |
+| `retention_ms` | null; maximum age of held history | yes |
+| `max_events` | null; maximum number of held events | yes |
+| `delivery` | inherited optionals | yes |
+| `bounds` | unbounded optionals, empty allowed modes | yes |
+
+`delivery` has nullable `recipients` (`all`, `one`, `count`), `ordering` (`fifo`,
+`priority`), `priority` (0–255), `guarantee` (`at_most_once`, `at_least_once`,
+`exactly_once`), `ack_deadline_ms`, `reply` (`none`, `reply_to`, `reply_all`),
+and `count` (defaults to 1). `bounds` has nullable `max_priority`,
+`max_recipients`, `max_guarantee`, and `allowed_recipient_modes` (empty means
+any). Topic bounds further restrict the authorizer's bounds on publish.
+Changing defaults does not rewrite stored message-level delivery options.
 
 ## Subscriptions
 
