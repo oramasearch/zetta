@@ -1,7 +1,7 @@
 # ML docs
 
 The native ML engine — the "learns from your data" differentiator, re-implemented from scratch as
-distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) seams (no
+distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-device.md) interfaces (no
 Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
@@ -16,6 +16,7 @@ rather than a reference runtime. Read here for any model-training, explanation, 
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
+- [vision.md](vision.md) — M-13 native PNG/JPEG decoding, frozen ViT embeddings, source-disjoint distributed head training, prediction tables, and evaluation reports (#1052).
 
 ## Methodology portfolio
 
@@ -38,7 +39,7 @@ carry `*`. Regenerate it with
 | M-10 | NLP / embeddings / RAG / fine-tuning | Language, documents & perception | nlp, embedding, embeddings, rag, fine_tuning, retrieval | — | text*, label | embeddings, search results, generated text | recall at k, MRR, F1, groundedness | partial | [#1049](https://github.com/oramasearch/zetta/issues/1049) |
 | M-11 | Document intelligence | Language, documents & perception | document_intelligence, ocr, document | — | text*, label | structured fields, evidence links | field accuracy, F1, straight-through rate | not runnable | [#1050](https://github.com/oramasearch/zetta/issues/1050) |
 | M-12 | Graph ML | Identity & structure | graph_ml, graph | — | entity*, group*, time | node scores, links, graph embeddings | average precision, AUC, lift | not runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
-| M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label | classifications, detections, masks | mAP, IoU, escape rate | not runnable | [#1052](https://github.com/oramasearch/zetta/issues/1052) |
+| M-13 | Computer vision | Language, documents & perception | computer_vision, vision | S-8, S-12 | image*, label*, group* | vision model, prediction table, confusion matrix | accuracy, macro-F1 | runnable | — |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, label | transcripts, speaker segments, audio scores | word error rate, F1 | not runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
 | M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | feature*, group* | plan, allocation, constraint trace | objective value, constraint violations | not runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |

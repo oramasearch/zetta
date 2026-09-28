@@ -49,6 +49,10 @@ relay it to a person.
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).
+- For M-13, compile hints name the image table, its image/label/source columns,
+  and a registered ViT backbone. `run` reads that graph-owned table, refuses an
+  unauthorized image before its bytes are read, and `get_run_report` returns
+  source-disjoint accuracy, macro-F1, the confusion matrix, and prediction table.
 
 Working checklists: the **api-dev** and **mcp-journeys** skills. Wave epic:
 #614.

@@ -90,6 +90,16 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// Vision source-split check (#1052): a vision model must declare that holdout
+// assignment is made by a named source column. Frame-level random splitting can
+// put near-identical frames from one camera, site, or document in both sets and
+// report a score that does not measure generalization to a new source.
+class VisionSourceSplitCheck final : public Check {
+public:
+    std::string name() const override { return "vision_source_split"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).

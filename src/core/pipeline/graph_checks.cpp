@@ -80,6 +80,15 @@ const nlohmann::json& graph_step_annotations_schema() {
           }
         }
       }
+    },
+    "source_disjoint": {
+      "description": "Vision models must split whole source groups between train and test.",
+      "type": "boolean"
+    },
+    "source_column": {
+      "description": "The camera, site, document, or other source-group column used for a vision holdout.",
+      "type": "string",
+      "minLength": 1
     }
   }
 }
@@ -464,6 +473,49 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult VisionSourceSplitCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (auto error = validate_annotations(node->attributes)) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": malformed correctness annotations — " + *error};
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        std::string kind = model_kind->get<std::string>();
+        std::transform(kind.begin(), kind.end(), kind.begin(),
+                       [](unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                       });
+        if (kind != "vision" && kind != "computer_vision") {
+            continue;
+        }
+        const auto disjoint = node->attributes.find("source_disjoint");
+        if (disjoint == node->attributes.end() || !disjoint->is_boolean() ||
+            !disjoint->get<bool>()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": vision evaluation must set source_disjoint=true; "
+                        "splitting frames can put one source in both train and "
+                        "test"};
+        }
+        const auto source = node->attributes.find("source_column");
+        if (source == node->attributes.end() || !source->is_string() ||
+            source->get<std::string>().empty()) {
+            return {name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": source_column must name the camera, site, document, "
+                        "or other group held out as a unit"};
+        }
+    }
+    return {name(), CheckStatus::Pass,
+            "every vision model holds out complete source groups"};
 }
 
 } // namespace zetta::pipeline

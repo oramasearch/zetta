@@ -22,10 +22,14 @@
 #include "zetta/api/background.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/autograd/safetensors.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/ml/vision.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -45,6 +49,18 @@ using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::test::TempDir;
+
+std::string vision_png() {
+    const unsigned char bytes[] = {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00,
+        0x0D, 'I',  'H',  'D',  'R',  0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89,
+        0x00, 0x00, 0x00, 0x0D, 'I',  'D',  'A',  'T',  0x08, 0xD7, 0x63,
+        0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89,
+        0x99, 0xD1, 0x8D, 0x00, 0x00, 0x00, 0x00, 'I',  'E',  'N',  'D',
+        0xAE, 0x42, 0x60, 0x82};
+    return {reinterpret_cast<const char*>(bytes), sizeof(bytes)};
+}
 
 // A standalone node + the registry + a background-action owner — the layer-1
 // journey surface for the actions that need no compute plane.
@@ -167,6 +183,8 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
     EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
+    EXPECT_EQ(listed.value.at("methodologies").at(12).at("id"), "M-13");
+    EXPECT_TRUE(listed.value.at("methodologies").at(12).at("runnable"));
 
     ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
     const ApiResult captured =
@@ -245,6 +263,115 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, VisionMethodologyCompilesRunsAndReportsItsTables) {
+    ASSERT_TRUE(node.create_database("datasets"));
+    const std::shared_ptr<zetta::data::Database> database =
+        node.find_database("datasets");
+    ASSERT_TRUE(database);
+    std::vector<std::string> image_refs;
+    for (int index = 0; index < 12; ++index) {
+        const auto image = database->large_objects().import_bytes(
+            "frame-" + std::to_string(index) + ".png", vision_png());
+        ASSERT_TRUE(image);
+        image_refs.push_back(image->id);
+    }
+
+    const zetta::ml::VitConfig config = {.image_width = 4,
+                                         .image_height = 4,
+                                         .patch_size = 2,
+                                         .channels = 3,
+                                         .embedding_size = 4,
+                                         .attention_heads = 2,
+                                         .encoder_layers = 1,
+                                         .mlp_size = 6};
+    const zetta::ml::VitBackbone backbone =
+        zetta::ml::random_vit_backbone(config, 101);
+    zetta::ml::ModelValue backbone_value;
+    backbone_value.name = "journey-vit";
+    backbone_value.kind = "vision_backbone";
+    backbone_value.feature_schema = {{"vit_config", zetta::ml::to_json(config)},
+                                     {"weights_origin", "random"}};
+    const std::shared_ptr<zetta::ml::Model> backbone_model =
+        node.create_model(std::move(backbone_value));
+    ASSERT_TRUE(backbone_model);
+    ASSERT_TRUE(backbone_model->set_weights(
+        zetta::autograd::serialize_safetensors(backbone.tensors)));
+
+    std::string content;
+    for (int index = 0; index < 12; ++index) {
+        content += nlohmann::json{{"image", image_refs[index]},
+                                  {"label", index % 2},
+                                  {"source",
+                                   "camera-" + std::to_string(index / 3)}}
+                       .dump() +
+                   "\n";
+    }
+    const ApiResult uploaded =
+        call("upload_dataset", {{"table_name", "inspection_frames"},
+                                {"format", "jsonl"},
+                                {"database", "datasets"},
+                                {"replication_factor", 1},
+                                {"content", content}});
+    ASSERT_TRUE(uploaded.ok) << uploaded.error.message;
+    EXPECT_EQ(uploaded.value.at("rows"), 12u);
+
+    ASSERT_TRUE(call("create_project", {{"name", "inspection"}}).ok);
+    const ApiResult captured =
+        call("capture_intent",
+             {{"project", "inspection"},
+              {"text", "Classify defects in governed inspection images"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult by_solution =
+        call("compile_intent", {{"project", "inspection"},
+                                {"input_id", captured.value.at("input_id")},
+                                {"solution", "S-8"},
+                                {"name", "vision from solution"}});
+    ASSERT_TRUE(by_solution.ok) << by_solution.error.message;
+    EXPECT_EQ(by_solution.value.at("methodology"), "M-13");
+    EXPECT_TRUE(by_solution.value.at("runnable"));
+
+    const ApiResult compiled =
+        call("compile_intent", {{"project", "inspection"},
+                                {"input_id", captured.value.at("input_id")},
+                                {"methodology", "M-13"},
+                                {"name", "vision classifier"},
+                                {"hints",
+                                 {{"database", "datasets"},
+                                  {"table", "inspection_frames"},
+                                  {"backbone_model", backbone_model->id()},
+                                  {"epochs", 12},
+                                  {"seed", 7}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-13");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult ran =
+        call("run", {{"project", "inspection"},
+                     {"graph", "vision classifier"},
+                     {"model_name", "inspection-vision"}});
+    ASSERT_TRUE(ran.ok) << ran.error.message;
+    EXPECT_EQ(ran.value.at("engine"), "vision");
+    const std::string run_id = ran.value.at("run_id");
+
+    const ApiResult run = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+    EXPECT_EQ(run.value.at("outputs").size(), 3u);
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_TRUE(report.value.at("model").contains("accuracy"));
+    EXPECT_TRUE(report.value.at("model").contains("macro_f1"));
+    EXPECT_EQ(report.value.at("dataset").at("images_read"), 12u);
+    EXPECT_EQ(report.value.at("dataset").at("images_excluded"), 0u);
+    EXPECT_FALSE(report.value.at("confusion_matrix").empty());
+    ASSERT_EQ(report.value.at("output_tables").size(), 1u);
+    EXPECT_TRUE(report.value.at("output_tables")
+                    .front()
+                    .get<std::string>()
+                    .starts_with("vision_results.predictions_"));
 }
 
 // =====================================================================

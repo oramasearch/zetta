@@ -85,12 +85,14 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        EXPECT_EQ(methodologies[index].runnable, index == 0);
+        EXPECT_EQ(methodologies[index].runnable, index == 0 || index == 12);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
-                  index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].owns), index == 0);
-        EXPECT_EQ(static_cast<bool>(methodologies[index].run), index == 0);
-        if (index > 0) {
+                  index == 0 || index == 12);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].owns),
+                  index == 0 || index == 12);
+        EXPECT_EQ(static_cast<bool>(methodologies[index].run),
+                  index == 0 || index == 12);
+        if (index > 0 && index != 12) {
             EXPECT_EQ(methodologies[index].issue,
                       "https://github.com/oramasearch/zetta/issues/" +
                           std::to_string(1040 + index));
@@ -101,13 +103,38 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_EQ(methodologies.front().id, "M-1");
     EXPECT_FALSE(methodologies[9].runnable);
     EXPECT_TRUE(methodologies[9].partial);
+    EXPECT_TRUE(methodologies[12].runnable);
+    EXPECT_TRUE(methodologies[12].issue.empty());
+}
+
+TEST(MethodologyRegistry, VisionBuildsItsOwnRunnableShape) {
+    const zetta::ml::Methodology* vision = zetta::ml::find_methodology("M-13");
+    ASSERT_NE(vision, nullptr);
+    const zetta::ir::ExecutionGraph graph = vision->build_shape(
+        {.project = "inspection",
+         .intent = "classify defects",
+         .hints = {{"database", "factory"},
+                   {"table", "frames"},
+                   {"backbone_model", "vit-small"}}});
+    EXPECT_TRUE(vision->owns(graph));
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(), 1u);
+    ASSERT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Model).size(), 1u);
+    const auto connect =
+        graph.nodes_of_kind(zetta::ir::StepKind::Connect).front();
+    const auto model = graph.nodes_of_kind(zetta::ir::StepKind::Model).front();
+    EXPECT_EQ(connect->attributes.at("source"), "factory");
+    EXPECT_EQ(connect->attributes.at("table"), "frames");
+    EXPECT_EQ(model->attributes.at("model_kind"), "vision");
+    EXPECT_EQ(model->attributes.at("backbone_model"), "vit-small");
+    EXPECT_EQ(model->attributes.at("source_disjoint"), true);
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     ASSERT_NE(zetta::ml::find_methodology("M-3"), nullptr);
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
-    EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
+    EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-13");
+    EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-13");
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {

@@ -6513,6 +6513,10 @@
                           "description": "figures that are PRESENT but must not be read as results — a holdout too small to mean anything, a perfect score. `missing` says what the run cannot tell you; this says what it can and you should not believe",
                           "type": "array"
                         },
+                        "confusion_matrix": {
+                          "description": "vision held-out counts indexed by actual then predicted class",
+                          "type": "array"
+                        },
                         "dataset": {
                           "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
                           "type": "object"
@@ -6528,6 +6532,14 @@
                         "model": {
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
+                        },
+                        "output_tables": {
+                          "description": "dataset tables produced by the run",
+                          "type": "array"
+                        },
+                        "predictions": {
+                          "description": "vision prediction rows, capped by `limit`",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",

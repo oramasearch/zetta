@@ -2,7 +2,7 @@
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
@@ -82,6 +82,17 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `vision_source_split` — refuse frame-level evaluation
+
+Engages on a Model step whose `model_kind` is `vision` or `computer_vision`.
+It requires `source_disjoint: true` and a non-empty `source_column`. A missing or
+false flag fails because random frame splitting can put nearly identical frames
+from one camera, site, or document in both train and test. A missing source
+column fails because the runner cannot know which rows must stay together.
+
+The M-13 shape emits both annotations. The runtime also performs the split from
+the named column, so the graph promise and the executed behavior agree.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -145,11 +156,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks sit on the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
 result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+checks to land on the same interface.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
