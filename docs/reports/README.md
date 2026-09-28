@@ -20,3 +20,6 @@ decays. A number with no date is not evidence.
 - [base-agent v10 validation (2026-07-27)](base-agent-v10-validation-2026-07-27.md) — 98.75% on the
   canary, and a demo smoke test that PASSED when it should not have: it checks mode and shape, not
   whether an answer is true, so a fluent non-sequitur scores as success.
+- [label-efficiency validation (2026-09-27)](label-efficiency-validation-2026-09-27.md) — M-19
+  active learning and weak supervision validated on planted distributed tasks, including the
+  registry-driven API journey and gold-set isolation checks.
