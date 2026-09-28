@@ -85,6 +85,11 @@ struct ApiResult {
 // (registry-design.md → "no new job infrastructure").
 enum class CapabilityKind { Read, Action, Job };
 
+enum class AuditPolicy {
+    PerCall,
+    SummarizeAuthorizedReads,
+};
+
 std::string_view to_string(CapabilityKind kind);
 
 class BackgroundActions;
@@ -218,6 +223,10 @@ struct Capability {
     // the owner thread after the per-tool gate; handlers still check each
     // addressed object, including every item in a filtered listing.
     std::function<bool(const nlohmann::json&, const ApiContext&)> authorize_scoped;
+    // High-frequency successful reads may be summarized by actor, capability,
+    // and one input scope. Denials and failures remain per-call (#1154).
+    AuditPolicy audit_policy = AuditPolicy::PerCall;
+    std::string audit_scope_field;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh

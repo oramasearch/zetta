@@ -70,7 +70,7 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   on a pool worker so it never pins the loop. The
   call's authorization + audit gate still runs on the owner thread, through
   `Node::run_on_owner`: the gate reads the access keys and appends to the audit
-  trail, which the tick reconciles and re-sorts. Running the gate on the worker
+  trail, which the tick reconciles. Running the gate on the worker
   crashed lake's bus Zetta every few minutes (#1063). An offloadable handler may
   touch only thread-safe state (the replication store, `PubSub`), and
   `Registry::add` refuses an offloadable entry that mutates or requires consent,
@@ -79,8 +79,9 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   inside their first owner-loop call, return an immediate read, and let the REST
   or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
   wakes it; the route makes one final owner-loop call. A long poll therefore
-  holds no thread and makes at most two authorized, audited registry calls
-  (#1076, #1136).
+  holds no thread and makes at most two authorized registry calls. Those reads
+  share an audit session and contribute to its five-minute totals (#1076,
+  #1136, #1154).
 - **Object-scoped operation grants** (#1136): an entry may declare an
   `authorize_scoped` owner-thread fallback when there is no global operation
   grant. The per-tool gate still runs first. Pub/sub resolves concrete topic
@@ -161,8 +162,12 @@ reaps the child before joining clients so a regression cannot strand the suite.
   the gate is unconditional. The in-process headed-GUI governed console still runs as
   a trusted local session because it authorizes **in-process**, not through this HTTP
   gate.
-- Every call runs `Node::authorize(key, required_operation)` — deny-by-default
-  capability check **and** the audit record in one motion. Convention: reads
+- Every call runs the deny-by-default capability check and the registry applies
+  its declared audit policy. Writes, denials, failures, and ordinary reads stay
+  per-call. Successful `receive_events`, `browse_topic`, `get_topic`, and
+  `list_topics` calls use an actor/capability/scope session plus five-minute
+  totals; see [the audit policy](../governance/audit-trail.md#audit-policy).
+  Convention: reads
   require `api:query`; each action requires `orchestration:<name>`
   (`orchestration:create_project`). Handlers that reach the gate/deploy/run
   entry points inherit their enforcement too (RULE-1 cannot be bypassed by

@@ -3,7 +3,7 @@
 The headed app: an SDL3 + Dear ImGui desktop that is itself a cluster member. The central rule: the
 GUI is a **thin renderer** driven by a `zetta::Node` — panels read live engine state
 (`system.*` views, `Node::…()` accessors) each frame and hold no engine state of their own; the
-`zetta-core` library has no SDL/ImGui dependency, and that seam is what keeps headless mode
+`zetta-core` library has no SDL/ImGui dependency, and that module split keeps headless mode
 possible. **[design-system.md](design-system.md) is the mandatory read before any GUI work** — the
 Orama tokens, typography, copy rules, and component grammar it defines are enforced, not advisory.
 
@@ -26,7 +26,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [agents.md](agents.md) — the Agents view: the served `agent:<id>` records (list + detail) + an inline New agent affordance; in-panel chat + selector in flight (#849).
 - [explorer-system-tables.md](explorer-system-tables.md) — the explorer's `system` table list rendered from the engine catalog (`system_table_names()` / `system.tables`), never a GUI-side copy (#684).
 - [repl-console.md](repl-console.md) — the REPL console component (CMP-6 / #524): `repl::ConsoleModel` in zetta-core + the thin `gui::ReplConsole` renderer behind Data → Console.
-- [admin-panel.md](admin-panel.md) — the Admin & Settings panel (SCR-7 / CMP-5): read-only principals + keys, scope + capability grants, and the audit log.
+- [admin-panel.md](admin-panel.md) — the Admin & Settings panel (SCR-7 / CMP-5): read-only principals + keys, scope + capability grants, and the bounded recent audit log.
 - [activity-feed.md](activity-feed.md) — the Activity view (#622): one chronological feed of everything the cluster was asked to do (audit trail + runs merged at render time; `system.activity` is its queryable twin), each entry with actor + surface (GUI · console · MCP) + outcome.
 - [traces.md](traces.md) — the Traces view (#640): the per-operation trace pane over the node's span ring (intent · plan · duration · result shape per span), the GUI form of `system.traces` / `system.spans`.
 - [cluster-node-gauges.md](cluster-node-gauges.md) — animated per-node resource gauges + sparklines on the cluster node boxes, fed by the signal-plane telemetry exchange (#584).

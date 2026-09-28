@@ -1,6 +1,29 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "not": {
+          "required": [
+            "summary"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "action": {
+            "const": "data_access_summary"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "summary"
+        ]
+      }
+    }
+  ],
   "properties": {
     "action": {
       "enum": [
@@ -9,6 +32,7 @@
         "graph_deployed",
         "graph_approved",
         "data_access",
+        "data_access_summary",
         "job_created",
         "job_finished",
         "key_issued",
@@ -39,6 +63,36 @@
     },
     "id": {
       "type": "string"
+    },
+    "summary": {
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "events_delivered": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "window_ended": {
+          "type": "string"
+        },
+        "window_started": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "calls",
+        "events_delivered",
+        "scope",
+        "window_started",
+        "window_ended"
+      ],
+      "type": "object"
     },
     "target": {
       "type": "string"

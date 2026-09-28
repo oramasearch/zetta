@@ -28,8 +28,10 @@ Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
 REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
 retention updates and audited deletions. Its default dispatcher is a
 [shared pool sized at one worker per 250 active topics](docs/pubsub/dispatch.md),
-bounded by configurable minimum and maximum worker counts. Clustered pub/sub
-remains deferred (D39).
+bounded by configurable minimum and maximum worker counts. Authorised polling reads use
+five-minute audit summaries, while denied reads and mutations remain per-call;
+the trail uses checksummed compressed segments with bounded-memory indexing and
+configurable retention (#1154). Clustered pub/sub remains deferred (D39).
 
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*
@@ -183,8 +185,8 @@ What's inside, by domain (each links to that domain's docs):
   identity**, a **cost-cap approval gate**, and a **permission-gated Cloud
   Inspector** (deny-by-default, ask-every-time consent).
 - **[Governance](docs/governance/README.md)** — V1 **key-scoped access**
-  (deny-by-default scopes + TTL'd capabilities), an immutable, append-only
-  **audit trail**, and a **governed console** (every statement
+  (deny-by-default scopes + TTL'd capabilities), an immutable, retained
+  **audit trail** with compact polling summaries, and a **governed console** (every statement
   capability-scoped, gated, and audited).
 - **[Solutions foundation](docs/solutions/README.md)** — the replicated
   [holdout and experiment manager](docs/solutions/experiments.md) assigns

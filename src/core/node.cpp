@@ -469,6 +469,7 @@ bool Node::start() {
         persist_replication();
         last_seen_version_ = replication_->version();
     }
+    apply_audit_retention();
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
         "%zu deployments, %zu runs, %zu studies, %zu models, %zu experiments, %zu monitors, "
@@ -480,7 +481,7 @@ bool Node::start() {
         experiment_manager_.experiments().size(), monitors_.size(), indexes_.size(),
         jobs_.size(), dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
-        audit_events_.size(), ledger_entries_.size());
+        audit_event_count(), ledger_entries_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -647,6 +648,13 @@ void Node::tick() {
                 encode_node_metrics(metrics, node_id()));
         }
     }
+    flush_due_audit_summaries();
+    constexpr auto kAuditRetentionCheckInterval = std::chrono::hours(1);
+    if (last_audit_retention_.time_since_epoch().count() == 0 ||
+        Clock::now() - last_audit_retention_ >=
+            kAuditRetentionCheckInterval) {
+        apply_audit_retention();
+    }
     // 5. Coordinated co-launch (#601): execute any `run.launch` requests peers
     //    fanned out, HERE on the owner thread — the launched SPMD body blocks on
     //    collective rounds, which must never run on the network thread that
@@ -727,6 +735,10 @@ void Node::stop() {
     if (pubsub_) {
         pubsub_->shutdown();
         pubsub_.reset();
+    }
+    flush_audit_summaries();
+    if (audit_trail_) {
+        audit_trail_->flush();
     }
     if (replication_) persist_replication();
     running_ = false;
@@ -3714,57 +3726,24 @@ zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
     return decision;
 }
 
-// ----- audit trail (immutable, append-only; replicated as audit:<uuid>) ------
+// ----- audit trail (immutable records; replicated as audit:<uuid>) -----------
 
 fs::path Node::audit_dir() const {
     return fs::path(config_.data_dir) / "audit";
 }
 
 void Node::load_audit_events() {
-    audit_events_.clear();
-    audit_events_by_id_.clear();
-    const fs::path root = audit_dir();
-    std::error_code ec;
-    if (!fs::exists(root, ec)) return;
-    for (const auto& entry : fs::directory_iterator(root, ec)) {
-        if (!entry.is_regular_file() ||
-            entry.path().extension() != ".json") {
-            continue;
-        }
-        std::ifstream in(entry.path());
-        const auto meta = nlohmann::json::parse(in, nullptr,
-                                                /*allow_exceptions=*/false);
-        // Boundary validation: an audit file that fails the AuditEvent JSON
-        // Schema is rejected here (with a logged reason) rather than allowed to
-        // corrupt the in-memory trail — fail fast, don't propagate bad state.
-        std::string error;
-        const std::optional<zetta::governance::AuditEventValue> value =
-            meta.is_discarded() ? std::nullopt
-                                : zetta::governance::parse_audit_event_value(meta, &error);
-        if (!value) {
-            std::printf("zetta: skipping invalid audit event %s (%s)\n",
-                        entry.path().filename().string().c_str(),
-                        meta.is_discarded() ? "unparseable JSON"
-                                            : error.c_str());
-            continue;
-        }
-        auto event = std::make_shared<zetta::governance::AuditEvent>(
-            entry.path().stem().string(), *value, root);
-        audit_events_by_id_.emplace(event->id(), event);
-        audit_events_.push_back(std::move(event));
+    audit_trail_ = std::make_unique<zetta::governance::AuditTrail>(
+        audit_dir(), config_.audit_recent_events);
+    std::string error;
+    if (!audit_trail_->open(&error)) {
+        std::printf("zetta: audit store could not open (%s)\n", error.c_str());
     }
-    // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
-    // ties on identical stamps.
-    std::sort(audit_events_.begin(), audit_events_.end(),
-              [](const auto& a, const auto& b) {
-                  if (a->time() != b->time()) return a->time() < b->time();
-                  return a->id() < b->id();
-              });
 }
 
 void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // The sink owns identity + time: stamp a fresh id and the current time so the
-    // append-only contract holds regardless of what the caller passed.
+    // immutable record contract holds regardless of what the caller passed.
     const std::string id = zetta::util::new_uuid();
     value.time = zetta::util::now_iso8601();
     // CRDT first (the source of truth), then materialize the on-disk projection.
@@ -3774,28 +3753,156 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     materialize_audit_event(id, std::move(value));
 }
 
+std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
+Node::audit_events() const {
+    return audit_trail_ ? audit_trail_->events()
+                        : std::vector<std::shared_ptr<zetta::governance::AuditEvent>>{};
+}
+
+std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
+Node::recent_audit_events() const {
+    return audit_trail_ ? audit_trail_->recent_events()
+                        : std::vector<std::shared_ptr<zetta::governance::AuditEvent>>{};
+}
+
+std::size_t Node::audit_event_count() const {
+    return audit_trail_ ? audit_trail_->size() : 0;
+}
+
 std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     std::string id, zetta::governance::AuditEventValue value) {
-    if (auto known = audit_events_by_id_.find(id); known != audit_events_by_id_.end()) {
-        return known->second;  // already present (append-only)
+    if (!audit_trail_) {
+        return nullptr;
     }
-    const fs::path dir = audit_dir();
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) return nullptr;
-    auto event = std::make_shared<zetta::governance::AuditEvent>(std::move(id), std::move(value),
-                                              dir);
-    event->persist_meta();
-    // Insert at its chronological place, keeping the trail sorted without a
-    // re-sort (#1070). A local event (stamped now) lands at the end; a peer's
-    // merged-in event finds its place by binary search. Events sharing a stamp
-    // (the clock is per-second) keep the order they arrived in.
-    const auto place = std::upper_bound(
-        audit_events_.begin(), audit_events_.end(), event,
-        [](const auto& a, const auto& b) { return a->time() < b->time(); });
-    audit_events_.insert(place, event);
-    audit_events_by_id_.emplace(event->id(), event);
-    return event;
+    if (audit_trail_->contains(id)) {
+        const auto recent = audit_trail_->recent_events();
+        const auto found = std::ranges::find_if(
+            recent, [&id](const auto& event) { return event->id() == id; });
+        return found == recent.end() ? nullptr : *found;
+    }
+    std::string error;
+    const std::string event_id = id;
+    const zetta::governance::AuditEventValue event_value = value;
+    if (!audit_trail_->append(std::move(id), std::move(value), &error)) {
+        std::printf("zetta: audit append failed (%s)\n", error.c_str());
+        return nullptr;
+    }
+    return std::make_shared<zetta::governance::AuditEvent>(
+        event_id, event_value, audit_dir());
+}
+
+void Node::record_authorized_read(std::string actor, std::string capability,
+                                  std::string scope,
+                                  std::uint64_t events_delivered) {
+    if (actor.empty()) {
+        actor = "local";
+    }
+    const std::string key = actor + '\x1f' + capability + '\x1f' + scope;
+    const Clock::time_point now = Clock::now();
+    auto found = audit_summary_windows_.find(key);
+    if (found != audit_summary_windows_.end() &&
+        config_.audit_summary_window.count() > 0 &&
+        now - found->second.opened_at >= config_.audit_summary_window) {
+        flush_audit_summary(key);
+        found = audit_summary_windows_.find(key);
+    }
+    if (found == audit_summary_windows_.end()) {
+        zetta::governance::AuditEventValue started;
+        started.action = zetta::governance::AuditAction::DataAccess;
+        started.actor = actor;
+        started.target = "api:" + capability;
+        started.allowed = true;
+        started.detail = "authorised read session started for " + scope;
+        record_audit_event(std::move(started));
+
+        AuditSummaryWindow window;
+        window.actor = std::move(actor);
+        window.capability = std::move(capability);
+        window.scope = std::move(scope);
+        window.started = zetta::util::now_iso8601();
+        window.opened_at = now;
+        found = audit_summary_windows_.emplace(key, std::move(window)).first;
+    }
+    ++found->second.calls;
+    found->second.events_delivered += events_delivered;
+}
+
+void Node::flush_audit_summary(const std::string& key) {
+    const auto found = audit_summary_windows_.find(key);
+    if (found == audit_summary_windows_.end() || found->second.calls == 0) {
+        return;
+    }
+    AuditSummaryWindow& window = found->second;
+    const std::string ended = zetta::util::now_iso8601();
+    zetta::governance::AuditEventValue summary;
+    summary.action = zetta::governance::AuditAction::DataAccessSummary;
+    summary.actor = window.actor;
+    summary.target = "api:" + window.capability;
+    summary.allowed = true;
+    summary.detail = std::to_string(window.calls) +
+                     " authorised reads; " +
+                     std::to_string(window.events_delivered) +
+                     " events delivered";
+    summary.summary = zetta::governance::AuditReadSummary{
+        window.calls, window.events_delivered, window.scope,
+        window.started, ended};
+    record_audit_event(std::move(summary));
+    window.calls = 0;
+    window.events_delivered = 0;
+    window.started = ended;
+    window.opened_at = Clock::now();
+}
+
+void Node::flush_due_audit_summaries() {
+    if (config_.audit_summary_window.count() <= 0) {
+        return;
+    }
+    const Clock::time_point now = Clock::now();
+    std::vector<std::string> due;
+    for (const auto& [key, window] : audit_summary_windows_) {
+        if (window.calls > 0 &&
+            now - window.opened_at >= config_.audit_summary_window) {
+            due.push_back(key);
+        }
+    }
+    for (const std::string& key : due) {
+        flush_audit_summary(key);
+    }
+}
+
+void Node::flush_audit_summaries() {
+    std::vector<std::string> keys;
+    keys.reserve(audit_summary_windows_.size());
+    for (const auto& [key, window] : audit_summary_windows_) {
+        keys.push_back(key);
+    }
+    for (const std::string& key : keys) {
+        flush_audit_summary(key);
+    }
+    audit_summary_windows_.clear();
+}
+
+void Node::apply_audit_retention() {
+    last_audit_retention_ = Clock::now();
+    if (!audit_trail_ || config_.audit_retention.count() <= 0) {
+        return;
+    }
+    const long long seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            config_.audit_retention).count();
+    const std::string cutoff = zetta::util::iso8601_seconds_ago(seconds);
+    std::string error;
+    const bool retained = audit_trail_->retain_since(
+        cutoff,
+        [this](const std::string& id) {
+            if (replication_) {
+                replication_->remove(catalog::audit_key(id));
+            }
+        },
+        &error);
+    if (!retained) {
+        std::printf("zetta: audit retention failed (%s)\n", error.c_str());
+    }
 }
 
 // ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----
@@ -4230,11 +4337,13 @@ void Node::migrate_to_replication() {
             }
         }
     }
-    for (const auto& event : audit_events_) {
-        if (!already_replicated(catalog::audit_key(event->id()))) {
-            replication_->set(catalog::audit_key(event->id()),
-                              event->metadata());
-        }
+    if (audit_trail_) {
+        audit_trail_->for_each([&](const auto& event) {
+            if (!already_replicated(catalog::audit_key(event->id()))) {
+                replication_->set(catalog::audit_key(event->id()),
+                                  event->metadata());
+            }
+        });
     }
     for (const auto& entry : ledger_entries_) {
         if (!already_replicated(catalog::ledger_key(entry->id()))) {
@@ -5242,20 +5351,24 @@ void Node::reconcile_access_keys(
 
 void Node::reconcile_audit_events(
     const nlohmann::json& snapshot,
-    const std::vector<std::string>*) {
+    const std::vector<std::string>* changed_keys) {
     // Audit events (top-level, no parent): audit:<id> -> the event value. The
-    // trail is immutable + append-only, so reconcile only *adds* events the
-    // document has that we don't (a peer's, merged in via gossip) and never
-    // removes or edits one. Each value is validated at the boundary — a
-    // malformed CRDT value is ignored, not trusted into the trail.
+    // trail's records are immutable, so reconcile only adds events the document
+    // has that we don't (a peer's, merged in via gossip). Retention removes old
+    // records through its dedicated tombstone path. Each value is validated at
+    // the boundary — a malformed CRDT value is ignored, not trusted into the
+    // trail.
     //
     // Every reconcile walks every audit key in the document, so this pass must
     // stay O(n): an id already in the trail is skipped before its value is
-    // parsed, and a new one is inserted in order (materialize_audit_event), so
-    // the trail is never re-sorted (#1070).
+    // parsed, and a new one is indexed directly (materialize_audit_event), so
+    // reconciliation never sorts a full in-memory trail (#1070).
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kAuditPrefix);
-        if (id.empty() || audit_events_by_id_.contains(id)) continue;
+        if (id.empty() || !reconciliation_includes_key(changed_keys, key) ||
+            (audit_trail_ && audit_trail_->contains(id))) {
+            continue;
+        }
         if (std::optional<zetta::governance::AuditEventValue> parsed =
                 zetta::governance::parse_audit_event_value(value)) {
             materialize_audit_event(std::move(id), std::move(*parsed));
@@ -5399,7 +5512,7 @@ std::string Node::status_line() const {
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
         databases_.size(), projects_.size(), deployments_.size(),
         runs_.size(), models_.size(), principals_.size(),
-        audit_events_.size());
+        audit_event_count());
     return buf;
 }
 

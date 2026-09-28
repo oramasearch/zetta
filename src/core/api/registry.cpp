@@ -37,6 +37,11 @@ bool Registry::add(Capability capability) {
          !capability.awaitable_read->should_wait)) {
         return false;
     }
+    if (capability.audit_policy == AuditPolicy::SummarizeAuthorizedReads &&
+        (capability.kind != CapabilityKind::Read || capability.mutates ||
+         capability.requires_consent)) {
+        return false;
+    }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
     return true;
 }
@@ -216,9 +221,9 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // The gate reads the Node's keys and grants and appends to its audit trail,
     // both owner-thread state that the tick reconciles. An offloadable
     // capability reaches here on a pool worker, so the gate runs on the owner
-    // thread: without that, a worker's audit append raced the tick's sort of the
-    // trail and crashed the node (#1063). run_on_owner runs inline when already
-    // on the owner thread.
+    // thread: without that, a worker's audit append raced the tick's audit
+    // reconciliation and crashed the node (#1063). run_on_owner runs inline
+    // when already on the owner thread.
     std::optional<ApiResult> refused;
     context.node.run_on_owner([&] { refused = [&]() -> std::optional<ApiResult> {
         const zetta::governance::Operation kInvokeRight{
@@ -251,8 +256,11 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                 return ApiResult::failure("unauthorized", decision.reason);
             }
         }
-        audit_call(context.node, *capability, context.acting_key, /*allowed=*/true,
-                   std::string(to_string(capability->kind)) + " call");
+        if (capability->audit_policy == AuditPolicy::PerCall) {
+            audit_call(context.node, *capability, context.acting_key,
+                       /*allowed=*/true,
+                       std::string(to_string(capability->kind)) + " call");
+        }
         return std::nullopt;
     }(); });
     if (refused) return finish(std::move(*refused));
@@ -327,6 +335,33 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     // permissions and the audit trail apply to the inner call too.
     context.registry = this;
     ApiResult result = invoke_contained(*capability, effective_input, context);
+
+    if (capability->audit_policy == AuditPolicy::SummarizeAuthorizedReads) {
+        context.node.run_on_owner([&] {
+            if (result.ok) {
+                std::string scope = "*";
+                if (!capability->audit_scope_field.empty() &&
+                    effective_input.contains(capability->audit_scope_field) &&
+                    effective_input.at(capability->audit_scope_field).is_string()) {
+                    scope = effective_input.at(capability->audit_scope_field)
+                                .get<std::string>();
+                }
+                std::uint64_t events_delivered = 0;
+                if (result.value.is_object() &&
+                    result.value.contains("events") &&
+                    result.value.at("events").is_array()) {
+                    events_delivered = result.value.at("events").size();
+                }
+                context.node.record_authorized_read(
+                    context.acting_key, capability->name, std::move(scope),
+                    events_delivered);
+            } else {
+                audit_call(context.node, *capability, context.acting_key,
+                           result.error.code != "unauthorized",
+                           result.error.code + ": " + result.error.message);
+            }
+        });
+    }
 
     if (result.ok && capability->mutates && activity_) {
         activity_(ActivityEvent{capability->name,

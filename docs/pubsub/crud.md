@@ -211,6 +211,12 @@ separate settings-hash record. Payloads are not copied into the audit trail.
 Routine consumption and scheduled retention follow the existing store lifecycle;
 they are not administrative delete calls.
 
+Successful `receive_events`, `browse_topic`, `get_topic`, and `list_topics`
+reads use the registry's windowed audit policy. The first read records an
+actor/capability/topic session; five-minute summaries record call count and
+events delivered. Denied calls and handler failures remain one row per call.
+See [audit trail policy](../governance/audit-trail.md#audit-policy).
+
 Durability follows [stores.md](stores.md) and [restart.md](restart.md), exactly
 as publishes do. Default topics flush held edits and deletions at shutdown;
 edits to an already-spilled ring rewrite that store file by atomic replacement.

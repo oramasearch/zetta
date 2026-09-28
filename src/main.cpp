@@ -31,6 +31,7 @@
 #include "gui/app.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -78,6 +79,7 @@ struct Options {
     bool pubsub_topics_per_thread_from_cli = false;
     bool pubsub_dispatch_min_threads_from_cli = false;
     bool pubsub_dispatch_max_threads_from_cli = false;
+    bool audit_retention_from_cli = false;
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -103,6 +105,13 @@ bool parse_positive_size(std::string_view text, std::size_t& out) {
     }
     out = value;
     return true;
+}
+
+bool parse_uint32(const std::string& text, std::uint32_t& out) {
+    const auto [pointer, error_code] =
+        std::from_chars(text.data(), text.data() + text.size(), out);
+    return error_code == std::errc{} &&
+           pointer == text.data() + text.size();
 }
 
 void print_usage(const char* argv0) {
@@ -151,6 +160,9 @@ void print_usage(const char* argv0) {
         "                      Minimum shared-pool workers (default 1)\n"
         "  --pubsub-dispatch-max-threads N\n"
         "                      Maximum workers (default detected CPU count)\n"
+        "  --audit-retention-days N\n"
+        "                      Keep ordinary audit rows for N days (default 30);\n"
+        "                      summaries are preserved. Zero disables retention\n"
         "  --governance        Enforce consent gating on cloud-touching calls.\n"
         "                      OFF by default (#995): a consent-gated capability\n"
         "                      executes on the first call and the bypass is\n"
@@ -168,7 +180,9 @@ void print_usage(const char* argv0) {
         "  ZETTA_PUBSUB_TOPICS_PER_THREAD -> --pubsub-topics-per-thread\n"
         "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
         "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
-        "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n",
+        "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n"
+        "  ZETTA_AUDIT_RETENTION_DAYS\n"
+        "                      Ordinary audit retention in days\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -308,6 +322,21 @@ Options parse_args(int argc, char** argv) {
             }
             o.node.pubsub_dispatch_max_threads = maximum;
             o.pubsub_dispatch_max_threads_from_cli = true;
+        } else if (arg == "--audit-retention-days") {
+            const char* value =
+                take_value(argc, argv, i, o, "--audit-retention-days");
+            if (!value) {
+                break;
+            }
+            std::uint32_t days = 0;
+            if (!parse_uint32(value, days)) {
+                std::fprintf(stderr,
+                             "zetta: --audit-retention-days wants a non-negative number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.audit_retention = std::chrono::hours(24ULL * days);
+            o.audit_retention_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -472,7 +501,7 @@ int main(int argc, char** argv) {
 
 #ifdef ZETTA_WITH_POSTGRES
     // The libpqxx Postgres connector (#892) — registers into the connector runner
-    // seam so a "postgres" source connection can run its read-only query. Built
+    // runner so a "postgres" source connection can run its read-only query. Built
     // only when the libpqxx submodule is present; without it, a Postgres query
     // fails cleanly ("the Postgres connector is not built into this binary").
     zetta::connect::install_postgres_protocol();
@@ -487,7 +516,7 @@ int main(int argc, char** argv) {
 #endif
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster
-    // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
+    // coordinates as environment by the provisioner contract (ZETTA_SEED_PEER,
     // ZETTA_CLUSTER_TOKEN, ZETTA_DATA_DIR; docs/plans/cloud-provisioning.md Gap
     // A). Fold them in as defaults beneath the flags already parsed — explicit
     // flag > env > default — so a provisioned node auto-joins the secure (mTLS)
@@ -551,6 +580,18 @@ int main(int argc, char** argv) {
     }
     if (!apply_pubsub_environment(opts)) {
         return 2;
+    }
+    if (!opts.audit_retention_from_cli) {
+        if (const char* environment =
+                std::getenv("ZETTA_AUDIT_RETENTION_DAYS")) {
+            std::uint32_t days = 0;
+            if (!parse_uint32(environment, days)) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_AUDIT_RETENTION_DAYS wants a non-negative number\n");
+                return 2;
+            }
+            opts.node.audit_retention = std::chrono::hours(24ULL * days);
+        }
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
@@ -775,7 +816,7 @@ int main(int argc, char** argv) {
     // too — so a provisioned node boots with `--peer <seed> --join-token <token>`
     // and can join a non-plaintext cluster instead of being stuck on
     // --cluster-plaintext (#670). Empty under --cluster-plaintext, so nothing is
-    // injected. The token is a secret: it rides the same bootstrap env seam as the
+    // injected. The token is a secret: it rides the same bootstrap environment as the
     // seed peer (ZETTA_CLUSTER_TOKEN alongside ZETTA_SEED_PEER) and is never stored
     // in the detected provisioner config / system.provisioners.
     const std::string default_cluster_token = opts.cluster.security.join_token;

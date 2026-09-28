@@ -337,7 +337,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
     policy.hpp              zetta::governance::Policy/PolicyValue/policy_value_from_json/policy_schema — a row-level security policy (Postgres-style RLS): a USING read filter + WITH CHECK write filter per table, evaluated by the SQL WHERE engine (#748); policy:<uuid>
     token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/constant_time_equal — the token crypto (OpenSSL)
-    audit_event.hpp         zetta::governance::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
+    audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable audit values + summary metadata + checksummed bounded-memory segment projection + JSON Schema (ENT-23, #1154)
     consent.hpp             zetta::governance::ConsentAction/ConsentChallenge/ConsentLedger — remote consent for cloud-touching capabilities (#621): one-time challenges naming exactly what would be read/run, consumable exactly once by a distinctly-privileged approval; ephemeral + owner-thread-only, never replicated (docs/api/consent.md)
   solutions/                runtime evidence shared by deployed solutions (docs/solutions/)
     audit_ledger.hpp        zetta::solutions::ActionLedgerValue/OutcomeLedgerValue/LedgerEntry — immutable action and outcome records, enum codecs, JSON Schema boundary, and disk projection (#1107)
@@ -678,7 +678,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
     policy.cpp              zetta::governance::Policy — persist policy.json + PolicyValue JSON boundary validation + policy schema (RLS, #748)
     token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)
-    audit_event.cpp         zetta::governance::AuditEvent — value, JSON form, JSON-Schema boundary validation
+    audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value, JSON-Schema boundary, compressed segment frames, legacy migration, and retention
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)
   solutions/
     audit_ledger.cpp        zetta::solutions ledger JSON codecs/schema validation plus immutable `<data_dir>/ledger/<uuid>.json` persistence (#1107)
@@ -856,9 +856,9 @@ data_dir/
         key.json             ← { id, principal, scope:{ unrestricted, grants },
                                  capabilities:[ { domain, action, expires_at? } ],
                                  created }
-  audit/                     ← the immutable, append-only audit trail
-    <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
-                                 time }  (one file per event, never edited)
+  audit/                     ← the immutable-record audit projection
+    segment-<number>.audit.gz ← checksummed compressed event frames; legacy
+                                 <audit-uuid>.json files migrate on startup
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name, replication? }  (replication = the
                                 ReplicationStrategy, ENT-35; omitted when default)
