@@ -64,6 +64,7 @@ struct DecisionRecord {
     std::string action;
     std::string autonomy;
     std::string status;
+    bool holdout = false;
     bool actionable = false;
     std::vector<std::string> reasons;
     nlohmann::json evidence = nlohmann::json::object();
@@ -134,6 +135,7 @@ struct BatchDecisionOptions {
     std::string cost_column = "cost";
     std::string contacts_column = "contacts";
     std::string recent_actions_column = "recent_actions";
+    std::string holdout_column = "holdout";
 };
 
 struct BatchDecisionResult {

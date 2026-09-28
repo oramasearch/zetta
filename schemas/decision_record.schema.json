@@ -37,6 +37,9 @@
     "evidence": {
       "type": "object"
     },
+    "holdout": {
+      "type": "boolean"
+    },
     "id": {
       "minLength": 1,
       "type": "string"

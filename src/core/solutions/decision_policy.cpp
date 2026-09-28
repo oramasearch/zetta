@@ -291,6 +291,7 @@ DecisionRecord evaluate(
     decision.score = entity.at("score").get<double>();
     decision.cost = number_or(entity, "cost", 0.0);
     decision.autonomy = config.value("autonomy", std::string("A0"));
+    decision.holdout = entity.value("holdout", false);
     decision.created = zetta::util::now_iso8601();
     decision.evidence = entity;
 
@@ -359,6 +360,13 @@ DecisionRecord evaluate(
     }
     if (decision.action.empty()) {
         decision.action = entity.value("action", std::string{});
+    }
+
+    if (decision.holdout) {
+        decision.status = "blocked";
+        decision.reasons.push_back(
+            "entity is in a holdout cell and must not be delivered");
+        return decision;
     }
 
     if (decision.autonomy == "A0") {
@@ -460,6 +468,7 @@ Json to_json(const DecisionRecord& decision) {
             {"action", decision.action},
             {"autonomy", decision.autonomy},
             {"status", decision.status},
+            {"holdout", decision.holdout},
             {"actionable", decision.actionable},
             {"reasons", decision.reasons},
             {"evidence", decision.evidence},
@@ -549,8 +558,8 @@ const Json& decision_record_schema() {
         {"additionalProperties", false},
         {"required",
          {"id", "policy_id", "policy_version", "entity_id", "score", "cost", "tier",
-          "action", "autonomy", "status", "actionable", "reasons", "evidence", "created",
-          "approved_at", "approved_by"}},
+          "action", "autonomy", "status", "actionable", "reasons",
+          "evidence", "created", "approved_at", "approved_by"}},
         {"properties",
          {{"id", {{"type", "string"}, {"minLength", 1}}},
           {"policy_id", {{"type", "string"}, {"minLength", 1}}},
@@ -562,6 +571,7 @@ const Json& decision_record_schema() {
           {"action", {{"type", "string"}}},
           {"autonomy", {{"type", "string"}, {"enum", {"A0", "A1", "A2", "A3"}}}},
           {"status", {{"type", "string"}, {"enum", {"blocked", "manual", "pending_approval", "allowed", "approved"}}}},
+          {"holdout", {{"type", "boolean"}}},
           {"actionable", {{"type", "boolean"}}},
           {"reasons", {{"type", "array"}, {"items", {{"type", "string"}}}}},
           {"evidence", {{"type", "object"}}},
@@ -628,6 +638,7 @@ std::optional<DecisionRecord> parse_decision_record(const Json& value, std::stri
     decision.action = value.at("action").get<std::string>();
     decision.autonomy = value.at("autonomy").get<std::string>();
     decision.status = value.at("status").get<std::string>();
+    decision.holdout = value.value("holdout", false);
     decision.actionable = value.at("actionable").get<bool>();
     decision.reasons = value.at("reasons").get<std::vector<std::string>>();
     decision.evidence = value.at("evidence");
@@ -755,6 +766,12 @@ std::optional<DecisionRecord> DecisionPolicyStore::decide(
         }
         return std::nullopt;
     }
+    if (entity.contains("holdout") && !entity.at("holdout").is_boolean()) {
+        if (error != nullptr) {
+            *error = "/entity/holdout: must be a boolean";
+        }
+        return std::nullopt;
+    }
     const Json snapshot = replication_.snapshot();
     double spend = 0.0;
     if (policy->current()->config.contains("budget")) {
@@ -864,6 +881,9 @@ BatchDecisionResult decide_table(
         }
         if (row->contains(options.recent_actions_column)) {
             entity["recent_actions"] = row->at(options.recent_actions_column);
+        }
+        if (row->contains(options.holdout_column)) {
+            entity["holdout"] = row->at(options.holdout_column);
         }
         std::string error;
         const auto decision = store.decide(policy_id, std::move(entity), actor, &error);

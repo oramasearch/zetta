@@ -138,6 +138,40 @@ TEST(DecisionPolicy, KillSwitchStopsAllActions) {
     EXPECT_EQ(decision->reasons.front(), "policy kill-switch is active");
 }
 
+TEST(DecisionPolicy, HoldoutPreservesSelectionButNeverAuthorizesDelivery) {
+    ReplicationManager replication{zetta::util::new_uuid()};
+    DecisionPolicyStore store{replication};
+    std::string error;
+    const auto policy = store.create(
+        "holdout",
+        policy_config("A3"),
+        "owner",
+        &error);
+    ASSERT_TRUE(policy) << error;
+
+    Json held_entity = entity("customer-1");
+    held_entity["holdout"] = true;
+    held_entity["cell"] = "control";
+    const auto decision = store.decide(
+        policy->id,
+        std::move(held_entity),
+        "agent",
+        &error);
+    ASSERT_TRUE(decision) << error;
+    EXPECT_TRUE(decision->holdout);
+    EXPECT_EQ(decision->tier, "high");
+    EXPECT_EQ(decision->action, "call");
+    EXPECT_EQ(decision->status, "blocked");
+    EXPECT_FALSE(decision->actionable);
+    EXPECT_EQ(decision->evidence.at("cell"), "control");
+
+    const auto parsed = zetta::solutions::parse_decision_record(
+        zetta::solutions::to_json(*decision),
+        &error);
+    ASSERT_TRUE(parsed) << error;
+    EXPECT_TRUE(parsed->holdout);
+}
+
 TEST(DecisionPolicy, KillSwitchAlsoStopsPendingApproval) {
     ReplicationManager replication{zetta::util::new_uuid()};
     DecisionPolicyStore store{replication};
@@ -257,7 +291,9 @@ TEST(DecisionPolicy, BatchWritesVersionedDecisionTable) {
     auto table = database->create_table("customers");
     ASSERT_TRUE(table);
     table->add_row(entity("one", 0.95));
-    table->add_row(entity("two", 0.2));
+    Json held = entity("two", 0.95);
+    held["holdout"] = true;
+    table->add_row(std::move(held));
 
     DecisionPolicyStore store{replication, &node};
     std::string error;
@@ -282,6 +318,7 @@ TEST(DecisionPolicy, BatchWritesVersionedDecisionTable) {
     ASSERT_TRUE(output);
     ASSERT_EQ(output->row_count(), 2u);
     EXPECT_EQ(output->store().at(0)->at("policy_version"), 1);
+    EXPECT_TRUE(output->store().at(1)->at("holdout").get<bool>());
     node.stop();
 }
 

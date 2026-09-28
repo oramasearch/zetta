@@ -85,6 +85,7 @@ const nlohmann::json& decide_schema() {
           {"cost", {{"type", "number"}, {"minimum", 0}}},
           {"contacts", {{"type", "integer"}, {"minimum", 0}}},
           {"recent_actions", {{"type", "integer"}, {"minimum", 0}}},
+          {"holdout", {{"type", "boolean"}}},
           {"action", {{"type", "string"}}}}}};
     static const nlohmann::json schema = {
         {"type", "object"},
@@ -104,7 +105,8 @@ const nlohmann::json& decide_schema() {
           {"score_column", {{"type", "string"}, {"minLength", 1}}},
           {"cost_column", {{"type", "string"}, {"minLength", 1}}},
           {"contacts_column", {{"type", "string"}, {"minLength", 1}}},
-          {"recent_actions_column", {{"type", "string"}, {"minLength", 1}}}}}};
+          {"recent_actions_column", {{"type", "string"}, {"minLength", 1}}},
+          {"holdout_column", {{"type", "string"}, {"minLength", 1}}}}}};
     return schema;
 }
 
@@ -229,6 +231,9 @@ ApiResult handle_decide(const nlohmann::json& input, ApiContext& context) {
     options.recent_actions_column = input.value(
         "recent_actions_column",
         options.recent_actions_column);
+    options.holdout_column = input.value(
+        "holdout_column",
+        options.holdout_column);
     const auto result = zetta::solutions::decide_table(
         context.node,
         *store,

@@ -1158,6 +1158,9 @@
                         "evidence": {
                           "type": "object"
                         },
+                        "holdout": {
+                          "type": "boolean"
+                        },
                         "id": {
                           "minLength": 1,
                           "type": "string"
@@ -4282,6 +4285,9 @@
                           }
                         ]
                       },
+                      "holdout": {
+                        "type": "boolean"
+                      },
                       "recent_actions": {
                         "minimum": 0,
                         "type": "integer"
@@ -4297,6 +4303,10 @@
                     "type": "object"
                   },
                   "entity_column": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "holdout_column": {
                     "minLength": 1,
                     "type": "string"
                   },
@@ -4397,6 +4407,9 @@
                             },
                             "evidence": {
                               "type": "object"
+                            },
+                            "holdout": {
+                              "type": "boolean"
                             },
                             "id": {
                               "minLength": 1,
