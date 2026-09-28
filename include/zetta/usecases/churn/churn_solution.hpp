@@ -112,6 +112,10 @@ struct ChurnSolutionOptions {
     std::string model_name = "churn_model";  // the registered Model's human name
     std::string project;                     // labels the Run + every ComputeJob
     std::string graph;                       // graph id label
+    std::string result_database = "churn_results";
+    std::string result_table_prefix = "at_risk_";
+    std::string result_entity_column = "account";
+    std::string result_score_column = "risk";
     // Fan the run out to the live membership when the cluster has peers (#601).
     // False = run this node's copy alone — only correct on a single-member
     // cluster (a lone submitter fails the SPMD collective rounds otherwise).

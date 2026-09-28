@@ -35,6 +35,7 @@ The reusable annotation and methodology-specific checks are:
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
+| `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -93,6 +94,22 @@ M-6 at levels 3 and 4.
 optional `sources.correctness` overrides. `run_solution` checks the stored
 profile again. See [S-2](../solutions/S-2.md) for its data, policy, action, and
 measurement contract.
+
+### S-9 composed solution checks
+
+The S-9 checks engage only for a bound S-9 manifest. The consent and
+suppression check requires named boolean evidence for consent, suppression, and
+channel eligibility, plus no-contact behavior for an ineligible row. The cap
+check requires positive lifetime and rolling limits, named contact-count
+evidence, persisted prior decisions, and no contact at the limit.
+
+The uplift check requires M-1, M-2, and M-3 at every level and binds the primary
+decision to M-1's `outbound response scores` table using `entity` and
+`response_propensity`, rather than a churn result. Levels 2–4 require M-6 and
+positive incremental uplift selection with no contact for non-positive effects;
+levels 3 and 4 add M-8, and level 4 adds M-10. The bound profile is created and
+persisted by `create_solution`, then checked again by `run_solution`. See
+[S-9](../solutions/S-9.md) for the full contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

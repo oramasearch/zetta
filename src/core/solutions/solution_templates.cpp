@@ -123,6 +123,42 @@ void lead_scoring_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void automated_outbound_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "priority"}, {"minimum_score", 0.7}, {"action", "outbound_journey"},
+         {"allowed_actions", {"outbound_journey", "copy_review", "no_contact"}}},
+        {{"name", "standard"}, {"minimum_score", 0.4}, {"action", "nurture_journey"},
+         {"allowed_actions", {"nurture_journey", "copy_review", "no_contact"}}},
+        {{"name", "low"}, {"minimum_score", 0.0}, {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"outbound_journey", {{"autonomy", "A2"}, {"sla_seconds", 3600},
+                              {"frequency_cap", frequency(1, 7)}}},
+        {"nurture_journey", {{"autonomy", "A2"}, {"sla_seconds", 86400},
+                             {"frequency_cap", frequency(1, 14)}}},
+        {"copy_review", {{"autonomy", "A1"}, {"sla_seconds", 86400},
+                         {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("consent", true), predicate("suppressed", false),
+        predicate("channel_eligible", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("suppressed", true), predicate("unsubscribed", true),
+        predicate("do_not_contact", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"priority", 0.1}, {"standard", 0.1}, {"low", 0.1}};
+    result.experiment.treatment_cells = {"journey_sent"};
+    result.guardrails = {{"unsubscribe_rate", 0.01, "maximum"},
+                         {"complaint_rate", 0.005, "maximum"},
+                         {"consent_violation_rate", 0.0, "maximum"},
+                         {"contact_frequency", 1.0, "maximum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "response", "response", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -133,6 +169,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 retention_defaults(result);
             } else if (solution_id == "S-2") {
                 lead_scoring_defaults(result);
+            } else if (solution_id == "S-9") {
+                automated_outbound_defaults(result);
             }
             return result;
         }

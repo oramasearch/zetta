@@ -57,7 +57,11 @@ a substitute classifier. M-1 defaults to its `account` / `risk` score table.
 S-2 also uses M-1 as its primary methodology. Its shared table carries the
 entity in `account` and conversion propensity in `risk`; S-2 binds that real
 output and relabels the downstream decision cell as a conversion band. Inputs
-and score scales for S-3 through S-12 remain their catalogue module's
+S-9 binds the real M-1 `outbound response scores` output in
+`solution_methodology_results`, with `entity` and `response_propensity` as the
+decision columns. At levels 2–4, the M-6 treatment-effect output supplies the
+positive-uplift targeting decision. Inputs and score scales for S-3 through
+S-8 and S-10 through S-12 remain their catalogue module's
 responsibility; their templates are deliberately minimal.
 
 ## Run and read back
@@ -88,6 +92,9 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    reason codes and risk × value × driver cells. Observe complaint fraction,
    committed action cost, monthly contact count, and action-execution rate in
    its monitor. Publish the S-1 driver report through the report action pattern.
+   S-9 rows carry audience tier, segment, journey, channel, consent and
+   suppression evidence, and contact counts. Its monitor observes unsubscribe,
+   complaint, consent-violation, contact-frequency, and execution rates.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -129,3 +136,10 @@ territory, capacity evidence and SLA payloads, observes all four guardrails,
 records centered conversion outcomes with a 0.15 routing effect, and checks
 that the readout's estimate and 95% confidence interval recover the planted
 effect.
+
+`SolutionJourney.AutomatedOutboundRespectsEligibilityCapsAndRecoversPlantedEffect`
+builds and runs S-9 over partitioned synthetic engagement data. It excludes a
+future observation, protects permanent holdouts, refuses ineligible and capped
+contacts, inspects delivered journey evidence, observes all five guardrails,
+records response outcomes with a 0.12 treatment effect, and checks that the
+estimate and 95% confidence interval recover the planted effect.

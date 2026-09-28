@@ -60,70 +60,94 @@ bool m1_owns(const ir::ExecutionGraph& graph) {
 ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     ir::ExecutionGraph graph;
     const bool lead_scoring = request.solution == "S-2";
+    const bool automated_outbound = request.solution == "S-9";
 
     graph.add_node(
         ir::StepKind::Connect,
         lead_scoring ? "Load lead and opportunity records"
-                     : "Load customer accounts",
+        : automated_outbound ? "Load consented outbound candidates"
+                             : "Load customer accounts",
         nlohmann::json{
             {"source", "warehouse"},
             {"table", lead_scoring ? "leads" : "customers"},
             {"note", lead_scoring
                          ? "open leads and opportunities to score for conversion"
+                     : automated_outbound
+                         ? "resolved customers eligible for outbound audience selection"
                          : "active accounts to score for churn risk"}},
         "load_customers");
     graph.add_node(
         ir::StepKind::Connect,
         lead_scoring ? "Load pre-qualification engagement"
-                     : "Load usage & billing activity",
+        : automated_outbound ? "Load pre-send engagement and contact history"
+                             : "Load usage & billing activity",
         nlohmann::json{
             {"source", "warehouse"},
             {"table", lead_scoring ? "lead_events" : "events"},
             {"note", lead_scoring
                          ? "point-in-time engagement signals per lead"
+                     : automated_outbound
+                         ? "point-in-time engagement, consent, suppression, and contact evidence"
                          : "engagement + payment signals per account"}},
         "load_activity");
     graph.add_node(
         ir::StepKind::Clean,
-        lead_scoring ? "Build conversion features" : "Build churn features",
+        lead_scoring ? "Build conversion features"
+        : automated_outbound ? "Build outbound response features"
+                             : "Build churn features",
         nlohmann::json{
             {"note", lead_scoring
                          ? "point-in-time features; exclude post-qualification fields"
+                     : automated_outbound
+                         ? "point-in-time response features; keep policy evidence out of model features"
                          : "point-in-time features; keep out post-cutoff leakage"}},
         "build_features");
     graph.add_node(
         ir::StepKind::Model,
         lead_scoring ? "Train conversion-propensity model"
-                     : "Train churn-risk model",
+        : automated_outbound ? "Train outbound response-propensity model"
+                             : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", lead_scoring ? "converted" : "churned"},
+                       {"target", lead_scoring ? "converted"
+                                  : automated_outbound ? "response"
+                                                       : "churned"},
                        {"note", lead_scoring
                                     ? "predict probability each lead converts"
+                                : automated_outbound
+                                    ? "predict response propensity before incremental targeting"
                                     : "predict probability each account churns"}},
         "train_churn_model");
     graph.add_node(
         ir::StepKind::Index,
-        lead_scoring ? "Index conversion scores" : "Index churn scores",
+        lead_scoring ? "Index conversion scores"
+        : automated_outbound ? "Index outbound response scores"
+                             : "Index churn scores",
         nlohmann::json{{"kind", "feature"},
                        {"note", "make scores fast to look up at serve time"}},
         "index_scores");
     graph.add_node(
         ir::StepKind::Serve,
         lead_scoring ? "Serve conversion scores and reasons"
-                     : "Serve churn scores & reasons",
+        : automated_outbound ? "Serve outbound response scores and reasons"
+                             : "Serve churn scores & reasons",
         nlohmann::json{
             {"note", lead_scoring
                          ? "expose per-lead conversion score and top drivers"
+                     : automated_outbound
+                         ? "expose per-entity response propensity and top drivers"
                          : "expose per-account risk + top drivers"}},
         "serve_scores");
     graph.add_node(
         ir::StepKind::Act,
         lead_scoring ? "Route sales queue tasks"
-                     : "Trigger retention outreach",
+        : automated_outbound ? "outbound response scores"
+                             : "Trigger retention outreach",
         nlohmann::json{
             {"note", lead_scoring
                          ? "route capacity-aware CRM tasks with SLAs"
+                     : automated_outbound
+                         ? "publish the outbound-specific decision score artifact"
                          : "notify retention on high-risk accounts"}},
         "notify_retention");
 
@@ -262,11 +286,21 @@ api::ApiResult run_m1(RunRequest& request) {
     }
 
     zetta::usecases::churn::ChurnSolutionOptions options;
+    const bool automated_outbound =
+        request.input.value("solution", std::string{}) == "S-9";
     options.project = request.project->id();
     options.graph = request.graph->id();
     options.model_name = request.input.value("model_name", options.model_name);
     options.top_k = request.input.value("top_k", options.top_k);
     options.coordinate = request.input.value("coordinate", true);
+    if (automated_outbound) {
+        options.model_name = request.input.value(
+            "model_name", std::string("outbound_response_model"));
+        options.result_database = "solution_methodology_results";
+        options.result_table_prefix = "outbound_response_";
+        options.result_entity_column = "entity";
+        options.result_score_column = "response_propensity";
+    }
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
 

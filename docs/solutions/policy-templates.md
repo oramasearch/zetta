@@ -32,7 +32,17 @@ exclusion and do-not-contact evidence suppresses action. The lifetime cap is
 six tasks and the rolling seven-day cap is one. Its deterministic experiment
 keeps 10% as permanent holdout and assigns the remainder to `routed`.
 
-S-3 through S-12 intentionally provide minimal starter policies derived from
+S-9 defines priority/standard/low response floors of 0.7/0.4/0.0. Priority
+entities select an A2 outbound journey with a one-hour SLA; standard entities
+select an A2 nurture journey with a one-day SLA; low entities select no contact.
+An optional copy review is A1. Current consent, no suppression, and channel
+eligibility are mandatory, while suppression, unsubscribe, and do-not-contact
+evidence block delivery. The lifetime cap is four contacts. Outbound is limited
+to one action in seven days and nurture to one in fourteen. Its deterministic
+experiment keeps 10% as permanent holdout and assigns the remainder to
+`journey_sent`.
+
+S-3 through S-8 and S-10 through S-12 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -42,6 +52,8 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-9 uses the `journey_sent` treatment cell and observes unsubscribe, complaint,
+consent-violation, contact-frequency, and action-execution metrics.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,

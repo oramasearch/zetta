@@ -60,6 +60,12 @@ Two things also had to line up for *the catalog blueprint* specifically:
 | `run_churn_solution_on_node(node, device, graph, dataset, options)` | THE runner: resolve `node.job_coordinator()` → encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` → execute `graph`. Returns the Run plus the real artifacts. |
 | `demo_churn_dataset()` | A small, deterministic, in-memory churn dataset (no files) with a clean failed-payments churn signal — the data the headed "Run over the cluster" action trains on. |
 
+`ChurnSolutionOptions` retains the churn result defaults but can name the
+result database, table prefix, entity column, and score column. Composed
+solutions use those additive fields to publish a domain-specific M-1 artifact;
+S-9 writes outbound response scores instead of presenting a churn-named
+decision source.
+
 `run_churn_solution_on_node` returns a `ChurnSolutionResult`:
 
 ```cpp

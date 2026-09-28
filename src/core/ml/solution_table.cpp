@@ -70,6 +70,7 @@ Solution band_a(
     solution.status = "catalogue";
     solution.issue = issue(solution.id == "S-1" ? 1110
                            : solution.id == "S-2" ? 1111
+                           : solution.id == "S-9" ? 1118
                                                    : 1102);
     return solution;
 }
@@ -346,22 +347,33 @@ const std::vector<Solution>& solutions() {
                    "add anomaly detection", "add bounded automatic scheduling")),
         band_a(
             "S-9", "Automated Outbound",
-            "Choose governed outbound journeys and preserve a no-contact option for every audience.",
-            "Coordinate targeting, channel, pacing, and message policy without exhausting customers.",
+            "Select incremental audiences and run governed outbound journeys without exhausting customers.",
+            "Coordinate audience, channel, pacing, and message policy while measuring response against protected holdouts.",
             {{"M-1", "primary", 1}, {"M-3", "foundation", 1},
              {"M-2", "foundation", 1}, {"M-6", "attachable", 2},
              {"M-8", "attachable", 3}, {"M-10", "attachable", 4}},
             {"M-2", "M-1", "M-3", "M-6", "M-8", "M-10"},
-            {"policy engine for journeys within caps"}, {"L1"},
-            {{"send inside caps", "A2"}, {"audiences and copy", "A1"},
+            {"capped outbound journey triggers", "copy-review tasks"},
+            {"L1 journey triggers", "L1 copy-review tasks"},
+            {{"send approved journeys inside caps", "A2"}, {"audiences and copy", "A1"},
              {"pacing inside bounds", "A3"}},
-            {{"entity", true, "resolved customer or account"}, {"treatment", true, "journey, channel, and no-contact arm"},
-             {"label", true, "response and downstream value"}, {"time", true, "eligibility and contact history"}},
+            {{"entity", true, "resolved customer or account"},
+             {"label", true, "response observed in a fully closed window"},
+             {"time", true, "eligibility, contact history, and response cutoff"},
+             {"feature", true, "point-in-time engagement and audience attributes"},
+             {"consent", true, "current consent for the selected channel"},
+             {"suppression", true, "suppression and unsubscribe state at decision time"},
+             {"contact", true, "lifetime and rolling-window contact counts"},
+             {"channel", true, "eligible channel and journey routing evidence"},
+             {"treatment", false, "journey, channel, and no-contact arm for uplift levels"}},
             "Journey eligibility, consent and suppression, contact caps, channel budgets, approvals, and no-contact arms.",
             "Send/hold holdouts per cell with incremental response and downstream value measurement.",
-            {"unsubscribe", "complaints", "frequency cap", "consent", "margin"},
-            levels("governed outbound cells", "add uplift selection",
-                   "add action arbitration", "add grounded language assistance")),
+            {"unsubscribe rate", "complaint rate", "consent violations",
+             "contact frequency", "action-execution rate"},
+            levels("response propensity, audiences, capped journeys and holdout",
+                   "add positive-uplift audience selection",
+                   "add eligible journey arbitration",
+                   "add governed, grounded copy assistance")),
         band_a(
             "S-10", "Fraud & Financial-Crime Decisioning",
             "Make bounded request-time fraud decisions and route evidence-rich cases for review.",

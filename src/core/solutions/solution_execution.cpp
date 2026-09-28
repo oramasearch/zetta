@@ -186,6 +186,17 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                         }
                     }
                 }
+                if (state->binding.value("solution", std::string{}) == "S-9" &&
+                    state->binding.value("level", 1) >= 2 &&
+                    stage.methodology->id == "M-6") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
                 outputs.insert(outputs.end(), snapshot.outputs.begin(),
                                snapshot.outputs.end());
                 break;
@@ -351,6 +362,7 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
     state->binding["delivery_token"] = input.value("delivery_token", "");
     state->input["sources"] = manifest->attributes.value(
         "sources", nlohmann::json::object());
+    state->input["solution"] = state->binding.at("solution");
     state->stages = std::move(stages);
     const std::shared_ptr<AsyncComposedSolution> handle =
         AsyncComposedSolution::start(std::move(state));

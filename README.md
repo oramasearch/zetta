@@ -109,8 +109,11 @@ What's inside, by domain (each links to that domain's docs):
   delivery, tier holdouts, driver reports, uplift no-contact targeting, and ROI
   readout. S-2 is runnable at all four levels with point-in-time conversion
   checks, post-qualification leakage refusal, capacity-aware CRM queues and SLA
-  tasks, permanent holdout measurement, and conversion ROI readout. S-3 through
-  S-12 have explicitly minimal editable defaults. Snapshot
+  tasks, permanent holdout measurement, and conversion ROI readout. S-9 is
+  runnable at all four levels with consent and suppression checks, enforced
+  contact limits, positive-uplift targeting, capped journeys, protected
+  holdouts, and response ROI readout. S-3 through S-8 and S-10 through S-12
+  have explicitly minimal editable defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,

@@ -32,13 +32,6 @@
 
 namespace zetta::usecases::churn {
 namespace {
-// Where a churn run publishes its at-risk list so SQL, Studio, and the agent can
-// read it (#915). One database for every churn pipeline's results; the per-pipeline
-// table inside it is replaced on each run.
-constexpr const char* kChurnResultsDatabase = "churn_results";
-}  // namespace
-
-namespace {
 
 // A short, human-readable label for a step: its name, else its (UUID) id — the
 // same convention the default orchestrator uses.
@@ -614,12 +607,16 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
     // its predecessor; keeping every run's copy would just accumulate stale lists).
     std::string at_risk_table;
     node_.run_on_owner([&] {
-        std::shared_ptr<data::Database> database = node_.find_database(kChurnResultsDatabase);
-        if (!database) database = node_.create_database(kChurnResultsDatabase);
+        std::shared_ptr<data::Database> database =
+            node_.find_database(config_.result_database);
+        if (!database) {
+            database = node_.create_database(config_.result_database);
+        }
         if (!database) return;
         const std::string name =
-            "at_risk_" + (config_.graph.empty() ? std::string("pipeline")
-                                                : config_.graph.substr(0, 8));
+            config_.result_table_prefix +
+            (config_.graph.empty() ? std::string("pipeline")
+                                   : config_.graph.substr(0, 8));
         database->drop_table(name);  // replace the previous run's list
         std::shared_ptr<data::Table> table = database->create_table(name);
         if (!table) return;
@@ -635,8 +632,8 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             ++position;
             std::vector<std::pair<std::string, nlohmann::json>> cells = {
                 {"rank", position},
-                {"account", action.entity},
-                {"risk", action.risk},
+                {config_.result_entity_column, action.entity},
+                {config_.result_score_column, action.risk},
                 {"dominant_driver", action.dominant_driver},
                 {"driver_effect", action.dominant_value}};
             for (const std::string& column : evidence) {
@@ -654,7 +651,7 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
             }
             table->add_row(std::move(row));
         }
-        at_risk_table = kChurnResultsDatabase + std::string(".") + name;
+        at_risk_table = config_.result_database + "." + name;
     });
 
     zetta::pipeline::StepOutcome outcome;

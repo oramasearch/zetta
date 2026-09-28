@@ -320,6 +320,58 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_automated_outbound_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("outbound_customers");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool suppressed = index % 30 == 0;
+        const bool consent = index % 35 != 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "outbound_fixture"},
+             {"name", "Outbound customer " + std::to_string(index + 1)},
+             {"response", index % 10 != 0 ? 1 : 0},
+             {"engagement", index % 13 + 0.5},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"consent", consent},
+             {"suppressed", suppressed},
+             {"channel_eligible", true},
+             {"unsubscribed", false},
+             {"do_not_contact", false},
+             {"contacts", index % 20 == 0 ? 4 : 0},
+             {"recent_actions", index % 25 == 0 ? 1 : 0},
+             {"channel", index % 2 == 0 ? "email" : "sms"},
+             {"complaint", false}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "outbound_fixture"},
+         {"name", "Future outbound customer"},
+         {"response", 1},
+         {"engagement", 999.0},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"consent", true},
+         {"suppressed", false},
+         {"channel_eligible", true},
+         {"unsubscribed", false},
+         {"do_not_contact", false},
+         {"contacts", 0},
+         {"recent_actions", 0},
+         {"channel", "email"},
+         {"complaint", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -355,6 +407,31 @@ nlohmann::json lead_scoring_configuration() {
         {"roi_model",
          {{"value_per_outcome", 250.0},
           {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json automated_outbound_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "outbound_customers"},
+          {"target_table", "automated_outbound_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "response"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"engagement"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://journeys.example.test/trigger"},
+          {"owner", "lifecycle-marketing"}}},
+        {"roi_model",
+         {{"value_per_outcome", 40.0},
+          {"investment", 150.0},
           {"currency", "USD"}}}};
 }
 
@@ -512,6 +589,68 @@ journey::Journey planted_conversion_outcomes(
                              estimate.at("confidence_interval")
                                      .at("upper")
                                      .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+journey::Journey planted_outbound_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"automated-outbound-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.2 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed outbound response",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "response"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {}});
+    }
+    outcomes.steps.push_back(
+        {"read measured outbound effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted outbound effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.12;
                   })}}});
     return outcomes;
 }
@@ -725,6 +864,163 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       AutomatedOutboundRespectsEligibilityCapsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_automated_outbound_data(node);
+    journey::Journey flow{"automated-outbound-solution", {}};
+    flow.steps = {
+        {"read S-9 defaults",
+         "get_solution",
+         {{"solution", "S-9"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name", "response"),
+                     journey::equals(
+                         "/solution/policy_template/contact_cap", 4)}}},
+        {"create outbound project",
+         "create_project",
+         {{"name", "automated outbound"}}},
+        {"create S-9 Pipeline",
+         "create_solution",
+         {{"project", "automated outbound"},
+          {"solution", "S-9"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "outbound_customers"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "response"},
+              {"feature_columns", {"engagement"}}}}}},
+          {"foundation", automated_outbound_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"outbound_graph", "/graph"},
+          {"outbound_experiment", "/experiment_id"},
+          {"outbound_readout", "/readout_id"}}},
+        {"run S-9 Pipeline",
+         "run_solution",
+         {{"project", "automated outbound"},
+          {"graph", "$outbound_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"outbound_run", "/run_id"}}},
+        {"read completed outbound Run",
+         "get_run",
+         {{"run_id", "$outbound_run"}},
+         {.checks = {
+              journey::equals("/status", "succeeded"),
+              journey::size_equals("/lineage/steps", 9),
+              journey::any_element(
+                  "/outputs", {{"/name", "outbound response scores"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected outbound assignments",
+         "get_experiment",
+         {{"experiment", "$outbound_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read outbound action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("automated outbound");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-9 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "outbound response scores");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "response_propensity");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t eligibility_blocks = 0;
+    std::size_t cap_blocks = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+        }
+        const auto& evidence = decision.evidence;
+        if (!evidence.value("consent", false) ||
+            evidence.value("suppressed", true)) {
+            ++eligibility_blocks;
+            EXPECT_FALSE(decision.actionable);
+        }
+        if (evidence.value("contacts", 0) >= 4 ||
+            evidence.value("recent_actions", 0) >= 1) {
+            ++cap_blocks;
+            EXPECT_FALSE(decision.actionable);
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(eligibility_blocks, 0u);
+    EXPECT_GT(cap_blocks, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_TRUE(payload.at("consent").get<bool>());
+        EXPECT_FALSE(payload.at("suppressed").get<bool>());
+        EXPECT_LT(payload.at("contacts").get<int>(), 4);
+        EXPECT_LT(payload.at("recent_actions").get<int>(), 1);
+        EXPECT_FALSE(payload.at("channel").get<std::string>().empty());
+        EXPECT_TRUE(payload.at("decision_cell").contains("audience_tier"));
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("automated_outbound_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_outbound_outcomes(ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(
