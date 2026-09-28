@@ -657,6 +657,10 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
+  src/core/ml/uplift.cpp
+  src/core/ml/uplift_job.cpp
+  src/core/ml/uplift_methodology.cpp
+  src/core/ml/uplift_runner.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/anomaly.cpp

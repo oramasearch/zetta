@@ -58,6 +58,31 @@ const nlohmann::json& graph_step_annotations_schema() {
     "stop_after_event": { "type": "boolean" },
     "point_in_time_features": { "type": "boolean" },
     "temporal_validation": { "type": "boolean" },
+    "treatment": {
+      "description": "The binary treatment-assignment column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "description": "The binary observed-outcome column for an uplift model.",
+      "type": "string",
+      "minLength": 1
+    },
+    "treatment_time": {
+      "description": "The treatment instant; causal features with data_as_of after it are post-treatment and refused.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "overlap_lower": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
+    "overlap_upper": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "type": "array",
@@ -577,6 +602,83 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
     }
     return pass(std::to_string(checked) +
                 " ML step(s) are point-in-time correct and target-leakage free");
+}
+
+CheckResult CausalUpliftCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail, std::move(reason)};
+    };
+    std::size_t checked = 0;
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const json& attributes = node->attributes;
+        const std::string kind = attributes.value("model_kind", std::string{});
+        if (kind != "uplift" && kind != "causal") {
+            continue;
+        }
+        ++checked;
+        if (const auto error = validate_annotations(attributes)) {
+            return fail(node_label(*node) +
+                        ": malformed correctness annotations — " + *error);
+        }
+        const std::optional<std::string> treatment =
+            string_field(attributes, "treatment");
+        const std::optional<std::string> outcome =
+            string_field(attributes, "outcome");
+        if (!treatment || !outcome) {
+            return fail(node_label(*node) +
+                        ": uplift requires explicit treatment and outcome columns");
+        }
+        if (*treatment == *outcome) {
+            return fail(node_label(*node) +
+                        ": treatment and outcome must be different columns");
+        }
+        const double lower = attributes.value("overlap_lower", 0.05);
+        const double upper = attributes.value("overlap_upper", 0.95);
+        if (lower < 0.05 || upper > 0.95 || lower >= upper) {
+            return fail(node_label(*node) +
+                        ": overlap bounds must stay within [0.05,0.95] and be ordered");
+        }
+
+        const std::optional<std::string> treatment_time =
+            string_field(attributes, "treatment_time");
+        const auto features = attributes.find("features");
+        if (features == attributes.end() || !features->is_array()) {
+            continue;
+        }
+        for (const json& feature : *features) {
+            const std::string feature_name = feature.value("name", std::string{});
+            const std::string normalized_feature = normalize_type(feature_name);
+            const std::string normalized_outcome = normalize_type(*outcome);
+            const bool outcome_like =
+                normalized_feature == normalized_outcome ||
+                normalized_feature.starts_with(normalized_outcome + "_") ||
+                normalized_feature.ends_with("_" + normalized_outcome);
+            if (outcome_like) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is named like outcome \"" + *outcome + "\"");
+            }
+            if (feature_name == *treatment) {
+                return fail(node_label(*node) + ": treatment column \"" +
+                            *treatment + "\" cannot be a feature");
+            }
+            const std::optional<std::string> data_as_of =
+                string_field(feature, "data_as_of");
+            if (treatment_time && data_as_of &&
+                comparable_instant(*data_as_of) >
+                    comparable_instant(*treatment_time)) {
+                return fail(node_label(*node) + ": feature \"" + feature_name +
+                            "\" is timestamped after treatment");
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        checked == 0
+            ? "no causal uplift step to check"
+            : "causal uplift roles, overlap, and feature timing are valid"};
 }
 
 } // namespace zetta::pipeline

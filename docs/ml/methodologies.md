@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-5 and M-7 are runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 through M-7 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -54,7 +54,7 @@ for structural execution and logs that it trained and scored nothing.
 The methodology is `null` for structural graphs and unknown model kinds;
 structural graphs are runnable, while unknown model kinds are not.
 
-## M-1 reference implementation
+## Runnable implementations
 
 `src/core/ml/methodology.cpp` wraps the existing behavior behind the interface:
 
@@ -117,6 +117,14 @@ Its ownership callback recognizes only `survival` and `time_to_event`. Its run
 callback resolves the connect step's own table, calls the native distributed
 runner, and returns the durable Run record read by `get_run` and
 `get_run_report`. See [survival.md](survival.md).
+
+## M-6 causal uplift implementation
+
+`src/core/ml/uplift_methodology.cpp` supplies M-6’s own connect → feature
+selection → uplift model → targeting-policy shape. Its ownership predicate only
+claims `causal` and `uplift` model steps. Its run callback resolves the connect
+step’s table through the shared dataset contract and calls the native runner
+documented in [uplift.md](uplift.md).
 
 ## M-7 anomaly implementation
 

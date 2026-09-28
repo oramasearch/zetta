@@ -15,6 +15,7 @@ Methodology make_m1_methodology();
 Methodology make_m2_methodology();
 Methodology make_m3_methodology();
 Methodology make_m5_methodology();
+Methodology make_m6_methodology();
 
 namespace {
 
@@ -72,14 +73,7 @@ const std::vector<Methodology>& methodologies() {
         make_m3_methodology(),
         make_m4_methodology(),
         make_m5_methodology(),
-        planned("M-6", "Causal inference & uplift", "Action & decision",
-                {"causal", "uplift"}, {},
-                {"uplift", "treatment", "who to target", "incremental effect"},
-                {input("entity", true, "unit receiving treatment"),
-                 input("treatment", true, "treatment assignment"),
-                 input("label", true, "observed outcome")},
-                {"treatment effects", "targeting policy"},
-                {"uplift", "Qini", "policy value"}, 1045),
+        make_m6_methodology(),
         make_anomaly_methodology(),
         planned("M-8", "Recommendation / next-best-action", "Action & decision",
                 {"recommendation", "recommender", "next_best_action"}, {"S-11"},

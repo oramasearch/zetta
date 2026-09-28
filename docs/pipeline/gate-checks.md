@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks (schema/type · leakage · causal uplift)
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -17,6 +17,7 @@ The reusable annotation and methodology-specific checks are:
 | `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
 | `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
+| `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -119,6 +120,14 @@ array, numeric `review_threshold` and `match_threshold` values satisfying
 declaration fails before execution. The runtime enforces the same thresholds
 and checks whole clusters before each union, preventing a fuzzy bridge from
 merging records across incompatible verified identifiers.
+
+### `causal_uplift` — treatment design and pre-treatment features
+
+Engages on model steps whose `model_kind` is `uplift` or `causal`. The step must
+name distinct `treatment` and `outcome` columns. Optional `overlap_lower` and
+`overlap_upper` annotations must remain within `[0.05,0.95]` and be ordered.
+Features named like the outcome, equal to the treatment column, or carrying a
+`data_as_of` later than `treatment_time` fail before execution.
 
 ## Example
 

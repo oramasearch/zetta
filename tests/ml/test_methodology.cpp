@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
-        const bool runnable = index <= 4 || index == 6;
+        const bool runnable = index <= 6;
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
                   runnable);
@@ -111,6 +111,9 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("uplift")->id, "M-6");
+    EXPECT_EQ(zetta::ml::find_methodology("S-11")->id, "M-8");
+    EXPECT_EQ(zetta::ml::find_methodology("M-6")->id, "M-6");
     EXPECT_EQ(zetta::ml::find_methodology("S-12")->id, "M-9");
     EXPECT_EQ(zetta::ml::find_methodology("S-8")->id, "M-5");
 }
@@ -136,6 +139,30 @@ TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {
     unknown.add_node(zetta::ir::StepKind::Model, "unknown model",
                      nlohmann::json{{"model_kind", "unknown"}}, "unknown");
     EXPECT_EQ(zetta::ml::methodology_for_graph(unknown), nullptr);
+}
+
+TEST(MethodologyRegistry, M6BuildsAndOwnsItsCausalPipeline) {
+    const zetta::ml::Methodology* methodology =
+        zetta::ml::find_methodology("M-6");
+    ASSERT_NE(methodology, nullptr);
+    zetta::ml::ShapeRequest request;
+    request.hints = {{"source", "experiments"},
+                     {"table", "population"},
+                     {"entity", "customer_id"},
+                     {"treatment", "offer"},
+                     {"outcome", "converted"}};
+    const zetta::ir::ExecutionGraph graph = methodology->build_shape(request);
+    ASSERT_EQ(graph.node_count(), 4u);
+    EXPECT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Connect).size(), 1u);
+    EXPECT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Clean).size(), 1u);
+    EXPECT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Model).size(), 1u);
+    EXPECT_EQ(graph.nodes_of_kind(zetta::ir::StepKind::Act).size(), 1u);
+    const auto model = graph.nodes_of_kind(zetta::ir::StepKind::Model).front();
+    EXPECT_EQ(model->attributes.at("model_kind"), "uplift");
+    EXPECT_EQ(model->attributes.at("treatment"), "offer");
+    EXPECT_EQ(model->attributes.at("outcome"), "converted");
+    EXPECT_TRUE(methodology->owns(graph));
+    EXPECT_FALSE(zetta::ml::find_methodology("M-1")->owns(graph));
 }
 
 TEST(MethodologyRegistry, DocumentationTableMatchesTheRegistry) {
