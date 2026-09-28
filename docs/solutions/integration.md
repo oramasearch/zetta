@@ -33,5 +33,81 @@ six build jobs. The complete `zetta-tests` binary supplies the proof counts;
 the only pre-authorized timing waivers are #959 and #1124. OpenAPI and boundary
 schemas are regenerated with `ZETTA_WRITE_SCHEMAS=1`, then drift-checked.
 
+The native proof uses a fresh local PostgreSQL database, with the search
+engine enabled and no CUDA. Build caches and test temporary files stay in the
+worktree. The proof environment was:
+
+```sh
+export CCACHE_DIR="$PWD/build/ccache"
+export CCACHE_TEMPDIR="$PWD/build/ccache/tmp"
+export TMPDIR="$PWD/build/test-tmp"
+export ZETTA_PG_TEST_HOST=127.0.0.1
+export ZETTA_PG_TEST_USER=stevesperandeo
+export ZETTA_PG_TEST_DB=zetta_issue1122_20260928_proof_8127
+```
+
+Configure and build commands:
+
+```sh
+cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF \
+  -DCMAKE_C_COMPILER_LAUNCHER= -DCMAKE_CXX_COMPILER_LAUNCHER=
+cmake --build build -j 6
+cmake -B build-shared -G Ninja -DBUILD_SHARED_LIBS=ON
+cmake --build build-shared --target boost_beast2 zetta-tests -j 6
+cmake --build build-shared --target zetta-refused-start-test -j 6
+```
+
+Schema regeneration and focused proof:
+
+```sh
+ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests \
+  --gtest_filter='Schemas.*:OpenApi.*:SolutionRegistry.*:SolutionJourney.*:CorrectnessGate.*:GraphChecksThroughGate.*' \
+  --gtest_output=xml:build/focused.xml
+```
+
+```text
+[==========] 43 tests from 6 test suites ran. (45504 ms total)
+[  PASSED  ] 43 tests.
+```
+
+Full proofs, executed one suite at a time:
+
+```sh
+./build/tests/zetta-tests --gtest_output=xml:build/static-proof.xml
+ctest --test-dir build -R '^zetta-refused-start-exit$' --output-on-failure
+./build-shared/tests/zetta-tests --gtest_output=xml:build/shared-proof.xml
+ctest --test-dir build-shared -R '^zetta-refused-start-exit$' --output-on-failure
+```
+
+Static result summary:
+
+```text
+[==========] 2536 tests from 518 test suites ran. (424948 ms total)
+[  PASSED  ] 2520 tests.
+[  SKIPPED ] 16 tests, listed below:
+```
+
+Shared result summary:
+
+```text
+[==========] 2536 tests from 518 test suites ran. (408638 ms total)
+[  PASSED  ] 2520 tests.
+[  SKIPPED ] 16 tests, listed below:
+```
+
+The separate refused-start process regression passes in both builds:
+
+```text
+100% tests passed, 0 tests failed out of 1
+```
+
+Both full runs pass all six solution journeys and all 18 solution-registry
+tests, including every S-1, S-2, S-3, S-4, and S-12 test. The same 16 built-in
+skips cover ten optional checkpoint tests, three corpus input/output tests,
+the optional Motive demo dataset, the CUDA-only training test, and the
+search-engine-absent fallback test in this engine-enabled build. There are
+no failures, isolated reruns, or host-contention exceptions; neither #959 nor
+#1124 was needed. Both full suites also pass the schema drift checks after
+regeneration.
+
 Linux proof deferred: the work order's external Linux proof helper is absent.
-Final native results are recorded here after the proof run.
