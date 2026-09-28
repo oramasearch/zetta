@@ -72,8 +72,13 @@ Solution band_a(
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
+                           : solution.id == "S-5" ? 1114
+                           : solution.id == "S-6" ? 1115
+                           : solution.id == "S-7" ? 1116
+                           : solution.id == "S-8" ? 1117
+                           : solution.id == "S-9" ? 1118
                            : solution.id == "S-12" ? 1121
-                                                     : 1102);
+                                                   : 1102);
     return solution;
 }
 
@@ -318,14 +323,21 @@ const std::vector<Solution>& solutions() {
             "Balance availability, working capital, capacity, and spend constraints.",
             {{"M-4", "primary", 1}, {"M-16", "foundation", 1},
              {"M-5", "attachable", 3}},
-            {"M-4", "M-16", "M-5"}, {"tasks in ERP", "bounded closed loop"}, {"L1"},
+            {"M-4", "M-16", "M-5"},
+            {"draft purchase and transfer orders", "owned tasks in ERP",
+             "bounded closed-loop release"},
+            {"L1 ERP tasks", "bounded batch release"},
             {{"draft purchase or transfer orders", "A0"}, {"release inside policy", "A2"},
              {"policy changes", "A1"}},
-            {{"time", true, "demand and inventory history"}, {"label", true, "demand quantity"},
+            {{"entity", true, "item and location replenishment key"},
+             {"time", true, "demand and inventory history"},
+             {"label", true, "demand quantity"},
              {"variable", true, "order and transfer decisions"},
-             {"constraint", true, "capacity, lead time, budget, and service bounds"}},
+             {"constraint", true, "capacity, lead time, budget, and service bounds"},
+             {"cost", true, "unit, order, and working-capital cost"},
+             {"owner", false, "planner or buyer accountable for the ERP task"}},
             "Order proposals constrained by service targets, lead times, capacity, spend caps, and segregation of duties.",
-            "Phased release comparison with acceptance rate, edit distance, service, and inventory outcomes.",
+            "Protected holdout inside a phased release, with acceptance, edit distance, service, and inventory outcomes.",
             {"spend cap", "service level", "inventory exposure", "order volatility", "segregation of duties"},
             levels("forecast plus draft plan", "add ERP tasks",
                    "add time-to-stockout", "add bounded automatic release")),
@@ -336,52 +348,88 @@ const std::vector<Solution>& solutions() {
             {{"M-7", "primary", 1}, {"M-1", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-4", "attachable", 3}},
             {"M-7", "M-1", "M-3", "M-4"},
-            {"report to decision forum", "decision log"}, {"L1", "L2"},
-            {{"detection and report drafting", "A2"}, {"business decision", "A0"},
-             {"alert-budget tuning", "A3"}},
+            {"decision-forum report with anomaly evidence",
+             "durable forum decision log"},
+            {"L1 decision-forum webhook", "L2 batch report read-back"},
+            {{"detection and report drafting", "A2"},
+             {"executive escalation", "A1"},
+             {"business decision", "A0"},
+             {"alert-budget tuning inside approved bounds", "A3"}},
             {{"feature", true, "KPI measures and candidate drivers"},
-             {"time", true, "event and reporting periods"}, {"entity", false, "business unit or segment"},
+             {"time", true, "ordered KPI and reporting periods"},
+             {"entity", true, "observation, business unit, or segment key"},
+             {"owner", true, "decision-forum owner"},
+             {"permission", true, "sensitive-driver access evidence"},
              {"label", false, "confirmed anomaly for evaluation only"}},
-            "Alert budgets, severity tiers, owner routing, sensitive-driver access, and documented decision outcomes.",
-            "Decision adoption and forecast-honesty tracking with confirmed-alert precision.",
-            {"alert volume", "false escalation", "sensitive-driver access", "causal caveats", "decision closure"},
-            levels("anomaly report", "add driver forum and log",
-                   "add forecast context", "add cross-module executive view")),
+            "Exact alert budgets and severity tiers with owner routing, sensitive-driver access, weekly caps, executive approval, and a kill switch.",
+            "Phased decision-quality tracking: adoption, closure, and confirmed-alert precision are descriptive until a module-specific estimator ships.",
+            {"alert volume", "false escalation rate",
+             "sensitive-driver access violations", "causal-claim violations",
+             "decision closure rate", "action-execution rate"},
+            levels("seasonal anomaly report and protected forum routing",
+                   "add candidate-driver forum and decision log",
+                   "add rolling-origin forecast context",
+                   "add cross-module executive review")),
         band_a(
             "S-8", "Predictive Maintenance",
             "Detect asset risk early and route evidence-backed maintenance work before failure.",
             "Trade planned intervention against failure risk without exceeding safe operating authority.",
             {{"M-5", "primary", 1}, {"M-1", "foundation", 1},
              {"M-2", "foundation", 1}, {"M-7", "attachable", 3}},
-            {"M-2", "M-1", "M-5", "M-7"}, {"work orders in maintenance system"},
-            {"L3 detect", "L1"},
-            {{"draft work orders", "A0"}, {"approved asset classes", "A2"},
-             {"threshold tuning", "A3"}},
-            {{"entity", true, "asset identity and hierarchy"}, {"time", true, "sensor and maintenance chronology"},
-             {"label", true, "failure or intervention outcome"}, {"feature", true, "condition and usage signals"}},
-            "Risk tiers by asset class with maintenance windows, safety boundaries, approval rules, and kill switches.",
-            "Phased rollout by asset class with confirmed-alert precision and avoided-failure evidence.",
-            {"functional safety", "false work orders", "missed failures", "OT security", "maintenance capacity"},
-            levels("risk and work-order drafts", "add survival timing",
-                   "add anomaly detection", "add bounded automatic scheduling")),
+            {"M-2", "M-1", "M-5", "M-7"},
+            {"CMMS work orders with asset, owner, SLA, risk, and time-to-failure",
+             "governed inspection and scheduling tasks"},
+            {"L3 sensor detection", "L1 CMMS tasks"},
+            {{"draft work orders", "A0"},
+             {"inspection work orders for approved asset classes", "A2"},
+             {"scheduled work orders", "A1"},
+             {"threshold tuning inside approved bounds", "A3"}},
+            {{"entity", true, "stable asset identity and hierarchy"},
+             {"time", true, "sensor, failure, and maintenance chronology"},
+             {"label", true, "observed failure event indicator"},
+             {"duration", true, "time from prediction cutoff to failure or censoring"},
+             {"feature_time", true, "point-in-time sensor observation cutoff"},
+             {"feature", true, "condition, usage, and environment signals"},
+             {"asset_class", true, "approved class and safety policy scope"},
+             {"owner", true, "maintenance team or CMMS queue"},
+             {"eligibility", true, "maintenance window, safety, and capacity evidence"}},
+            "Failure-risk tiers crossed with asset-class approval, maintenance windows, safety exclusions, work-order caps, approval rules, and a kill switch.",
+            "Permanent holdout within each risk tier, measuring failure avoidance after work-order assignment.",
+            {"unsafe work orders", "false work orders", "missed failures",
+             "sensor drift", "maintenance capacity", "action-execution rate"},
+            levels("failure risk, time-to-failure, holdout, and CMMS work orders",
+                   "add asset-class maintenance-window policy",
+                   "add sensor anomaly context",
+                   "add approval-gated scheduling")),
         band_a(
             "S-9", "Automated Outbound",
-            "Choose governed outbound journeys and preserve a no-contact option for every audience.",
-            "Coordinate targeting, channel, pacing, and message policy without exhausting customers.",
+            "Select incremental audiences and run governed outbound journeys without exhausting customers.",
+            "Coordinate audience, channel, pacing, and message policy while measuring response against protected holdouts.",
             {{"M-1", "primary", 1}, {"M-3", "foundation", 1},
              {"M-2", "foundation", 1}, {"M-6", "attachable", 2},
              {"M-8", "attachable", 3}, {"M-10", "attachable", 4}},
             {"M-2", "M-1", "M-3", "M-6", "M-8", "M-10"},
-            {"policy engine for journeys within caps"}, {"L1"},
-            {{"send inside caps", "A2"}, {"audiences and copy", "A1"},
+            {"capped outbound journey triggers", "copy-review tasks"},
+            {"L1 journey triggers", "L1 copy-review tasks"},
+            {{"send approved journeys inside caps", "A2"}, {"audiences and copy", "A1"},
              {"pacing inside bounds", "A3"}},
-            {{"entity", true, "resolved customer or account"}, {"treatment", true, "journey, channel, and no-contact arm"},
-             {"label", true, "response and downstream value"}, {"time", true, "eligibility and contact history"}},
+            {{"entity", true, "resolved customer or account"},
+             {"label", true, "response observed in a fully closed window"},
+             {"time", true, "eligibility, contact history, and response cutoff"},
+             {"feature", true, "point-in-time engagement and audience attributes"},
+             {"consent", true, "current consent for the selected channel"},
+             {"suppression", true, "suppression and unsubscribe state at decision time"},
+             {"contact", true, "lifetime and rolling-window contact counts"},
+             {"channel", true, "eligible channel and journey routing evidence"},
+             {"treatment", false, "journey, channel, and no-contact arm for uplift levels"}},
             "Journey eligibility, consent and suppression, contact caps, channel budgets, approvals, and no-contact arms.",
             "Send/hold holdouts per cell with incremental response and downstream value measurement.",
-            {"unsubscribe", "complaints", "frequency cap", "consent", "margin"},
-            levels("governed outbound cells", "add uplift selection",
-                   "add action arbitration", "add grounded language assistance")),
+            {"unsubscribe rate", "complaint rate", "consent violations",
+             "contact frequency", "action-execution rate"},
+            levels("response propensity, audiences, capped journeys and holdout",
+                   "add positive-uplift audience selection",
+                   "add eligible journey arbitration",
+                   "add governed, grounded copy assistance")),
         band_a(
             "S-10", "Fraud & Financial-Crime Decisioning",
             "Make bounded request-time fraud decisions and route evidence-rich cases for review.",
@@ -683,12 +731,27 @@ ComposedSolution compose_solution(const Solution& solution, int level,
 ir::ExecutionGraph solution_stage_graph(const ir::ExecutionGraph& graph,
                                         int stage) {
     ir::ExecutionGraph result;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    const bool strips_composition_annotations =
+        manifest &&
+        manifest->attributes.value("solution", std::string{}) == "S-6";
     for (const auto& node : graph.nodes()) {
         if (!node->attributes.is_object() ||
             node->attributes.value("solution_stage", 0) != stage) {
             continue;
         }
-        result.add_node(node->kind, node->name, node->attributes, node->id);
+        nlohmann::json attributes = node->attributes;
+        attributes.erase("methodology");
+        attributes.erase("solution_stage");
+        attributes.erase("preview");
+        if (strips_composition_annotations) {
+            attributes.erase("source_kind");
+            attributes.erase("snapshot_as_of");
+            attributes.erase("solution_snapshot_as_of");
+        }
+        result.add_node(node->kind, node->name, std::move(attributes),
+                        node->id);
     }
     for (const ir::Edge& edge : graph.edges()) {
         if (result.has_node(edge.from) && result.has_node(edge.to)) {

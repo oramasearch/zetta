@@ -593,6 +593,66 @@ const json* s2_correctness_profile(const ir::ExecutionGraph& graph,
     return &*profile;
 }
 
+const json* s5_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-5") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-5 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s5_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-5 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+const json* s6_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-6") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-6 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s6_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-6 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
 CheckResult s1_not_applicable(std::string name) {
     return {std::move(name), CheckStatus::Pass,
             "no bound S-1 Pipeline to validate"};
@@ -616,6 +676,161 @@ CheckResult s2_failure(std::string name, std::string reason) {
 }
 
 CheckResult s2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s5_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-5 Pipeline to validate"};
+}
+
+CheckResult s5_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s5_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+CheckResult s6_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-6 Pipeline to validate"};
+}
+
+CheckResult s6_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s6_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+const json* s7_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-7") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-7 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s7_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-7 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s7_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-7 Pipeline to validate"};
+}
+
+CheckResult s7_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s7_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+const json* s8_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-8") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-8 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s8_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-8 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s8_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-8 Pipeline to validate"};
+}
+
+CheckResult s8_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s8_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+const json* s9_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-9") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-9 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s9_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-9 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s9_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-9 Pipeline to validate"};
+}
+
+CheckResult s9_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s9_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
@@ -1278,6 +1493,162 @@ CheckResult S2CapacityRoutingCheck::evaluate(
         name(), "S-2 routing is owner-, territory-, and capacity-aware");
 }
 
+CheckResult S6ServiceBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto service = profile->find("service_level_target");
+    const auto budget = profile->find("budget_limit");
+    const auto constraints = profile->find("required_constraints");
+    if (service == profile->end() || !service->is_number() ||
+        service->get<double>() <= 0.0 || service->get<double>() > 1.0) {
+        return s6_failure(
+            name(), "S-6 service-level target must be in the interval (0, 1]");
+    }
+    if (budget == profile->end() || !budget->is_number() ||
+        budget->get<double>() <= 0.0) {
+        return s6_failure(name(),
+                          "S-6 requires a positive replenishment budget cap");
+    }
+    if (constraints == profile->end() || !constraints->is_array()) {
+        return s6_failure(
+            name(), "S-6 must name service-level and budget constraints");
+    }
+    std::unordered_set<std::string> named;
+    for (const json& constraint : *constraints) {
+        if (constraint.is_string()) {
+            named.insert(constraint.get<std::string>());
+        }
+    }
+    if (!named.contains("service_level") || !named.contains("budget")) {
+        return s6_failure(
+            name(), "S-6 must optimize under both service-level and budget constraints");
+    }
+    const ir::Node* optimization = model_kind(graph, "optimization");
+    if (optimization == nullptr ||
+        !optimization->attributes.value("verify_constraints", false)) {
+        return s6_failure(
+            name(), "S-6 requires M-16 to verify every replenishment constraint");
+    }
+    return s6_success(
+        name(), "S-6 has bounded service and spend constraints with verification");
+}
+
+CheckResult S6LeadTimeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto lead_time = profile->find("lead_time_days");
+    const auto horizon = profile->find("forecast_horizon_days");
+    const std::string source =
+        profile->value("lead_time_source", std::string{});
+    if (lead_time == profile->end() || !lead_time->is_number() ||
+        lead_time->get<double>() <= 0.0 || source != "snapshot") {
+        return s6_failure(
+            name(), "S-6 requires a positive lead time from frozen source evidence");
+    }
+    if (horizon == profile->end() || !horizon->is_number() ||
+        horizon->get<double>() < lead_time->get<double>()) {
+        return s6_failure(
+            name(), "S-6 forecast horizon must cover the replenishment lead time");
+    }
+    return s6_success(name(),
+                      "S-6 forecast horizon covers the evidenced lead time");
+}
+
+CheckResult S6OrderApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    const auto automatic =
+        profile->find("automatic_release_max_quantity");
+    const auto hard = profile->find("hard_order_max_quantity");
+    const auto approval = profile->find("approval_above");
+    if (automatic == profile->end() || !automatic->is_number() ||
+        automatic->get<double>() <= 0.0 || hard == profile->end() ||
+        !hard->is_number() ||
+        hard->get<double>() < automatic->get<double>()) {
+        return s6_failure(
+            name(), "S-6 order quantities need positive automatic and hard bounds");
+    }
+    if (approval == profile->end() || !approval->is_number() ||
+        approval->get<double>() > automatic->get<double>() ||
+        profile->value("approval_field", std::string{}) != "order_quantity" ||
+        !profile->value("approval_required", false) ||
+        !profile->value("hard_order_bound_enforced", false)) {
+        return s6_failure(
+            name(), "S-6 must require approval above the automatic quantity bound and block the hard bound");
+    }
+    return s6_success(
+        name(), "S-6 routes over-bound orders to approval and enforces a hard limit");
+}
+
+CheckResult S6LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s6_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s6_failure(name(), error);
+    }
+    if (!has_methodology(graph, "M-4") ||
+        !has_methodology(graph, "M-16")) {
+        return s6_failure(
+            name(), "S-6 requires M-4 forecasting and M-16 optimization");
+    }
+    if (level >= 3 && !has_methodology(graph, "M-5")) {
+        return s6_failure(
+            name(), "S-6 level 3 and above requires M-5 time-to-stockout");
+    }
+    const std::string expected_action =
+        level <= 1 ? "draft_order"
+        : level >= 4 ? "release_order"
+                     : "erp_replenishment_task";
+    if (profile->value("level_action", std::string{}) != expected_action) {
+        return s6_failure(
+            name(), "S-6 selected level has the wrong action authority");
+    }
+    if (level >= 4 &&
+        !profile->value("kill_switch_configured", false)) {
+        return s6_failure(
+            name(), "S-6 level 4 requires a configured kill switch");
+    }
+    return s6_success(name(),
+                      "S-6 selected level has every required stage and action bound");
+}
+
 CheckResult S3ShortTenureCensoringCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;
@@ -1761,6 +2132,527 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+CheckResult S5RollingOriginCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation");
+    const ir::Node* forecast = model_kind(graph, "forecast");
+    if (validation == nullptr ||
+        validation->value("split", std::string{}) != "rolling_origin" ||
+        validation->value("backtest_folds", 0) < 2 ||
+        forecast == nullptr ||
+        forecast->attributes.value("split", std::string{}) !=
+            "rolling_origin" ||
+        !forecast->attributes.value("temporal_validation", false)) {
+        return s5_failure(
+            name(), "S-5 requires at least two rolling-origin backtest folds; "
+                    "random or row holdouts are refused");
+    }
+    return s5_success(name(),
+                      "S-5 uses rolling-origin backtests only");
+}
+
+CheckResult S5FutureCovariateCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const auto covariates = profile->find("future_covariates");
+    if (covariates == profile->end() || !covariates->is_array() ||
+        !covariates->empty()) {
+        return s5_failure(
+            name(), "S-5 refuses future covariates; forecast features must be "
+                    "strictly past target lags and rolling summaries");
+    }
+    bool found_past_lags = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Clean)) {
+        if (!node ||
+            node->attributes.value("transform", std::string{}) !=
+                "past_lags") {
+            continue;
+        }
+        found_past_lags = true;
+        if (!node->attributes.value("strictly_past", false)) {
+            return s5_failure(
+                name(), "S-5 forecast features must end strictly before each "
+                        "forecast origin");
+        }
+    }
+    if (!found_past_lags) {
+        return s5_failure(
+            name(), "S-5 forecast features must end strictly before each "
+                    "forecast origin");
+    }
+    return s5_success(name(),
+                      "S-5 uses only strictly past target history");
+}
+
+CheckResult S5HierarchyConsistencyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    const std::string series_column =
+        profile->value("series_column", std::string{});
+    const auto hierarchy = profile->find("hierarchy_columns");
+    if (series_column.empty() || hierarchy == profile->end() ||
+        !hierarchy->is_array() || hierarchy->empty() ||
+        !hierarchy->back().is_string() ||
+        hierarchy->back().get_ref<const std::string&>() != series_column ||
+        profile->value("hierarchy_mode", std::string{}) !=
+            "bottom_level_only" ||
+        !profile->value("hierarchy_consistent", false)) {
+        return s5_failure(
+            name(), "S-5 requires a named leaf series as the last hierarchy "
+                    "column and bottom-level-only forecasts so parent totals "
+                    "are derived by summing leaves");
+    }
+    return s5_success(
+        name(), "S-5 forecasts hierarchy leaves and derives parent totals");
+}
+
+CheckResult S5LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s5_failure(name(), error);
+    }
+    for (const std::string_view methodology : {"M-2", "M-4", "M-3"}) {
+        if (!has_methodology(graph, methodology)) {
+            return s5_failure(
+                name(), "S-5 requires M-2, M-4, and M-3 at every level");
+        }
+    }
+    if (level >= 3 && !has_methodology(graph, "M-5")) {
+        return s5_failure(
+            name(), "S-5 level 3 and above requires M-5 event timing");
+    }
+    return s5_success(name(),
+                      "S-5 selected level has every required methodology");
+}
+
+CheckResult S7CausalHumilityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* attribution = object_field(*profile, "driver_attribution");
+    if (attribution == nullptr ||
+        attribution->value("claim", std::string{}) != "associational" ||
+        attribution->value("causal_claims", true) ||
+        !attribution->value("caveat_required", false) ||
+        attribution->value("caveat", std::string{}).empty()) {
+        return s7_failure(
+            name(), "S-7 driver attribution must remain associational and "
+                    "carry an explicit causal caveat");
+    }
+    return s7_success(
+        name(), "S-7 reports candidate drivers without causal claims");
+}
+
+CheckResult S7AlertBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* alerting = object_field(*profile, "alerting");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (alerting == nullptr || anomaly == nullptr ||
+        !alerting->contains("alert_budget") ||
+        !alerting->at("alert_budget").is_number_integer() ||
+        alerting->at("alert_budget").get<int>() < 1 ||
+        alerting->value("owner_column", std::string{}).empty() ||
+        alerting->value("window_days", 0) < 1) {
+        return s7_failure(
+            name(), "S-7 requires a positive alert budget, reporting window, "
+                    "and forum owner role");
+    }
+    const auto configured = anomaly->attributes.find("alert_budget");
+    if (configured == anomaly->attributes.end() ||
+        !configured->is_number_integer() ||
+        configured->get<int>() != alerting->at("alert_budget").get<int>() ||
+        anomaly->attributes.contains("contamination")) {
+        return s7_failure(
+            name(), "S-7 anomaly scoring must use the declared exact alert "
+                    "budget instead of a contamination-rate approximation");
+    }
+    return s7_success(
+        name(), "S-7 anomaly scoring and forum routing share one alert budget");
+}
+
+CheckResult S7SeasonalityBaselineCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s7_failure(name(), error);
+    }
+    const json* baseline = object_field(*profile, "baseline");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (baseline == nullptr || anomaly == nullptr ||
+        baseline->value("kind", std::string{}) != "causal_seasonal" ||
+        !baseline->value("strictly_prior", false) ||
+        anomaly->attributes.value("mode", std::string{}) !=
+            "kpi_time_series" ||
+        !anomaly->attributes.value("causal", false) ||
+        anomaly->attributes.value("time_column", std::string{}).empty()) {
+        return s7_failure(
+            name(), "S-7 KPI detection requires a causal, seasonality-aware "
+                    "time-series baseline and an explicit time role");
+    }
+    const int seasonal_period =
+        anomaly->attributes.value("seasonal_period", 0);
+    const int trend_window = anomaly->attributes.value("trend_window", 0);
+    const int residual_window =
+        anomaly->attributes.value("residual_window", 0);
+    const int seasonal_cycles =
+        anomaly->attributes.value("seasonal_cycles", 0);
+    if (seasonal_period < 2 || trend_window < seasonal_period ||
+        residual_window < seasonal_period * 2 || seasonal_cycles < 2) {
+        return s7_failure(
+            name(), "S-7 seasonal windows must cover at least two complete "
+                    "cycles using only prior observations");
+    }
+    if (!has_methodology(graph, "M-7") ||
+        !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-3")) {
+        return s7_failure(
+            name(), "S-7 requires anomaly, tabular driver, and segmentation "
+                    "methodologies at every level");
+    }
+    if (level >= 3) {
+        const ir::Node* forecast = model_kind(graph, "forecast");
+        if (!has_methodology(graph, "M-4") || forecast == nullptr ||
+            forecast->attributes.value("baseline", std::string{}) !=
+                "seasonal_naive" ||
+            !forecast->attributes.value("temporal_validation", false) ||
+            forecast->attributes.value("split", std::string{}) !=
+                "rolling_origin") {
+            return s7_failure(
+                name(), "S-7 levels 3 and 4 require rolling-origin M-4 "
+                        "forecast context against a seasonal-naive baseline");
+        }
+    }
+    return s7_success(
+        name(), "S-7 baselines are causal, seasonal, and level-complete");
+}
+
+CheckResult S8CensoringCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* censoring = object_field(*profile, "censoring");
+    const ir::Node* survival = model_kind(graph, "survival");
+    if (censoring == nullptr ||
+        censoring->value("event_indicator", std::string{}).empty() ||
+        censoring->value("duration_column", std::string{}).empty() ||
+        !censoring->value("censored_assets_included", false) ||
+        censoring->value("censored_value", -1) != 0 ||
+        survival == nullptr ||
+        !survival->attributes.value("censoring_handled", false) ||
+        !survival->attributes.value("stop_after_event", false)) {
+        return s8_failure(
+            name(), "S-8 must retain event=0 assets as censored observations "
+                    "and stop survival expansion at an observed failure");
+    }
+    if (!has_methodology(graph, "M-5") ||
+        !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-2") ||
+        (level >= 3 && !has_methodology(graph, "M-7"))) {
+        return s8_failure(
+            name(), "S-8 selected level is missing M-5, M-1, M-2, or the "
+                    "level-3 M-7 sensor anomaly stage");
+    }
+    return s8_success(
+        name(), "S-8 retains censored assets and uses its required stages");
+}
+
+CheckResult S8SensorDriftCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* sensors = object_field(*profile, "sensor_drift");
+    if (sensors == nullptr ||
+        !sensors->value("monitoring_enabled", false) ||
+        !sensors->contains("baseline_end") ||
+        !sensors->contains("sensor_columns") ||
+        !sensors->at("sensor_columns").is_array() ||
+        sensors->at("sensor_columns").empty() ||
+        !sensors->contains("maximum_psi") ||
+        !sensors->at("maximum_psi").is_number() ||
+        sensors->at("maximum_psi").get<double>() <= 0.0 ||
+        sensors->at("maximum_psi").get<double>() > 0.2) {
+        return s8_failure(
+            name(), "S-8 requires drift monitoring for named sensor columns "
+                    "with a pre-decision baseline and PSI limit at or below 0.2");
+    }
+    const auto prediction = profile->find("prediction_time");
+    if (prediction == profile->end()) {
+        return s8_failure(name(), "S-8 must declare its prediction time");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> baseline_end =
+        solutions::parse_time_point(sensors->at("baseline_end"));
+    if (!prediction_time || !baseline_end ||
+        prediction_time->kind != baseline_end->kind ||
+        baseline_end->value > prediction_time->value) {
+        return s8_failure(
+            name(), "S-8 sensor-drift baseline must end at or before the "
+                    "prediction cutoff");
+    }
+    return s8_success(
+        name(), "S-8 sensor drift has a bounded pre-decision baseline");
+}
+
+CheckResult S8PostFailureMaintenanceLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s8_failure(name(), error);
+    }
+    const json* maintenance =
+        object_field(*profile, "maintenance_records");
+    const auto blocklist = profile->find("post_failure_blocklist");
+    const auto features = profile->find("feature_names");
+    if (maintenance == nullptr ||
+        maintenance->value("failure_time_column", std::string{}).empty() ||
+        !maintenance->value("truncate_at_failure", false) ||
+        maintenance->value("post_failure_records", std::string{}) !=
+            "exclude" ||
+        blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return s8_failure(
+            name(), "S-8 must truncate maintenance history at failure, "
+                    "exclude later records, and declare a non-empty leakage blocklist");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string&>().empty()) {
+            return s8_failure(
+                name(), "S-8 post-failure blocklist entries must be names");
+        }
+        blocked.insert(
+            normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return s8_failure(name(), "S-8 feature names must be strings");
+        }
+        if (blocked.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return s8_failure(
+                name(), "S-8 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is recorded only after failure or maintenance");
+        }
+    }
+    return s8_success(
+        name(), "S-8 excludes post-failure maintenance leakage");
+}
+
+CheckResult S9ConsentSuppressionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* audience = object_field(*profile, "audience");
+    if (audience == nullptr ||
+        !audience->value("consent_required", false) ||
+        audience->value("consent_column", std::string{}).empty() ||
+        audience->value("suppression_column", std::string{}).empty() ||
+        audience->value("channel_eligibility_column", std::string{}).empty() ||
+        audience->value("missing_evidence_action", std::string{}) !=
+            "no_contact" ||
+        audience->value("suppressed_action", std::string{}) !=
+            "no_contact") {
+        return s9_failure(
+            name(), "S-9 requires explicit consent, suppression, and channel "
+                    "eligibility evidence; missing or suppressed rows must be "
+                    "no-contact");
+    }
+    return s9_success(
+        name(), "S-9 audience rows require current consent and suppression evidence");
+}
+
+CheckResult S9ContactCapsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* caps = object_field(*profile, "contact_caps");
+    if (caps == nullptr || caps->value("lifetime", 0) <= 0 ||
+        caps->value("maximum_actions", 0) <= 0 ||
+        caps->value("window_seconds", 0) <= 0 ||
+        caps->value("contacts_column", std::string{}).empty() ||
+        caps->value("recent_actions_column", std::string{}).empty() ||
+        !caps->value("include_recorded_decisions", false) ||
+        caps->value("at_cap_action", std::string{}) != "no_contact") {
+        return s9_failure(
+            name(), "S-9 journeys require positive lifetime and rolling contact "
+                    "caps, supplied count columns, persisted-decision counting, "
+                    "and no-contact at the cap");
+    }
+    return s9_success(
+        name(), "S-9 lifetime and rolling contact caps include persisted decisions");
+}
+
+CheckResult S9UpliftOverPropensityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* score = object_field(*profile, "primary_score");
+    if (score == nullptr ||
+        score->value("methodology", std::string{}) != "M-1" ||
+        score->value("output_name", std::string{}) !=
+            "outbound response scores" ||
+        score->value("entity_column", std::string{}) != "entity" ||
+        score->value("score_column", std::string{}) !=
+            "response_propensity") {
+        return s9_failure(
+            name(), "S-9 must bind its primary M-1 outbound response table; "
+                    "the churn score artifact is not a valid decision source");
+    }
+    if (!has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-2") ||
+        !has_methodology(graph, "M-3")) {
+        return s9_failure(
+            name(), "S-9 requires M-2 identity, M-1 response propensity, and "
+                    "M-3 audience stages at every level");
+    }
+    if (level >= 2) {
+        const ir::Node* uplift = model_kind(graph, "uplift");
+        if (!has_methodology(graph, "M-6") || uplift == nullptr ||
+            uplift->attributes.value("selection_basis", std::string{}) !=
+                "incremental_uplift" ||
+            !uplift->attributes.value("positive_uplift_only", false) ||
+            uplift->attributes.value("non_positive_uplift_action",
+                                     std::string{}) != "no_contact") {
+            return s9_failure(
+                name(), "S-9 level 2 and above must select on positive M-6 "
+                        "incremental uplift, never response propensity alone");
+        }
+    }
+    if (level >= 3 && !has_methodology(graph, "M-8")) {
+        return s9_failure(name(), "S-9 level 3 requires M-8 journey arbitration");
+    }
+    if (level >= 4 && !has_methodology(graph, "M-10")) {
+        return s9_failure(name(), "S-9 level 4 requires M-10 grounded language assistance");
+    }
+    return s9_success(
+        name(), level >= 2
+                    ? "S-9 prioritizes positive incremental uplift over propensity"
+                    : "S-9 uses the outbound response artifact until randomized uplift is available");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

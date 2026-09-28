@@ -113,6 +113,22 @@
         "project": {
           "type": "string"
         },
+        "result_database": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result_entity_column": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result_score_column": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "result_table_prefix": {
+          "minLength": 1,
+          "type": "string"
+        },
         "top_k": {
           "minimum": 0,
           "type": "integer"

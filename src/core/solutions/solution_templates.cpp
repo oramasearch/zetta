@@ -17,6 +17,12 @@ Json predicate(const std::string& field, bool value) {
             {"operator", "eq"}, {"value", value}};
 }
 
+Json numeric_predicate(const std::string& field, const std::string& operation,
+                       double value) {
+    return {{"name", field}, {"role", "entity"}, {"field", field},
+            {"operator", operation}, {"value", value}};
+}
+
 struct DefaultAction {
     const char* id;
     const char* action;
@@ -258,6 +264,206 @@ void claims_triage_defaults(SolutionTemplates& result) {
     result.measurement = {"holdout", "referral_confirmed", "claim", 45};
 }
 
+void demand_forecast_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.2},
+         {"action", "exception_queue"}},
+        {{"name", "review"}, {"minimum_score", 0.05},
+         {"action", "exception_queue"}},
+        {{"name", "routine"}, {"minimum_score", 0.0},
+         {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"exception_queue",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"planner_report", {{"autonomy", "A2"}, {"sla_seconds", 86400}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = {
+        {"max_actions", 1}, {"window_seconds", 7 * 86400}};
+    result.policy["eligibility_rules"] = {
+        predicate("planner_owned", true),
+        predicate("forecast_fresh", true),
+        predicate("hierarchy_consistent", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("stockout_censored", true),
+        predicate("override_locked", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"review", 0.1}, {"routine", 0.1}};
+    result.experiment.treatment_cells = {"planner_report"};
+    result.guardrails = {
+        {"forecast_value_added", 0.0, "minimum"},
+        {"interval_coverage", 0.75, "minimum"},
+        {"stale_forecast_fraction", 0.0, "maximum"},
+        {"stockout_censored_fraction", 0.1, "maximum"},
+        {"unaudited_override_fraction", 0.0, "maximum"}};
+}
+
+void replenishment_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "replenish"}, {"minimum_score", 1.0},
+         {"action", "draft_order"},
+         {"allowed_actions", {"draft_order", "erp_replenishment_task",
+                              "release_order", "no_contact"}}},
+        {{"name", "no_order"}, {"minimum_score", 0.0},
+         {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"draft_order", {{"autonomy", "A0"}, {"sla_seconds", 86400},
+                         {"frequency_cap", frequency(1)}}},
+        {"erp_replenishment_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"release_order",
+         {{"autonomy", "A2"}, {"approval_field", "order_quantity"},
+          {"approval_above", 100.0}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["budget"] = {{"limit", 10000.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("lead_time_confirmed", true),
+        numeric_predicate("order_quantity", "lte", 500.0)};
+    result.policy["exclusion_rules"] = {
+        predicate("inventory_hold", true), predicate("supplier_blocked", true)};
+    result.experiment.holdouts = {{"replenish", 0.1}, {"no_order", 0.1}};
+    result.experiment.treatment_cells = {"replenishment_action"};
+    result.guardrails = {
+        {"replenishment_spend", 10000.0, "maximum"},
+        {"service_level", 0.95, "minimum"},
+        {"inventory_exposure", 5000.0, "maximum"},
+        {"order_volatility", 0.5, "maximum"},
+        {"unapproved_over_bound_orders", 0.0, "maximum"}};
+    result.measurement = {"holdout", "service_level", "fraction", 30};
+}
+
+void kpi_anomaly_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.8},
+         {"action", "decision_forum_report"},
+         {"allowed_actions", {"decision_forum_report", "executive_review",
+                              "no_contact"}}},
+        {{"name", "anomaly"}, {"minimum_score", 0.0},
+         {"action", "decision_forum_report"},
+         {"allowed_actions", {"decision_forum_report", "no_contact"}}}};
+    result.policy["actions"] = {
+        {"decision_forum_report",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"executive_review",
+         {{"autonomy", "A1"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 12;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true),
+        predicate("forum_owner_assigned", true),
+        predicate("sensitive_driver_access", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("suppressed", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"anomaly", 0.1}};
+    result.experiment.treatment_cells = {"forum_routed"};
+    result.guardrails = {
+        {"alert_volume", 12.0, "maximum"},
+        {"false_escalation_rate", 0.25, "maximum"},
+        {"sensitive_driver_access_violations", 0.0, "maximum"},
+        {"causal_claim_violations", 0.0, "maximum"},
+        {"decision_closure_rate", 0.9, "minimum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+}
+
+void predictive_maintenance_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "imminent"}, {"minimum_score", 0.65},
+         {"action", "draft_work_order"},
+         {"allowed_actions", {"draft_work_order", "scheduled_work_order",
+                              "no_action"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.25},
+         {"action", "inspection_work_order"},
+         {"allowed_actions", {"inspection_work_order",
+                              "scheduled_work_order", "no_action"}}},
+        {{"name", "monitor"}, {"minimum_score", 0.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"draft_work_order",
+         {{"autonomy", "A0"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"inspection_work_order",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"scheduled_work_order",
+         {{"autonomy", "A1"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 24;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("maintenance_eligible", true),
+        predicate("approved_asset_class", true),
+        predicate("maintenance_window_available", true),
+        predicate("safe_to_service", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("safety_lockout", true),
+        predicate("active_work_order", true),
+        predicate("sensor_data_untrusted", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"imminent", 0.1}, {"elevated", 0.1}, {"monitor", 0.1}};
+    result.experiment.treatment_cells = {"work_order"};
+    result.guardrails = {
+        {"unsafe_work_order_rate", 0.0, "maximum"},
+        {"false_work_order_rate", 0.1, "maximum"},
+        {"missed_failure_rate", 0.05, "maximum"},
+        {"sensor_drift_psi", 0.2, "maximum"},
+        {"maintenance_capacity_utilization", 0.9, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "failure_avoided", "asset", 30};
+}
+
+void automated_outbound_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "priority"}, {"minimum_score", 0.7}, {"action", "outbound_journey"},
+         {"allowed_actions", {"outbound_journey", "copy_review", "no_contact"}}},
+        {{"name", "standard"}, {"minimum_score", 0.4}, {"action", "nurture_journey"},
+         {"allowed_actions", {"nurture_journey", "copy_review", "no_contact"}}},
+        {{"name", "low"}, {"minimum_score", 0.0}, {"action", "no_contact"}}};
+    result.policy["actions"] = {
+        {"outbound_journey", {{"autonomy", "A2"}, {"sla_seconds", 3600},
+                              {"frequency_cap", frequency(1, 7)}}},
+        {"nurture_journey", {{"autonomy", "A2"}, {"sla_seconds", 86400},
+                             {"frequency_cap", frequency(1, 14)}}},
+        {"copy_review", {{"autonomy", "A1"}, {"sla_seconds", 86400},
+                         {"frequency_cap", frequency(1, 7)}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("consent", true), predicate("suppressed", false),
+        predicate("channel_eligible", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("suppressed", true), predicate("unsubscribed", true),
+        predicate("do_not_contact", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"priority", 0.1}, {"standard", 0.1}, {"low", 0.1}};
+    result.experiment.treatment_cells = {"journey_sent"};
+    result.guardrails = {{"unsubscribe_rate", 0.01, "maximum"},
+                         {"complaint_rate", 0.005, "maximum"},
+                         {"consent_violation_rate", 0.0, "maximum"},
+                         {"contact_frequency", 1.0, "maximum"},
+                         {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "response", "response", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -272,6 +478,16 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 lifetime_value_defaults(result);
             } else if (solution_id == "S-4") {
                 collections_defaults(result);
+            } else if (solution_id == "S-5") {
+                demand_forecast_defaults(result);
+            } else if (solution_id == "S-6") {
+                replenishment_defaults(result);
+            } else if (solution_id == "S-7") {
+                kpi_anomaly_defaults(result);
+            } else if (solution_id == "S-8") {
+                predictive_maintenance_defaults(result);
+            } else if (solution_id == "S-9") {
+                automated_outbound_defaults(result);
             } else if (solution_id == "S-12") {
                 claims_triage_defaults(result);
             }
@@ -279,6 +495,22 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
         }
     }
     return {};
+}
+
+Json solution_policy_template(const std::string& solution_id, int level) {
+    Json policy = solution_templates(solution_id).policy;
+    if (solution_id != "S-6") {
+        return policy;
+    }
+    const std::string action = level <= 1 ? "draft_order"
+                               : level >= 4 ? "release_order"
+                                            : "erp_replenishment_task";
+    for (Json& tier : policy["tiers"]) {
+        if (tier.at("name") == "replenish") {
+            tier["action"] = action;
+        }
+    }
+    return policy;
 }
 
 Json to_json(const SolutionExperimentTemplate& value) {

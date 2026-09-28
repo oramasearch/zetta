@@ -50,8 +50,8 @@ economics with `get_roi_readout`. `update_policy` creates owner-edited versions.
 Graph names are unique within a project; foundation record names include the
 project UUID and graph name.
 
-Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
-`methodology`, `entity_column`, `score_column`, and optional `output_name`.
+Non-M-1 primary methodologies without a module default require an explicit `foundation.decision_source`:
+`methodology`, `entity_column`, `score_column`, and optional `output_name` and positive `horizon`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. S-1 and S-2 use M-1's `account` / `risk` score table.
 S-2 binds conversion propensity to its conversion-band decision cell. S-3 uses
@@ -62,6 +62,23 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+S-5 defaults to the real M-4 `forecast` output, with `series` as the
+entity and relative interval width in `exception_score` as the policy score.
+S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
+the declared lead-time horizon into one decision score per item-location. Its
+M-4 stage reads the configured bounded history table; M-16 and M-5 read the
+latest decision snapshot.
+S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
+anomaly score. Forum decisions copy the real flag, threshold, period, top
+candidate driver, deviation, and contributor list.
+S-8 binds M-5's `survival table`, using `entity` and `hazard` at a configured
+emitted horizon. M-5 writes one row per asset and horizon, so the runtime selects
+that real row and carries `hazard`, `survival`, `expected_time`, and
+`median_survival` into the decision and CMMS payload. It never substitutes the
+M-1 churn table.
+S-9 binds the real M-1 `outbound response scores` output in
+`solution_methodology_results`, with `entity` and `response_propensity`.
+At levels 2–4, M-6 treatment effects supply positive-uplift targeting.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
@@ -78,8 +95,11 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. All stage Connect nodes read this snapshot. An ISO cutoff is
-   carried into feature planning from the snapshot annotation, not inferred.
+   each child Run. Stage Connect nodes read this snapshot except S-6 M-4, which
+   reads its configured bounded history table. Wrapper stage
+   annotations are removed while reconstructing the child graph, so they are
+   never interpreted as methodology parameters. An ISO cutoff is carried into
+   feature planning from the snapshot annotation, not inferred.
 3. Join the chosen model output to snapshot evidence, exactly once per entity.
    `DecisionPolicyStore::decide` selects the tier/action and enforces policy,
    then calls the experiment manager in the same path. Protected cells clear
@@ -99,6 +119,18 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    changes for A1 approval, and publish the allocation report through the same
    action integration layer.
 
+   S-7 routes only flagged rows within its exact alert budget, publishes one
+   candidate-driver report with a causal caveat, and includes the durable forum
+   decision log.
+
+   S-8 rows carry the selected risk horizon and expected failure timing; its
+   monitor observes safety, false work, missed failure, sensor drift,
+   maintenance capacity, and execution.
+
+   S-9 rows carry audience tier, segment, journey, channel, consent and
+   suppression evidence, and contact counts. Its monitor observes unsubscribe,
+   complaint, consent-violation, contact-frequency, and execution rates.
+
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
 not an atomic transaction. A new Run makes new decisions and obeys recorded
@@ -111,6 +143,12 @@ Outcome producers call `record_outcome` against the emitted ledger action IDs.
 outcome/window and configured design, and returns a confidence interval plus
 customer-supplied economics. No missing outcomes are invented. FVA/phased
 measurement remains non-claimable pending a design-specific estimator.
+
+S-5 publishes its planner report through action integration after holdout
+assignment and routes actionable critical/review rows through the same action
+outbox. Its report contains only non-held-out series. The FVA readout preserves
+the methodology metrics but refuses causal incrementality and ROI claims until
+the design-specific estimator exists.
 
 ## Proof
 
@@ -160,3 +198,39 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
+S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
+checks protected-series suppression in both task and report actions, records
+planted forecast errors, observes all five guardrails, and verifies the FVA
+readout reports its current claim boundary.
+
+`SolutionJourney.ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect`
+builds and runs level-4 S-6 over partitioned demand history. It executes M-4,
+M-16, and M-5, aggregates the real lead-time forecast, protects the permanent
+holdout, checks bounded ERP release payloads and all five guardrails, records
+centered service-level outcomes with a 0.12 effect, and verifies that the
+readout estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
+and runs S-7 over a partitioned seasonal KPI table with planted spikes and
+correlated driver spikes. It excludes a future observation, verifies exact
+alert-budget selection, protected holdouts, action-integration tasks and report,
+the driver caveat, decision log, ledger, and guardrails. It records a planted
+forum-adoption difference and verifies that phased evidence remains visible
+while incrementality and ROI are explicitly non-claimable until a
+module-specific estimator exists.
+
+`SolutionJourney.PredictiveMaintenanceCreatesWorkOrdersAndRecoversPlantedEffect`
+builds and runs S-8 over partitioned synthetic asset history. It excludes a
+future asset, retains censored assets, selects a real M-5 horizon, proves
+holdout suppression, checks the CMMS work-order payload and all six guardrails,
+records a centered 0.18 failure-avoidance effect, and verifies the estimate and
+95% confidence interval recover it.
+
+`SolutionJourney.AutomatedOutboundRespectsEligibilityCapsAndRecoversPlantedEffect`
+builds and runs S-9 over partitioned synthetic engagement data. It excludes a
+future observation, protects permanent holdouts, refuses ineligible and capped
+contacts, inspects delivered journey evidence, observes all five guardrails,
+records response outcomes with a 0.12 treatment effect, and checks that the
+estimate and 95% confidence interval recover the planted effect.

@@ -276,6 +276,1149 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_demand_forecast_data(Node& node) {
+    const auto database = node.create_database("demand");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int series = 1; series <= 60; ++series) {
+        for (int day = 0; day < 42; ++day) {
+            const int observation = series * 1000 + day;
+            const double alternating = day % 2 == 0 ? -45.0 : 75.0;
+            const double weekly =
+                12.0 * std::sin(day * 2.0 * std::numbers::pi / 7.0);
+            const double demand = 180.0 + series + alternating + weekly;
+            table->add_row(
+                {{"observation_id", observation},
+                 {"record_id", observation},
+                 {"source", "fixture"},
+                 {"name", "record-" + std::to_string(observation)},
+                 {"series", series},
+                 {"item", "sku-" + std::to_string(series)},
+                 {"location", "west"},
+                 {"day", day},
+                 {"demand", demand},
+                 {"history_feature", static_cast<double>(day % 7)},
+                 {"planner_owned", true},
+                 {"forecast_fresh", true},
+                 {"hierarchy_consistent", true},
+                 {"stockout_censored", false},
+                 {"override_locked", false},
+                 {"manual_override", false},
+                 {"override_reason", ""},
+                 {"owner", "planner-west"}});
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+TEST_F(SolutionJourney,
+       DemandForecastBuildsActsAndReportsFvaLimitsHonestly) {
+    SolutionDeliveryBoundary delivery;
+    land_demand_forecast_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "demand planning"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "demand planning"},
+         {"solution", "S-5"},
+         {"level", 1},
+         {"sources",
+          {{"source", "demand"},
+           {"table", "history"},
+           {"M-3",
+            {{"entity_column", "entity_id"},
+             {"label_column", "demand"},
+             {"feature_columns", {"history_feature"}}}},
+           {"M-4",
+            {{"time_column", "day"},
+             {"target_column", "demand"},
+             {"series_column", "series"},
+             {"horizon", 7},
+             {"seasonal_period", 7},
+             {"lags", {1, 7, 14}},
+             {"rolling_window", 7},
+             {"backtest_folds", 3},
+             {"num_trees", 8},
+             {"max_depth", 3},
+             {"seed", 1114}}},
+           {"correctness",
+            {{"hierarchy_columns", {"item", "location", "series"}}}}}},
+         {"foundation",
+          {{"snapshot",
+            {{"database", "demand"},
+             {"source_table", "history"},
+             {"target_table", "planning_snapshot"},
+             {"entity_column", "observation_id"},
+             {"time_column", "day"},
+             {"as_of", 41}}},
+           {"dataset",
+            {{"entity_column", "entity_id"},
+             {"label_column", "demand"},
+             {"time_column", "day"},
+             {"as_of", 41},
+             {"feature_columns", {"history_feature"}}}},
+           {"delivery",
+            {{"kind", "webhook"},
+             {"endpoint", "https://planning.example.test/forecast"},
+             {"owner", "planner-west"}}},
+           {"roi_model",
+            {{"value_per_outcome", 1.0},
+             {"investment", 0.0},
+             {"currency", "USD"}}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies"),
+              (nlohmann::json{"M-2", "M-4", "M-3"}));
+
+    const auto project = node.find_project("demand planning");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-4");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"), "forecast");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "exception_score");
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "demand planning"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::map<std::string, bool> protected_by_series;
+    std::size_t exception_decisions = 0;
+    const std::string policy_id = binding.at("policy_id");
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id != policy_id) {
+            continue;
+        }
+        protected_by_series[decision.entity_id] = decision.holdout;
+        if (decision.holdout) {
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.actionable) {
+            ++exception_decisions;
+            EXPECT_EQ(decision.action, "exception_queue");
+        }
+    }
+    ASSERT_EQ(protected_by_series.size(), 60u);
+    EXPECT_TRUE(std::ranges::any_of(
+        protected_by_series,
+        [](const auto& entry) { return entry.second; }));
+    EXPECT_GT(exception_decisions, 0u);
+
+    std::size_t planner_reports = 0;
+    std::size_t exception_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++planner_reports;
+            EXPECT_EQ(request.at("payload").at("title"),
+                      "Demand forecast planner report");
+            for (const auto& row : request.at("payload")
+                                       .at("driver_report")
+                                       .at("forecast_rows")) {
+                const std::string series =
+                    std::to_string(row.at("series").get<int>());
+                ASSERT_TRUE(protected_by_series.contains(series));
+                EXPECT_FALSE(protected_by_series.at(series));
+            }
+            continue;
+        }
+        ++exception_tasks;
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id").get<std::string>());
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(request.at("owner"), "planner-west");
+        EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        EXPECT_TRUE(request.at("payload").contains("point_forecast"));
+        EXPECT_TRUE(request.at("payload").contains("lower"));
+        EXPECT_TRUE(request.at("payload").contains("upper"));
+        EXPECT_TRUE(request.at("payload").contains("exception_score"));
+    }
+    EXPECT_EQ(planner_reports, 1u);
+    EXPECT_EQ(exception_tasks, exception_decisions);
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    std::size_t holdout_outcomes = 0;
+    std::size_t treatment_outcomes = 0;
+    for (const auto& entry : ledger.value.at("entries")) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string subject = entry.at("subject");
+        if (!protected_by_series.contains(subject)) {
+            continue;
+        }
+        const bool holdout = protected_by_series.at(subject);
+        const double planted_error = holdout ? 0.4 : 0.2;
+        const ApiResult recorded = call(
+            "record_outcome",
+            {{"action_id", entry.at("id")},
+             {"outcome", "forecast_error"},
+             {"value", planted_error},
+             {"currency", "USD"},
+             {"source", "connector"},
+             {"occurred_at", entry.at("action_at")}});
+        ASSERT_TRUE(recorded.ok) << recorded.error.message;
+        if (holdout) {
+            ++holdout_outcomes;
+        } else {
+            ++treatment_outcomes;
+        }
+    }
+    EXPECT_GT(holdout_outcomes, 0u);
+    EXPECT_GT(treatment_outcomes, 0u);
+
+    const ApiResult readout = call(
+        "get_roi_readout", {{"solution", binding.at("scope")}});
+    ASSERT_TRUE(readout.ok) << readout.error.message;
+    EXPECT_EQ(readout.value.at("measurement").at("design"), "fva");
+    EXPECT_FALSE(readout.value.at("incrementality").at("claimable"));
+    EXPECT_NE(readout.value.at("incrementality")
+                  .at("reason")
+                  .get<std::string>()
+                  .find("module-specific estimator"),
+              std::string::npos);
+    EXPECT_FALSE(readout.value.at("roi_statement").at("claimable"));
+
+    const auto monitor = node.find_monitor(
+        binding.at("monitor_id").get<std::string>());
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+}
+
+void land_kpi_anomaly_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("kpi_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool planted_anomaly = index > 55 && index % 20 == 0;
+        const double seasonal =
+            100.0 + 8.0 * std::sin(
+                                static_cast<double>(index) *
+                                2.0 * std::numbers::pi / 7.0);
+        const double driver =
+            40.0 + static_cast<double>(index % 9) +
+            (planted_anomaly ? 35.0 : 0.0);
+        const double kpi = seasonal + 0.4 * driver +
+                           (planted_anomaly ? 55.0 : 0.0);
+        table->add_row(
+            {{"entity", index},
+             {"period", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"kpi", kpi},
+             {"candidate_driver", driver},
+             {"confirmed_anomaly", planted_anomaly ? 1 : 0},
+             {"eligible", true},
+             {"forum_owner_assigned", true},
+             {"sensitive_driver_access", true},
+             {"suppressed", false},
+             {"owner", "weekly-kpi-forum"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"period", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"kpi", 9999.0},
+         {"candidate_driver", 9999.0},
+         {"confirmed_anomaly", 1},
+         {"eligible", true},
+         {"forum_owner_assigned", true},
+         {"sensitive_driver_access", true},
+         {"suppressed", false},
+         {"owner", "weekly-kpi-forum"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json kpi_anomaly_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "kpi_history"},
+          {"target_table", "kpi_anomaly_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "confirmed_anomaly"},
+          {"time_column", "period"},
+          {"as_of", 239.0},
+          {"feature_columns", {"kpi", "candidate_driver"}}}},
+        {"decision_source",
+         {{"methodology", "M-7"},
+          {"entity_column", "row"},
+          {"score_column", "score"},
+          {"output_name", "anomaly table"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://forum.example.test/kpi-decisions"},
+          {"owner", "weekly-kpi-forum"}}},
+        {"roi_model",
+         {{"value_per_outcome", 0.0},
+          {"investment", 0.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_decision_quality_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    journey::Journey outcomes{"kpi-anomaly-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        outcomes.steps.push_back(
+            {"record observed forum adoption",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "decision_adopted"},
+              {"value", holdout ? 0.2 : 0.35},
+              {"currency", "USD"},
+              {"source", "manual"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read honest phased decision-quality result",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/measurement/design", "phased"),
+              journey::equals("/incrementality/claimable", false),
+              journey::at_least("/incrementality/holdout_samples", 1),
+              journey::equals("/roi_statement/claimable", false),
+              journey::predicate(
+                  "phased readout states why no causal effect is claimable",
+                  [](const auto& value) {
+                      return value.at("incrementality")
+                          .at("reason")
+                          .template get<std::string>()
+                          .contains("module-specific estimator");
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest) {
+    SolutionDeliveryBoundary delivery;
+    land_kpi_anomaly_data(node);
+    journey::Journey flow{"kpi-anomaly-solution", {}};
+    flow.steps = {
+        {"read S-7 defaults",
+         "get_solution",
+         {{"solution", "S-7"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/design", "phased"),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "decision_adopted")}}},
+        {"create KPI anomaly project",
+         "create_project",
+         {{"name", "KPI anomaly forum"}}},
+        {"create S-7 Pipeline",
+         "create_solution",
+         {{"project", "KPI anomaly forum"},
+          {"solution", "S-7"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "kpi_history"},
+            {"M-7",
+             {{"mode", "kpi_time_series"},
+              {"entity_column", "entity_id"},
+              {"label_column", "confirmed_anomaly"},
+              {"time_column", "period"},
+              {"feature_columns", {"kpi", "candidate_driver"}},
+              {"alert_budget", 12},
+              {"seasonal_period", 7},
+              {"trend_window", 28},
+              {"residual_window", 56},
+              {"seasonal_cycles", 8}}},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "confirmed_anomaly"},
+              {"time_column", "period"},
+              {"as_of", 239.0},
+              {"feature_columns", {"kpi", "candidate_driver"}}}}}},
+          {"foundation", kpi_anomaly_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"anomaly_graph", "/graph"},
+          {"anomaly_experiment", "/experiment_id"},
+          {"anomaly_readout", "/readout_id"}}},
+        {"run S-7 Pipeline",
+         "run_solution",
+         {{"project", "KPI anomaly forum"},
+          {"graph", "$anomaly_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"anomaly_run", "/run_id"}}},
+        {"read completed S-7 Run",
+         "get_run",
+         {{"run_id", "$anomaly_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected forum assignments",
+         "get_experiment",
+         {{"experiment", "$anomaly_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 200),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read forum action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 200)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("KPI anomaly forum");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-7 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t actionable_alerts = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        if (decision.actionable) {
+            ++actionable_alerts;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(actionable_alerts, 0u);
+    EXPECT_LE(actionable_alerts, 12u);
+
+    std::size_t forum_tasks = 0;
+    std::size_t forum_reports = 0;
+    for (const auto& request : delivery.requests) {
+        if (request.at("action") == "publish_driver_report") {
+            ++forum_reports;
+            EXPECT_FALSE(request.at("payload")
+                             .at("decision_log")
+                             .empty());
+            EXPECT_EQ(request.at("payload")
+                          .at("driver_report")
+                          .at("alert_budget"),
+                      12);
+            EXPECT_FALSE(request.at("payload")
+                             .at("driver_report")
+                             .at("causal_caveat")
+                             .get<std::string>()
+                             .empty());
+            continue;
+        }
+        ++forum_tasks;
+        EXPECT_EQ(request.at("action"), "decision_forum_report");
+        EXPECT_TRUE(request.at("payload").at("decision_log_required"));
+        EXPECT_FALSE(request.at("payload")
+                         .at("top_driver")
+                         .get<std::string>()
+                         .empty());
+        EXPECT_FALSE(request.at("payload")
+                         .at("causal_caveat")
+                         .get<std::string>()
+                         .empty());
+    }
+    EXPECT_EQ(forum_tasks, actionable_alerts);
+    EXPECT_EQ(forum_reports, 1u);
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("kpi_anomaly_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    const auto alert_guardrail = std::ranges::find_if(
+        monitor->value().guardrails,
+        [](const auto& guardrail) {
+            return guardrail.bound.name == "alert_volume";
+        });
+    ASSERT_NE(alert_guardrail, monitor->value().guardrails.end());
+    ASSERT_TRUE(alert_guardrail->value.has_value());
+    EXPECT_EQ(*alert_guardrail->value, 12.0);
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_decision_quality_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+void land_predictive_maintenance_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("assets");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool high_risk = index % 3 != 0;
+        const bool failed = high_risk ? index % 5 != 0 : index % 8 == 0;
+        const double duration = failed
+                                    ? static_cast<double>(high_risk
+                                                              ? 2 + index % 4
+                                                              : 9 + index % 5)
+                                    : static_cast<double>(18 + index % 8);
+        const std::string asset_class =
+            index % 2 == 0 ? "pump" : "compressor";
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "sensor_fixture"},
+             {"name", "Asset " + std::to_string(index + 1)},
+             {"event", failed ? 1 : 0},
+             {"duration", duration},
+             {"start_time", static_cast<double>(index)},
+             {"feature_time", static_cast<double>(index)},
+             {"vibration", high_risk ? 9.0 + index % 3 : 1.0 + index % 2},
+             {"temperature", high_risk ? 95.0 + index % 4 : 55.0 + index % 3},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"asset_class", asset_class},
+             {"owner", asset_class + "-maintenance"},
+             {"maintenance_window", "2026-W40"},
+             {"maintenance_eligible", true},
+             {"approved_asset_class", true},
+             {"maintenance_window_available", true},
+             {"safe_to_service", true},
+             {"safety_lockout", false},
+             {"active_work_order", false},
+             {"sensor_data_untrusted", false},
+             {"failure_within_horizon", failed && duration <= 12.0},
+             {"false_work_order", false},
+             {"sensor_drift_psi", 0.04},
+             {"maintenance_capacity_utilization", 0.6}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "sensor_fixture"},
+         {"name", "Future asset"},
+         {"event", 1},
+         {"duration", 1.0},
+         {"start_time", 240.0},
+         {"feature_time", 240.0},
+         {"vibration", 999.0},
+         {"temperature", 999.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"asset_class", "pump"},
+         {"owner", "pump-maintenance"},
+         {"maintenance_window", "2026-W44"},
+         {"maintenance_eligible", true},
+         {"approved_asset_class", true},
+         {"maintenance_window_available", true},
+         {"safe_to_service", true},
+         {"safety_lockout", false},
+         {"active_work_order", false},
+         {"sensor_data_untrusted", false},
+         {"failure_within_horizon", true},
+         {"false_work_order", false},
+         {"sensor_drift_psi", 0.04},
+         {"maintenance_capacity_utilization", 0.6}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json predictive_maintenance_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "assets"},
+          {"target_table", "predictive_maintenance_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "event"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"vibration", "temperature"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://cmms.example.test/work-orders"},
+          {"owner", "maintenance-planning"}}},
+        {"decision_source",
+         {{"methodology", "M-5"},
+          {"output_name", "survival table"},
+          {"entity_column", "entity"},
+          {"score_column", "hazard"},
+          {"horizon", 30.0}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_maintenance_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"predictive-maintenance-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double failure_avoided =
+            0.2 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record observed failure avoidance",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "failure_avoided"},
+              {"value", failure_avoided},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {}});
+    }
+    outcomes.steps.push_back(
+        {"read measured maintenance effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted maintenance effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       PredictiveMaintenanceCreatesWorkOrdersAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_predictive_maintenance_data(node);
+    journey::Journey flow{"predictive-maintenance-solution", {}};
+    flow.steps = {
+        {"read S-8 defaults",
+         "get_solution",
+         {{"solution", "S-8"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name",
+                         "failure_avoided")}}},
+        {"create maintenance project",
+         "create_project",
+         {{"name", "predictive maintenance"}}},
+        {"create S-8 Pipeline",
+         "create_solution",
+         {{"project", "predictive maintenance"},
+          {"solution", "S-8"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "assets"},
+            {"M-5",
+             {{"duration_column", "duration"},
+              {"event_indicator", "event"}}}}},
+          {"foundation", predictive_maintenance_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"maintenance_graph", "/graph"},
+          {"maintenance_experiment", "/experiment_id"},
+          {"maintenance_readout", "/readout_id"}}},
+        {"run S-8 Pipeline",
+         "run_solution",
+         {{"project", "predictive maintenance"},
+          {"graph", "$maintenance_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"maintenance_run", "/run_id"}}},
+        {"read completed maintenance Run",
+         "get_run",
+         {{"run_id", "$maintenance_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected maintenance assignments",
+         "get_experiment",
+         {{"experiment", "$maintenance_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read maintenance action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("predictive maintenance");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-8 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_FALSE(payload.at("asset_id").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("asset_class").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("cmms_owner").get<std::string>().empty());
+        EXPECT_FALSE(payload.at("maintenance_window").get<std::string>().empty());
+        EXPECT_GT(payload.at("risk_horizon").get<double>(), 0.0);
+        EXPECT_GT(payload.at("expected_time_to_failure").get<double>(), 0.0);
+        EXPECT_GT(payload.at("median_time_to_failure").get<double>(), 0.0);
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("predictive_maintenance_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_maintenance_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+void land_automated_outbound_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("outbound_customers");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool suppressed = index % 30 == 0;
+        const bool consent = index % 35 != 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "outbound_fixture"},
+             {"name", "Outbound customer " + std::to_string(index + 1)},
+             {"response", index % 10 != 0 ? 1 : 0},
+             {"engagement", index % 13 + 0.5},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"consent", consent},
+             {"suppressed", suppressed},
+             {"channel_eligible", true},
+             {"unsubscribed", false},
+             {"do_not_contact", false},
+             {"contacts", index % 20 == 0 ? 4 : 0},
+             {"recent_actions", index % 25 == 0 ? 1 : 0},
+             {"channel", index % 2 == 0 ? "email" : "sms"},
+             {"complaint", false}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "outbound_fixture"},
+         {"name", "Future outbound customer"},
+         {"response", 1},
+         {"engagement", 999.0},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"consent", true},
+         {"suppressed", false},
+         {"channel_eligible", true},
+         {"unsubscribed", false},
+         {"do_not_contact", false},
+         {"contacts", 0},
+         {"recent_actions", 0},
+         {"channel", "email"},
+         {"complaint", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json automated_outbound_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "outbound_customers"},
+          {"target_table", "automated_outbound_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "response"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"engagement"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://journeys.example.test/trigger"},
+          {"owner", "lifecycle-marketing"}}},
+        {"roi_model",
+         {{"value_per_outcome", 40.0},
+          {"investment", 150.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_outbound_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"automated-outbound-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.2 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed outbound response",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "response"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {}});
+    }
+    outcomes.steps.push_back(
+        {"read measured outbound effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted outbound effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.12;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       AutomatedOutboundRespectsEligibilityCapsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_automated_outbound_data(node);
+    journey::Journey flow{"automated-outbound-solution", {}};
+    flow.steps = {
+        {"read S-9 defaults",
+         "get_solution",
+         {{"solution", "S-9"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name", "response"),
+                     journey::equals(
+                         "/solution/policy_template/contact_cap", 4)}}},
+        {"create outbound project",
+         "create_project",
+         {{"name", "automated outbound"}}},
+        {"create S-9 Pipeline",
+         "create_solution",
+         {{"project", "automated outbound"},
+          {"solution", "S-9"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "outbound_customers"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "response"},
+              {"feature_columns", {"engagement"}}}}}},
+          {"foundation", automated_outbound_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"outbound_graph", "/graph"},
+          {"outbound_experiment", "/experiment_id"},
+          {"outbound_readout", "/readout_id"}}},
+        {"run S-9 Pipeline",
+         "run_solution",
+         {{"project", "automated outbound"},
+          {"graph", "$outbound_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"outbound_run", "/run_id"}}},
+        {"read completed outbound Run",
+         "get_run",
+         {{"run_id", "$outbound_run"}},
+         {.checks = {
+              journey::equals("/status", "succeeded"),
+              journey::size_equals("/lineage/steps", 9),
+              journey::any_element(
+                  "/outputs", {{"/name", "outbound response scores"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected outbound assignments",
+         "get_experiment",
+         {{"experiment", "$outbound_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read outbound action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("automated outbound");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-9 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "outbound response scores");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "response_propensity");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t eligibility_blocks = 0;
+    std::size_t cap_blocks = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+        }
+        const auto& evidence = decision.evidence;
+        if (!evidence.value("consent", false) ||
+            evidence.value("suppressed", true)) {
+            ++eligibility_blocks;
+            EXPECT_FALSE(decision.actionable);
+        }
+        if (evidence.value("contacts", 0) >= 4 ||
+            evidence.value("recent_actions", 0) >= 1) {
+            ++cap_blocks;
+            EXPECT_FALSE(decision.actionable);
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(eligibility_blocks, 0u);
+    EXPECT_GT(cap_blocks, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_TRUE(payload.at("consent").get<bool>());
+        EXPECT_FALSE(payload.at("suppressed").get<bool>());
+        EXPECT_LT(payload.at("contacts").get<int>(), 4);
+        EXPECT_LT(payload.at("recent_actions").get<int>(), 1);
+        EXPECT_FALSE(payload.at("channel").get<std::string>().empty());
+        EXPECT_TRUE(payload.at("decision_cell").contains("audience_tier"));
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot = node.find_database("datasets")
+                              ->find_table("automated_outbound_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_outbound_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
 void land_lead_scoring_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
@@ -323,6 +1466,82 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_replenishment_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("inventory_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    int row_id = 1;
+    for (int item = 1; item <= 64; ++item) {
+        const int order_quantity = 25 + item % 50;
+        const double start_time =
+            30.0 + static_cast<double>(item % 5);
+        for (int period = 0; period < 36; ++period) {
+            const double demand =
+                20.0 + static_cast<double>(item % 7) +
+                static_cast<double>(period) * 0.2 +
+                static_cast<double>(period % 7);
+            const int constraint_index = period % 4;
+            const std::string constraint =
+                constraint_index == 0 ? "service_level"
+                : constraint_index == 1 ? "budget"
+                : constraint_index == 2 ? "lead_time"
+                                        : "receiving_capacity";
+            const std::string sense =
+                constraint_index == 0 ? ">=" : "<=";
+            const double right_hand_side =
+                constraint_index == 0 ? 1.0
+                : constraint_index == 1 ? 640.0
+                : constraint_index == 2 ? 128.0
+                                        : 64.0;
+            table->add_row(
+                {{"row_id", row_id},
+                 {"item_location_id", item},
+                 {"item_id", "sku-" + std::to_string(item)},
+                 {"location_id", "west-dc"},
+                 {"supplier_id", "supplier-a"},
+                 {"timestamp", static_cast<double>(period)},
+                 {"demand_quantity", demand},
+                 {"demand_signal", demand / 10.0},
+                 {"variable", "order-" + std::to_string(item)},
+                 {"objective", 100.0 - static_cast<double>(item % 9)},
+                 {"lower_bound", 0.0},
+                 {"upper_bound", 1.0},
+                 {"integer", false},
+                 {"current_value", 0.0},
+                 {"scenario", "base"},
+                 {"constraint", constraint},
+                 {"coefficient", 1.0},
+                 {"sense", sense},
+                 {"rhs", right_hand_side},
+                 {"event", item % 3 == 0 ? 1 : 0},
+                 {"start_time", start_time},
+                 {"feature_time", start_time - 1.0},
+                 {"duration", 14.0 + static_cast<double>(item % 10)},
+                 {"eligible", true},
+                 {"lead_time_confirmed", true},
+                 {"inventory_hold", false},
+                 {"supplier_blocked", false},
+                 {"order_quantity", order_quantity},
+                 {"lead_time_days", 7.0},
+                 {"service_level_target", 0.95},
+                 {"service_level", 0.98},
+                 {"inventory_exposure", 1200.0 + item},
+                 {"order_volatility", 0.1},
+                 {"cost", 10.0},
+                 {"contacts", 0},
+                 {"recent_actions", 0},
+                 {"owner", "inventory-planning"}});
+            ++row_id;
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -358,6 +1577,36 @@ nlohmann::json lead_scoring_configuration() {
         {"roi_model",
          {{"value_per_outcome", 250.0},
           {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json replenishment_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "inventory_history"},
+          {"target_table", "replenishment_snapshot"},
+          {"entity_column", "item_location_id"},
+          {"time_column", "timestamp"},
+          {"as_of", 35.0}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "event"},
+          {"time_column", "start_time"},
+          {"as_of", 35.0},
+          {"feature_columns", {"demand_signal"}}}},
+        {"decision_source",
+         {{"methodology", "M-4"},
+          {"entity_column", "series"},
+          {"score_column", "point_forecast"},
+          {"output_name", "forecast"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://erp.example.test/replenishment"},
+          {"owner", "inventory-planning"}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 400.0},
           {"currency", "USD"}}}};
 }
 
@@ -963,6 +2212,66 @@ journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+journey::Journey planted_service_level_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"replenishment-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double service_level =
+            0.75 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.12);
+        outcomes.steps.push_back(
+            {"record observed service level",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "service_level"},
+              {"value", service_level},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured replenishment effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted service-level effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.12) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.12 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.12;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -1407,6 +2716,165 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_replenishment_data(node);
+    journey::Journey flow{"replenishment-solution", {}};
+    flow.steps = {
+        {"read S-6 defaults",
+         "get_solution",
+         {{"solution", "S-6"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "service_level")}}},
+        {"create replenishment project",
+         "create_project",
+         {{"name", "replenishment"}}},
+        {"create S-6 Pipeline",
+         "create_solution",
+         {{"project", "replenishment"},
+          {"solution", "S-6"},
+          {"level", 4},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "inventory_history"},
+            {"M-4",
+             {{"source", "datasets"},
+              {"table", "inventory_history"},
+              {"time_column", "timestamp"},
+              {"target_column", "demand_quantity"},
+              {"series_column", "item_location_id"},
+              {"horizon", 7},
+              {"seasonal_period", 7},
+              {"lags", {1, 7}},
+              {"rolling_window", 7},
+              {"backtest_folds", 3},
+              {"num_trees", 10},
+              {"max_depth", 2}}},
+            {"M-5",
+             {{"duration_column", "duration"},
+              {"event_indicator", "event"}}},
+            {"correctness",
+             {{"service_level_target", 0.95},
+              {"lead_time_days", 7.0},
+              {"automatic_release_max_quantity", 100.0},
+              {"hard_order_max_quantity", 500.0}}}}},
+          {"foundation", replenishment_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"replenishment_graph", "/graph"},
+          {"replenishment_experiment", "/experiment_id"}}},
+        {"run S-6 Pipeline",
+         "run_solution",
+         {{"project", "replenishment"},
+          {"graph", "$replenishment_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"replenishment_run", "/run_id"}}},
+        {"read completed replenishment Run",
+         "get_run",
+         {{"run_id", "$replenishment_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected replenishment assignments",
+         "get_experiment",
+         {{"experiment", "$replenishment_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 32),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read replenishment action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 32)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("replenishment");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-6 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& pipeline = graph->graph();
+    bool forecast_reads_history = false;
+    for (const auto& source :
+         pipeline.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (source->attributes.value("methodology", std::string{}) == "M-4") {
+            forecast_reads_history =
+                source->attributes.value("table", std::string{}) ==
+                "inventory_history";
+        }
+    }
+    EXPECT_TRUE(forecast_reads_history);
+    const auto& binding = pipeline.find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("payload").at("action"), "release_order");
+        const auto& proposal = request.at("payload").at("order_proposal");
+        EXPECT_LE(proposal.at("order_quantity").get<double>(), 100.0);
+        EXPECT_EQ(proposal.at("lead_time_days"), 7.0);
+        EXPECT_FALSE(proposal.at("item_id").get<std::string>().empty());
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("replenishment_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 64u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_service_level_outcomes(
+        ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(

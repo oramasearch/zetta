@@ -230,6 +230,229 @@ zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-5");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"M-4",
+          {{"time_column", "day"},
+           {"target_column", "demand"},
+           {"series_column", "series"}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["solution_snapshot_as_of"] = 167.0;
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s5_correctness"] = {
+        {"validation", {{"split", "rolling_origin"}, {"backtest_folds", 4}}},
+        {"future_covariates", nlohmann::json::array()},
+        {"time_column", "day"},
+        {"target_column", "demand"},
+        {"series_column", "series"},
+        {"hierarchy_columns", {"item", "location", "series"}},
+        {"hierarchy_mode", "bottom_level_only"},
+        {"hierarchy_consistent", true}};
+    return composed.graph;
+}
+
+zetta::ir::ExecutionGraph bound_s6_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-6");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level,
+                                    {{"M-4", {{"horizon", 7}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s6_correctness"] = {
+        {"service_level_target", 0.95},
+        {"budget_limit", 10000.0},
+        {"required_constraints", {"service_level", "budget"}},
+        {"lead_time_days", 7.0},
+        {"lead_time_source", "snapshot"},
+        {"forecast_horizon_days", 7.0},
+        {"automatic_release_max_quantity", 100.0},
+        {"hard_order_max_quantity", 500.0},
+        {"approval_field", "order_quantity"},
+        {"approval_above", 100.0},
+        {"hard_order_bound_enforced", true},
+        {"approval_required", true},
+        {"level_action", level <= 1 ? "draft_order"
+                          : level >= 4 ? "release_order"
+                                       : "erp_replenishment_task"},
+        {"kill_switch_configured", true}};
+    return composed.graph;
+}
+
+zetta::ir::ExecutionGraph bound_s7_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-7");
+    if (solution == nullptr) {
+        return {};
+    }
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "kpi_history"},
+        {"M-7",
+         {{"mode", "kpi_time_series"},
+          {"entity_column", "entity_id"},
+          {"label_column", "confirmed_anomaly"},
+          {"time_column", "period"},
+          {"feature_columns", {"kpi", "candidate_driver"}},
+          {"alert_budget", 12}}},
+        {"M-3",
+         {{"entity_column", "entity_id"},
+          {"label_column", "confirmed_anomaly"},
+          {"time_column", "period"},
+          {"as_of", 239.0},
+          {"feature_columns", {"kpi", "candidate_driver"}}}},
+        {"M-4",
+         {{"time_column", "period"},
+          {"target_column", "kpi"},
+          {"series_column", ""}}}};
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, sources);
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (source->attributes.value("methodology", std::string{}) == "M-4") {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] = "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s7_correctness"] = {
+        {"driver_attribution",
+         {{"claim", "associational"},
+          {"causal_claims", false},
+          {"caveat_required", true},
+          {"caveat", "Candidate drivers do not establish causation."}}},
+        {"alerting",
+         {{"alert_budget", 12},
+          {"window_days", 7},
+          {"owner_column", "owner"}}},
+        {"baseline",
+         {{"kind", "causal_seasonal"}, {"strictly_prior", true}}}};
+    return composed.graph;
+}
+
+zetta::ir::ExecutionGraph bound_s8_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-8");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s8_correctness"] = {
+        {"prediction_time", "2024-01-01T00:00:00Z"},
+        {"censoring",
+         {{"event_indicator", "event"},
+          {"duration_column", "duration"},
+          {"censored_assets_included", true},
+          {"censored_value", 0}}},
+        {"sensor_drift",
+         {{"monitoring_enabled", true},
+          {"baseline_end", "2024-01-01T00:00:00Z"},
+          {"sensor_columns", {"temperature", "vibration"}},
+          {"maximum_psi", 0.2}}},
+        {"maintenance_records",
+         {{"failure_time_column", "failure_at"},
+          {"truncate_at_failure", true},
+          {"post_failure_records", "exclude"}}},
+        {"post_failure_blocklist",
+         {"repair_completed_at", "failure_code", "replacement_reason"}},
+        {"feature_names", {"temperature", "vibration"}}};
+    return composed.graph;
+}
+
+zetta::ir::ExecutionGraph bound_s9_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-9");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s9_correctness"] = {
+        {"audience",
+         {{"consent_required", true},
+          {"consent_column", "consent"},
+          {"suppression_column", "suppressed"},
+          {"channel_eligibility_column", "channel_eligible"},
+          {"missing_evidence_action", "no_contact"},
+          {"suppressed_action", "no_contact"}}},
+        {"contact_caps",
+         {{"lifetime", 4},
+          {"maximum_actions", 1},
+          {"window_seconds", 604800},
+          {"contacts_column", "contacts"},
+          {"recent_actions_column", "recent_actions"},
+          {"include_recorded_decisions", true},
+          {"at_cap_action", "no_contact"}}},
+        {"primary_score",
+         {{"methodology", "M-1"},
+          {"output_name", "outbound response scores"},
+          {"entity_column", "entity"},
+          {"score_column", "response_propensity"}}}};
+    for (const auto& model :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["selection_basis"] = "incremental_uplift";
+            model->attributes["positive_uplift_only"] = true;
+            model->attributes["non_positive_uplift_action"] = "no_contact";
+        }
+    }
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -287,6 +510,42 @@ void expect_s12_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_s5_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s7_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s8_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_s9_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
@@ -310,9 +569,11 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_NO_THROW(validator.validate(solution.templates.policy)) << solution.id;
             EXPECT_FALSE(solution.templates.policy.at("kill_switch").get<bool>());
             EXPECT_EQ(solution.templates.minimal,
-                      solution.id != "S-1" && solution.id != "S-2" &&
-                      solution.id != "S-3" && solution.id != "S-4" &&
-                      solution.id != "S-12");
+                       solution.id != "S-1" && solution.id != "S-2" &&
+                       solution.id != "S-3" && solution.id != "S-4" &&
+                       solution.id != "S-5" && solution.id != "S-6" &&
+                       solution.id != "S-7" && solution.id != "S-8" &&
+                       solution.id != "S-9" && solution.id != "S-12");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -426,6 +687,41 @@ TEST(SolutionRegistry, LeadScoringEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("actions").at("priority_queue_review").at("autonomy"),
               "A1");
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, ReplenishmentEntryCarriesExecutableDefaults) {
+    const zetta::ml::Solution* replenishment =
+        zetta::ml::find_solution("S-6");
+    ASSERT_NE(replenishment, nullptr);
+    EXPECT_TRUE(replenishment->runnable);
+    EXPECT_EQ(replenishment->issue,
+              "https://github.com/oramasearch/zetta/issues/1115");
+    EXPECT_FALSE(replenishment->templates.minimal);
+    EXPECT_EQ(replenishment->templates.measurement.design, "holdout");
+    EXPECT_EQ(replenishment->templates.measurement.outcome,
+              "service_level");
+    EXPECT_EQ(replenishment->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"replenishment_action"}));
+    ASSERT_EQ(replenishment->templates.guardrails.size(), 5u);
+    EXPECT_EQ(replenishment->templates.guardrails.front().metric,
+              "replenishment_spend");
+    EXPECT_EQ(replenishment->templates.guardrails.at(1).direction,
+              "minimum");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 1)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "draft_order");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 2)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "erp_replenishment_task");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("S-6", 4)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "release_order");
 }
 
 TEST(SolutionRegistry, RefusesSketchesAndUnknownLevels) {
@@ -772,6 +1068,424 @@ TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
         EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
                       methods.end(),
                   level >= 3);
+    }
+}
+
+TEST(SolutionRegistry, DemandForecastEntryCarriesExecutableDefaults) {
+    const zetta::ml::Solution* forecast = zetta::ml::find_solution("S-5");
+    ASSERT_NE(forecast, nullptr);
+    EXPECT_TRUE(forecast->runnable);
+    EXPECT_EQ(forecast->issue,
+              "https://github.com/oramasearch/zetta/issues/1114");
+    EXPECT_EQ(forecast->action_patterns,
+              (std::vector<std::string>{"planner report",
+                                        "exception queues"}));
+    EXPECT_FALSE(forecast->templates.minimal);
+    EXPECT_EQ(forecast->templates.measurement.design, "fva");
+    EXPECT_EQ(forecast->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"planner_report"}));
+    ASSERT_EQ(forecast->templates.guardrails.size(), 5u);
+    EXPECT_EQ(forecast->templates.guardrails.front().metric,
+              "forecast_value_added");
+    EXPECT_EQ(forecast->templates.guardrails.front().direction, "minimum");
+    EXPECT_EQ(
+        forecast->templates.policy.at("actions")
+            .at("exception_queue")
+            .at("autonomy"),
+        "A2");
+    EXPECT_EQ(
+        forecast->templates.policy.at("actions")
+            .at("no_contact")
+            .at("autonomy"),
+        "A0");
+}
+
+TEST(SolutionRegistry, S5CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s5_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto temporal = bound_s5_graph();
+    temporal.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["validation"]["split"] = "random";
+    expect_s5_failure(temporal, "s5_rolling_origin");
+
+    auto too_few_folds = bound_s5_graph();
+    too_few_folds.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["validation"]["backtest_folds"] = 1;
+    expect_s5_failure(too_few_folds, "s5_rolling_origin");
+
+    auto future = bound_s5_graph();
+    future.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["future_covariates"] = {"promotion"};
+    expect_s5_failure(future, "s5_future_covariates");
+
+    auto current_target = bound_s5_graph();
+    for (const auto& step : current_target.nodes_of_kind(
+             zetta::ir::StepKind::Clean)) {
+        if (step->attributes.value("transform", std::string{}) ==
+            "past_lags") {
+            step->attributes["strictly_past"] = false;
+        }
+    }
+    expect_s5_failure(current_target, "s5_future_covariates");
+
+    auto hierarchy = bound_s5_graph();
+    hierarchy.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["hierarchy_consistent"] = false;
+    expect_s5_failure(hierarchy, "s5_hierarchy_consistency");
+
+    auto wrong_leaf = bound_s5_graph();
+    wrong_leaf.find_node("solution_manifest")
+        ->attributes["s5_correctness"]["hierarchy_columns"] = {
+            "item", "location"};
+    expect_s5_failure(wrong_leaf, "s5_hierarchy_consistency");
+}
+
+TEST(SolutionRegistry, S5EveryLevelBuildsWithItsDeclaredComposition) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s5_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n'
+            << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            const zetta::ir::ExecutionGraph stage_graph =
+                zetta::ml::solution_stage_graph(
+                    graph, static_cast<int>(stage));
+            EXPECT_FALSE(stage_graph.empty()) << level << ':' << stage;
+            const std::string methodology =
+                manifest->attributes.at("methodologies").at(stage - 1);
+            const zetta::ml::Methodology* callback =
+                zetta::ml::find_methodology(methodology);
+            ASSERT_NE(callback, nullptr) << methodology;
+            EXPECT_TRUE(callback->run) << methodology;
+        }
+    }
+
+    auto missing_timing = bound_s5_graph(3);
+    missing_timing.find_node("solution_manifest")
+        ->attributes["methodologies"] = {"M-2", "M-4", "M-3"};
+    expect_s5_failure(missing_timing, "s5_level_composition");
+
+    auto missing_foundation = bound_s5_graph();
+    missing_foundation.find_node("solution_manifest")
+        ->attributes["methodologies"] = {"M-4", "M-3"};
+    expect_s5_failure(missing_foundation, "s5_level_composition");
+}
+
+TEST(SolutionRegistry, S6CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_s6_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto service = bound_s6_graph();
+    service.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["required_constraints"] = {"budget"};
+    const auto service_report = zetta::pipeline::default_gate().run(service);
+    const auto* service_check = check_result(
+        service_report, "solution/s6_service_budget_constraints");
+    ASSERT_NE(service_check, nullptr);
+    EXPECT_EQ(service_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto budget = bound_s6_graph();
+    budget.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["budget_limit"] = 0.0;
+    const auto budget_report = zetta::pipeline::default_gate().run(budget);
+    const auto* budget_check = check_result(
+        budget_report, "solution/s6_service_budget_constraints");
+    ASSERT_NE(budget_check, nullptr);
+    EXPECT_EQ(budget_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto lead_time = bound_s6_graph();
+    lead_time.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["forecast_horizon_days"] = 6.0;
+    const auto lead_time_report =
+        zetta::pipeline::default_gate().run(lead_time);
+    const auto* lead_time_check = check_result(
+        lead_time_report, "solution/s6_lead_time_realism");
+    ASSERT_NE(lead_time_check, nullptr);
+    EXPECT_EQ(lead_time_check->status, zetta::pipeline::CheckStatus::Fail);
+
+    auto approval = bound_s6_graph();
+    approval.find_node("solution_manifest")
+        ->attributes["s6_correctness"]["approval_required"] = false;
+    const auto approval_report =
+        zetta::pipeline::default_gate().run(approval);
+    const auto* approval_check = check_result(
+        approval_report, "solution/s6_order_approval");
+    ASSERT_NE(approval_check, nullptr);
+    EXPECT_EQ(approval_check->status, zetta::pipeline::CheckStatus::Fail);
+}
+
+TEST(SolutionRegistry, S6EveryLevelBuildsThroughItsMethodologyCallbacks) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_s6_graph(level);
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 3u : 2u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, KpiAnomalyEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* anomaly = zetta::ml::find_solution("S-7");
+    ASSERT_NE(anomaly, nullptr);
+    EXPECT_TRUE(anomaly->runnable);
+    EXPECT_EQ(anomaly->issue,
+              "https://github.com/oramasearch/zetta/issues/1116");
+    EXPECT_FALSE(anomaly->templates.minimal);
+    EXPECT_EQ(anomaly->action_patterns.size(), 2u);
+    EXPECT_EQ(anomaly->templates.experiment.holdouts.size(), 2u);
+    EXPECT_EQ(anomaly->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"forum_routed"}));
+    ASSERT_EQ(anomaly->templates.guardrails.size(), 6u);
+    EXPECT_EQ(anomaly->templates.guardrails.front().metric, "alert_volume");
+    EXPECT_EQ(anomaly->templates.guardrails.back().direction, "minimum");
+    EXPECT_EQ(anomaly->templates.measurement.design, "phased");
+    EXPECT_EQ(anomaly->templates.measurement.outcome, "decision_adopted");
+
+    const nlohmann::json policy = anomaly->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 2u);
+    EXPECT_EQ(policy.at("contact_cap"), 12);
+    EXPECT_EQ(policy.at("actions").at("executive_review").at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, S7ChecksRefuseWrongAttributionBudgetAndBaseline) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s7_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto causal_claim = bound_s7_graph();
+    causal_claim.find_node("solution_manifest")
+        ->attributes["s7_correctness"]["driver_attribution"]
+                   ["causal_claims"] = true;
+    expect_s7_failure(causal_claim, "s7_causal_humility");
+
+    auto budget = bound_s7_graph();
+    budget.find_node("solution_manifest")
+        ->attributes["s7_correctness"]["alerting"]["alert_budget"] = 11;
+    expect_s7_failure(budget, "s7_alert_budget");
+
+    auto seasonality = bound_s7_graph();
+    for (const auto& model :
+         seasonality.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) ==
+            "anomaly") {
+            model->attributes["seasonal_period"] = 1;
+        }
+    }
+    expect_s7_failure(seasonality, "s7_seasonality_baseline");
+
+    auto future_fitted = bound_s7_graph();
+    future_fitted.find_node("solution_manifest")
+        ->attributes["s7_correctness"]["baseline"]["strictly_prior"] = false;
+    expect_s7_failure(future_fitted, "s7_seasonality_baseline");
+
+    auto forecast = bound_s7_graph(3);
+    for (const auto& model :
+         forecast.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) ==
+            "forecast") {
+            model->attributes["baseline"] = "last_value";
+        }
+    }
+    expect_s7_failure(forecast, "s7_seasonality_baseline");
+}
+
+TEST(SolutionRegistry, S7EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s7_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, PredictiveMaintenanceEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* maintenance =
+        zetta::ml::find_solution("S-8");
+    ASSERT_NE(maintenance, nullptr);
+    EXPECT_TRUE(maintenance->runnable);
+    EXPECT_EQ(maintenance->issue,
+              "https://github.com/oramasearch/zetta/issues/1117");
+    EXPECT_FALSE(maintenance->templates.minimal);
+    EXPECT_EQ(maintenance->action_patterns.size(), 2u);
+    EXPECT_EQ(maintenance->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(maintenance->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"work_order"}));
+    ASSERT_EQ(maintenance->templates.guardrails.size(), 6u);
+    EXPECT_EQ(maintenance->templates.guardrails.front().metric,
+              "unsafe_work_order_rate");
+    EXPECT_EQ(maintenance->templates.guardrails.back().direction,
+              "minimum");
+    EXPECT_EQ(maintenance->templates.measurement.design, "holdout");
+    EXPECT_EQ(maintenance->templates.measurement.outcome,
+              "failure_avoided");
+
+    const nlohmann::json policy = maintenance->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("actions").at("draft_work_order").at("autonomy"),
+              "A0");
+    EXPECT_EQ(policy.at("actions")
+                  .at("inspection_work_order")
+                  .at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("actions")
+                  .at("scheduled_work_order")
+                  .at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 4u);
+}
+
+TEST(SolutionRegistry, S8ChecksRefuseWrongMaintenanceCases) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s8_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto censoring = bound_s8_graph();
+    censoring.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["censoring"]
+                   ["censored_assets_included"] = false;
+    expect_s8_failure(censoring, "s8_censoring");
+
+    auto drift = bound_s8_graph();
+    drift.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["sensor_drift"]
+                   ["monitoring_enabled"] = false;
+    expect_s8_failure(drift, "s8_sensor_drift");
+
+    auto leakage = bound_s8_graph();
+    leakage.find_node("solution_manifest")
+        ->attributes["s8_correctness"]["feature_names"]
+        .push_back("repair_completed_at");
+    expect_s8_failure(leakage,
+                      "s8_post_failure_maintenance_leakage");
+}
+
+TEST(SolutionRegistry, S8EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s8_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, AutomatedOutboundEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* outbound =
+        zetta::ml::find_solution("S-9");
+    ASSERT_NE(outbound, nullptr);
+    EXPECT_TRUE(outbound->runnable);
+    EXPECT_EQ(outbound->issue,
+              "https://github.com/oramasearch/zetta/issues/1118");
+    EXPECT_FALSE(outbound->templates.minimal);
+    EXPECT_EQ(outbound->action_patterns.size(), 2u);
+    EXPECT_EQ(outbound->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(outbound->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"journey_sent"}));
+    ASSERT_EQ(outbound->templates.guardrails.size(), 5u);
+    EXPECT_EQ(outbound->templates.guardrails.front().metric,
+              "unsubscribe_rate");
+    EXPECT_EQ(outbound->templates.guardrails.back().direction,
+              "minimum");
+    EXPECT_EQ(outbound->templates.measurement.outcome, "response");
+
+    const nlohmann::json policy = outbound->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("contact_cap"), 4);
+    EXPECT_EQ(policy.at("actions").at("copy_review").at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+    EXPECT_EQ(policy.at("exclusion_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, S9ChecksRefuseUnsafeAudienceAndPropensityCases) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s9_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto consent = bound_s9_graph();
+    consent.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["audience"]["consent_required"] =
+            false;
+    expect_s9_failure(consent, "s9_consent_suppression");
+
+    auto suppression = bound_s9_graph();
+    suppression.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["audience"]
+                   ["suppressed_action"] = "send";
+    expect_s9_failure(suppression, "s9_consent_suppression");
+
+    auto caps = bound_s9_graph();
+    caps.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["contact_caps"]
+                   ["maximum_actions"] = 0;
+    expect_s9_failure(caps, "s9_contact_caps");
+
+    auto churn_source = bound_s9_graph();
+    churn_source.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["primary_score"]["score_column"] =
+            "risk";
+    expect_s9_failure(churn_source, "s9_uplift_over_propensity");
+
+    auto propensity_only = bound_s9_graph(2);
+    for (const auto& model :
+         propensity_only.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["selection_basis"] = "response_propensity";
+        }
+    }
+    expect_s9_failure(propensity_only, "s9_uplift_over_propensity");
+}
+
+TEST(SolutionRegistry, S9EveryLevelBuildsThroughRegisteredMethodologies) {
+    const std::vector<std::size_t> expected_stages = {3u, 4u, 5u, 6u};
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s9_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = expected_stages[level - 1];
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
     }
 }
 

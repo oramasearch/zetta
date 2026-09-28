@@ -37,6 +37,8 @@ std::map<int, ir::ExecutionGraph> solution_stages(const ir::ExecutionGraph& grap
                                                 std::string& error) {
     std::map<int, ir::ExecutionGraph> stages;
     const auto manifest = graph.find_node("solution_manifest");
+    const bool strips_snapshot_annotations =
+        manifest->attributes.value("solution", std::string{}) == "S-6";
     const auto declared = manifest->attributes.find("methodologies");
     if (declared == manifest->attributes.end() || !declared->is_array() || declared->empty()) {
         error = "solution manifest must declare its methodology stages";
@@ -63,6 +65,11 @@ std::map<int, ir::ExecutionGraph> solution_stages(const ir::ExecutionGraph& grap
             attributes.erase("methodology");
             attributes.erase("solution_stage");
             attributes.erase("preview");
+            if (strips_snapshot_annotations) {
+                attributes.erase("source_kind");
+                attributes.erase("snapshot_as_of");
+                attributes.erase("solution_snapshot_as_of");
+            }
         }
         stages[index].add_node(node->kind, node->name,
                                std::move(attributes), node->id);
@@ -180,6 +187,23 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S12FairnessReviewCheck>());
     gate.add_check(std::make_shared<S12DocumentConfidenceCheck>());
     gate.add_check(std::make_shared<S12LevelCompositionCheck>());
+    gate.add_check(std::make_shared<S5RollingOriginCheck>());
+    gate.add_check(std::make_shared<S5FutureCovariateCheck>());
+    gate.add_check(std::make_shared<S5HierarchyConsistencyCheck>());
+    gate.add_check(std::make_shared<S5LevelCompositionCheck>());
+    gate.add_check(std::make_shared<S6ServiceBudgetCheck>());
+    gate.add_check(std::make_shared<S6LeadTimeCheck>());
+    gate.add_check(std::make_shared<S6OrderApprovalCheck>());
+    gate.add_check(std::make_shared<S6LevelCompositionCheck>());
+    gate.add_check(std::make_shared<S7CausalHumilityCheck>());
+    gate.add_check(std::make_shared<S7AlertBudgetCheck>());
+    gate.add_check(std::make_shared<S7SeasonalityBaselineCheck>());
+    gate.add_check(std::make_shared<S8CensoringCheck>());
+    gate.add_check(std::make_shared<S8SensorDriftCheck>());
+    gate.add_check(std::make_shared<S8PostFailureMaintenanceLeakageCheck>());
+    gate.add_check(std::make_shared<S9ConsentSuppressionCheck>());
+    gate.add_check(std::make_shared<S9ContactCapsCheck>());
+    gate.add_check(std::make_shared<S9UpliftOverPropensityCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

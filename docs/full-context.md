@@ -97,6 +97,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   fairness review, protected holdouts, and measured referral outcomes are
   covered by [solutions/S-12.md](solutions/S-12.md).
 
+- **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
+  with M-4 lead-time forecasting, M-16 constrained planning, optional M-5
+  time-to-stockout, complete policy and holdout defaults, bounded ERP release,
+  five observed guardrails, and a service-level ROI readout. See
+  [solutions/S-6.md](solutions/S-6.md).
+
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal
   handler protection. Solution monitors, experiments/assignments and ledger
@@ -104,6 +110,31 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   decisions and ROI definitions remain direct CRDT reads. The audit ID index
   and owner wake-up callback are retained. See
   [cluster/solution-reconciliation.md](cluster/solution-reconciliation.md).
+
+- **S-5 Demand Forecasting (#1114)** — runnable at levels 1–4 with
+  M-2/M-4/M-3 and optional M-5, rolling-origin and past-only checks,
+  bottom-level hierarchy consistency, complete policy and holdout defaults,
+  prediction-interval exception tasks, planner reports, observed FVA
+  guardrails, and an explicitly non-causal FVA readout. See
+  [solutions/S-5.md](solutions/S-5.md).
+
+- **S-7 KPI Anomaly & Driver Analysis (#1116)** — runnable at levels 1–4 with
+  M-7/M-1/M-3 and optional M-4 context, causal seasonal baselines, an exact
+  alert budget, associational driver evidence, protected forum routing, a
+  decision log, and honest phased measurement. See
+  [solutions/S-7.md](solutions/S-7.md).
+
+- **S-8 Predictive Maintenance (#1117)** — runnable at levels 1–4 with
+  M-2/M-1/M-5 and optional M-7, full maintenance policy and holdout defaults,
+  censoring, sensor-drift, and post-failure leakage refusals, governed CMMS
+  work-order payloads, and a failure-avoidance ROI readout. See
+  [solutions/S-8.md](solutions/S-8.md).
+
+- **S-9 Automated Outbound (#1118)** — runnable at levels 1–4 with
+  M-1/M-3/M-2, optional M-6/M-8/M-10 stages, consent and suppression
+  eligibility, persisted contact limits, positive-uplift targeting, capped
+  journey delivery, tier holdouts, and a response ROI readout. See
+  [solutions/S-9.md](solutions/S-9.md).
 
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and

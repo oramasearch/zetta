@@ -1,5 +1,8 @@
 # Landing S-1 through S-4 and S-12
 
+This is the historical first landing (#1152). See
+[pass two](integration-pass-2.md) for the subsequent modules and proof.
+
 Refs #1122 and #1128. The integration branch combines S-1 (#1135), S-2
 (#1141), S-3 (#1140), S-4 (#1139), and S-12 (#1142), followed by `dev`.
 Module branches retain merge commits and their original tests. This landing

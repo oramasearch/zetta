@@ -146,6 +146,10 @@ ChurnSolutionResult run_churn_solution_with_coordinator(
     pipeline.entity_column = "entity";
     pipeline.top_k = options.top_k;
     pipeline.model_name = options.model_name;
+    pipeline.result_database = options.result_database;
+    pipeline.result_table_prefix = options.result_table_prefix;
+    pipeline.result_entity_column = options.result_entity_column;
+    pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
 
@@ -202,7 +206,11 @@ Json options_to_wire(const ChurnSolutionOptions& options) {
         {"top_k", options.top_k},
         {"model_name", options.model_name},
         {"project", options.project},
-        {"graph_label", options.graph}};
+        {"graph_label", options.graph},
+        {"result_database", options.result_database},
+        {"result_table_prefix", options.result_table_prefix},
+        {"result_entity_column", options.result_entity_column},
+        {"result_score_column", options.result_score_column}};
 }
 
 // Parse the (schema-validated) options object back. Returns nullopt + a reason
@@ -229,6 +237,10 @@ std::optional<ChurnSolutionOptions> options_from_wire(const Json& wire,
     options.model_name = wire.at("model_name").get<std::string>();
     if (wire.contains("project")) options.project = wire["project"].get<std::string>();
     if (wire.contains("graph_label")) options.graph = wire["graph_label"].get<std::string>();
+    options.result_database = wire.value("result_database", options.result_database);
+    options.result_table_prefix = wire.value("result_table_prefix", options.result_table_prefix);
+    options.result_entity_column = wire.value("result_entity_column", options.result_entity_column);
+    options.result_score_column = wire.value("result_score_column", options.result_score_column);
     options.coordinate = false;  // a co-launched run never re-fans-out
     return options;
 }
@@ -505,6 +517,10 @@ ChurnSolutionResult run_churn_solution_on_table(
     pipeline.entity_column = std::string(kTableEntityColumn);
     pipeline.top_k = options.top_k;
     pipeline.model_name = options.model_name;
+    pipeline.result_database = options.result_database;
+    pipeline.result_table_prefix = options.result_table_prefix;
+    pipeline.result_entity_column = options.result_entity_column;
+    pipeline.result_score_column = options.result_score_column;
     pipeline.project = options.project;
     pipeline.graph = options.graph;
 
@@ -636,7 +652,11 @@ const nlohmann::json& churn_coordinated_run_schema() {
             "top_k":       { "type": "integer", "minimum": 0 },
             "model_name":  { "type": "string", "minLength": 1 },
             "project":     { "type": "string" },
-            "graph_label": { "type": "string" }
+            "graph_label": { "type": "string" },
+            "result_database": { "type": "string", "minLength": 1 },
+            "result_table_prefix": { "type": "string", "minLength": 1 },
+            "result_entity_column": { "type": "string", "minLength": 1 },
+            "result_score_column": { "type": "string", "minLength": 1 }
           } }
       }
     })JSONSCHEMA");

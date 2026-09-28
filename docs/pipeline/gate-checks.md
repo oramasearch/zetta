@@ -38,6 +38,15 @@ The reusable annotation and methodology-specific checks are:
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
 | `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
+| `S6*Check` family | `s6_service_budget_constraints`, `s6_lead_time_realism`, `s6_order_approval`, `s6_level_composition` | an S-6 graph without service/budget verification, lead-time coverage, bounded approval, or the methodologies and action authority required by its level |
+
+| `S5*Check` family | `s5_rolling_origin`, `s5_future_covariates`, `s5_hierarchy_consistency`, `s5_level_composition` | an S-5 graph with non-temporal validation, future covariates, a hierarchy that does not end at the forecast leaf, or a missing required methodology stage |
+
+| `S7*Check` family | `s7_causal_humility`, `s7_alert_budget`, `s7_seasonality_baseline` | an S-7 graph that makes causal driver claims, disagrees on the exact alert budget, uses noncausal seasonal windows, or omits required M-7/M-1/M-3/M-4 stages |
+
+| `S8*Check` family | `s8_censoring`, `s8_sensor_drift`, `s8_post_failure_maintenance_leakage` | an S-8 graph that discards censored assets, lacks a bounded pre-decision sensor baseline, or uses maintenance facts recorded after failure |
+
+| `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -129,6 +138,83 @@ low-confidence review routing, and exactly the methodology stages registered
 for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
+
+### S-5 composed solution checks
+
+The S-5 checks engage only for a bound S-5 manifest and evaluate the composed
+graph once. `s5_rolling_origin` requires M-4 rolling-origin validation and at
+least two backtest folds. `s5_future_covariates` refuses any declared future
+covariate and requires strictly past lag generation. `s5_hierarchy_consistency`
+requires a named hierarchy ending in the leaf series and bottom-level-only
+forecasts so parent totals are sums of leaves. `s5_level_composition` requires
+M-2, M-4, and M-3 at every level and M-5 at levels 3 and 4.
+
+`create_solution` binds this profile from the M-4 graph and optional
+`sources.correctness` hierarchy settings. `run_solution` checks the stored
+profile again. See [S-5](../solutions/S-5.md) for its data, policy, actions,
+measurement, and readout boundary.
+
+### S-6 composed solution checks
+
+The S-6 checks engage only for a bound S-6 manifest. The service/budget check
+requires a positive budget, a service target in `(0, 1]`, named service and
+budget constraints, and M-16 independent constraint verification. The
+lead-time check requires positive frozen lead-time evidence and an M-4 horizon
+that covers it. The order check requires ordered automatic and hard quantity
+bounds, A1 approval above the automatic bound, and hard-bound enforcement.
+The level check requires M-4 and M-16 throughout, M-5 from level 3, the action
+authority selected for that level, and a configured kill switch at level 4.
+
+`create_solution` derives the profile from the complete policy template, M-4
+hints, and optional `sources.correctness` overrides. `run_solution` checks the
+stored profile again. See [S-6](../solutions/S-6.md) for the data, policy,
+action, and measurement contract.
+
+### S-7 composed solution checks
+
+The S-7 checks engage only for a bound S-7 manifest. `s7_causal_humility`
+requires associational driver language, disables causal claims, and requires a
+nonempty forum caveat. `s7_alert_budget` requires one positive integer budget,
+a routing window and owner, and M-7 exact-budget selection with the same cap;
+contamination fractions are refused.
+
+`s7_seasonality_baseline` requires KPI time-series mode, causal windows, a time
+role, sufficient seasonal/trend/residual history, and M-7, M-1, and M-3 at every
+level. Levels 3 and 4 also require M-4 rolling-origin context with a
+seasonal-naive baseline. `create_solution` binds the correctness profile from
+the module sources, and `run_solution` checks the stored profile again. See
+[S-7](../solutions/S-7.md) for the data, forum action, and phased measurement
+
+### S-8 composed solution checks
+
+The S-8 checks engage only for a bound S-8 manifest. `s8_censoring` requires a
+named event indicator and duration, retains event `0` assets, checks the native
+M-5 stop-after-event contract, and verifies M-5/M-1/M-2 plus M-7 at levels 3–4.
+`s8_sensor_drift` requires named sensors, an enabled PSI check capped at 0.2,
+and a baseline ending no later than prediction. The maintenance-leakage check
+requires failure-time truncation, exclusion of later records, and a nonempty
+blocklist that no selected feature may match.
+
+`create_solution` derives the profile from the snapshot, dataset roles, M-5
+hints, and optional `sources.correctness` overrides. `run_solution` checks the
+stored profile again. See [S-8](../solutions/S-8.md) for the complete module
+contract.
+
+### S-9 composed solution checks
+
+The S-9 checks engage only for a bound S-9 manifest. The consent and
+suppression check requires named boolean evidence for consent, suppression, and
+channel eligibility, plus no-contact behavior for an ineligible row. The cap
+check requires positive lifetime and rolling limits, named contact-count
+evidence, persisted prior decisions, and no contact at the limit.
+
+The uplift check requires M-1, M-2, and M-3 at every level and binds the primary
+decision to M-1's `outbound response scores` table using `entity` and
+`response_propensity`, rather than a churn result. Levels 2–4 require M-6 and
+positive incremental uplift selection with no contact for non-positive effects;
+levels 3 and 4 add M-8, and level 4 adds M-10. The bound profile is created and
+persisted by `create_solution`, then checked again by `run_solution`. See
+[S-9](../solutions/S-9.md) for the full contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

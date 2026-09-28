@@ -102,6 +102,15 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
         request.project = project.get();
         request.graph = &stage_graph;
         request.input = state->input;
+        if (stage.methodology->id == "M-4") {
+            request.input.erase("dataset_path");
+            request.input.erase("dataset");
+        }
+        if (state->binding.value("solution", std::string{}) == "S-7" &&
+            stage.methodology->id == "M-7" &&
+            request.input.contains("dataset")) {
+            request.input["dataset"].erase("as_of");
+        }
         result = stage.methodology->run(request);
     });
     return result;
@@ -190,6 +199,17 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                     state->binding.value("solution", std::string{});
                 if ((solution_id == "S-1" || solution_id == "S-3" || solution_id == "S-4") &&
                     state->binding.value("level", 1) >= 3 &&
+                    stage.methodology->id == "M-6") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
+                if (state->binding.value("solution", std::string{}) == "S-9" &&
+                    state->binding.value("level", 1) >= 2 &&
                     stage.methodology->id == "M-6") {
                     for (const zetta::pipeline::RunOutput& output :
                          snapshot.outputs) {
@@ -366,6 +386,7 @@ api::ApiResult run_composed_solution(const nlohmann::json& input, ApiContext& co
     state->binding["delivery_token"] = input.value("delivery_token", "");
     state->input["sources"] = manifest->attributes.value(
         "sources", nlohmann::json::object());
+    state->input["solution"] = state->binding.at("solution");
     state->stages = std::move(stages);
     const std::shared_ptr<AsyncComposedSolution> handle =
         AsyncComposedSolution::start(std::move(state));

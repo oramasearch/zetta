@@ -416,6 +416,145 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-5's domain adaptations (#1114). The methodology check proves M-4's own
+// shape; these checks bind its temporal contract to the complete demand
+// solution and require a coherent leaf-level hierarchy declaration.
+class S5RollingOriginCheck final : public Check {
+public:
+    std::string name() const override { return "s5_rolling_origin"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5FutureCovariateCheck final : public Check {
+public:
+    std::string name() const override { return "s5_future_covariates"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5HierarchyConsistencyCheck final : public Check {
+public:
+    std::string name() const override { return "s5_hierarchy_consistency"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S5LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s5_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-6's domain adaptations (#1115) validate the complete replenishment
+// Pipeline: service and spend constraints, realistic lead-time coverage, and
+// approval protection above the automatic-release quantity bound.
+class S6ServiceBudgetCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s6_service_budget_constraints";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6LeadTimeCheck final : public Check {
+public:
+    std::string name() const override { return "s6_lead_time_realism"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6OrderApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "s6_order_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S6LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "s6_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-7's domain adaptations (#1116). Driver language must remain
+// associational, anomaly delivery must obey an explicit alert budget, and KPI
+// scoring must use causal seasonal baselines rather than future observations.
+class S7CausalHumilityCheck final : public Check {
+public:
+    std::string name() const override { return "s7_causal_humility"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S7AlertBudgetCheck final : public Check {
+public:
+    std::string name() const override { return "s7_alert_budget"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S7SeasonalityBaselineCheck final : public Check {
+public:
+    std::string name() const override { return "s7_seasonality_baseline"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-8's predictive-maintenance adaptations (#1117). Censored assets remain in
+// the survival cohort, sensor drift has a pre-decision baseline, and failure or
+// repair facts recorded after failure cannot become predictors.
+class S8CensoringCheck final : public Check {
+public:
+    std::string name() const override { return "s8_censoring"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S8SensorDriftCheck final : public Check {
+public:
+    std::string name() const override { return "s8_sensor_drift"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S8PostFailureMaintenanceLeakageCheck final : public Check {
+public:
+    std::string name() const override {
+        return "s8_post_failure_maintenance_leakage";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// S-9's domain adaptations (#1118). Outbound audiences require current consent
+// and suppression evidence, every journey is bounded by persisted contact caps,
+// and levels with randomized history must select on positive uplift rather than
+// mistaking response propensity for incremental effect.
+class S9ConsentSuppressionCheck final : public Check {
+public:
+    std::string name() const override { return "s9_consent_suppression"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S9ContactCapsCheck final : public Check {
+public:
+    std::string name() const override { return "s9_contact_caps"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S9UpliftOverPropensityCheck final : public Check {
+public:
+    std::string name() const override { return "s9_uplift_over_propensity"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.

@@ -105,7 +105,18 @@ relay it to a person.
   and a measured net-value readout. S-4 adds regulatory contact limits,
   vulnerable-customer protection, digital/dialer delivery, and net-recovery
   measurement. S-12 adds claim routing, human-only denial, document confidence,
-  fairness review, and referral measurement. S-5 through S-11 are marked minimal.
+  fairness review, and referral measurement. S-5 has full demand-planning
+  defaults, rolling-origin and hierarchy refusals, interval exception tasks,
+  protected planner reports, and an honest FVA readout.
+  S-6 has full replenishment defaults, service/budget/lead-time/bound refusals,
+  ERP tasks, bounded automatic release, and holdout ROI.
+  S-7 has full KPI anomaly defaults, causal-seasonality and alert-budget
+  refusals, candidate drivers, forum reports, a decision log, protected cells,
+  and a non-claimable phased readout. S-8 has complete maintenance
+  defaults, censoring/sensor/leakage refusals, governed CMMS tasks, and holdout
+  ROI. S-9 has full outbound defaults, consent/suppression and contact-limit
+  refusals, positive-uplift targeting, capped journeys, and holdout ROI.
+  S-10 and S-11 are marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,

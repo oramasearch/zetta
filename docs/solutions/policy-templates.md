@@ -53,7 +53,42 @@ customer. It caps lifetime contacts at six and rolling contacts at one per
 seven days. Its champion/challenger design protects a 10% holdout and splits
 treatment between dialer and digital cells.
 
-S-5 through S-11 intentionally provide minimal starter policies derived from
+S-5 defines critical/review/routine interval-uncertainty floors of
+0.20/0.05/0.0. Critical and review series create A2 exception tasks with a
+one-day SLA; routine series record A0 no-contact. Planner ownership, forecast
+freshness and hierarchy consistency are required, while stockout-censored and
+locked-override rows are suppressed. The lifetime cap is 52, the rolling
+seven-day cap is one, and the default budget is zero. Every tier keeps a 10%
+permanent holdout; planner reports omit protected series.
+
+S-6 defines replenish/no-order tiers. The replenish action is selected by
+level: A0 draft at level 1, A2 ERP task at levels 2–3, and A2 bounded release
+at level 4. `approval_field: order_quantity` changes release authority to A1
+above 100 units, while the 500-unit eligibility bound blocks larger orders.
+Eligibility also requires confirmed lead time; inventory holds and supplier
+blocks suppress action. The budget is 10,000 currency units, the rolling cap is
+one action per 30 days, and the lifetime cap is 52. Its permanent 10% holdout
+measures `service_level` against the `replenishment_action` cell.
+
+S-8 defines imminent/elevated/monitor hazard floors of 0.65/0.25/0.0. Imminent
+assets receive an A0 draft work order; elevated assets receive an A2 inspection
+work order; optional scheduling is A1. Eligibility requires an approved asset
+class, maintenance window, service safety, and maintenance eligibility.
+Lockouts, active work orders, and untrusted sensor evidence suppress action.
+The rolling cap is one work order per seven days. Its permanent 10% holdout and
+`work_order` cell measure `failure_avoided` over 30 days.
+
+S-9 defines priority/standard/low response floors of 0.7/0.4/0.0. Priority
+entities select an A2 outbound journey with a one-hour SLA; standard entities
+select an A2 nurture journey with a one-day SLA; low entities select no contact.
+An optional copy review is A1. Current consent, no suppression, and channel
+eligibility are mandatory, while suppression, unsubscribe, and do-not-contact
+evidence block delivery. The lifetime cap is four contacts. Outbound is limited
+to one action in seven days and nurture to one in fourteen. Its deterministic
+experiment keeps 10% as permanent holdout and assigns the remainder to
+`journey_sent`.
+
+S-10 and S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -63,6 +98,27 @@ tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
 cover complaints, discount budget, contact fatigue, and action-execution rate.
 S-2 uses the `routed` treatment cell and observes SLA misses, capacity
 violations, routing coverage, and action execution.
+S-5 uses the `planner_report` treatment cell and observes FVA, interval
+coverage, freshness, stockout censoring, and override auditability.
+
+S-6 observes replenishment spend, service level, inventory exposure, order
+volatility, and unapproved over-bound orders.
+
+S-7 defines critical/anomaly score floors of 0.8/0.0. Flagged rows create an A2
+decision-forum report with a one-day SLA; critical rows may be changed to an A1
+executive review with a four-hour SLA. Routing requires explicit eligibility,
+forum-owner assignment, and sensitive-driver access, while `suppressed` blocks
+action. The exact alert and lifetime cap is 12, with one action per entity per
+seven-day window. Its permanent 10% tier holdouts compare with `forum_routed`.
+Guardrails cover alert volume, false escalations, sensitive access, causal
+claims, decision closure, and action execution. Phased `decision_adopted`
+measurement remains descriptive until its module-specific estimator ships.
+
+S-8 observes unsafe and false work orders, missed failures, sensor PSI,
+maintenance capacity, and action execution.
+
+S-9 uses the `journey_sent` treatment cell and observes unsubscribe, complaint,
+consent-violation, contact-frequency, and action-execution metrics.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

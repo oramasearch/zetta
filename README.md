@@ -127,8 +127,20 @@ What's inside, by domain (each links to that domain's docs):
   dialer delivery; a permanent holdout; and net-recovery readout.
   S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
   SIU paths, A0-only denial, document-confidence and fairness refusals, action
-  tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
-  editable defaults. Snapshot
+  tasks, holdout, and ROI readout. S-5 is runnable at all four levels with
+  rolling-origin forecasting, prediction intervals, planner reports, exception
+  queues, protected holdouts, FVA, and hierarchy consistency checks.
+  S-6 is runnable at all four levels with lead-time demand aggregation,
+  constrained replenishment, bounded ERP release, protected holdout
+  measurement, and a service-level ROI readout.
+  S-7 is runnable at all four levels with seasonal anomaly checks, exact alert
+  budgets, candidate-driver forum reports, decision logs, permanent holdouts,
+  and honest phased readouts. S-8 is runnable at all four levels with
+  censoring-aware failure timing, sensor-drift and post-failure leakage refusals,
+  governed CMMS work orders, permanent holdouts, and failure-avoidance ROI.
+  S-9 is runnable at all four levels with consent and suppression checks,
+  contact limits, positive-uplift targeting, capped journeys, protected
+  holdouts, and response ROI. S-10 and S-11 retain minimal defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
