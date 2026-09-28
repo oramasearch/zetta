@@ -113,6 +113,11 @@ What's inside, by domain (each links to that domain's docs):
   (deny-by-default scopes + TTL'd capabilities), an immutable, append-only
   **audit trail**, and a **governed console** (every statement
   capability-scoped, gated, and audited).
+- **[Solutions foundation](docs/solutions/README.md)** — the replicated
+  [holdout and experiment manager](docs/solutions/experiments.md) assigns
+  entities deterministically across holdout, treatment, exploration, and
+  below-line cells; protects control populations before model-driven actions;
+  and reports balance, exemption erosion, and uplift-training rows.
 - **[The programmatic control surface](docs/api/README.md)** — one **capability
   registry** where each entry renders three ways at once: an **MCP tool**, a
   **REST route**, and a palette action. An embedded Beast2 server (both run

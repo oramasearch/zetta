@@ -106,6 +106,7 @@ add_executable(zetta-tests
   ml/test_next_best_action_partitions.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
+  solutions/test_experiment.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp

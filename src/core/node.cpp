@@ -75,6 +75,7 @@ std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot
 Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
+      experiment_manager_(config_.data_dir, replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
     // The owner thread is adopted LAZILY, at the first tick() (#624) — never
     // here. A constructed-but-never-ticked node has no owner loop to drain
@@ -247,6 +248,7 @@ bool Node::start() {
     load_models();
     load_workspace_profiles();
     load_plans();
+    experiment_manager_.load();
     load_indexes();
     load_jobs();
     load_dataset_partitions();
@@ -271,12 +273,14 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
+        "%zu deployments, %zu runs, %zu models, %zu experiments, %zu indexes, "
+        "%zu jobs, "
         "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
         "%zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        indexes_.size(), jobs_.size(), dataset_partitions_.size(),
+        experiment_manager_.experiments().size(), indexes_.size(), jobs_.size(),
+        dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
         audit_events_.size());
     if (config_.preflight) {
@@ -3404,6 +3408,7 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::plan_key(plan->id()), plan->metadata());
         }
     }
+    experiment_manager_.migrate_to_replication();
     for (const auto& index : indexes_) {
         if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
@@ -3457,6 +3462,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_models(snapshot);
     reconcile_workspace_profiles(snapshot);
     reconcile_plans(snapshot);
+    experiment_manager_.reconcile(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_partitions(snapshot);

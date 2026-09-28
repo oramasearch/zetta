@@ -74,6 +74,7 @@
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/experiment.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -125,6 +126,11 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::ml::next_best_action_step_schema},
         {"next_best_action_launch", "next_best_action_launch.schema.json",
          &zetta::ml::next_best_action_launch_schema},
+        // solutions
+        {"experiment", "experiment.schema.json",
+         &zetta::solutions::experiment_value_schema},
+        {"experiment_assignment", "experiment_assignment.schema.json",
+         &zetta::solutions::experiment_assignment_value_schema},
         // index
         {"index", "index.schema.json", &zetta::index::index_value_schema},
         {"fulltext_query", "fulltext_query.schema.json",

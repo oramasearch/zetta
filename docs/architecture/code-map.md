@@ -38,7 +38,7 @@ scripts/gen-parquet-fixture.py  dev-time pyarrow generator for the committed Par
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); the live near-data pipeline instrumentation registry (record_pipeline_job()/pipeline_jobs(), the bounded source for system.pipeline_jobs, #589); the node's span ring (span_recorder(), the ONE source for system.traces/system.spans + list_traces/get_trace, #640); the computed-at-query-time dataset summaries (datasets(), the source for system.datasets, #585) + the detected-provisioner cache (record_provisioner_config()/provisioner_configs(), ephemeral, the source for system.provisioners); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; owns the shared ExperimentManager (#1105); the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); the live near-data pipeline instrumentation registry (record_pipeline_job()/pipeline_jobs(), the bounded source for system.pipeline_jobs, #589); the node's span ring (span_recorder(), the ONE source for system.traces/system.spans + list_traces/get_trace, #640); the computed-at-query-time dataset summaries (datasets(), the source for system.datasets, #585) + the detected-provisioner cache (record_provisioner_config()/provisioner_configs(), ephemeral, the source for system.provisioners); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
   runtime.hpp               zetta::runtime — async/coroutine interface over Capy (task/io_task/io_result/block_on/spawn/thread_pool + parallel_for data-parallel fan-out + the structured-concurrency pair when_all/timeout, #827)
   runtime/net.hpp           networking slice of the interface (Corosio; included by exactly two adapters — src/core/cluster/cluster.cpp inbound, src/core/api/native_http_transport.cpp outbound) incl. the TLS surface (tls_context/openssl_stream/any_stream, #466) and the async DNS resolver (resolver/resolver_results, for hostname peer seeds, #785)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
@@ -211,6 +211,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
     plan.hpp                zetta::billing::Plan — the quota/tier config the Billing/Usage surface measures live consumption against (Conflict D); value + JSON Schema (parse_plan_value). Usage itself is the live system.usage view (no entity)
+  solutions/                shared solution components (docs/solutions/)
+    experiment.hpp          zetta::solutions::ExperimentManager — replicated experiment definitions and per-entity assignment rows, seeded SHA-256 allocation, decide-before-action protection, exemption erosion, balance checks, and JSON boundaries (#1105)
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic, squared error, or custom LambdaMART derivatives): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary, train_gbdt, and all-reduced gradient/Hessian histograms (FEAT-6/ENT-14; #390/#1048)
     gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig; opt-in per-round checkpoint/restart via TrainCheckpointConfig (resume the partial model from the last checkpoint after a spot eviction, cluster-agreed resume round; RULE-5/#468) (FEAT-6/ENT-14; #390/#391)
     gbdt_score.hpp          zetta::ml — batch scoring / rank-at-risk: score_gbdt/predict_risk (calibrated risk = predict_proba, ranked desc) + load_gbdt_model (weights body read back through the GbdtModel JSON Schema boundary) (FEAT-6/CMD-10; #392)
@@ -522,6 +524,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     synthetic_private_methodology.cpp  M-20 registry graph shape, ownership predicate, runner, output-table lineage, model registration, and run metrics (#1059)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
+  solutions/experiment.cpp zetta::solutions::ExperimentManager — SHA-256 allocation, protected decisions, exemption accounting, report construction, disk projection, and independent experiment:/experiment_assignment: CRDT records (#1105)
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), binary/squared/LambdaMART objective support + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
     forecast.cpp            zetta::ml — refit-at-origin backtesting, recursive multi-step prediction, per-fold/mean MAE·MASE·sMAPE·FVA, and distributed residual intervals (#1043)
     forecast_runner.cpp     zetta::ml — verify per-series ownership, bridge JobRound allreduce into forecasting, load resolved owned partitions, and write root model/table outputs with lineage (#1043)
@@ -706,6 +709,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   ml/test_segmentation_methodology.cpp M-3/S-9/intent shape and graph-gate refusal tests (#1042)
   ml/test_segmentation_launch.cpp off-root registry submission over three owned partitions and single-node metric equivalence (#1042)
+  solutions/test_experiment.cpp deterministic balance and restart stability, protected actions, attributed exemptions, malformed boundaries, and concurrent peer convergence (#1105)
   temp_dir.hpp              per-test isolated data_dir helper
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
@@ -776,6 +780,11 @@ data_dir/
                                   metrics, created, weights:{ size, sha256 } }
     weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
                                  like an LO body — transfers peer-to-peer)
+  experiments/
+    <experiment-uuid>/       ← one folder per experiment
+      experiment.json        ← { id, name, seed, allocations, created }
+      assignments/
+        <entity-digest>.json ← stable allocation + propensity + exemption log
   <index-uuid>/              ← one folder per index (UUIDv4 = its id)
     index.json               ← { id, table, kind, backend, fields, created }
                                  (metadata only — no body)
