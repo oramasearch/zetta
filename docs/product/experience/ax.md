@@ -63,6 +63,14 @@ relay it to a person.
   Default pipeline names also identify the method: M-3 returns
   `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
   Explicit caller names are unchanged.
+- **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
+  `list_solutions` and `get_solution` expose all twelve catalogue modules and eight
+  sketches with plain product copy, portfolio-number composition, data roles,
+  autonomy, policy, measurement, guardrails, levels, and missing components.
+  `create_solution` stores a callback-built preview Pipeline on an existing
+  project; `run_solution` executes its runnable methodology stages in order and
+  records stage Run ids in lineage. The response and Run both say `preview`:
+  absent shared-foundation components are never presented as production-ready.
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,
   then run the stored pipeline and poll its Run. The report carries temporal

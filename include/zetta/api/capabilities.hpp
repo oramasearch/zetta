@@ -60,6 +60,10 @@ void register_cloud_capabilities(Registry& registry);
 //   receive_events  read    long-poll an exposed topic from a sequence number
 void register_pubsub_capabilities(Registry& registry);
 
+// Catalogue solutions (#1102): discovery plus composed preview creation and
+// ordered execution through methodology callbacks.
+void register_solution_capabilities(Registry& registry);
+
 // A Pipeline granted to an agent, run as that agent's tool (lake#238): the tool is
 // `pipeline_<graph>` (lowercase, non-alphanumerics as `_`). The graph must still be approved at the
 // version the grant pinned; it is gated, then run (`dataset`, `holdout`, `model_name` pass through).
