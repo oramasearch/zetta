@@ -1,0 +1,233 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "created": {
+      "type": "string"
+    },
+    "current_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "updated": {
+      "type": "string"
+    },
+    "versions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "config": {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "additionalProperties": false,
+            "properties": {
+              "autonomy": {
+                "enum": [
+                  "A0",
+                  "A1",
+                  "A2",
+                  "A3"
+                ],
+                "type": "string"
+              },
+              "budget": {
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "minimum": 0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "limit"
+                ],
+                "type": "object"
+              },
+              "contact_cap": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "eligibility_rules": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "field": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "operator": {
+                      "enum": [
+                        "eq",
+                        "neq",
+                        "lt",
+                        "lte",
+                        "gt",
+                        "gte",
+                        "in",
+                        "not_in",
+                        "exists"
+                      ],
+                      "type": "string"
+                    },
+                    "value": {}
+                  },
+                  "required": [
+                    "field",
+                    "operator"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "exclusion_rules": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "field": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "operator": {
+                      "enum": [
+                        "eq",
+                        "neq",
+                        "lt",
+                        "lte",
+                        "gt",
+                        "gte",
+                        "in",
+                        "not_in",
+                        "exists"
+                      ],
+                      "type": "string"
+                    },
+                    "value": {}
+                  },
+                  "required": [
+                    "field",
+                    "operator"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "frequency_cap": {
+                "additionalProperties": false,
+                "properties": {
+                  "max_actions": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "window_seconds": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_actions",
+                  "window_seconds"
+                ],
+                "type": "object"
+              },
+              "kill_switch": {
+                "type": "boolean"
+              },
+              "threshold": {
+                "type": "number"
+              },
+              "tiers": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "action": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minimum_score": {
+                      "type": "number"
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "minimum_score",
+                    "action"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "tunable_bounds": {
+                "additionalProperties": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maximum": {
+                      "type": "number"
+                    },
+                    "minimum": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "minimum",
+                    "maximum"
+                  ],
+                  "type": "object"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "autonomy"
+            ],
+            "title": "zetta.DecisionPolicyConfig",
+            "type": "object"
+          },
+          "created": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "config",
+          "actor",
+          "reason",
+          "created"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "current_version",
+    "versions",
+    "created",
+    "updated"
+  ],
+  "title": "zetta.DecisionPolicy",
+  "type": "object"
+}

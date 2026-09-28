@@ -79,6 +79,12 @@ relay it to a person.
   M-8 and primary solution S-11 compile to a runnable recommendation graph;
   `run` reads that graph's table and `get_run_report` returns queryable output
   references, ranked actions, policy metrics, exclusions, and causal caveats.
+- **Versioned decision policy** (#1104): `create_policy`, `get_policy`, and
+  `update_policy` manage immutable policy versions; `decide` applies hard
+  thresholds, tiers, budgets, caps, eligibility/exclusions, autonomy, and the
+  kill-switch to one entity or a scored table. A1 results stay non-actionable
+  until `approve_decision`, and every result names its policy version. See
+  [the decision-policy contract](../../solutions/decision-policy.md).
 - For M-13, compile hints name the image table, its image/label/source columns,
   and a registered ViT backbone. `run` reads that graph-owned table, refuses an
   unauthorized image before its bytes are read, and `get_run_report` returns

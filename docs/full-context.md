@@ -41,7 +41,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   contracts; surface changes update the affected page same-commit).
 - **Foundations (conventions)**:
   [architecture/coding-conventions.md](architecture/coding-conventions.md) —
-  namespaces==directories, no-throw boundaries, schema-as-code, seams;
+  namespaces==directories, no-throw boundaries, schema-as-code, interfaces;
   **coroutines-first**, **observability-first**
   ([architecture/observability.md](architecture/observability.md): intent ·
   plan · performance · result shape on every operation), **distributed-first**
@@ -75,6 +75,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   See [ml/integration.md](ml/integration.md).
   [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
   [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
+
+- **Decision-policy engine (#1104)** — native versioned policy config between
+  scores and actions, with thresholds, tiers, budgets, caps, eligibility,
+  exclusions, A0–A3 approval behavior, and a kill-switch. Policies and decisions
+  replicate through the node catalog; all decisions retain their exact policy
+  version. Five registry capabilities expose single-entity and table decisions,
+  bounded tuning, and A1 approval over MCP and REST. See
+  [solutions/decision-policy.md](solutions/decision-policy.md).
 
 - **In review (PR [#1035](https://github.com/oramasearch/zetta/pull/1035), stacked on the
   design PR [#1023](https://github.com/oramasearch/zetta/pull/1023)) — pub/sub stage 1**
@@ -334,7 +342,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   multi-node + one root Model replicated everywhere over a real replicated
   3-member loopback cluster
   ([docs/compute/coordinated-launch.md](compute/coordinated-launch.md)).
-  Near-data (#531) cross-process launch on this seam is the follow-on.
+  Near-data (#531) cross-process launch on this boundary is the follow-on.
 - **Observability build-out (#640, closed) — PR #665 in flight**: all six
   slices on one branch — system.traces/spans/crashes read views over the
   Node-owned span ring (`Node::span_recorder()`, RULE-7 one source), crash

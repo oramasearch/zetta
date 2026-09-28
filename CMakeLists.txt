@@ -501,6 +501,7 @@ add_library(zetta-core STATIC
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/pubsub_capabilities.cpp
+  src/core/api/decision_policy_capabilities.cpp
   src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/mcp_docs.cpp
@@ -511,6 +512,7 @@ add_library(zetta-core STATIC
   src/core/api/specs.cpp
   src/core/api/web_ui.cpp
   src/core/schemas/registry.cpp
+  src/core/solutions/decision_policy.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/security.cpp
   src/core/cluster/signal.cpp

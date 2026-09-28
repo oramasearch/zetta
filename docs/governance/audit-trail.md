@@ -16,7 +16,7 @@ gates). It builds directly on the [key-scoped access model](access-control.md)
 > [large-burst cost-cap approval gate](../cloud/burst-approval-gate.md) (APR-3) records its
 > block/approve decision here as a `provision_requested` event. Threading the
 > login key through the whole request path (so *every* read/write is authorized
-> and thereby audited) is a later slice; today the data-access seam is
+> and thereby audited) is a later slice; today the data-access boundary is
 > `Node::authorize` itself.
 
 ## The type
@@ -28,7 +28,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested` / `cloud_inspected` / `dataset_added` (#624). |
+| `action` | `AuditAction` | Closed event vocabulary, including graph, data, job, key, provisioning, consent, decision-policy creation/update, and decision approval actions. |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
@@ -40,12 +40,12 @@ chronologically as plain text); the trail is kept sorted by `(time, id)`.
 
 ## What emits an event
 
-Events are emitted at the governed seams, and **only for local user actions** —
+Events are emitted at governed boundaries, and **only for local user actions** —
 the reverse `materialize_*` paths used by reconciliation never emit (a peer's
 action arrives already-audited as its own replicated `audit:` event, so each
 action is recorded exactly once, on the node where it happened):
 
-| Action | Seam | Event |
+| Action | Boundary | Event |
 |---|---|---|
 | **Graph change** | `Project::create_graph` / `drop_graph` | `graph_created` / `graph_dropped`, `target` = graph name, `actor` = the project's owner key. |
 | **Deploy** | `Node::deploy_graph` | `graph_deployed` (on a successful placement), `target` = graph name, `detail` = node/edge counts + the placed node. |
@@ -53,6 +53,8 @@ action is recorded exactly once, on the node where it happened):
 | **Compute job** | `Node::create_job` / `ComputeJob::set_status` | `job_created` (on create) / `job_finished` (on the first terminal transition), `target` = job id, `allowed` = success (for `job_finished`), `detail` = the job kind / note. See [compute-jobs.md](../compute/compute-jobs.md). |
 | **Burst identity** | `BurstIdentityManager::mint` / `revoke` | `key_issued` (per minted identity) / `key_revoked` (per revoked one), `target` = the access key id, `detail` = the job + burst node. See [burst-identity.md](../cloud/burst-identity.md). |
 | **Provision burst** | `BurstApprovalGate::provision` | `provision_requested`, emitted **only** when a burst exceeds the cap, `allowed` = approved (vs. blocked pending approval), `target` = the burst size, `detail` = which cap axis was exceeded + the outcome. See [burst-approval-gate.md](../cloud/burst-approval-gate.md). |
+| **Decision policy** | `DecisionPolicyStore::create` / `update` | `decision_policy_created` / `decision_policy_updated`, `target` = policy id, `actor` = capability caller, `detail` = committed version. |
+| **Decision approval** | `DecisionPolicyStore::approve` | `decision_approved`, emitted only for a pending A1 item, `target` = decision id, `actor` = approver, `detail` = original policy id and version. See [decision-policy.md](../solutions/decision-policy.md). |
 
 Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
 (it appends to the trail). `zetta::governance::authorize(const AccessKey&, const Resource&)`
@@ -69,14 +71,14 @@ for (const auto& event : node.audit_events()) {    // listed, chronological
 }
 ```
 
-## The sink seam
+## The sink interface
 
 A graph change happens on a `Project`, not on the `Node` that owns the trail, so
 the two are decoupled by an **`AuditSink`** (`include/zetta/governance/audit_event.hpp`):
-a one-method seam (`record_audit_event`). `Node` *is* the sink (it implements
+a one-method interface (`record_audit_event`). `Node` *is* the sink (it implements
 `AuditSink`), and a `Project` holds a non-owning `AuditSink*` the same way it
 holds a `ReplicationManager*` — null means "not audited". This mirrors how the
-[blob-store](../data/large-objects.md) and storage-engine seams keep `zetta-core`
+[blob-store](../data/large-objects.md) and storage-engine interfaces keep `zetta-core`
 decoupled. `Node::record_audit_event` is also the **public append API**, so the
 future request-path slice can record data accesses at real read/write points
 without going through `authorize`.
@@ -150,7 +152,7 @@ This is the audit half of FEAT-9, on top of the
 [key-scoped access model](access-control.md). The pieces still ahead: **approval
 gates** (block a risky action pending sign-off), threading the login key through
 the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` seam), and a **`system.audit`** SQL table (the trail is
+just the `authorize` boundary), and a **`system.audit`** SQL table (the trail is
 queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
 headed [Admin & Settings panel](../gui/admin-panel.md) (SCR-7 / CMP-5) renders it as a
 read-only table.
@@ -158,11 +160,11 @@ read-only table.
 ## Pointers
 
 - `include/zetta/governance/audit_event.hpp` — `zetta::governance::AuditEvent` / `AuditEventValue` /
-  `AuditAction` (ENT-23) + the `AuditSink` seam + JSON schema/validate/parse.
+  `AuditAction` (ENT-23) + the `AuditSink` interface + JSON schema/validate/parse.
 - `src/core/governance/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
   validation.
 - `include/zetta/node.hpp` — `Node::record_audit_event` / `audit_events` and the
-  emission seams (`deploy_graph`, `authorize`).
+  emission boundaries (`deploy_graph`, `authorize`).
 - [access-control.md](access-control.md) — the `Principal` + `AccessKey` model a
   `data_access` event records the decision of.
 - [admin-panel.md](../gui/admin-panel.md) — the headed **Admin & Settings panel** that
