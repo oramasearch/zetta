@@ -168,6 +168,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
+    graph.hpp               zetta::ml graph core and resolved-dataset runner: time-bounded features, PageRank, components, label propagation, clustering, embeddings, output tables, Model, and lineage (#1051)
+    graph_job.hpp           zetta::ml::run_graph_job — distributed edge-partition statistics and iterative PageRank allreduce through a recorded train ComputeJob (#1051)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
@@ -419,6 +421,10 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
     methodology.cpp         M-1 reference callbacks: established churn shape, ownership predicate, and asynchronous runner (#1061)
+    graph.cpp               deterministic native graph feature and node2vec-style embedding implementation (#1051)
+    graph_job.cpp           SPMD sparse edge-statistics combine and iterative PageRank rank-mass allreduce (#1051)
+    graph_methodology.cpp   M-12 graph pipeline shape, ownership predicate, registry metadata, resolved-table run callback (#1051)
+    graph_runner.cpp        resolved edge-table reader, node-feature and summary-table writer, graph Model registration, and Run lineage (#1051)
     methodology_table.cpp   the ordered M-1 through M-21 portfolio table, aliases, primary solutions, keywords, data roles, outputs, metrics, and implementation issues (#1061)
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
@@ -607,6 +613,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   ml/test_methodology.cpp   registry order/lookup/graph ownership and generated methodology-table drift check (#1061)
+  ml/test_graph.cpp / ml/test_graph_partitions.cpp  graph reference values, cutoff and seed rules, partition equivalence, and real three-member allreduce coverage (#1051)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 

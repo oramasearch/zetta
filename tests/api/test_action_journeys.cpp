@@ -142,6 +142,59 @@ TEST_F(Uc1Journey, JourneyUc1EndToEndWithActingKey) {
     EXPECT_TRUE(report.ok) << report.summary();
 }
 
+TEST_F(Uc1Journey, JourneyGraphMethodologyCompilesRunsAndReports) {
+    const std::string edges =
+        "src,dst,weight,time,label\n"
+        "1,2,1,1,0\n"
+        "2,3,1,2,\n"
+        "3,1,1,3,0\n"
+        "4,5,1,1,1\n"
+        "5,6,1,2,\n"
+        "6,4,1,3,1\n"
+        "3,4,50,9,0\n";
+    const ApiResult uploaded = call(
+        "upload_dataset", {{"table_name", "edges"},
+                           {"format", "csv"},
+                           {"content", edges}});
+    ASSERT_TRUE(uploaded.ok) << uploaded.error.message;
+    ASSERT_TRUE(call("create_project", {{"name", "graph-fraud"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent", {{"project", "graph-fraud"},
+                           {"text", "Learn fraud signals from relationships"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent", {{"project", "graph-fraud"},
+                           {"input_id", captured.value.at("input_id")},
+                           {"methodology", "M-12"},
+                           {"name", "relationship graph"},
+                           {"hints", {{"source", "datasets"},
+                                      {"table", "edges"},
+                                      {"prediction_time", 5.0}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-12");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult started = call(
+        "run", {{"project", "graph-fraud"},
+                {"graph", "relationship graph"},
+                {"holdout_fraction", 0.34}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    const std::string run_id = started.value.at("run_id");
+    const ApiResult run = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+    EXPECT_GE(run.value.at("outputs").size(), 4u);
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("model").at("kind"), "graph");
+    EXPECT_TRUE(report.value.at("model").contains("held_out_accuracy"));
+    EXPECT_EQ(report.value.at("dataset").at("edges_read"), 6.0);
+    EXPECT_EQ(report.value.at("dataset").at("edges_excluded"), 1.0);
+    EXPECT_EQ(report.value.at("graph").at("component_count"), 2u);
+    EXPECT_EQ(report.value.at("output_tables").size(), 2u);
+}
+
 // =====================================================================
 // Canonical journey 2 — the gate-blocked negative: a leakage-annotated graph
 // is refused over MCP exactly as in the GUI, with the failing check's reason

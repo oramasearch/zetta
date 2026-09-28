@@ -15,6 +15,7 @@ using zetta::pipeline::CheckResult;
 using zetta::pipeline::CheckStatus;
 using zetta::pipeline::CorrectnessGate;
 using zetta::pipeline::DataLeakageCheck;
+using zetta::pipeline::GraphEdgeTimeCheck;
 using zetta::pipeline::SchemaTypeCheck;
 using zetta::pipeline::ValidationReport;
 using zetta::ir::EdgeKind;
@@ -272,15 +273,89 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
         << result.reason;
 }
 
+TEST(GraphCheck, EdgeTimeFilterPassesWhenItMatchesTheModelCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Connect, "edges", json::object(), "source");
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("source", "filter");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Pass);
+}
+
+TEST(GraphCheck, RefusesAGraphWithoutAPredictionCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"}, {"time_column", "time"}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisabledEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", false}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesAFilterUsingAnotherCutoff) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "filter future edges",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 11.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    graph.add_edge("filter", "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
+TEST(GraphCheck, RefusesADisconnectedEdgeTimeFilter) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Clean, "unrelated filter",
+                   json{{"filter_time_column", "time"},
+                        {"prediction_time", 10.0},
+                        {"exclude_after_prediction_time", true}},
+                   "filter");
+    graph.add_node(StepKind::Model, "graph model",
+                   json{{"model_kind", "graph"},
+                        {"time_column", "time"},
+                        {"prediction_time", 10.0}},
+                   "model");
+    EXPECT_EQ(GraphEdgeTimeCheck{}.evaluate(graph).status, CheckStatus::Fail);
+}
+
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "graph_edge_time");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
@@ -596,8 +671,9 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         zetta::pipeline::MethodologyCheck::implemented();
     // What ships, ships. What does not, is refused rather than silently run as something else.
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "gbdt"), implemented.end());
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"), implemented.end());
     for (const char* unshipped :
-         {"forecast", "anomaly", "uplift", "survival", "cluster", "graph"}) {
+         {"forecast", "anomaly", "uplift", "survival", "cluster"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " has no run path; listing it would make the gate a lie";
     }

@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_graph_methodology();
 
 namespace {
 
@@ -142,14 +143,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "field annotations")},
                 {"structured fields", "evidence links"},
                 {"field accuracy", "F1", "straight-through rate"}, 1050),
-        planned("M-12", "Graph ML", "Identity & structure",
-                {"graph_ml", "graph"}, {},
-                {"graph", "network", "link prediction"},
-                {input("entity", true, "graph nodes"),
-                 input("group", true, "relationships or edges"),
-                 input("time", false, "edge observation time")},
-                {"node scores", "links", "graph embeddings"},
-                {"average precision", "AUC", "lift"}, 1051),
+        make_graph_methodology(),
         planned("M-13", "Computer vision", "Language, documents & perception",
                 {"computer_vision", "vision"}, {},
                 {"image", "vision", "detect defect", "segment image"},

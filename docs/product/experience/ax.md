@@ -45,7 +45,8 @@ relay it to a person.
 - **Methodology discovery** ([#1061](https://github.com/oramasearch/zetta/issues/1061)):
   `list_methodologies` exposes the 21-entry portfolio, required inputs, outputs,
   metrics, and runnable status. `compile_intent` accepts a methodology or
-  solution selector; unsupported work names its implementation issue. `run`
+  solution selector; M-1 and M-12 are runnable, while unsupported work names
+  its implementation issue. `run`
   refuses unsupported model kinds, and `get_graph` / `get_project` expose each
   pipeline's methodology and runnable status. See
   [the registry contract](../../ml/methodologies.md).

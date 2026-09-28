@@ -75,9 +75,10 @@ What's inside, by domain (each links to that domain's docs):
   (allreduced histograms), probability **calibration**, batch **scoring /
   rank-at-risk**, **exact TreeSHAP** explanation, a registered **Model** entity
   (weights as verified large-object bodies), all proven by a **native
-  correctness oracle** (no Python/XGBoost anywhere).
+  correctness oracle**, plus native **graph ML** features and node embeddings
+  over time-bounded relationship edges (no Python/XGBoost anywhere).
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
+  approaches: M-1 and M-12 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;

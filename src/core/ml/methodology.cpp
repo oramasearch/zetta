@@ -256,7 +256,7 @@ Methodology make_m1_methodology() {
                                "classifier", "classification",
                                "regression", "score",
                                "tabular"};
-    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10"};
+    methodology.solutions = {"S-1", "S-2", "S-3", "S-4"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",

@@ -530,6 +530,15 @@ const nlohmann::json& get_run_report_output_schema() {
              "id, name, and the metrics. `held_out_*` is present only when the run "
              "asked for a holdout; when it is absent the only figures available are "
              "in-sample and they flatter (#953)"}}},
+          {"graph",
+           {{"type", "object"},
+            {"description",
+             "graph runs: component sizes, degree distribution, PageRank top "
+             "nodes, edge cutoff counts, and held-out node-task accuracy"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "queryable tables materialized by the run"}}},
           {"drivers",
            {{"type", "array"},
             {"description", "feature -> weight, strongest first. A weight is what "
@@ -634,6 +643,44 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         if (found == metrics.end() || !found->is_number()) return std::nullopt;
         return found->get<double>();
     };
+
+    if (model->kind() == "graph") {
+        nlohmann::json model_facts = {{"id", model->id()},
+                                      {"name", model->name()},
+                                      {"kind", model->kind()}};
+        for (const auto& [key, value] : metrics.items()) {
+            if (value.is_number()) model_facts[key] = value;
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) dataset["source"] = source.substr(8);
+        }
+        if (const auto value = number("edges_read")) dataset["edges_read"] = *value;
+        if (const auto value = number("edges_excluded")) {
+            dataset["edges_excluded"] = *value;
+        }
+        if (!dataset.empty()) report["dataset"] = std::move(dataset);
+
+        nlohmann::json tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind != "dataset") continue;
+            tables.push_back(output.ref);
+            if (output.ref.find(".summary_") == std::string::npos) continue;
+            const std::size_t dot = output.ref.find('.');
+            if (dot == std::string::npos) continue;
+            const std::shared_ptr<zetta::data::Database> database =
+                context.node.find_database(output.ref.substr(0, dot));
+            if (!database) continue;
+            const std::shared_ptr<zetta::data::Table> table =
+                database->find_table(output.ref.substr(dot + 1));
+            if (!table || table->store().size() == 0) continue;
+            if (const auto row = table->store().at(0)) report["graph"] = *row;
+        }
+        report["output_tables"] = std::move(tables);
+        return ApiResult::success(std::move(report));
+    }
 
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {

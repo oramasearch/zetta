@@ -1,4 +1,4 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks (schema/type · leakage · graph edge time)
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
@@ -7,14 +7,15 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
@@ -82,6 +83,15 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `graph_edge_time` — graph rows available at prediction time
+
+This check engages only for `graph` and `graph_ml` model steps. The model must
+declare `time_column` and a finite `prediction_time`. An enabled clean step must
+feed the graph model through a data-flow edge and declare the same
+`filter_time_column` and cutoff plus
+`exclude_after_prediction_time: true`. Missing, disabled, or mismatched filters
+fail the gate before the graph can run.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -122,7 +132,7 @@ source profile and `schema_type` fails; add a feature with `"data_as_of":
 using namespace zetta;
 
 ir::ExecutionGraph graph = *ir::from_json(document);   // the compiled graph
-ValidationReport report = default_gate().run(graph);   // ships both #309 checks
+ValidationReport report = default_gate().run(graph);   // ships all concrete checks
 if (report.block_deploy) {
     // RULE-1: refuse to deploy; report.checks carries the per-check reasons.
 }
@@ -145,7 +155,7 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks implement the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
 result format** here. Entity-resolution checks (`#312`) are the next concrete

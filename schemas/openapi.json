@@ -6521,6 +6521,10 @@
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
                         },
+                        "graph": {
+                          "description": "graph runs: component sizes, degree distribution, PageRank top nodes, edge cutoff counts, and held-out node-task accuracy",
+                          "type": "object"
+                        },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
@@ -6528,6 +6532,13 @@
                         "model": {
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
+                        },
+                        "output_tables": {
+                          "description": "queryable tables materialized by the run",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",

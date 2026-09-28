@@ -556,6 +556,10 @@ add_library(zetta-core STATIC
   src/core/pipeline/run.cpp
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
+  src/core/ml/graph.cpp
+  src/core/ml/graph_job.cpp
+  src/core/ml/graph_methodology.cpp
+  src/core/ml/graph_runner.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp
   src/core/billing/plan.cpp
