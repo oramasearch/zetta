@@ -121,15 +121,18 @@ length, CRC-32, and compact JSON body containing the id and validated event
 value. Gzip compression reduces disk use. A partial or corrupt trailing frame
 stops recovery at the last valid frame instead of trusting damaged bytes.
 
-Steady-state RAM holds a compact id-to-segment-position index and a bounded
-recent-event window (2,048 by default), not every full event. Full historical
-objects are inflated only for an explicit `audit_events()` or SQL read and are
-released with that result. `recent_audit_events()` serves bounded UI views.
+Steady-state RAM holds a compact 96-bit id fingerprint-to-segment-position index
+and a bounded recent-event window (2,048 by default), not every full event.
+Membership checks use that index without inflating a segment, including startup
+reconciliation against a large replicated catalog. Full historical objects are
+inflated only for an explicit `audit_events()` or SQL read and are released with
+that result. `recent_audit_events()` serves bounded UI views.
 
 On first open after an upgrade, valid legacy `audit/<uuid>.json` files are
-appended to the segment store, synced, and removed. Invalid legacy files remain
-in place and are reported, preserving evidence for repair. Once migrated,
-subsequent starts read the segments directly.
+appended to the segment store, synced in 64-record durability batches, and then
+removed. Invalid legacy files remain in place and are reported, preserving
+evidence for repair. Once migrated, subsequent starts read the segments
+directly.
 
 The storage regression appends one million records and requires less than
 100 MiB additional resident memory and less than 50 MiB on disk.

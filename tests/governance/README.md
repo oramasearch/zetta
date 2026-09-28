@@ -4,5 +4,5 @@ Role tests keep the permission vocabulary and built-in mappings synchronized.
 Pub/sub capability tests additionally exercise the topic/event/subscription scope
 matrix. See [governance](../../docs/governance/README.md) and
 [CRUD](../../docs/pubsub/crud.md).
-Audit tests cover segment migration, retention of summaries, schema round trips,
-and the million-record RAM/disk budgets (#1154).
+Audit tests cover segment migration, index-only membership, retention of
+summaries, schema round trips, and the million-record RAM/disk budgets (#1154).

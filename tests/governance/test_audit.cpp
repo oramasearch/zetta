@@ -433,26 +433,55 @@ TEST(AuditTrail, MigratesLegacyFilesIntoSegmentsOnce) {
     TempDir tmp;
     const auto audit_directory = tmp.path() / "audit";
     std::filesystem::create_directories(audit_directory);
-    AuditEventValue value;
-    value.action = AuditAction::GraphCreated;
-    value.target = "legacy";
-    value.time = "2026-09-28T22:00:00Z";
-    auto record = zetta::governance::to_json(value);
-    record["id"] = "legacy-event";
-    {
-        std::ofstream output(audit_directory / "legacy-event.json");
+    for (std::size_t index = 0; index < 70; ++index) {
+        AuditEventValue value;
+        value.action = AuditAction::GraphCreated;
+        value.target = "legacy";
+        value.time = "2026-09-28T22:00:00Z";
+        auto record = zetta::governance::to_json(value);
+        const std::string id = "legacy-event-" + std::to_string(index);
+        record["id"] = id;
+        std::ofstream output(audit_directory / (id + ".json"));
         output << record.dump() << '\n';
     }
 
     zetta::governance::AuditTrail trail(audit_directory);
     std::string error;
     ASSERT_TRUE(trail.open(&error)) << error;
-    EXPECT_TRUE(trail.contains("legacy-event"));
-    EXPECT_EQ(trail.size(), 1u);
-    EXPECT_FALSE(std::filesystem::exists(
-        audit_directory / "legacy-event.json"));
+    EXPECT_TRUE(trail.contains("legacy-event-0"));
+    EXPECT_TRUE(trail.contains("legacy-event-69"));
+    EXPECT_EQ(trail.size(), 70u);
+    for (const auto& entry :
+         std::filesystem::directory_iterator(audit_directory)) {
+        EXPECT_NE(entry.path().extension(), ".json");
+    }
     EXPECT_TRUE(std::filesystem::exists(
         audit_directory / "segment-00000000.audit.gz"));
+}
+
+TEST(AuditTrail, MembershipUsesTheIndexWithoutReadingSegmentsAgain) {
+    TempDir tmp;
+    const auto audit_directory = tmp.path() / "audit";
+    {
+        zetta::governance::AuditTrail trail(audit_directory);
+        std::string error;
+        ASSERT_TRUE(trail.open(&error)) << error;
+        AuditEventValue value;
+        value.action = AuditAction::DataAccess;
+        value.time = "2026-09-28T22:00:00Z";
+        ASSERT_TRUE(trail.append("known-event", value, &error)) << error;
+        trail.flush();
+    }
+
+    zetta::governance::AuditTrail trail(audit_directory);
+    std::string error;
+    ASSERT_TRUE(trail.open(&error)) << error;
+    const auto segment = audit_directory / "segment-00000000.audit.gz";
+    const auto held_segment = audit_directory / "segment-held.audit.gz";
+    std::filesystem::rename(segment, held_segment);
+    EXPECT_TRUE(trail.contains("known-event"));
+    EXPECT_FALSE(trail.contains("unknown-event"));
+    std::filesystem::rename(held_segment, segment);
 }
 
 TEST(AuditTrail, RetentionRemovesOldCallsButPreservesSummaries) {

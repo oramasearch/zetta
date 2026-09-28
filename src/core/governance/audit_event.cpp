@@ -268,14 +268,18 @@ std::uint32_t read_u32(std::string_view input, std::size_t offset) {
 }
 
 std::uint64_t audit_id_hash(std::string_view id) {
-    // Audit ids are random UUIDs. FNV-1a keeps the in-memory index compact;
-    // the rare equal-hash case is resolved by reading the indexed records.
+    // Audit ids are random UUIDs. FNV-1a plus the CRC stored in Location keeps
+    // a compact 96-bit membership fingerprint without retaining full ids.
     std::uint64_t hash = 1469598103934665603ULL;
     for (const unsigned char byte : id) {
         hash ^= byte;
         hash *= 1099511628211ULL;
     }
     return hash;
+}
+
+std::uint32_t audit_id_checksum(std::string_view id) {
+    return audit_crc32(id);
 }
 
 std::string segment_name(std::uint32_t number) {
@@ -409,8 +413,9 @@ std::optional<std::string> inflate_segment(const fs::path& path,
 class AuditTrail::Impl {
 public:
     struct Location {
-        std::uint32_t segment = 0;
         std::uint64_t offset = 0;
+        std::uint32_t segment = 0;
+        std::uint32_t id_checksum = 0;
     };
 
     explicit Impl(fs::path directory, std::size_t recent_limit)
@@ -444,26 +449,11 @@ public:
         return result;
     }
 
-    std::shared_ptr<AuditEvent> event_at(const Location& location) const {
-        const std::optional<std::string> bytes =
-            inflate_segment(segment_path(location.segment));
-        if (!bytes || location.offset >= bytes->size()) {
-            return nullptr;
-        }
-        const std::optional<DecodedAuditFrame> decoded =
-            decode_audit_frame(std::string_view(*bytes).substr(location.offset));
-        if (!decoded) {
-            return nullptr;
-        }
-        return std::make_shared<AuditEvent>(decoded->id, decoded->value,
-                                            directory_);
-    }
-
     bool contains(std::string_view id) const {
         const auto range = index_.equal_range(audit_id_hash(id));
+        const std::uint32_t checksum = audit_id_checksum(id);
         for (auto iterator = range.first; iterator != range.second; ++iterator) {
-            const std::shared_ptr<AuditEvent> event = event_at(iterator->second);
-            if (event && event->id() == id) {
+            if (iterator->second.id_checksum == checksum) {
                 return true;
             }
         }
@@ -498,20 +488,10 @@ public:
                             offset, frame_error.c_str());
                 break;
             }
-            const std::uint64_t hash = audit_id_hash(decoded->id);
-            bool duplicate = false;
-            const auto range = index_.equal_range(hash);
-            for (auto iterator = range.first; iterator != range.second;
-                 ++iterator) {
-                const std::shared_ptr<AuditEvent> known = event_at(iterator->second);
-                if (known && known->id() == decoded->id) {
-                    duplicate = true;
-                    break;
-                }
-            }
-            if (!duplicate) {
+            if (!contains(decoded->id)) {
                 remember(decoded->id, decoded->value,
-                         Location{number, offset});
+                         Location{offset, number,
+                                  audit_id_checksum(decoded->id)});
             }
             offset += decoded->consumed;
         }
@@ -585,7 +565,8 @@ public:
             }
             return false;
         }
-        const Location location{current_segment_, current_offset_};
+        const Location location{current_offset_, current_segment_,
+                                audit_id_checksum(id)};
         current_offset_ += frame.size();
         ++unsynced_records_;
         remember(id, value, location);
@@ -633,6 +614,7 @@ public:
 
     bool migrate_legacy_files(std::string* error) {
         std::vector<fs::path> legacy_files;
+        std::vector<fs::path> durable_files;
         std::error_code error_code;
         for (const fs::directory_entry& entry :
              fs::directory_iterator(directory_, error_code)) {
@@ -641,6 +623,30 @@ public:
             }
         }
         std::ranges::sort(legacy_files);
+        const auto remove_durable_files = [&]() {
+            if (durable_files.empty()) {
+                return true;
+            }
+            if (!sync_writer()) {
+                if (error) {
+                    *error = "cannot sync migrated audit records";
+                }
+                return false;
+            }
+            for (const fs::path& durable : durable_files) {
+                error_code.clear();
+                fs::remove(durable, error_code);
+                if (error_code) {
+                    if (error) {
+                        *error = "cannot remove migrated audit file " +
+                                 durable.string();
+                    }
+                    return false;
+                }
+            }
+            durable_files.clear();
+            return true;
+        };
         for (const fs::path& path : legacy_files) {
             std::ifstream input(path);
             const nlohmann::json record =
@@ -660,16 +666,13 @@ public:
             if (!append(path.stem().string(), *value, error)) {
                 return false;
             }
-            sync_writer();
-            fs::remove(path, error_code);
-            if (error_code) {
-                if (error) {
-                    *error = "cannot remove migrated audit file " + path.string();
-                }
+            durable_files.push_back(path);
+            if (durable_files.size() >= kSyncEveryRecords &&
+                !remove_durable_files()) {
                 return false;
             }
         }
-        return true;
+        return remove_durable_files();
     }
 
     bool open(std::string* error) {
