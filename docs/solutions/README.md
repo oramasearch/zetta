@@ -17,6 +17,11 @@ and policy decisions to actions and measured outcomes.
 - [point-in-time-snapshots.md](point-in-time-snapshots.md) — replicated snapshot
   tables, row-level as-of joins, and the feature-lineage/blackout gate (#1103).
 
+- [action-integration.md](action-integration.md) — report publication, replicated
+  action outbox, webhook and CRM connector plugins, bounded retries,
+  acknowledgements, dead letters, holdout suppression, and kill-switch guarded
+  closed-loop execution (#1109).
+
 ## Solution registry
 
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the

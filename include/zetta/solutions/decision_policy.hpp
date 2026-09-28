@@ -68,6 +68,7 @@ struct DecisionRecord {
     std::string action;
     std::string autonomy;
     std::string status;
+    bool holdout = false;
     bool actionable = false;
     std::vector<std::string> reasons;
     nlohmann::json evidence = nlohmann::json::object();
@@ -124,6 +125,12 @@ public:
         std::string actor,
         std::string* error = nullptr);
 
+    // Empty when a recorded decision may be delivered now. This re-checks the
+    // latest policy kill-switch immediately before execution while preserving
+    // the decision's original policy version for auditability.
+    std::optional<std::string> delivery_blocker(
+        const DecisionRecord& decision) const;
+
 private:
     zetta::cluster::ReplicationManager& replication_;
     zetta::governance::AuditSink* audit_;
@@ -140,6 +147,7 @@ struct BatchDecisionOptions {
     std::string cost_column = "cost";
     std::string contacts_column = "contacts";
     std::string recent_actions_column = "recent_actions";
+    std::string holdout_column = "holdout";
 };
 
 struct BatchDecisionResult {

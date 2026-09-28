@@ -103,6 +103,14 @@ Batch mode accepts a database/table plus column mappings and writes full decisio
 rows to a new table, including `policy_id`, `policy_version`, `experiment`, and
 `cell` on every row.
 
+An entity may carry `holdout: true`; batch decisions read it from the
+`holdout` column by default (overridable with `holdout_column`). The engine
+still selects and records the policy action for counterfactual measurement,
+then writes `holdout: true`, `status: "blocked"`, and `actionable: false`.
+Action delivery treats this field as a hard stop. This is the input contract
+for the holdout manager tracked by #1105; the experiment cell remains in the
+decision evidence.
+
 All handlers run on the node owner loop. The evaluator itself has no foreign
 runtime or hosted call. The request-time regression measures persisted-decision
 p99 over 64 calls and requires it to remain below 50 ms on the native test host.

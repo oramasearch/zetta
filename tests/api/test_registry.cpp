@@ -64,7 +64,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        103u); // +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        107u); // +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -141,7 +141,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "update_workspace_profile", "create_plan", "update_plan",
           "record_action", "record_outcome", "create_policy", "update_policy",
           "decide", "approve_decision", "create_experiment", "assign",
-          "create_solution", "run_solution"}) {
+          "create_solution", "run_solution",
+          "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,

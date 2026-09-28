@@ -118,6 +118,10 @@ What's inside, by domain (each links to that domain's docs):
   policy, experiments, and solution monitoring, including drift, calibration,
   cohort performance, guardrails, breach events, retrain requests, and durable
   score-to-outcome evidence.
+  The action runtime publishes driver reports,
+  places owned SLA tasks in a replicated outbox, delivers webhook and CRM tasks
+  with retry/idempotency/dead-letter handling, and stops held-out or
+  kill-switched closed-loop actions before delivery.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

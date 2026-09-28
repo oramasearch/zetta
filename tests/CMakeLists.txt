@@ -111,6 +111,7 @@ add_executable(zetta-tests
   billing/test_plan.cpp
   solutions/test_decision_policy.cpp
   solutions/test_experiment.cpp
+  solutions/test_action_integration.cpp
   index/test_index.cpp
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp

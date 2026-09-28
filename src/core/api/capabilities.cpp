@@ -9427,6 +9427,9 @@ void register_core_capabilities(Registry& registry) {
     // Versioned score-to-action policy (#1104).
     register_decision_policy_capabilities(registry);
 
+    // Report, task, and bounded closed-loop action patterns (#1109).
+    register_action_capabilities(registry);
+
     registry.add(Capability{
         "analyze_dataset",
         "Analyze a dataset",
