@@ -561,6 +561,7 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
   src/core/solutions/monitor.cpp
+  src/core/solutions/roi_readout.cpp
   src/core/ml/ensemble.cpp
   src/core/ml/ensemble_methodology.cpp
   src/core/ml/ensemble_runner.cpp

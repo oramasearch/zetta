@@ -120,6 +120,7 @@ public:
         std::string* error = nullptr);
     std::optional<DecisionRecord> get_decision(
         const std::string& decision_id) const;
+    std::vector<DecisionRecord> decisions() const;
     std::optional<DecisionRecord> approve(
         const std::string& decision_id,
         std::string actor,

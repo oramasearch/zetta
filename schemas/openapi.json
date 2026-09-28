@@ -9937,6 +9937,414 @@
         ]
       }
     },
+    "/v1/get_roi_readout": {
+      "get": {
+        "description": "Read one solution's versioned correctness certificate, aggregate incrementality with confidence intervals, customer-supplied ROI, guardrails, agent operations, and audit extract. No side effects. Requires api:query.",
+        "operationId": "get_roi_readout",
+        "parameters": [
+          {
+            "description": "the solution name or ROI readout definition uuid",
+            "in": "query",
+            "name": "solution",
+            "required": true,
+            "schema": {
+              "description": "the solution name or ROI readout definition uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "additionalProperties": false,
+                      "description": "A versioned customer-visible correctness, incrementality, ROI, guardrail, operations, and audit readout (#1108).",
+                      "properties": {
+                        "agent_operations": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "actions": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "actions_by_autonomy": {
+                              "type": "object"
+                            },
+                            "agent_actions": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "approvals": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "human_actions": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "overrides": {
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "actions",
+                            "agent_actions",
+                            "human_actions",
+                            "actions_by_autonomy",
+                            "approvals",
+                            "overrides"
+                          ],
+                          "type": "object"
+                        },
+                        "audit_extract": {
+                          "items": {
+                            "not": {
+                              "required": [
+                                "value"
+                              ]
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "correctness_certificate": {
+                          "properties": {
+                            "block_deploy": {
+                              "type": "boolean"
+                            },
+                            "checks": {
+                              "type": "array"
+                            },
+                            "passed": {
+                              "type": "boolean"
+                            },
+                            "verdict": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "checks",
+                            "verdict",
+                            "block_deploy",
+                            "passed"
+                          ],
+                          "type": "object"
+                        },
+                        "generated_at": {
+                          "type": "string"
+                        },
+                        "guardrail_panel": {
+                          "type": "object"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "incrementality": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "cells": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "cell": {
+                                    "type": "string"
+                                  },
+                                  "claimable": {
+                                    "type": "boolean"
+                                  },
+                                  "estimate": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "confidence_interval": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "lower": {
+                                            "type": "number"
+                                          },
+                                          "upper": {
+                                            "type": "number"
+                                          }
+                                        },
+                                        "required": [
+                                          "lower",
+                                          "upper"
+                                        ],
+                                        "type": "object"
+                                      },
+                                      "effect": {
+                                        "type": "number"
+                                      },
+                                      "samples": {
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "samples",
+                                      "effect",
+                                      "confidence_interval"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "cell",
+                                  "claimable",
+                                  "reason"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "claimable": {
+                              "type": "boolean"
+                            },
+                            "combined": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "confidence_interval": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "lower": {
+                                      "type": "number"
+                                    },
+                                    "upper": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "lower",
+                                    "upper"
+                                  ],
+                                  "type": "object"
+                                },
+                                "effect": {
+                                  "type": "number"
+                                },
+                                "samples": {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "samples",
+                                "effect",
+                                "confidence_interval"
+                              ],
+                              "type": "object"
+                            },
+                            "confidence_level": {
+                              "type": "number"
+                            },
+                            "holdout_samples": {
+                              "minimum": 0,
+                              "type": "integer"
+                            },
+                            "outcome": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "claimable",
+                            "reason",
+                            "outcome",
+                            "confidence_level",
+                            "holdout_samples",
+                            "cells"
+                          ],
+                          "type": "object"
+                        },
+                        "roi_statement": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "claimable": {
+                              "type": "boolean"
+                            },
+                            "gross_value": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "incremental_outcomes": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "model": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "currency": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "investment": {
+                                  "minimum": 0,
+                                  "type": "number"
+                                },
+                                "outcome": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "value_per_outcome": {
+                                  "type": "number"
+                                }
+                              },
+                              "required": [
+                                "outcome",
+                                "value_per_outcome",
+                                "investment",
+                                "currency"
+                              ],
+                              "type": "object"
+                            },
+                            "net_value": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string"
+                            },
+                            "return_on_investment": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "claimable",
+                            "reason",
+                            "model",
+                            "incremental_outcomes",
+                            "gross_value",
+                            "net_value",
+                            "return_on_investment"
+                          ],
+                          "type": "object"
+                        },
+                        "solution": {
+                          "type": "string"
+                        },
+                        "sources": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "experiment": {
+                              "type": "string"
+                            },
+                            "graph": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "project",
+                            "graph",
+                            "experiment"
+                          ],
+                          "type": "object"
+                        },
+                        "version": {
+                          "minimum": 1,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "solution",
+                        "version",
+                        "generated_at",
+                        "sources",
+                        "correctness_certificate",
+                        "incrementality",
+                        "roi_statement",
+                        "guardrail_panel",
+                        "agent_operations",
+                        "audit_extract"
+                      ],
+                      "title": "zetta.RoiReadout",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get a solution ROI readout",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_run": {
       "get": {
         "description": "Read one run's full validated record — status, logs, outputs, lineage — by its uuid. No side effects. Requires api:query.",

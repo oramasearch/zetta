@@ -22,6 +22,10 @@ and policy decisions to actions and measured outcomes.
   acknowledgements, dead letters, holdout suppression, and kill-switch guarded
   closed-loop execution (#1109).
 
+- [roi-readout.md](roi-readout.md) — versioned correctness, aggregate
+  incrementality with confidence intervals, customer-supplied ROI, guardrails,
+  agent operations, and redacted audit evidence (#1108).
+
 ## Solution registry
 
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the

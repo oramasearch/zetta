@@ -80,6 +80,7 @@
 #include "zetta/solutions/experiment.hpp"
 #include "zetta/solutions/monitor.hpp"
 #include "zetta/solutions/snapshot.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -120,6 +121,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::solutions::decision_record_schema},
         {"solution_monitor", "solution_monitor.schema.json",
          &zetta::solutions::monitor_value_schema},
+        {"roi_readout_definition", "roi_readout_definition.schema.json",
+         &zetta::solutions::roi_readout_definition_schema},
+        {"roi_readout", "roi_readout.schema.json",
+         &zetta::solutions::roi_readout_schema},
         {"calibration", "calibration.schema.json",
          &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
