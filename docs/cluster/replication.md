@@ -73,7 +73,7 @@ the node currently holds, keyed by resource.
 
 `ReplicationManager` takes a `ReplicationPolicy`. The first (and currently only)
 policy is **`ReplicateToAllNodes`** — every node keeps a full copy of all state.
-Future policies (sharded, quorum, …) plug in behind the same enum/seam.
+Future policies (sharded, quorum, …) extend the same policy enum.
 
 ### Per-table / per-database replication strategy (ENT-35)
 
@@ -112,7 +112,14 @@ of zetta stays decoupled from the backend.
 
 - `set(key, json)` — a local change (any JSON value, stored as JSON text in the CRDT).
 - `remove(key)` — a local removal. Writes a **tombstone**, see below.
-- `snapshot()` — the merged document as JSON, **live entries only**.
+- `snapshot()` — a compatibility copy of the merged document as JSON, **live
+  entries only**.
+- `shared_snapshot()` — a shared immutable view of the same parsed cache. A
+  writer updates the cache in place when no reader holds it and uses
+  copy-on-write otherwise.
+- `changes_since(token)` — the shared snapshot, the effective keys changed
+  since the caller's token, the next token, and whether the caller must perform
+  a full resync.
 - `knows_key(key)` — whether the document holds the key at all, *including* as a
   tombstone. "Was this ever replicated?", as opposed to `snapshot()`'s "is it live
   now?".
@@ -123,6 +130,31 @@ of zetta stays decoupled from the backend.
   match — this is the "in sync" check. `"empty"` for an empty document.
 
 It is thread-safe (the cluster's network thread and local callers both touch it).
+
+## Parsed cache and incremental reads (#1079)
+
+`ReplicationManager` keeps each key's encoded value and parsed JSON current at
+the point of mutation. `set()` replaces the cached live value, while `remove()`
+keeps the encoded tombstone and removes the key from the live snapshot. The
+cache therefore has the same removal-wins behavior as the document: a
+tombstoned key remains known to `knows_key()` but is absent from snapshots.
+
+Each effective value change also advances a monotonic token and appends its key
+to a bounded 65,536-record journal. `changes_since(token)` deduplicates the
+records after that token. Token zero, a future token, or a token older than the
+journal produces `full_resync = true`; the returned snapshot is still the
+current immutable view. This bounds bookkeeping while making the common read
+cost proportional to the changes since the last tick.
+
+A peer merge is the exception: Automerge does not expose the affected top-level
+keys cheaply. After `Document::merge`, the manager makes one pass over the
+merged document, compares each effective encoded value with the cache, updates
+only differences, and records those keys. Concurrent tombstones participate in
+that comparison, so a merge that changes a live key to removal is reported even
+when Automerge's selected scalar is unchanged.
+
+This adds no JSON or wire format. Gossip and the persisted Automerge bytes keep
+their existing representation.
 
 ## Removal replicates as a tombstone
 
@@ -264,7 +296,7 @@ are a materialized *projection* of it.** Concretely:
     created, weights: { size, sha256 } }` — a trained model (a top-level entity).
     Like a large object, only the **metadata** rides in the document; the
     serialized **weights body** stays on disk and transfers peer-to-peer over the
-    LO body seam, verified against `weights.size` + `weights.sha256`. The value is
+    LO body transfer path, verified against `weights.size` + `weights.sha256`. The value is
     **JSON-Schema validated** at both entry points. See [models.md](../ml/models.md).
   - `part:<part_uuid>` → `{ table, blob_ref, row_range: { start, end }, stats,
     owner_nodes, created }` — a dataset partition: where a slice of a table's data
@@ -280,10 +312,11 @@ are a materialized *projection* of it.** Concretely:
 - **Gossip:** unchanged — peers exchange `save()`/`merge()` blobs and converge.
 - **Apply (remote → local):** on the **main/Node thread** (the network thread only
   merges into the CRDT, which is thread-safe), `Node::tick()` notices the CRDT
-  `version()` changed and **reconciles** the on-disk projection to match the
-  document — creating missing databases/tables/rows (and dropping removed ones).
-  Reconcile reads the CRDT and writes only disk, so it never loops back into the
-  CRDT, and it is idempotent.
+  `version()` changed and **reconciles** changed prefix buckets into the on-disk
+  projection — creating missing databases/tables/rows and dropping removed ones.
+  Startup, journal gaps, and batches larger than one quarter of live keys use the
+  complete snapshot. Reconcile reads the CRDT and writes only disk, so it never
+  loops back into the CRDT, and it is idempotent.
 
   **The watermark is the version read at the TOP of the tick, never the current
   one.** Peers merge on the network thread, so a merge can land at any moment
@@ -298,8 +331,9 @@ are a materialized *projection* of it.** Concretely:
   reconciles a snapshot it has already applied, which is idempotent.
 - **Persistence:** the CRDT document is saved to `data_dir/replication.automerge`
   (Automerge `save()`), and `merge()`d back on startup, so replicated state
-  survives restarts. On first run with pre-existing on-disk data, that data is
-  captured into the document (migrated) so nothing is lost.
+  survives restarts. A dirty document is saved at most once per second and is
+  always saved by `stop()`. On first run with pre-existing on-disk data, that
+  data is captured into the document (migrated) so nothing is lost.
 
 ## Status / next steps
 
@@ -309,10 +343,11 @@ are a materialized *projection* of it.** Concretely:
   every node's disk, and persisted across restart (`tests/cluster/test_data_replication.cpp`).
 - **Documented, not built:** the leadership / `leadership` table and Raft
   (see *Consistency model* above) — design only for now.
-- **Known limits (v1):** the whole document is re-saved on each change and
-  reconcile rescans on each version bump (fine for modest data; incremental
-  save / per-table versioning can come later). **The document keeps full change
-  history** (a CRDT keeps it so merges stay conflict-free), so `save()` grows
+- **Known limits (v1):** persistence still serializes the whole document, but
+  no more than once per second plus `stop()`; peer merge still makes one full
+  comparison pass because Automerge exposes no changed top-level keys.
+  **The document keeps full change history** (a CRDT keeps it so merges stay
+  conflict-free), so `save()` grows
   with every change — it does *not* grow while idle, but a write-heavy or
   long-lived document will accumulate. **History compaction** (dropping changes
   all peers already have) is the future mitigation; for now, deleting
