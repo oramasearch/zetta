@@ -68,7 +68,9 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(solution.id == "S-1" ? 1110 : 1102);
+    solution.issue = issue(solution.id == "S-1" ? 1110
+                           : solution.id == "S-2" ? 1111
+                                                   : 1102);
     return solution;
 }
 
@@ -214,17 +216,24 @@ const std::vector<Solution>& solutions() {
             "Concentrate finite sales capacity while preserving exploration and coverage.",
             {{"M-1", "primary", 1}, {"M-2", "foundation", 1},
              {"M-3", "foundation", 1}, {"M-6", "attachable", 3}},
-            {"M-2", "M-1", "M-3", "M-6"}, {"tasks and queues with SLAs"},
-            {"L1", "optional L2"},
-            {{"queue writes and nurture assignment", "A2"}, {"band and SLA changes", "A1"},
+            {"M-2", "M-1", "M-3", "M-6"},
+            {"CRM lead tasks with owners and SLAs", "capacity-aware sales and nurture queues"},
+            {"L1 CRM queue writes", "optional L2 scoring read-back"},
+            {{"queue writes and nurture assignment", "A2"}, {"priority overrides", "A1"},
+             {"band and SLA policy changes", "A1"},
              {"exploration rate inside bounds", "A3"}},
             {{"entity", true, "lead, contact, account, and opportunity hierarchy"},
              {"label", true, "stage conversion in a signed window"},
              {"time", true, "point-in-time CRM field history"},
-             {"treatment", false, "worked, routed, or nurtured action"}},
+             {"feature", true, "pre-qualification activity and firmographic signals"},
+             {"owner", true, "eligible sales owner or queue"},
+             {"territory", true, "routing territory and eligibility"},
+             {"capacity", true, "rep capacity available at decision time"},
+             {"value", false, "opportunity value for level-4 routing evidence"},
+             {"treatment", false, "worked, routed, nurtured, or no-contact action"}},
             "Score bands crossed with territory, rep capacity, SLAs, coverage caps, and an exploration quota.",
             "Randomized routing at matched capacity with a protected exploration slice.",
-            {"response SLA", "new-segment coverage", "rep cherry-picking", "speed to lead"},
+            {"SLA miss rate", "capacity violations", "routing coverage", "action-execution rate"},
             levels("scoring with queues and SLAs", "add opportunity risk",
                    "add worked-lead incrementality", "add value-weighted routing")),
         band_a(

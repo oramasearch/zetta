@@ -54,7 +54,10 @@ Non-M-1 primary methodologies require an explicit `foundation.decision_source`:
 `methodology`, `entity_column`, `score_column`, and optional `output_name`.
 It selects a real output table from that child Run, never a fabricated score or
 a substitute classifier. M-1 defaults to its `account` / `risk` score table.
-Inputs and score scales for other modules remain their catalogue module's
+S-2 also uses M-1 as its primary methodology. Its shared table carries the
+entity in `account` and conversion propensity in `risk`; S-2 binds that real
+output and relabels the downstream decision cell as a conversion band. Inputs
+and score scales for S-3 through S-12 remain their catalogue module's
 responsibility; their templates are deliberately minimal.
 
 ## Run and read back
@@ -118,3 +121,11 @@ The registry test validates every S policy template against the engine schema.
 builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
 proves positive-uplift recommendations can reach policy execution and every
 non-positive effect remains non-actionable, including protected holdouts.
+
+`SolutionJourney.LeadScoringRoutesCapacityAwareQueuesAndRecoversPlantedEffect`
+builds and runs S-2 over a partitioned synthetic CRM table. It excludes a
+future lead, verifies permanent holdout suppression, inspects queue owner,
+territory, capacity evidence and SLA payloads, observes all four guardrails,
+records centered conversion outcomes with a 0.15 routing effect, and checks
+that the readout's estimate and 95% confidence interval recover the planted
+effect.

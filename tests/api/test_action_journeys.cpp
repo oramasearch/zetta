@@ -273,6 +273,53 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_lead_scoring_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("leads");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const std::string territory = index % 2 == 0 ? "west" : "east";
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "crm_fixture"},
+             {"name", "Lead " + std::to_string(index + 1)},
+             {"label", index % 10 != 0 ? 1 : 0},
+             {"engagement", index % 13 + 0.5},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"eligible", true},
+             {"excluded", false},
+             {"do_not_contact", false},
+             {"territory_eligible", true},
+             {"rep_capacity_available", true},
+             {"territory", territory},
+             {"owner", territory + "-sales"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "crm_fixture"},
+         {"name", "Future lead"},
+         {"label", 1},
+         {"engagement", 999.0},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"eligible", true},
+         {"excluded", false},
+         {"do_not_contact", false},
+         {"territory_eligible", true},
+         {"rep_capacity_available", true},
+         {"territory", "west"},
+         {"owner", "west-sales"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -284,6 +331,31 @@ nlohmann::json retention_configuration() {
                      {"feature_columns", {"feature", "uplift_segment"}}}},
         {"delivery", {{"endpoint", "https://crm.example.test/tasks"}, {"owner", "retention-team"}}},
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
+}
+
+nlohmann::json lead_scoring_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "leads"},
+          {"target_table", "lead_scoring_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns", {"engagement"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://crm.example.test/lead-queues"},
+          {"owner", "sales-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 250.0},
+          {"investment", 300.0},
+          {"currency", "USD"}}}};
 }
 
 journey::Journey retention_journey(const nlohmann::json& foundation) {
@@ -382,6 +454,68 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+journey::Journey planted_conversion_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"lead-scoring-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double converted =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record observed conversion",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "converted"},
+              {"value", converted},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured conversion effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted conversion effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_retention_data(node);
@@ -458,6 +592,145 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       LeadScoringRoutesCapacityAwareQueuesAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_lead_scoring_data(node);
+    journey::Journey flow{"lead-scoring-solution", {}};
+    flow.steps = {
+        {"read S-2 defaults",
+         "get_solution",
+         {{"solution", "S-2"}},
+         {.checks = {journey::equals("/solution/runnable", true),
+                     journey::equals("/solution/minimal_template", false),
+                     journey::equals(
+                         "/solution/measurement/outcome/name", "converted")}}},
+        {"create lead scoring project",
+         "create_project",
+         {{"name", "lead scoring"}}},
+        {"create S-2 Pipeline",
+         "create_solution",
+         {{"project", "lead scoring"},
+          {"solution", "S-2"},
+          {"level", 1},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "leads"},
+            {"M-3",
+             {{"entity_column", "entity_id"},
+              {"label_column", "label"},
+              {"feature_columns", {"engagement"}}}}}},
+          {"foundation", lead_scoring_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"lead_graph", "/graph"},
+          {"lead_experiment", "/experiment_id"},
+          {"lead_readout", "/readout_id"}}},
+        {"run S-2 Pipeline",
+         "run_solution",
+         {{"project", "lead scoring"},
+          {"graph", "$lead_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"lead_run", "/run_id"}}},
+        {"read completed lead scoring Run",
+         "get_run",
+         {{"run_id", "$lead_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected routing assignments",
+         "get_experiment",
+         {{"experiment", "$lead_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read lead action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("lead scoring");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("S-2 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        ASSERT_TRUE(request.at("payload").contains("routing_queue"));
+        EXPECT_FALSE(
+            request.at("payload").at("territory").get<std::string>().empty());
+        EXPECT_TRUE(
+            request.at("payload").at("rep_capacity_available").get<bool>());
+        EXPECT_FALSE(
+            request.at("payload").at("queue_owner").get<std::string>().empty());
+        EXPECT_TRUE(request.at("payload")
+                        .at("decision_cell")
+                        .contains("conversion_band"));
+        EXPECT_FALSE(request.at("sla_due_at").get<std::string>().empty());
+        const auto decision = policies.get_decision(
+            request.at("payload").at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("lead_scoring_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 4u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_conversion_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

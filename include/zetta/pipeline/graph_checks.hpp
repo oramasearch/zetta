@@ -301,6 +301,30 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-2's domain adaptations (#1111). Conversion outcomes must be observed after
+// the score cutoff, post-qualification CRM fields may not become predictors,
+// and routed tasks must name the capacity evidence used to select an owner.
+class S2PointInTimeConversionCheck final : public Check {
+public:
+    std::string name() const override { return "s2_point_in_time_conversion"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S2PostQualificationLeakageCheck final : public Check {
+public:
+    std::string name() const override { return "s2_post_qualification_leakage"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S2CapacityRoutingCheck final : public Check {
+public:
+    std::string name() const override { return "s2_capacity_routing"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.
