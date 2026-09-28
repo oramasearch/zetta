@@ -25,5 +25,9 @@ pubsub: INFO topic:orders recovered 1204339 events (next sequence 89325343)
 pubsub: INFO start-up: reloaded 14 topics, 1204339 events; 0 torn or corrupt tails dropped
 ```
 
-Zetta's SIGTERM / SIGINT handler (`src/core/signals.cpp`) sets the stop flag; the node's
-shutdown path calls `PubSub::shutdown`.
+Zetta's SIGTERM / SIGINT handler (`src/core/signals.cpp`) sets the stop flag. The
+terminal path stops the API listener first, then calls `PubSub::shutdown()` while
+the owner loop is still available. Closing the topics wakes every REST
+`receive_events` long poll; the API server drains those request coroutines and
+their owner-thread work before its I/O context is destroyed (#1077). `Node::stop`
+then sees pub/sub already stopped and performs the remaining node teardown.

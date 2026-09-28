@@ -83,6 +83,27 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   not only inside the 10 Hz `tick()`. Without both, each hop waited out a tick:
   `receive_events` took ~205 ms with no wait at all; it now takes under 1 ms.
 
+## Ordered shutdown
+
+`ApiServer::stop_accepting()` closes the listener before terminal node shutdown
+begins. `main` then calls `PubSub::shutdown()` so every `receive_events` wait is
+woken, and calls `ApiServer::stop()` while the `Node` and its owner thread still
+exist. `stop()` keeps `MainThreadBridge` and `Node::run_on_owner` work draining
+until every REST capability coroutine has returned, with a five-second upper
+bound. Only then does it release the `io_context` work hold, join the I/O thread
+and allow the server/context to be destroyed (#1077).
+
+The work hold matters for offloaded calls: while a long poll is running on the
+blocking pool there may briefly be no completion queued on the I/O executor.
+Without the hold, `io_context::run()` can return before the pool posts the
+completion, leaving the request coroutine to be destroyed while its stop
+callback is still running. No new wire or JSON format is introduced.
+
+`Shutdown.SigtermWithLongPollsInFlightExitsPromptly` starts a real headless
+node, opens eleven 30-second REST long polls, and requires a normal exit within
+one second of SIGTERM. Its child environment excludes cloud CLIs, and cleanup
+reaps the child before joining clients so a regression cannot strand the suite.
+
 ## Auth, governance, audit — nothing new
 
 - **Bearer token = an `AccessKey` id.** Possession of the key id is the

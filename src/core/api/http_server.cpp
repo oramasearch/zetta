@@ -609,6 +609,21 @@ boost::http::status http_status_of(int status_code) {
 }  // namespace
 
 struct ApiServer::Impl {
+    class RequestLifetime {
+    public:
+        explicit RequestLifetime(std::atomic<std::size_t>& requests)
+            : requests_(requests) {
+            requests_.fetch_add(1);
+        }
+
+        ~RequestLifetime() {
+            requests_.fetch_sub(1);
+        }
+
+    private:
+        std::atomic<std::size_t>& requests_;
+    };
+
     Node& node;
     const zetta::cluster::Cluster* cluster;
     ServerOptions options;
@@ -626,6 +641,8 @@ struct ApiServer::Impl {
     std::unique_ptr<boost::beast2::http_server> server;
     std::thread io_thread;
     std::atomic<bool> is_running{false};
+    std::atomic<bool> io_work_held{false};
+    std::atomic<std::size_t> requests_in_flight{0};
     unsigned short bound_port = 0;
     std::string failure_reason;
 
@@ -832,6 +849,7 @@ struct ApiServer::Impl {
         std::shared_ptr<const Capability> capability) {
         namespace http = boost::http;
 
+        RequestLifetime request_lifetime(requests_in_flight);
         std::string response_body;
         http::status status = http::status::ok;
 
@@ -3790,20 +3808,61 @@ bool ApiServer::start() {
         return false;
     }
     impl.bound_port = impl.server->local_endpoint().port();
+    // Keep run() alive while an offloaded request has no completion queued on
+    // this executor. Shutdown releases this only after those request
+    // coroutines have finished (#1077).
+    impl.io_context.get_executor().on_work_started();
+    impl.io_work_held.store(true);
     impl.server->start();
     impl.io_thread = std::thread([&impl] { impl.io_context.run(); });
     impl.is_running.store(true);
     return true;
 }
 
-void ApiServer::stop() {
+void ApiServer::stop_accepting() {
     Impl& impl = *impl_;
     if (!impl.is_running.exchange(false)) return;
     impl.server->stop();
-    impl.io_context.stop();
+}
+
+void ApiServer::stop() {
+    Impl& impl = *impl_;
+    stop_accepting();
+    if (!impl.io_thread.joinable()) return;
+
+    // tcp_server::stop requests cancellation but its connection coroutines
+    // still have to unwind on the live io_context. Keep both owner queues
+    // moving while they do: an offloaded request can return through the API
+    // bridge and its authorization can return through Node::run_on_owner.
+    // Destroying the io_context with either hop suspended can deadlock while
+    // its stop callback is being removed (#1077).
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        impl.bridge.drain();
+        impl.node.drain_owner_work();
+        impl.background.prune();
+        if (impl.requests_in_flight.load() == 0 &&
+            impl.bridge.pending() == 0) {
+            break;
+        }
+        impl.bridge.wait_for_work(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    const bool drained = impl.requests_in_flight.load() == 0 &&
+                         impl.bridge.pending() == 0;
+    if (impl.io_work_held.exchange(false)) {
+        impl.io_context.get_executor().on_work_finished();
+    }
+    if (!drained) {
+        std::fprintf(stderr,
+                     "zetta: API shutdown drain exceeded 5 seconds; "
+                     "stopping the io context\n");
+        impl.io_context.stop();
+    }
     if (impl.io_thread.joinable()) impl.io_thread.join();
-    // Unblock any coroutine still parked on the bridge.
     impl.bridge.drain();
+    impl.node.drain_owner_work();
+    if (drained) impl.server->join();
 }
 
 bool ApiServer::running() const { return impl_->is_running.load(); }

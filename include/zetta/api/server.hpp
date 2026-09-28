@@ -73,6 +73,10 @@ public:
 
     // Bind + start serving on the io thread. False on failure (see reason()).
     bool start();
+    // Stop accepting new connections while leaving the io_context alive so
+    // callers can wake request waiters and keep draining owner work before
+    // stop() joins the server thread (#1077).
+    void stop_accepting();
     void stop();
     bool running() const;
 

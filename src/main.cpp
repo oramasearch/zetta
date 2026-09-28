@@ -24,6 +24,7 @@
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -775,6 +776,16 @@ int main(int argc, char** argv) {
     }
 
     node.set_owner_wakeup({});  // before the API server can go away
+    if (api_server) api_server->stop_accepting();
+    // Wake receive_events long polls before waiting for their connection
+    // coroutines. ApiServer::stop keeps both owner queues draining until the
+    // I/O thread has unwound, then the io_context can be destroyed safely
+    // (#1077).
+    if (node.pubsub()) node.pubsub()->shutdown();
+    if (api_server) {
+        api_server->stop();
+        api_server.reset();
+    }
     cluster.stop();
     node.stop();
     // Stop the outbound HTTP client's io_context + join its thread, after the
