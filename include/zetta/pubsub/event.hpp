@@ -79,6 +79,9 @@ struct Envelope {
 
 struct Event {
     std::uint64_t sequence = 0;  // assigned by the topic on append
+    std::uint64_t revision = 1;
+    std::optional<std::chrono::system_clock::time_point> edited_at;
+    std::string edited_by;
     std::string id;              // unique per publish; exactly-once dedupe key
     Envelope envelope;
     Encoding encoding = Encoding::Blob;
@@ -127,7 +130,7 @@ std::string new_event_id();
 // One framed record: [u32 length][u32 crc32][body]. The body carries the
 // envelope as JSON plus the raw payload. A torn or corrupt tail is detected by
 // the length / crc and reported, never parsed.
-std::string encode_event_frame(const Event& event);
+std::string encode_event_frame(const Event& event, std::optional<std::size_t> slot = std::nullopt);
 
 enum class FrameStatus { Ok, Incomplete, Corrupt };
 
@@ -135,6 +138,7 @@ struct DecodedFrame {
     FrameStatus status = FrameStatus::Corrupt;
     Event event;
     std::size_t consumed = 0;  // bytes of `buffer` this frame occupied
+    std::optional<std::size_t> slot;  // sparse spill position; absent in older frames
 };
 
 DecodedFrame decode_event_frame(std::string_view buffer,

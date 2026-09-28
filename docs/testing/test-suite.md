@@ -236,7 +236,7 @@ needs a test fake exposed to the testkit.
 - `gate.schema_type` / `gate.data_leakage` — the #309 checks (field/type mismatch; ML leakage / point-in-time) (pure)
 - `gate.structural` — non-empty / acyclicity / legal stage transitions (pure)
 - `governance.entity_resolver` — the resolver itself: FullName vs Brand, `normalize_entity_name`, the "Umbrella Logistics" near-collision (pure)
-- `governance.intent_compiler` — NL intent → churn / generic skeleton, deterministic, round-trips through `ir::from_json` (pure)
+- `governance.intent_compiler` — NL intent → registered runnable methodology shape, deterministic, round-trips through `ir::from_json`, and refuses unsupported work (pure)
 - `governance.n8n` — import / compile an n8n workflow JSON → artifact input / ExecutionGraph IR (node)
 - `governance.deployment` — `deploy_graph` + the reconcile / self-heal control loop (start, kill, heal a run) (node)
 - `governance.burst_approval_gate` — an over-cap burst blocked pending approval + audited (`provision_requested`) (node)

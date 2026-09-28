@@ -13,11 +13,16 @@ The IR is *what* it validates; the report is *what it returns*; this is the part
 that does the running.
 
 The gate ships the trivial `NonEmptyGraphCheck` so the path works end to end,
-plus the concrete schema/type and data-leakage / point-in-time checks (`#309` —
-see [gate-checks.md](gate-checks.md)) and the
+plus the concrete schema/type, data-leakage, M-10 grounding, and M-10 training
+access checks, plus M-15's `BanditPolicyCheck` (see [gate-checks.md](gate-checks.md)) and the
 [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). They all
-implement the same `Check` seam and plug in without touching the gate;
+implement the same `Check` interface;
 `default_gate()` registers each.
+
+The baseline also registers `SegmentationCheck` (#1042). It refuses unsafe entity
+or outcome features, non-global transforms, invalid K/minimum-share settings and
+incomplete assignment/profile graphs for M-3; other graphs pass it vacuously.
+See [segmentation.md](../ml/segmentation.md#running-it).
 
 ## The shape
 
@@ -78,14 +83,25 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free — `NonEmptyGraphCheck`, then the concrete `#309` checks (`SchemaTypeCheck`,
-`DataLeakageCheck` — see [gate-checks.md](gate-checks.md)), then the
-[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). The `#309`
-and entity-resolution checks are opt-in per step, so a graph that carries none of
-their annotations still passes. As further concrete checks land they are
-registered there too.
+for free: twenty-nine checks on the methodology integration branch (#1082).
+`NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck`,
+`SnapshotLineageCheck` and `TemporalValidationCheck` precede the M-2 through M-16 checks in methodology order,
+followed by [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md)
+(`#312` / TC-4). See [gate-checks.md](gate-checks.md). Method-specific checks
+engage on their own model kinds; shared annotation checks retain their opt-in
+behavior. An unannotated graph without a matching model kind still passes.
 
 ## Using it
+
+Composed solutions (#1128) declare methodology stages in their manifest.
+The gate applies every registered check to each stage and to the foundation
+nodes separately, prefixing result names with the stage number. A segmentation
+stage therefore validates its own source/model rather than counting unrelated
+M-1/M-2 nodes as extra segmentation inputs. Undeclared/missing stages, models
+outside a stage, and cross-stage data-flow edges are refused; only control edges
+cross the boundary. Existing graphs without a solution manifest are unchanged.
+`run_solution` uses this same gate before it creates a Run or delivers actions,
+and the ROI certificate evaluates the identical composed graph.
 
 ```cpp
 #include "zetta/pipeline/gate.hpp"
@@ -156,10 +172,11 @@ The gate sits between **compile** and **deploy**: a graph is compiled from inten
 run through the gate, and deployed only if the report allows it. The events the
 rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
-`#309` schema/type and data-leakage / point-in-time checks
+schema/type, data-leakage, and M-10 correctness checks
 ([gate-checks.md](gate-checks.md)) and the
-[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) already plug into
-this seam; the gate's wiring into deploy lands on top of it as separate work.
+[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) and M-15
+allocation check already plug into this interface; the gate's wiring into
+deploy lands on top of it as separate work.
 
 See also [gate-checks.md](gate-checks.md) (the concrete checks),
 [validation.md](validation.md) (the result type), the

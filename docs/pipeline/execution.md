@@ -154,20 +154,29 @@ steps are skipped, the failure is diagnosable), the empty/cyclic guards, that th
 produced run is schema-valid and survives a restart, and that a custom
 `StepExecutor` is honoured.
 
-## Real per-step compute (the churn pipeline)
+## Methodology run dispatch
 
-The first **real** `StepExecutor` is `zetta::usecases::churn::ChurnStepExecutor` (#396) — it replaces
-`DefaultStepExecutor`'s logical-ref placeholders with actual distributed accelerated
-compute for the UC-1 churn pipeline, **behind this same seam and without touching the
-orchestrator**. Each heavy step runs as a recorded `ComputeJob`
+The public `run` capability resolves the graph through the
+[methodology registry](../ml/methodologies.md). A model step with an unknown model kind is refused.
+A model step owned by a registered but unavailable methodology is refused with
+that methodology's tracking issue. A graph with no model step may still use the
+structural executor described above.
+
+M-1's `run` callback uses `zetta::usecases::churn::ChurnStepExecutor` (#396). It
+replaces `DefaultStepExecutor`'s logical-ref placeholders with actual distributed
+accelerated compute for the UC-1 churn pipeline. Each heavy step runs as a recorded `ComputeJob`
 (`connect`→load to DDF, `clean`→featurize, `model`→train GBDT + calibrate,
 `index`→score/rank, `serve`→explain via TreeSHAP, `act`→retention playbook), so
-`run_graph`'s churn graph produces a `Run` whose outputs reference a **real** `Model`
-+ ranked at-risk list + drivers. Because the seam's `run_step` is a pure-per-step
+the run produces a `Run` whose outputs reference a **real** `Model`, ranked
+at-risk list, and drivers. Because `run_step` is a pure-per-step
 function but the pipeline threads artifacts (feature table → model → ranked list →
 drivers), the executor is constructed with its dependencies (the node, a started job
 coordinator, a compute device, the input shards) and used by injection into a
 `GraphExecutor`. See [churn-step-executor.md](../use-cases/churn-step-executor.md).
+
+The API handler contains no M-1-specific dispatch. Later methodologies install
+their own graph ownership and run callbacks in the registry without editing the
+handler.
 
 The **`index` step** has its own real `StepExecutor` —
 [`zetta::index::IndexStepExecutor`](../indexing/index-step-executor.md) (#528) — which resolves the
@@ -178,7 +187,7 @@ so a built index is queryable. See [index-step-executor.md](../indexing/index-st
 
 ## What's next (later slices)
 
-- **More real per-step compute** behind the `StepExecutor` seam for the other use
+- **More real per-step compute** behind `StepExecutor` for the other use
   cases — materializing datasets as real tables/large objects, the distributed
   (fan-across-nodes) index build, and recording their real refs in the run's outputs.
 - **Wiring the correctness gate** ([gate.md](gate.md)) as a pre-execution
@@ -209,11 +218,18 @@ https://github.com/oramasearch/lake/issues/253):
   `dataset: trained on <database>.<table>` plus each of `resolve_dataset`'s notes. Every other
   connect step logs `connect: <name> was not read: this run trained on <database>.<table>` instead
   of reporting the graph's own `source:table` as read. `StepOutcome::notes` carries these lines.
+- **A run given no `dataset_path` reads its pipeline's own table** when there is one: the first
+  connect step whose `source` + `table` attributes name a dataset this node holds, with the first
+  model step's `target` as the label (`dataset.label_column`). It logs `dataset: read from the
+  pipeline's connect step '<name>': <database>.<table>, label '<target>'` and `run` answers it in
+  `dataset_notes`. Only a pipeline that names no existing table trains on the built-in demo
+  dataset, as before. lake points a project's pipeline at a table this way (a project made from an
+  Opportunity, *Build a Pipeline* from a dataset), and such runs used to train on the demo data
+  silently. Verify: `Uc1Journey.ARunWithoutADatasetReadsItsPipelinesTable`.
 - **Columns the model cannot use** are said: inference notes `not used: '<column>' (not numeric;
   categorical columns are not supported yet)` (#957 is categorical support), and
   `get_run_report`'s `dataset` adds `source` and `not_used` (from the run's lineage and logs; a
   model's metrics hold numbers only). A table-backed report drops `events`, which it has none of.
-- **A structural run** (a graph that is not churn-shaped) logs a `warn`, `structural: … its steps
+- **A structural run** (a graph with no model step) logs a `warn`, `structural: … its steps
   ran without training or scoring anything …` (and that a given `dataset_path` was not read), and
   `run`'s answer carries the same sentence as `note`.
-

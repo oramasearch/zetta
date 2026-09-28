@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "graph": {
+      "type": "object"
+    },
+    "model_name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "project_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "graph",
+    "project_id",
+    "model_name"
+  ],
+  "type": "object"
+}

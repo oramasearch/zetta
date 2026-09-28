@@ -55,16 +55,14 @@ The `Node` tree is **main-thread-only** (the same invariant the network thread
 obeys). The HTTP server runs on its own thread, so **no handler may touch the
 `Node` directly**. The bridge:
 
-- `zetta::api::MainThreadBridge` — a mutex-guarded queue of packaged tasks.
+- `zetta::api::MainThreadBridge` — a mutex-guarded queue of owner-thread closures.
   The owning loop **drains it**: `run_headless`'s tick loop and the headed
   app's frame loop both call `bridge.drain()` right where `Node::tick()`
-  already runs. An HTTP handler posts a closure and blocks on its future with
-  a timeout (default 10 s; a saturated loop returns a clear busy error, never
-  a hang).
-- Consequence: handler latency is bounded by the loop cadence (≤ ~100 ms
-  headless at 10 Hz, one frame headed). That is the correct price for never
-  violating the ownership invariant — the alternative (locking the tree) is
-  against the architecture and is not on the table.
+  already runs. An HTTP handler posts a closure and suspends on its completion
+  event. It resumes only after the closure has run, including during transport
+  cancellation, because the closure can borrow the request frame (#1077).
+- Enqueueing wakes the owner loop, which drains work before its next timed tick.
+  Handlers keep the Node ownership invariant without blocking the I/O thread.
 - Everything routes through the bridge, including reads that could arguably
   go direct — uniformity beats cleverness here; the thread-safety table lives
   in one place.
@@ -77,12 +75,17 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   touch only thread-safe state (the replication store, `PubSub`), and
   `Registry::add` refuses an offloadable entry that mutates or requires consent,
   because the activity hook and the consent ledger run after the gate.
-- **Awaitable reads do not offload.** `receive_events` registers a topic event
-  inside its first owner-loop call, returns an immediate read, and lets the REST
-  coroutine suspend on that event under `runtime::timeout`. Publish or close
+- **Awaitable reads do not offload.** `receive_events` and `browse_topic` register a topic event
+  inside their first owner-loop call, return an immediate read, and let the REST
+  or MCP coroutine suspend on that event under `runtime::timeout`. Publish, edit or close
   wakes it; the route makes one final owner-loop call. A long poll therefore
   holds no thread and makes at most two authorized, audited registry calls
-  (#1076).
+  (#1076, #1136).
+- **Object-scoped operation grants** (#1136): an entry may declare an
+  `authorize_scoped` owner-thread fallback when there is no global operation
+  grant. The per-tool gate still runs first. Pub/sub resolves concrete topic
+  addresses through the object tier; listings accept a topic-prefix grant and
+  filter every result through it. A global grant still covers all objects.
 - **Owner hops wake the loop.** Work a pool worker queues with
   `Node::run_on_owner` (that gate, the pub/sub authorizer, background actions)
   wakes the idle loop through `Node::set_owner_wakeup` (the API server's
@@ -110,6 +113,38 @@ closes the listener and sockets on their IO executor, signals pending poll event
 and keeps draining owner work until all session coroutines finish. This preserves
 the lifetime of queued bridge callbacks. No capability schema or new JSON format
 is added.
+
+## Ordered shutdown
+
+`ApiServer::stop_accepting()` closes the listener before terminal node shutdown
+begins. `main` then calls `PubSub::shutdown()` so every `receive_events` wait is
+woken, and calls `ApiServer::stop()` while the `Node` and its owner thread still
+exist. `stop()` closes the admitted session sockets on the I/O executor and keeps
+`MainThreadBridge` and `Node::run_on_owner` work draining until every REST
+capability coroutine has returned, with a five-second upper bound. Only then does
+it release the `io_context` work hold, join the I/O thread and allow the server
+context to be destroyed (#1077).
+
+The work hold matters for offloaded calls: while a long poll is running on the
+blocking pool there may briefly be no completion queued on the I/O executor.
+Without the hold, `io_context::run()` can return before the pool posts the
+completion, leaving the request coroutine to be destroyed while its stop
+callback is still running. No new wire or JSON format is introduced.
+
+With the awaitable long polls from #1076, shutdown cancellation can also resume a
+bridge wait before its queued closure has run. That closure borrows the route's
+`ApiResult` and input; letting the route finish first leaves dangling references
+for the owner drain. `MainThreadBridge::run_on_owner` therefore masks cancellation
+only while waiting for queued work to complete. Topic waits remain cancellable,
+and `PubSub::shutdown()` signals them while the topics, Node and API context are
+still alive. Their final owner-thread reads complete before the routes finish and
+the request count reaches zero. The bridge regression covers cancellation both
+before queueing and while queued (#1077, stacked on #1100).
+
+`Shutdown.SigtermWithLongPollsInFlightExitsPromptly` starts a real headless
+node, opens eleven 30-second REST long polls, and requires a normal exit within
+one second of SIGTERM. Its child environment excludes cloud CLIs, and cleanup
+reaps the child before joining clients so a regression cannot strand the suite.
 
 ## Auth, governance, audit — nothing new
 

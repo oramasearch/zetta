@@ -272,7 +272,9 @@ public:
     // runs on the cluster's network thread, so it must be cheap and thread-safe
     // (offload heavy work). Pass nullptr to clear. Thread-safe; may be called
     // before start() or at any time after. The handler must outlive the Cluster
-    // (or be cleared first).
+    // (or be cleared first). Called off the network thread, it returns only after
+    // any dispatch already inside the previous handler has finished, so the
+    // previous handler may be destroyed once this returns (#1131).
     void set_signal_handler(SignalHandler* handler);
 
     // The currently registered signal handler (nullptr when none) — what a

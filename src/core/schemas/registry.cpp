@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "zetta/api/serving.hpp"
+#include "zetta/billing/plan.hpp"
 #include "zetta/cloud/add_nodes.hpp"
 #include "zetta/cloud/aws_provisioner.hpp"
 #include "zetta/cloud/azure_provisioner.hpp"
@@ -55,12 +56,15 @@
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
+#include "zetta/ml/entity_resolution_job.hpp"
+#include "zetta/ml/forecast_methodology.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/model.hpp"
-#include "zetta/workspace/workspace_profile.hpp"
-#include "zetta/billing/plan.hpp"
+#include "zetta/ml/next_best_action_methodology.hpp"
 #include "zetta/ml/playbook.hpp"
+#include "zetta/ml/segmentation_methodology.hpp"
+#include "zetta/ml/streaming.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/parquet/column_decoder.hpp"
@@ -70,10 +74,18 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/solutions/action_integration.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/audit_ledger.hpp"
+#include "zetta/solutions/decision_policy.hpp"
+#include "zetta/solutions/experiment.hpp"
+#include "zetta/solutions/monitor.hpp"
+#include "zetta/solutions/snapshot.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
+#include "zetta/workspace/workspace_profile.hpp"
 
 namespace zetta::schemas {
 
@@ -89,20 +101,67 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::pipeline::graph_step_annotations_schema},
         {"n8n_workflow", "n8n_workflow.schema.json",
          &zetta::pipeline::n8n_workflow_schema},
+        // solutions
+        {"snapshot_spec", "snapshot_spec.schema.json",
+         &zetta::solutions::snapshot_spec_schema},
+        {"as_of_join_spec", "as_of_join_spec.schema.json",
+         &zetta::solutions::as_of_join_spec_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
+        {"entity_resolution_launch", "entity_resolution_launch.schema.json",
+         &zetta::ml::entity_resolution_launch_schema},
+        {"segmentation_config", "segmentation_config.schema.json",
+         &zetta::ml::segmentation_config_schema},
+        {"segmentation_launch", "segmentation_launch.schema.json",
+         &zetta::ml::segmentation_launch_schema},
         {"workspace_profile", "workspace_profile.schema.json",
          &zetta::workspace::workspace_profile_value_schema},
         {"plan", "plan.schema.json", &zetta::billing::plan_value_schema},
-        {"calibration", "calibration.schema.json", &zetta::ml::calibration_schema},
+        // solutions
+        {"decision_policy", "decision_policy.schema.json",
+         &zetta::solutions::decision_policy_schema},
+        {"decision_record", "decision_record.schema.json",
+         &zetta::solutions::decision_record_schema},
+        {"solution_monitor", "solution_monitor.schema.json",
+         &zetta::solutions::monitor_value_schema},
+        {"roi_readout_definition", "roi_readout_definition.schema.json",
+         &zetta::solutions::roi_readout_definition_schema},
+        {"roi_readout", "roi_readout.schema.json",
+         &zetta::solutions::roi_readout_schema},
+        {"calibration", "calibration.schema.json",
+         &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
-        {"gbdt_params", "gbdt_params.schema.json", &zetta::ml::gbdt_params_schema},
+        {"gbdt_params", "gbdt_params.schema.json",
+         &zetta::ml::gbdt_params_schema},
+        {"forecast_step", "forecast_step.schema.json",
+         &zetta::ml::forecast_step_schema},
+        {"forecast_launch", "forecast_launch.schema.json",
+         &zetta::ml::forecast_launch_schema},
+        {"streaming_model", "streaming_model.schema.json",
+         &zetta::ml::streaming_model_schema},
+        {"streaming_params", "streaming_params.schema.json",
+         &zetta::ml::streaming_params_schema},
         {"golden_oracle", "golden_oracle.schema.json",
          &zetta::ml::golden_oracle_schema},
         {"playbook_entry", "playbook_entry.schema.json",
          &zetta::ml::playbook_entry_schema},
         {"playbook_policy", "playbook_policy.schema.json",
          &zetta::ml::playbook_policy_schema},
+        {"next_best_action_step", "next_best_action_step.schema.json",
+         &zetta::ml::next_best_action_step_schema},
+        {"next_best_action_launch", "next_best_action_launch.schema.json",
+         &zetta::ml::next_best_action_launch_schema},
+        // solutions
+        {"audit_ledger_entry", "audit_ledger_entry.schema.json",
+         &zetta::solutions::audit_ledger_entry_schema},
+        {"experiment", "experiment.schema.json",
+         &zetta::solutions::experiment_value_schema},
+        {"experiment_assignment", "experiment_assignment.schema.json",
+         &zetta::solutions::experiment_assignment_value_schema},
+        {"action_task", "action_task.schema.json",
+         &zetta::solutions::action_task_schema},
+        {"report_publication", "report_publication.schema.json",
+         &zetta::solutions::report_publication_schema},
         // index
         {"index", "index.schema.json", &zetta::index::index_value_schema},
         {"fulltext_query", "fulltext_query.schema.json",
@@ -139,7 +198,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::data::dataset_partition_value_schema},
         {"partition_plan", "partition_plan.schema.json",
          &zetta::data::partition_plan_schema},
-        {"partitioner", "partitioner.schema.json", &zetta::data::partitioner_schema},
+        {"partitioner", "partitioner.schema.json",
+         &zetta::data::partitioner_schema},
         {"replication_strategy", "replication_strategy.schema.json",
          &zetta::data::replication_strategy_schema},
         // ddf
@@ -180,7 +240,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::governance::consent_challenge_schema},
         {"access_key", "access_key.schema.json",
          &zetta::governance::access_key_schema},
-        {"principal", "principal.schema.json", &zetta::governance::principal_schema},
+        {"principal", "principal.schema.json",
+         &zetta::governance::principal_schema},
         {"user", "user.schema.json", &zetta::governance::user_schema},
         {"role", "role.schema.json", &zetta::governance::role_schema},
         {"token", "token.schema.json", &zetta::governance::token_schema},
@@ -200,12 +261,16 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"node_capability", "node_capability.schema.json",
          &zetta::cloud::node_capability_schema},
         {"burst_cap", "burst_cap.schema.json", &zetta::cloud::burst_cap_schema},
-        {"aws_config", "aws_config.schema.json", &zetta::cloud::aws_config_schema},
+        {"aws_config", "aws_config.schema.json",
+         &zetta::cloud::aws_config_schema},
         {"azure_config", "azure_config.schema.json",
          &zetta::cloud::azure_config_schema},
-        {"gcp_config", "gcp_config.schema.json", &zetta::cloud::gcp_config_schema},
-        {"oci_config", "oci_config.schema.json", &zetta::cloud::oci_config_schema},
-        {"k8s_config", "k8s_config.schema.json", &zetta::cloud::k8s_config_schema},
+        {"gcp_config", "gcp_config.schema.json",
+         &zetta::cloud::gcp_config_schema},
+        {"oci_config", "oci_config.schema.json",
+         &zetta::cloud::oci_config_schema},
+        {"k8s_config", "k8s_config.schema.json",
+         &zetta::cloud::k8s_config_schema},
         {"bare_metal_config", "bare_metal_config.schema.json",
          &zetta::cloud::bare_metal_config_schema},
         // connect (the distributed connector ingest, #833)

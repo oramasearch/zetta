@@ -173,6 +173,22 @@ private:
         return advance().text;
     }
 
+    // A non-negative whole number, for LIMIT and OFFSET.
+    std::size_t parse_count(std::string_view clause) {
+        if (peek().type != Tok::Num ||
+            peek().text.find('.') != std::string::npos) {
+            throw ParseError{std::string(clause) +
+                             " takes a non-negative whole number, got '" +
+                             peek().text + "'"};
+        }
+        const std::string text = advance().text;
+        try {
+            return static_cast<std::size_t>(std::stoull(text));
+        } catch (...) {
+            throw ParseError{std::string(clause) + " is out of range: " + text};
+        }
+    }
+
     TableRef parse_table_ref() {
         TableRef ref;
         const std::string first = parse_ident();
@@ -830,6 +846,29 @@ private:
             do {
                 stmt.group_by.push_back(parse_ident());
             } while (accept_punct(','));
+        }
+        if (accept_keyword("order")) {
+            expect_keyword("by");
+            do {
+                OrderKey key;
+                key.column = parse_ident();
+                if (accept_keyword("desc")) {
+                    key.descending = true;
+                } else {
+                    accept_keyword("asc");
+                }
+                stmt.order_by.push_back(std::move(key));
+            } while (accept_punct(','));
+        }
+        // LIMIT n [OFFSET m] or OFFSET m [LIMIT n], as Postgres takes either order.
+        for (int clause = 0; clause < 2; ++clause) {
+            if (!stmt.limit && accept_keyword("limit")) {
+                if (accept_keyword("all")) continue;
+                stmt.limit = parse_count("LIMIT");
+            } else if (stmt.offset == 0 && accept_keyword("offset")) {
+                stmt.offset = parse_count("OFFSET");
+                accept_keyword("rows");
+            }
         }
 
         // Reconcile the select list with the GROUP BY into either a plain or an

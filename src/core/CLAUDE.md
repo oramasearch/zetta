@@ -13,8 +13,10 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   tree are its projection. Local mutations are **captured** at the data-model
   layer (`Node`/`Database`/`Table`/stores hold a `ReplicationManager*`) so every
   write path replicates; `Node::tick()` **reconciles** the projection from the
-  document — **materialize-only, never re-capture** (no feedback loop) — then
-  persists.
+  document — **materialize-only, never re-capture** (no feedback loop). Changed
+  ticks use the changed-key journal; full reconcile is for startup, journal gaps,
+  and large batches. Persistence is debounced to at most once per second and
+  forced by `stop()`.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
   peer's action arrives already-audited as its own replicated `audit:` key.
 - **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`
@@ -29,8 +31,9 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   that entry to route the delete to a table.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
-  `graph:` `deployment:` `run:` `model:` `profile:` `plan:` `job:` `index:`
-  `principal:` `key:` `audit:` `part:`. New shared state = a new key/shape, replicated by the
+  `graph:` `deployment:` `run:` `model:` `profile:` `plan:` `experiment:`
+  `experiment_assignment:` `job:` `index:` `principal:` `key:` `audit:`
+  `part:`. New shared state = a new key/shape, replicated by the
   existing gossip — never a parallel hand-synced copy. Bodies (large objects,
   model weights, input payloads) stay **off** the CRDT: on disk, transferred
   peer-to-peer, verified against size + sha256.

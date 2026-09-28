@@ -78,8 +78,12 @@ public:
 
     // Bind + start serving on the io thread. False on failure (see reason()).
     bool start();
-    // Call on the Node owner thread: closes sockets, wakes held polls and drains
-    // their queued owner work before joining the IO thread (#1076).
+    // Stop accepting new connections while leaving the io_context alive so
+    // callers can wake request waiters and keep draining owner work before
+    // stop() joins the server thread (#1077).
+    void stop_accepting();
+    // Call on the Node owner thread: closes admitted sockets, wakes held polls
+    // and drains their queued owner work before joining the IO thread (#1076).
     void stop();
     bool running() const;
 

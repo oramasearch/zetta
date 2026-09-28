@@ -18,7 +18,13 @@
         "dataset_added",
         "consent_requested",
         "consent_decided",
-        "consent_bypassed"
+        "consent_bypassed",
+        "decision_policy_created",
+        "decision_policy_updated",
+        "decision_approved",
+        "pubsub_topic_updated",
+        "pubsub_event_updated",
+        "pubsub_event_deleted"
       ],
       "type": "string"
     },

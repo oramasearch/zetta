@@ -45,6 +45,17 @@
 //                          NOT in the document — like a large object it lives on
 //                          disk and transfers peer-to-peer, verified against
 //                          weights.size + weights.sha256; see model.hpp)
+//   experiment:<uuid> -> { name, seed, allocations, created }  (a holdout /
+//                          experiment definition; see solutions/experiment.hpp)
+//   experiment_assignment:<experiment-uuid>:<entity-digest>
+//                       -> { experiment, entity, allocation, tier, propensity,
+//                            bucket, exempt, exemption_reason, exemption_actor,
+//                            assigned_at }  (one independently convergent
+//                            assignment and uplift-training row per entity)
+//   monitor:<monitor_uuid> -> { solution, inputs, scores?, calibration, cohorts,
+//                          guardrails, breaches, retrain_requested, created,
+//                          updated }  (one drift and guardrail monitor per
+//                          solution; see solutions/monitor.hpp)
 //   job:<job_uuid>     -> { kind, status, project, graph, run, scaling_policy,
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
@@ -53,7 +64,7 @@
 //                          index over a table — search / vector / feature; a
 //                          top-level entity with no parent (ENT-39 / ENT-40);
 //                          metadata only — building the index is the IndexBackend
-//                          seam's job; see index/index.hpp)
+//                          index subsystem's job; see index/index.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -67,6 +78,13 @@
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see
 //                          audit_event.hpp)
+//   ledger:<uuid>      -> an immutable action or outcome record in the
+//                          solutions reward ledger (#1107); action records carry
+//                          score, decision, versions, cell, cost and timestamps,
+//                          while outcome records reference the action id
+//   roi_readout:<uuid>  -> { id, solution, version, project, graph, experiment,
+//                          roi_model, created_by, created }  (one immutable
+//                          customer-supplied ROI configuration version; #1108)
 //   user:<uuid>        -> { name, status, created }        (an authenticatable
 //                          identity — conceptually a Principal of kind User in
 //                          the FEAT-9 access model; a top-level entity — see
@@ -87,6 +105,13 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   decision_policy:<uuid> -> { id, name, current_version, versions, created,
+//                          updated }  (the immutable version history for one
+//                          score-to-action policy; see decision_policy.hpp)
+//   decision:<uuid>    -> { id, policy_id, policy_version, entity_id, score,
+//                          action, autonomy, status, actionable, ... }  (one
+//                          durable policy result, stamped with its exact policy
+//                          version; see decision_policy.hpp)
 //   vtable:<name>      -> { name, prefix, columns:[{name,type,tier,key}] }  (a
 //                          user-declared VIRTUAL TABLE over a CRDT key-family —
 //                          CREATE VIRTUAL TABLE (#809 slice 3). Keyed by its
@@ -130,14 +155,20 @@ inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
+inline constexpr std::string_view kMonitorPrefix = "monitor:";
 inline constexpr std::string_view kWorkspaceProfilePrefix = "profile:";
 inline constexpr std::string_view kPlanPrefix = "plan:";
+inline constexpr std::string_view kExperimentPrefix = "experiment:";
+inline constexpr std::string_view kExperimentAssignmentPrefix =
+    "experiment_assignment:";
 inline constexpr std::string_view kAgentPrefix = "agent:";
 inline constexpr std::string_view kJobPrefix = "job:";
 inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
+inline constexpr std::string_view kLedgerPrefix = "ledger:";
+inline constexpr std::string_view kRoiReadoutPrefix = "roi_readout:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
 inline constexpr std::string_view kManifestPrefix = "mfst:";
 inline constexpr std::string_view kUserPrefix = "user:";
@@ -145,6 +176,8 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+inline constexpr std::string_view kDecisionPolicyPrefix = "decision_policy:";
+inline constexpr std::string_view kDecisionPrefix = "decision:";
 inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
 
 inline std::string node_key(const std::string& node_id) {
@@ -180,11 +213,23 @@ inline std::string run_key(const std::string& run_id) {
 inline std::string model_key(const std::string& model_id) {
     return std::string(kModelPrefix) + model_id;
 }
+inline std::string monitor_key(const std::string& monitor_id) {
+    return std::string(kMonitorPrefix) + monitor_id;
+}
 inline std::string workspace_profile_key(const std::string& workspace_profile_id) {
     return std::string(kWorkspaceProfilePrefix) + workspace_profile_id;
 }
 inline std::string plan_key(const std::string& plan_id) {
     return std::string(kPlanPrefix) + plan_id;
+}
+inline std::string experiment_key(const std::string& experiment_id) {
+    return std::string(kExperimentPrefix) + experiment_id;
+}
+inline std::string experiment_assignment_key(
+    const std::string& experiment_id,
+    const std::string& assignment_id) {
+    return std::string(kExperimentAssignmentPrefix) + experiment_id + ":" +
+           assignment_id;
 }
 inline std::string agent_key(const std::string& agent_id) {
     return std::string(kAgentPrefix) + agent_id;
@@ -201,8 +246,20 @@ inline std::string principal_key(const std::string& principal_id) {
 inline std::string access_key_key(const std::string& access_key_id) {
     return std::string(kAccessKeyPrefix) + access_key_id;
 }
+inline std::string decision_policy_key(const std::string& policy_id) {
+    return std::string(kDecisionPolicyPrefix) + policy_id;
+}
+inline std::string decision_key(const std::string& decision_id) {
+    return std::string(kDecisionPrefix) + decision_id;
+}
 inline std::string audit_key(const std::string& audit_id) {
     return std::string(kAuditPrefix) + audit_id;
+}
+inline std::string ledger_key(const std::string& ledger_id) {
+    return std::string(kLedgerPrefix) + ledger_id;
+}
+inline std::string roi_readout_key(const std::string& readout_id) {
+    return std::string(kRoiReadoutPrefix) + readout_id;
 }
 inline std::string partition_key(const std::string& partition_id) {
     return std::string(kPartitionPrefix) + partition_id;

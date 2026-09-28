@@ -43,6 +43,8 @@ struct Subscription::State {
     std::map<std::uint64_t, InFlight> in_flight;  // by sequence
     std::unordered_set<std::string> acked_ids;    // exactly-once
     std::deque<std::string> acked_order;
+    std::unordered_set<std::uint64_t> delivered_sequences;
+    std::map<std::uint64_t, Event> requested_redeliveries;
     std::uint64_t missed = 0;       // pending gap notice
     std::uint64_t missed_total = 0;
     bool connected = true;
@@ -93,6 +95,7 @@ public:
 
     // Close every subscription (drop, shutdown) and wake every waiter.
     void close_all(const std::string& reason);
+    TopicMutation retire();
     // The facade is going away: stop calling back into it.
     void detach();
 
@@ -103,6 +106,13 @@ public:
     std::uint64_t held_events() const;
     std::uint64_t next_sequence() const { return next_sequence_.load(); }
     TopicStats stats() const;
+    nlohmann::json inspect() const;
+    nlohmann::json browse(std::optional<std::uint64_t> from, std::size_t limit, bool backward);
+    TopicMutation update_settings(const nlohmann::json& patch);
+    TopicMutation update_event(std::uint64_t sequence, std::string payload,
+                               std::uint64_t expected_revision, const Address& actor, bool redeliver);
+    TopicMutation delete_events(const std::vector<std::uint64_t>& sequences,
+                                std::optional<std::uint64_t> before);
 
     // Retention sweep, lag policy, spill logging. Returns expired subscriber
     // addresses (for the log).
@@ -131,6 +141,8 @@ private:
     std::uint64_t& position_for(Subscription::State& state, std::size_t level);         // mutex_ held
     std::uint64_t min_position(std::size_t level) const;                                // mutex_ held
     void release_consumed();                                                             // mutex_ held
+    void forget_event(std::uint64_t sequence);                                            // mutex_ held
+    TopicMutation trim_retention();                                                      // mutex_ held
     bool over_limit(std::uint64_t incoming) const;
     OverflowPolicy overflow_policy() const;
     bool spill_one();

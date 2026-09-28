@@ -1,6 +1,7 @@
 #include "zetta/pipeline/gate.hpp"
 
 #include <string>
+#include <map>
 #include <utility>
 
 #include "zetta/usecases/churn/entity_resolution_check.hpp"
@@ -10,7 +11,7 @@ namespace zetta::pipeline {
 
 namespace {
 
-// Adapts a name + callable to the Check seam (see make_check). Stamps the
+// Adapts a name + callable to the Check interface (see make_check). Stamps the
 // registered name onto whatever CheckResult the callable returns, so the
 // reported name always matches the registered one.
 class FunctionCheck final : public Check {
@@ -31,6 +32,50 @@ private:
     std::string name_;
     std::function<CheckResult(const ir::ExecutionGraph&)> evaluate_;
 };
+
+std::map<int, ir::ExecutionGraph> solution_stages(const ir::ExecutionGraph& graph,
+                                                std::string& error) {
+    std::map<int, ir::ExecutionGraph> stages;
+    const auto manifest = graph.find_node("solution_manifest");
+    const auto declared = manifest->attributes.find("methodologies");
+    if (declared == manifest->attributes.end() || !declared->is_array() || declared->empty()) {
+        error = "solution manifest must declare its methodology stages";
+        return stages;
+    }
+    std::map<std::string, int> membership;
+    for (const auto& node : graph.nodes()) {
+        const auto stage = node->attributes.find("solution_stage");
+        int index = 0;
+        if (stage != node->attributes.end()) {
+            if (!stage->is_number_integer() || stage->get<int>() < 1 ||
+                stage->get<int>() > static_cast<int>(declared->size())) {
+                error = "solution node has an undeclared stage";
+                return {};
+            }
+            index = stage->get<int>();
+        } else if (node->kind == ir::StepKind::Model) {
+            error = "solution model must belong to a declared methodology stage";
+            return {};
+        }
+        membership[node->id] = index;
+        stages[index].add_node(node->kind, node->name, node->attributes, node->id);
+    }
+    for (const auto& edge : graph.edges()) {
+        if (membership.at(edge.from) == membership.at(edge.to)) {
+            stages[membership.at(edge.from)].add_edge(edge.from, edge.to, edge.kind);
+        } else if (edge.kind != ir::EdgeKind::Control) {
+            error = "solution stages may only cross through control edges; data dependencies must stay inside a checked stage";
+            return {};
+        }
+    }
+    for (int index = 1; index <= static_cast<int>(declared->size()); ++index) {
+        if (!stages.contains(index)) {
+            error = "solution graph is missing a declared methodology stage";
+            return {};
+        }
+    }
+    return stages;
+}
 
 }  // namespace
 
@@ -59,6 +104,23 @@ CorrectnessGate& CorrectnessGate::add_check(std::shared_ptr<Check> check) {
 
 ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
     ValidationReport report;
+    if (graph.find_node("solution_manifest")) {
+        std::string error;
+        const auto stages = solution_stages(graph, error);
+        if (!error.empty()) {
+            report.add("solution_composition", CheckStatus::Fail, error);
+        } else {
+            for (const auto& [index, stage] : stages) {
+                for (const auto& check : checks_) {
+                    const CheckResult result = check->evaluate(stage);
+                    report.add("stage_" + std::to_string(index) + "/" + result.name,
+                               result.status, result.reason);
+                }
+            }
+        }
+        report.block_deploy = !report.passed();
+        return report;
+    }
     for (const auto& check : checks_) {
         const CheckResult result = check->evaluate(graph);
         report.add(result.name, result.status, result.reason);
@@ -77,6 +139,33 @@ CorrectnessGate default_gate() {
     // annotations passes them), so they are safe to ship in the baseline gate.
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
+    gate.add_check(std::make_shared<SnapshotLineageCheck>());
+    gate.add_check(std::make_shared<TemporalValidationCheck>());
+    gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
+    gate.add_check(std::make_shared<SegmentationCheck>());
+    gate.add_check(std::make_shared<ForecastGraphCheck>());
+    gate.add_check(std::make_shared<SurvivalCensoringCheck>());
+    gate.add_check(std::make_shared<CausalUpliftCheck>());
+    gate.add_check(std::make_shared<AnomalyGraphCheck>());
+    gate.add_check(std::make_shared<NextBestActionGraphCheck>());
+    gate.add_check(std::make_shared<RankCorrectnessCheck>());
+    gate.add_check(std::make_shared<LanguageGroundingCheck>());
+    gate.add_check(std::make_shared<LanguageTrainingAccessCheck>());
+    gate.add_check(std::make_shared<DocumentReviewCheck>());
+    gate.add_check(std::make_shared<GraphEdgeTimeCheck>());
+    gate.add_check(std::make_shared<VisionSourceSplitCheck>());
+    gate.add_check(std::make_shared<SpeechConsentCheck>());
+    gate.add_check(std::make_shared<SpeechPiiRedactionCheck>());
+    gate.add_check(std::make_shared<SpeechLocalAudioCheck>());
+    // M-15 requires a feasible positive exploration floor and effective caps
+    // before any decision can be made.
+    gate.add_check(std::make_shared<BanditPolicyCheck>());
+    gate.add_check(std::make_shared<OptimizationContractCheck>());
+    gate.add_check(std::make_shared<UncertaintyValidationCheck>());
+    gate.add_check(std::make_shared<EnsembleOutOfFoldCheck>());
+    gate.add_check(std::make_shared<LabelEfficiencyGoldIsolationCheck>());
+    gate.add_check(std::make_shared<PrivacyBudgetCheck>());
+    gate.add_check(std::make_shared<StreamingCorrectnessCheck>());
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.
@@ -84,4 +173,4 @@ CorrectnessGate default_gate() {
     return gate;
 }
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

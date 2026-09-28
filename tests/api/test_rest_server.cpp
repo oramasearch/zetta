@@ -8,18 +8,24 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
+#include <nlohmann/json-schema.hpp>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
@@ -45,6 +51,8 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/version.hpp"
+
+extern char** environ;
 
 namespace {
 
@@ -134,6 +142,197 @@ HttpResponse http_request(unsigned short port, const std::string& method,
                           const std::string& bearer = {}) {
     return read_http_response(
         open_http_request(port, method, target, body, bearer));
+}
+
+unsigned short unused_loopback_port() {
+    int socket_descriptor = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_descriptor < 0) return 0;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::bind(socket_descriptor, reinterpret_cast<sockaddr*>(&address),
+               sizeof(address)) != 0) {
+        ::close(socket_descriptor);
+        return 0;
+    }
+    socklen_t address_size = sizeof(address);
+    if (::getsockname(socket_descriptor,
+                      reinterpret_cast<sockaddr*>(&address),
+                      &address_size) != 0) {
+        ::close(socket_descriptor);
+        return 0;
+    }
+    const unsigned short port = ntohs(address.sin_port);
+    ::close(socket_descriptor);
+    return port;
+}
+
+class ChildProcess {
+public:
+    ~ChildProcess() {
+        if (pid_ <= 0) return;
+        ::kill(pid_, SIGKILL);
+        ::waitpid(pid_, nullptr, 0);
+    }
+
+    void set(pid_t pid) {
+        pid_ = pid;
+    }
+
+    bool wait_until(std::chrono::steady_clock::time_point deadline,
+                    int& status) {
+        while (std::chrono::steady_clock::now() < deadline) {
+            const pid_t result = ::waitpid(pid_, &status, WNOHANG);
+            if (result == pid_) {
+                pid_ = -1;
+                return true;
+            }
+            if (result < 0) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    }
+
+private:
+    pid_t pid_ = -1;
+};
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+}
+
+TEST(Shutdown, SigtermWithLongPollsInFlightExitsPromptly) {
+    zetta::test::TempDir dir;
+    const unsigned short cluster_port = unused_loopback_port();
+    ASSERT_NE(cluster_port, 0);
+    unsigned short api_port = unused_loopback_port();
+    while (api_port == cluster_port) {
+        api_port = unused_loopback_port();
+    }
+    ASSERT_NE(api_port, 0);
+    ASSERT_NE(cluster_port, api_port);
+
+    const std::string cluster_listen =
+        "127.0.0.1:" + std::to_string(cluster_port);
+    const std::string api_listen = "127.0.0.1:" + std::to_string(api_port);
+    const std::string data_directory = (dir.path() / "node").string();
+    const std::filesystem::path log_path = dir.path() / "node.log";
+    const std::string owner_secret = "shutdown-owner-secret";
+    std::vector<std::string> arguments{
+        ZETTA_TEST_BINARY,
+        "--headless",
+        "--no-preflight",
+        "--data-dir",
+        data_directory,
+        "--listen",
+        cluster_listen,
+        "--mcp-listen",
+        api_listen,
+        "--admin-token",
+        owner_secret,
+    };
+    std::vector<char*> argument_pointers;
+    for (std::string& argument : arguments) {
+        argument_pointers.push_back(argument.data());
+    }
+    argument_pointers.push_back(nullptr);
+    std::vector<std::string> environment;
+    for (char** variable = environ; *variable != nullptr; ++variable) {
+        const std::string value = *variable;
+        if (!value.starts_with("PATH=")) environment.push_back(value);
+    }
+    // Startup provisioner detection must not find or invoke cloud CLIs in this
+    // process-boundary test. The node itself uses native libraries and needs no
+    // Homebrew executable at runtime.
+    environment.emplace_back("PATH=/usr/bin:/bin");
+    std::vector<char*> environment_pointers;
+    for (std::string& variable : environment) {
+        environment_pointers.push_back(variable.data());
+    }
+    environment_pointers.push_back(nullptr);
+
+    posix_spawn_file_actions_t file_actions;
+    ASSERT_EQ(posix_spawn_file_actions_init(&file_actions), 0);
+    ASSERT_EQ(posix_spawn_file_actions_addopen(
+                  &file_actions, STDOUT_FILENO, log_path.c_str(),
+                  O_WRONLY | O_CREAT | O_TRUNC, 0600),
+              0);
+    ASSERT_EQ(posix_spawn_file_actions_adddup2(
+                  &file_actions, STDOUT_FILENO, STDERR_FILENO),
+              0);
+    pid_t child_pid = -1;
+    const int spawn_result =
+        posix_spawn(&child_pid, ZETTA_TEST_BINARY, &file_actions, nullptr,
+                    argument_pointers.data(), environment_pointers.data());
+    posix_spawn_file_actions_destroy(&file_actions);
+    ASSERT_EQ(spawn_result, 0);
+    ASSERT_GT(child_pid, 0);
+
+    std::atomic<int> started{0};
+    std::atomic<int> finished{0};
+    std::vector<std::jthread> clients;
+    ChildProcess child;
+    child.set(child_pid);
+
+    HttpResponse readiness;
+    const auto startup_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < startup_deadline) {
+        readiness = http_request(api_port, "GET", "/v1/openapi.json", "");
+        if (readiness.status == 200) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_EQ(readiness.status, 200) << read_text(log_path);
+
+    const HttpResponse created = http_request(
+        api_port, "POST", "/v1/create_topic",
+        R"({"topic":"shutdown","exposed":true,"lifecycle":"ephemeral"})",
+        owner_secret);
+    ASSERT_EQ(created.status, 200) << created.body << '\n' << read_text(log_path);
+
+    constexpr int kLongPolls = 11;
+    for (int index = 0; index < kLongPolls; ++index) {
+        clients.emplace_back([&] {
+            ++started;
+            const HttpResponse response = http_request(
+                api_port, "GET",
+                "/v1/receive_events?topic=shutdown&wait_ms=30000", "",
+                owner_secret);
+            (void)response;
+            ++finished;
+        });
+    }
+    const auto clients_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (started.load() != kLongPolls &&
+           std::chrono::steady_clock::now() < clients_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(started.load(), kLongPolls);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    ASSERT_EQ(finished.load(), 0) << "long polls were not in flight";
+
+    const auto stop_started = std::chrono::steady_clock::now();
+    ASSERT_EQ(::kill(child_pid, SIGTERM), 0);
+    int status = 0;
+    const bool exited = child.wait_until(
+        stop_started + std::chrono::seconds(3), status);
+    const auto elapsed = std::chrono::steady_clock::now() - stop_started;
+
+    EXPECT_TRUE(exited) << "node did not exit after SIGTERM\n"
+                        << read_text(log_path);
+    if (exited) {
+        EXPECT_TRUE(WIFEXITED(status))
+            << "termination signal: " << (WIFSIGNALED(status) ? WTERMSIG(status) : 0)
+            << '\n' << read_text(log_path);
+        if (WIFEXITED(status)) {
+            EXPECT_EQ(WEXITSTATUS(status), 0) << read_text(log_path);
+        }
+    }
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 
 struct OpenSockets {
@@ -794,6 +993,96 @@ TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {
     EXPECT_GE(elapsed, std::chrono::milliseconds(20));
     EXPECT_LT(elapsed, std::chrono::seconds(2));
     EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+}
+
+TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
+    const auto openapi_response = request("GET", "/v1/openapi.json");
+    ASSERT_EQ(openapi_response.status, 200);
+    const auto openapi = json_of(openapi_response);
+    const auto listed = request("POST", "/mcp", R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    ASSERT_EQ(listed.status, 200);
+    const auto tools = json_of(listed).at("result").at("tools");
+    const std::vector<std::string> names = {"create_topic", "get_topic", "list_topics", "update_topic",
+        "browse_topic", "publish_event", "update_event", "delete_events", "drop_topic"};
+    for (const auto& name : names) {
+        SCOPED_TRACE(name);
+        const auto capability = server->registry().find(name);
+        ASSERT_TRUE(capability);
+        const auto tool = std::ranges::find_if(tools, [&](const auto& item) {
+            return item.at("name") == name;
+        });
+        ASSERT_NE(tool, tools.end());
+        EXPECT_EQ(tool->at("inputSchema"), capability->input_schema);
+        EXPECT_EQ(tool->at("outputSchema"), capability->output_schema);
+        const auto& operation = openapi.at("paths").at("/v1/" + name).at("post");
+        auto input_schema = operation.at("requestBody").at("content").at("application/json").at("schema");
+        input_schema["properties"].erase("intent");
+        EXPECT_EQ(input_schema, tool->at("inputSchema"));
+        EXPECT_EQ(operation.at("responses").at("200").at("content").at("application/json")
+            .at("schema").at("properties").at("value"), tool->at("outputSchema"));
+    }
+    for (const bool mcp : {false, true}) {
+        const std::string topic = mcp ? "parity-mcp" : "parity-rest";
+        const std::vector<std::pair<std::string, nlohmann::json>> calls = {
+            {"create_topic", {{"topic", topic}, {"exposed", true}}},
+            {"get_topic", {{"topic", topic}}}, {"list_topics", nlohmann::json::object()},
+            {"update_topic", {{"topic", topic}, {"settings", {{"max_events", 20}}}}},
+            {"publish_event", {{"topic", topic}, {"payload", "original"}}},
+            {"browse_topic", {{"topic", topic}, {"limit", 1}}},
+            {"update_event", {{"topic", topic}, {"sequence", 1}, {"payload", "edited"}, {"expected_revision", 1}}},
+            {"delete_events", {{"topic", topic}, {"before_sequence", 2}}},
+            {"drop_topic", {{"topic", topic}}}};
+        for (const auto& [name, input] : calls) {
+            SCOPED_TRACE(name + (mcp ? " MCP" : " REST"));
+            const nlohmann::json body = mcp ? nlohmann::json{{"jsonrpc", "2.0"}, {"id", 2},
+                {"method", "tools/call"}, {"params", {{"name", name}, {"arguments", input}}}} : input;
+            const auto response = request("POST", mcp ? "/mcp" : "/v1/" + name, body.dump());
+            ASSERT_EQ(response.status, 200) << response.body;
+            const auto envelope = mcp ? json_of(response).at("result").at("structuredContent") : json_of(response);
+            ASSERT_TRUE(envelope.at("ok").get<bool>()) << response.body;
+            nlohmann::json_schema::json_validator validator(server->registry().find(name)->output_schema);
+            EXPECT_NO_THROW(validator.validate(envelope.at("value"))) << response.body;
+        }
+    }
+}
+
+TEST_F(RestServerFixture, BrowseLongPollWorksOnRestAndMcpWithoutConsuming) {
+    for (const bool mcp : {false, true}) {
+        const std::string topic = mcp ? "wait-mcp" : "wait-rest";
+        ASSERT_EQ(request("POST", "/v1/create_topic", nlohmann::json{{"topic", topic}, {"exposed", true}}.dump()).status, 200);
+        const nlohmann::json input = {{"topic", topic}, {"wait_ms", 5000}, {"limit", 1}};
+        const nlohmann::json body = mcp ? nlohmann::json{{"jsonrpc", "2.0"}, {"id", 3},
+            {"method", "tools/call"}, {"params", {{"name", "browse_topic"}, {"arguments", input}}}} : input;
+        const auto audit_before = node.audit_event_count();
+        const int descriptor = open_http_request(server->port(), "POST", mcp ? "/mcp" : "/v1/browse_topic", body.dump(), owner_secret);
+        ASSERT_GE(descriptor, 0);
+        const auto registered_by = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (node.audit_event_count() == audit_before && std::chrono::steady_clock::now() < registered_by) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        EXPECT_GT(node.audit_event_count(), audit_before);
+        ASSERT_EQ(request("POST", "/v1/publish_event", nlohmann::json{{"topic", topic}, {"payload", "wakeup"}}.dump()).status, 200);
+        HttpResponse waiting;
+        std::atomic<bool> finished{false};
+        std::thread reader([&] {
+            waiting = read_http_response(descriptor);
+            finished = true;
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!finished && std::chrono::steady_clock::now() < deadline) {
+            server->drain();
+            std::this_thread::yield();
+        }
+        reader.join();
+        ASSERT_EQ(waiting.status, 200) << waiting.body;
+        const auto envelope = mcp ? json_of(waiting).at("result").at("structuredContent") : json_of(waiting);
+        ASSERT_TRUE(envelope.at("ok").get<bool>()) << waiting.body;
+        ASSERT_EQ(envelope.at("value").at("events").size(), 1u);
+        EXPECT_EQ(envelope.at("value").at("events")[0].at("payload"), "wakeup");
+        const auto inspected = request("POST", "/v1/get_topic", nlohmann::json{{"topic", topic}}.dump());
+        EXPECT_EQ(json_of(inspected).at("value").at("subscriber_count"), 0);
+    }
 }
 
 TEST_F(RestServerFixture, DroppingATopicWakesItsLongPoll) {

@@ -234,7 +234,9 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
             if (!(capability->required_operation == kInvokeRight)) {
                 auto decision = context.node.authorize_user(
                     context.acting_key, capability->required_operation);
-                if (!decision) {
+                const bool scoped = !decision && capability->authorize_scoped &&
+                    capability->authorize_scoped(effective_input, context);
+                if (!decision && !scoped) {
                     audit_call(context.node, *capability, context.acting_key,
                                /*allowed=*/false, decision.reason);
                     return ApiResult::failure("unauthorized", decision.reason);

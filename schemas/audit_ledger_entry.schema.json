@@ -1,0 +1,161 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "One immutable action or outcome in the solutions reward ledger (#1107).",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "action_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "actor": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "actor_kind": {
+          "enum": [
+            "agent",
+            "human"
+          ],
+          "type": "string"
+        },
+        "agent_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "cell": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "cost": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "currency": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "decision_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "action"
+        },
+        "model_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "policy_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recorded_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        },
+        "score_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "score_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "subject": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "subject",
+        "score_id",
+        "score",
+        "decision",
+        "action",
+        "actor_kind",
+        "actor",
+        "model_version",
+        "policy_version",
+        "agent_version",
+        "cell",
+        "cost",
+        "currency",
+        "score_at",
+        "decision_at",
+        "action_at",
+        "recorded_at"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "currency": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "outcome"
+        },
+        "occurred_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "outcome": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recorded_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "connector",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "action_id",
+        "outcome",
+        "value",
+        "currency",
+        "source",
+        "occurred_at",
+        "recorded_at"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "zetta.AuditLedgerEntry"
+}

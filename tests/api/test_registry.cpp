@@ -17,6 +17,7 @@
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -32,6 +33,7 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -63,12 +65,20 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 83u);  // +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile (#886), +3 plan (Conflict D),
-                                      // +agent_training_status +set_training_schedule (#941), +score (#948),
-                                      // +get_run_report (#958), +explain (#960 item 5),
-                                      // +list_source_tables (#994), +upload_dataset (#1008),
-                                      // +delete_project (#1009)
-    // A remote caller can put data on the node without a file on its disk (#1008).
+    EXPECT_EQ(
+        registry.size(),
+        113u); // +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+              // (#886), +3 plan (Conflict D), +agent_training_status
+              // +set_training_schedule (#941), +score (#948), +get_run_report
+              // (#958), +explain (#960 item 5), +list_source_tables (#994),
+              // +upload_dataset (#1008), +delete_project (#1009),
+              // +list_methodologies (#1061)
+    for (const char* name :
+         {"get_topic", "update_topic", "browse_topic", "update_event", "delete_events"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
+    // A remote caller can put data on the node without a file on its disk
+    // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
     // A mistaken project can be removed, not only created (#1009).
     EXPECT_TRUE(registry.find("delete_project"));
@@ -77,6 +87,9 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     // information_schema, which materialized a dataset to read a catalog (#994).
     EXPECT_TRUE(registry.find("list_source_tables"));
     EXPECT_TRUE(registry.find("server_info"));
+    EXPECT_TRUE(registry.find("create_experiment"));
+    EXPECT_TRUE(registry.find("assign"));
+    EXPECT_TRUE(registry.find("get_experiment"));
     // A run's report is readable through the control surface, not only from the
     // node that ran it (#958).
     EXPECT_TRUE(registry.find("get_run_report"));
@@ -104,11 +117,26 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("testsuite_list"));
     // The #616 read-parity slice: typed detail reads + list_* siblings.
     for (const char* name :
-         {"get_project", "get_run", "get_model", "get_job", "get_index",
+         {"get_project", "get_run", "get_model", "get_monitor", "get_roi_readout", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
-          "list_indexes", "list_datasets"}) {
+          "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
+          "list_methodologies", "list_solutions", "get_solution", "list_ledger",
+          "get_policy"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
+    const ApiResult methodologies =
+        call("list_methodologies", nlohmann::json::object());
+    ASSERT_TRUE(methodologies.ok);
+    ASSERT_EQ(methodologies.value.at("methodologies").size(), 21u);
+    EXPECT_EQ(methodologies.value.at("methodologies").front().at("id"), "M-1");
+    EXPECT_TRUE(methodologies.value.at("methodologies").front().at("runnable"));
+    const ApiResult solutions = call("list_solutions", nlohmann::json::object());
+    ASSERT_TRUE(solutions.ok);
+    ASSERT_EQ(solutions.value.at("solutions").size(), 20u);
+    EXPECT_EQ(solutions.value.at("solutions").front().at("id"), "S-1");
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("runnable"));
+    EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
+    EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an
@@ -116,9 +144,13 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     for (const char* name :
          {"create_project", "delete_project", "capture_intent", "import_n8n",
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
-          "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
+          "add_dataset", "snapshot", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
-          "update_workspace_profile", "create_plan", "update_plan"}) {
+          "update_workspace_profile", "create_plan", "update_plan",
+          "record_action", "record_outcome", "create_policy", "update_policy",
+          "decide", "approve_decision", "create_experiment", "assign",
+          "create_solution", "run_solution",
+          "publish_report", "enqueue_action_task", "deliver_action_task", "execute_closed_loop"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,
@@ -127,8 +159,116 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
         EXPECT_EQ(entry->required_operation.action, name);
     }
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("run_solution")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
+}
+
+TEST(RoiReadoutCapability, JourneyReturnsUnclaimableWithoutHoldoutOutcomes) {
+    zetta::test::TempDir directory;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(node.start());
+    const auto project = node.create_project("renewal-project");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    ASSERT_TRUE(graph.add_node(zetta::ir::StepKind::Connect, "source"));
+    ASSERT_TRUE(project->create_graph("production", std::move(graph)));
+
+    zetta::solutions::ExperimentValue experiment_value;
+    experiment_value.name = "renewal-experiment";
+    experiment_value.seed = 1108;
+    experiment_value.allocations = {
+        {"holdout", zetta::solutions::ExperimentTier::Holdout, 0.5},
+        {"treatment", zetta::solutions::ExperimentTier::Treatment, 0.5},
+    };
+    const auto experiment = node.experiment_manager().create(
+        std::move(experiment_value));
+    ASSERT_TRUE(experiment);
+
+    zetta::solutions::RoiReadoutSpec spec;
+    spec.solution = "renewal-risk";
+    spec.project = project->id();
+    spec.graph = "production";
+    spec.experiment = experiment->id;
+    spec.roi_model = {"renewed", 100.0, 500.0, "USD"};
+    zetta::solutions::RoiReadoutStore store{replication};
+    std::string error;
+    ASSERT_TRUE(store.configure(std::move(spec), "owner", &error)) << error;
+
+    Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    ApiContext context{node};
+    const ApiResult result = registry.call(
+        "get_roi_readout",
+        nlohmann::json{{"solution", "renewal-risk"}},
+        context);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("solution"), "renewal-risk");
+    EXPECT_FALSE(result.value.at("incrementality").at("claimable").get<bool>());
+    EXPECT_NE(
+        result.value.at("incrementality").at("reason").get<std::string>().find(
+            "no holdout outcomes"),
+        std::string::npos);
+    node.stop();
+}
+
+TEST_F(RegistryFixture, ExperimentJourneyProtectsHoldoutAndReportsExemptions) {
+    const ApiResult created = call(
+        "create_experiment",
+        {{"name", "retention-control"},
+         {"seed", 1105},
+         {"allocations",
+          {{{"name", "holdout"},
+            {"tier", "holdout"},
+            {"fraction", 0.5}},
+           {{"name", "treatment"},
+            {"tier", "treatment"},
+            {"fraction", 0.5}}}}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    const std::string experiment = created.value.at("id").get<std::string>();
+
+    std::string holdout_entity;
+    for (std::uint64_t index = 0; index < 100; ++index) {
+        const std::string entity = "account-" + std::to_string(index);
+        const ApiResult decision = call(
+            "assign", {{"experiment", experiment},
+                       {"entity", entity},
+                       {"proposed_action", "send-offer"}});
+        ASSERT_TRUE(decision.ok) << decision.error.message;
+        if (decision.value.at("assignment").at("tier") == "holdout") {
+            EXPECT_FALSE(decision.value.at("allowed").get<bool>());
+            EXPECT_TRUE(decision.value.at("action").get<std::string>().empty());
+            holdout_entity = entity;
+            break;
+        }
+    }
+    ASSERT_FALSE(holdout_entity.empty());
+
+    const ApiResult exempted = call(
+        "assign", {{"experiment", experiment},
+                   {"entity", holdout_entity},
+                   {"proposed_action", "send-required-notice"},
+                   {"exempt", true},
+                   {"exemption_reason", "contract requirement"}});
+    ASSERT_TRUE(exempted.ok) << exempted.error.message;
+    EXPECT_TRUE(exempted.value.at("allowed").get<bool>());
+    EXPECT_EQ(exempted.value.at("action"), "send-required-notice");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_actor"), "local");
+    EXPECT_EQ(exempted.value.at("assignment").at("exemption_reason"),
+              "contract requirement");
+
+    const ApiResult report =
+        call("get_experiment", {{"experiment", experiment}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("sizes").at("exemptions"), 1);
+    EXPECT_EQ(report.value.at("sizes").at("holdout_exemptions"), 1);
+    EXPECT_GT(report.value.at("erosion").at("exemption_rate").get<double>(),
+              0.0);
+    EXPECT_GT(
+        report.value.at("erosion").at("holdout_erosion_rate").get<double>(),
+        0.0);
+    EXPECT_FALSE(report.value.at("training_rows").empty());
 }
 
 TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
@@ -141,6 +281,76 @@ TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
     EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, {},
                                          CapabilityKind::Read,
                                          {}, false, false, nullptr}));
+}
+
+TEST_F(RegistryFixture, JourneyReconstructsScoreActionOutcomeChain) {
+    const nlohmann::json action_input = {
+        {"subject", "account-42"},
+        {"score_id", "score-42"},
+        {"score", 0.91},
+        {"decision", "retain"},
+        {"action", "no_contact"},
+        {"actor_kind", "human"},
+        {"model_version", "churn-v7"},
+        {"policy_version", "retention-policy-v3"},
+        {"agent_version", "agent-v5"},
+        {"cell", "holdout"},
+        {"cost", 0.0},
+        {"currency", "USD"},
+        {"score_at", "2026-09-28T10:00:00.000Z"},
+        {"decision_at", "2026-09-28T10:00:01.000Z"},
+        {"action_at", "2026-09-28T10:00:02.000Z"}};
+
+    const ApiResult action = call("record_action", action_input);
+    ASSERT_TRUE(action.ok) << action.error.message;
+    EXPECT_EQ(action.value.at("kind"), "action");
+    EXPECT_EQ(action.value.at("actor"), "local");
+    const std::string action_id = action.value.at("id").get<std::string>();
+    const nlohmann::json immutable_action = action.value;
+
+    const ApiResult outcome = call(
+        "record_outcome",
+        {{"action_id", action_id},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "connector"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    ASSERT_TRUE(outcome.ok) << outcome.error.message;
+    EXPECT_EQ(outcome.value.at("action_id"), action_id);
+
+    const ApiResult listed = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("entries").size(), 2u);
+    bool found_action = false;
+    bool found_outcome = false;
+    for (const auto& entry : listed.value.at("entries")) {
+        if (entry.at("kind") == "action") {
+            found_action = entry == immutable_action;
+        }
+        if (entry.at("kind") == "outcome") {
+            found_outcome = entry.at("action_id") == action_id;
+        }
+    }
+    EXPECT_TRUE(found_action);
+    EXPECT_TRUE(found_outcome);
+
+    const ApiResult sql = call(
+        "sql", {{"statement", "SELECT * FROM system.ledger;"}});
+    ASSERT_TRUE(sql.ok) << sql.error.message;
+    ASSERT_EQ(sql.value.at("rows").size(), 2u);
+
+    const ApiResult orphan = call(
+        "record_outcome",
+        {{"action_id", "missing"},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "manual"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    EXPECT_FALSE(orphan.ok);
+    EXPECT_EQ(orphan.error.code, "not_found");
+    EXPECT_EQ(node.ledger_entry_count(), 2u);
 }
 
 // #1007: a handler that throws must still produce an answer. The exception used
@@ -292,6 +502,35 @@ TEST_F(RegistryFixture, SqlReadsTheSystemViews) {
         call("sql", nlohmann::json{{"statement", "SELECT * FROM system.datasets;"}});
     ASSERT_TRUE(result.ok) << result.error.message;
     EXPECT_TRUE(result.value.contains("rows"));
+}
+
+TEST_F(RegistryFixture, SnapshotMaterializesAReplicatedPointInTimeTable) {
+    const auto database = node.create_database("features");
+    ASSERT_TRUE(database);
+    const auto events = database->create_table("events");
+    ASSERT_TRUE(events);
+    events->add_row({{"account", "a"}, {"observed_at", 1}, {"value", 10}});
+    events->add_row({{"account", "a"}, {"observed_at", 3}, {"value", 30}});
+
+    const ApiResult result = call(
+        "snapshot",
+        {{"database", "features"},
+         {"source_table", "events"},
+         {"target_table", "account_snapshots"},
+         {"entity_column", "account"},
+         {"time_column", "observed_at"},
+         {"as_of", 2}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("materialized_rows"), 1u);
+    EXPECT_EQ(result.value.at("future_rows_excluded"), 1u);
+    const auto snapshots = database->find_table("account_snapshots");
+    ASSERT_TRUE(snapshots);
+    ASSERT_EQ(snapshots->row_count(), 1u);
+    const auto row = snapshots->store().at(0);
+    ASSERT_TRUE(row) << row.error();
+    EXPECT_EQ(row->at("value"), 10);
+    EXPECT_EQ(row->at("entity_id"), "a");
+    EXPECT_EQ(row->at("as_of"), 2);
 }
 
 // Journey: seed a table + Search index, then `search` — the capability is a
@@ -534,6 +773,17 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     auto model = node.create_model(std::move(model_value));
     ASSERT_TRUE(model);
 
+    zetta::solutions::MonitorSpec monitor_spec;
+    monitor_spec.solution = "renewal-risk";
+    monitor_spec.inputs = {
+        {"tenure", {12.0}, {0.5, 0.5}},
+    };
+    monitor_spec.guardrails = {
+        {"cost", 0.0, 100.0},
+    };
+    auto monitor = node.create_monitor(std::move(monitor_spec));
+    ASSERT_TRUE(monitor);
+
     auto job = node.create_job(zetta::compute::JobKind::Featurize, "proj-uuid");
     ASSERT_TRUE(job);
 
@@ -554,6 +804,7 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     const DetailCase cases[] = {
         {"get_run", "run_id", run->id(), run->metadata()},
         {"get_model", "model_id", model->id(), model->metadata()},
+        {"get_monitor", "solution", monitor->id(), monitor->metadata()},
         {"get_job", "job_id", job->id(), job->metadata()},
         {"get_index", "index_id", index->id(), index->metadata()},
     };
@@ -578,6 +829,12 @@ TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
     EXPECT_EQ(fetched_run.value.at("status"), "running");
     ASSERT_EQ(fetched_run.value.at("logs").size(), 1u);
     EXPECT_EQ(fetched_run.value.at("logs")[0].at("message"), "step one");
+
+    auto monitor_by_solution = call(
+        "get_monitor",
+        nlohmann::json{{"solution", "renewal-risk"}});
+    ASSERT_TRUE(monitor_by_solution.ok) << monitor_by_solution.error.message;
+    EXPECT_EQ(monitor_by_solution.value.at("id"), monitor->id());
 }
 
 // Journey (#616): the list_* siblings return compact structured rows over the
@@ -684,6 +941,39 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+}
+
+TEST_F(RegistryFixture, AnalyzeAndPlanFeatureReadsUseLandedDatasetRows) {
+    std::vector<nlohmann::json> rows;
+    for (int index = 0; index < 80; ++index) {
+        rows.push_back({{"customer_id", index + 1},
+                        {"plan", index % 3 == 0 ? "pro" : "basic"},
+                        {"spend", index % 20},
+                        {"signup_at", "2025-01-01"},
+                        {"churned", index % 4 == 0 ? 1 : 0}});
+    }
+    zetta::data::AddDatasetOptions options;
+    options.database = "features";
+    options.table_name = "accounts";
+    options.partitioned = false;
+    const auto added = zetta::data::add_dataset_rows(node, std::move(rows), options);
+    ASSERT_TRUE(added.ok()) << added.error;
+
+    const auto analyzed = call("analyze_dataset", {{"dataset", "features.accounts"},
+                                                    {"label", "churned"},
+                                                    {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(analyzed.ok) << analyzed.error.message;
+    EXPECT_EQ(analyzed.value.at("grain"), "entity");
+    EXPECT_EQ(analyzed.value.at("columns").size(), 5u);
+
+    const auto planned = call("plan_features", {{"dataset", "features.accounts"},
+                                                {"methodology", "M-1"},
+                                                {"label", "churned"},
+                                                {"as_of", "2025-12-31"}});
+    ASSERT_TRUE(planned.ok) << planned.error.message;
+    EXPECT_EQ(planned.value.at("status"), "ready");
+    EXPECT_FALSE(planned.value.at("entries").empty());
+    EXPECT_TRUE(planned.value.at("transform_required").is_null());
 }
 
 // #1008: upload_dataset lands a file's TEXT from the request through the same
@@ -963,6 +1253,54 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     EXPECT_TRUE(work_ran.load());
     EXPECT_TRUE(coroutine_resumed.load());
     EXPECT_EQ(bridge.pending(), 0u);
+}
+
+TEST(MainThreadBridge, CancellationWaitsForQueuedOwnerWork) {
+    for (const bool cancel_before_queueing : {false, true}) {
+        SCOPED_TRACE(cancel_before_queueing);
+        zetta::api::MainThreadBridge bridge;
+        std::atomic<bool> work_ran{false};
+        std::atomic<bool> coroutine_resumed{false};
+        std::atomic<bool> completed{false};
+        std::stop_source cancellation;
+        if (cancel_before_queueing) cancellation.request_stop();
+
+        zetta::runtime::spawn(
+            zetta::runtime::with_stop_token(
+                await_bridge_work(bridge, work_ran, coroutine_resumed),
+                cancellation.get_token()),
+            [&] { completed.store(true); });
+        const auto queued_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (bridge.pending() == 0 &&
+               std::chrono::steady_clock::now() < queued_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(bridge.pending(), 1u);
+        cancellation.request_stop();
+        const auto cancelled_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < cancelled_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_FALSE(coroutine_resumed.load())
+            << "cancellation must not release borrowed request state";
+        EXPECT_FALSE(work_ran.load());
+
+        bridge.drain();
+        const auto completed_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < completed_deadline) {
+            bridge.drain();
+            std::this_thread::yield();
+        }
+        EXPECT_TRUE(completed.load());
+        EXPECT_TRUE(work_ran.load());
+        EXPECT_TRUE(coroutine_resumed.load());
+        EXPECT_EQ(bridge.pending(), 0u);
+    }
 }
 
 zetta::runtime::task<> await_throwing_bridge_work(zetta::api::MainThreadBridge& bridge,

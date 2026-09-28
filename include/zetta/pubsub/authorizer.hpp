@@ -16,6 +16,7 @@
 namespace zetta::pubsub {
 
 enum class PubSubOperation {
+    Read,          // topics:read, without consuming
     Publish,       // pubsub:publish on a target address
     Subscribe,     // pubsub:subscribe on a topic
     Create,        // pubsub:create (including auto-creation)
