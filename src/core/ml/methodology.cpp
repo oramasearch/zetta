@@ -316,7 +316,12 @@ api::ApiResult run_m1(RunRequest& request) {
             table.contract = resolved.contract;
             table.dataset_name = dataset_path->get<std::string>();
             table.notes = resolved.notes;
-            dataset_notes = resolved.notes;
+            // #1040: say that the table came from the pipeline's own connect step.
+            if (const auto note = request.input.find("pipeline_note");
+                note != request.input.end() && note->is_string()) {
+                table.notes.insert(table.notes.begin(), note->get<std::string>());
+            }
+            dataset_notes = table.notes;
             dataset_contract = to_json(resolved.contract);
         } else {
             auto loaded =
@@ -327,6 +332,8 @@ api::ApiResult run_m1(RunRequest& request) {
             dataset = std::move(loaded.dataset);
         }
     } else {
+        // No dataset and no connect-step table (handle_run fills the path when
+        // the pipeline names one, #1040): the built-in demo dataset.
         dataset = zetta::usecases::churn::demo_churn_dataset();
     }
 

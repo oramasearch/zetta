@@ -91,6 +91,20 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   Governed digital and dialer delivery preserves a permanent holdout and feeds
   the net-recovery readout. See [solutions/S-4.md](solutions/S-4.md).
 
+- **S-12 Claims Triage & Fraud Referral (#1121)** — runnable at levels 1–4
+  with M-2/M-11/M-1 and optional M-3. Claim-specific scores drive fast-track,
+  adjuster, and SIU tasks; denial remains human-only. Document confidence,
+  fairness review, protected holdouts, and measured referral outcomes are
+  covered by [solutions/S-12.md](solutions/S-12.md).
+
+- **Workspace solution integration (#1128)** — `deploy/workspace` combines the
+  solution foundations with the bus/engine fixes and #1131's in-flight signal
+  handler protection. Solution monitors, experiments/assignments and ledger
+  additions participate in #1086's incremental reconciliation; policies,
+  decisions and ROI definitions remain direct CRDT reads. The audit ID index
+  and owner wake-up callback are retained. See
+  [cluster/solution-reconciliation.md](cluster/solution-reconciliation.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to
@@ -132,6 +146,9 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [plans/pubsub/](plans/pubsub/README.md); what is built: [pubsub/](pubsub/README.md). One
   node only (the cluster is stage 2, designed later); locks and condition variables by
   decision D1/D5 (the one exception to the coroutine rule).
+  Issue #1136 adds node-local topic/message CRUD with revision checking,
+  hash-only mutation audit and non-consuming browse over REST/MCP async long
+  polls; [pubsub/crud.md](pubsub/crud.md). D39 still defers clustered pub/sub.
 
 - **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
   datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)

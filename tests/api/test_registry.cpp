@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
@@ -66,12 +67,16 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        108u); // +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        113u); // +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
               // +upload_dataset (#1008), +delete_project (#1009),
               // +list_methodologies (#1061)
+    for (const char* name :
+         {"get_topic", "update_topic", "browse_topic", "update_event", "delete_events"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     // A remote caller can put data on the node without a file on its disk
     // (#1008).
     EXPECT_TRUE(registry.find("upload_dataset"));
@@ -376,6 +381,89 @@ TEST_F(RegistryFixture, AThrowingHandlerAnswersWithAnEngineError) {
         << result.error.message;
     // Still a traced call, like every other failure.
     EXPECT_EQ(result.trace_id.size(), 32u);
+}
+
+// #1063: an offloadable capability (receive_events' long poll) runs on a pool
+// worker, but the call's authorization + audit gate touches owner-thread state —
+// the audit trail the tick re-sorts. The gate used to run on the worker, and the
+// lake bus's constant long polls crashed its Zetta every few minutes (a double
+// free, or a bad access inside the tick's sort). Workers hammer an offloadable
+// read while this thread ticks: every call completes, every call is audited,
+// and the handler itself still runs on the worker.
+TEST_F(RegistryFixture, OffloadedCallsRunTheirGateOnTheOwnerThread) {
+    node.tick();  // adopt this thread as the owner
+    ASSERT_TRUE(node.on_owner_thread());
+    const std::thread::id owner = std::this_thread::get_id();
+    std::atomic<int> handled_off_owner{0};
+    Capability poll{"offloaded_poll", "", "", nlohmann::json{{"type", "object"}}, {},
+                    CapabilityKind::Read,
+                    zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"},
+                    false, false,
+                    [&](const nlohmann::json&, ApiContext&) -> ApiResult {
+                        if (std::this_thread::get_id() != owner) ++handled_off_owner;
+                        return ApiResult::success({});
+                    }};
+    poll.offloadable = true;
+    ASSERT_TRUE(registry.add(std::move(poll)));
+
+    constexpr int kWorkers = 8;
+    constexpr int kCalls = 200;
+    const auto audit_before = node.audit_event_count();
+    std::atomic<int> done{0};
+    std::atomic<int> failed{0};
+    std::vector<std::thread> workers;
+    for (int w = 0; w < kWorkers; ++w) {
+        workers.emplace_back([&] {
+            for (int i = 0; i < kCalls; ++i) {
+                ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
+                if (!registry.call("offloaded_poll", nlohmann::json::object(), context).ok) {
+                    ++failed;
+                }
+            }
+            ++done;
+        });
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (done.load() < kWorkers && std::chrono::steady_clock::now() < deadline) {
+        node.tick();  // the tick re-sorts the audit trail while the gates queue
+    }
+    for (auto& worker : workers) worker.join();
+    ASSERT_EQ(done.load(), kWorkers);
+    EXPECT_EQ(failed.load(), 0);
+    EXPECT_EQ(handled_off_owner.load(), kWorkers * kCalls)
+        << "the handler itself stays on the worker";
+    EXPECT_EQ(node.audit_event_count(), audit_before + kWorkers * kCalls)
+        << "every offloaded call is audited, once";
+}
+
+// The consent path and the activity hook follow the gate on the calling thread,
+// so an offloadable entry may do neither (#1063).
+TEST_F(RegistryFixture, RefusesAnOffloadableEntryThatMutatesOrNeedsConsent) {
+    for (const bool mutates : {true, false}) {
+        Capability entry{mutates ? "offloaded_write" : "offloaded_consent", "", "",
+                         nlohmann::json{{"type", "object"}}, {}, CapabilityKind::Read,
+                         {}, mutates, !mutates,
+                         [](const nlohmann::json&, ApiContext&) {
+                             return ApiResult::success({});
+                         }};
+        entry.offloadable = true;
+        EXPECT_FALSE(registry.add(std::move(entry)));
+    }
+}
+
+TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
+    Capability entry{"awaitable_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, false, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.awaitable_read = zetta::api::AwaitableRead{
+        [](const nlohmann::json&) {
+            return std::chrono::milliseconds(1);
+        },
+        [](const ApiResult&) { return true; }};
+    EXPECT_FALSE(registry.add(std::move(entry)));
 }
 
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
@@ -1107,6 +1195,49 @@ zetta::runtime::task<> await_bridge_work(zetta::api::MainThreadBridge& bridge,
 }
 }  // namespace
 
+// #1063: a poke releases the owning loop's idle wait at once, so work queued
+// outside the bridge (Node::run_on_owner) runs on the next tick instead of
+// after the idle interval.
+TEST(MainThreadBridge, APokeReleasesTheIdleWaitAtOnce) {
+    zetta::api::MainThreadBridge bridge;
+    std::thread poker([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        bridge.poke();
+    });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));
+    const auto waited = std::chrono::steady_clock::now() - started;
+    poker.join();
+    EXPECT_LT(waited, std::chrono::seconds(5)) << "the poke must end the idle wait";
+    // The poke is consumed: the next idle wait runs its full (short) interval.
+    const auto again = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::milliseconds(50));
+    EXPECT_GE(std::chrono::steady_clock::now() - again, std::chrono::milliseconds(40));
+}
+
+// Node::run_on_owner calls the owner wakeup when it queues work, so an idle
+// loop is woken rather than left to its next timed tick (#1063).
+TEST(NodeOwnerWakeup, QueuedOwnerWorkWakesTheLoop) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    node.tick();  // adopt this thread as the owner
+    zetta::api::MainThreadBridge bridge;
+    node.set_owner_wakeup([&bridge] { bridge.poke(); });
+    std::atomic<bool> ran{false};
+    std::thread worker([&] { node.run_on_owner([&] { ran = true; }); });
+    const auto started = std::chrono::steady_clock::now();
+    bridge.wait_for_work(std::chrono::seconds(10));  // the loop's idle wait
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(5))
+        << "queued owner work must wake the idle loop";
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!ran.load() && std::chrono::steady_clock::now() < deadline) node.tick();
+    worker.join();
+    EXPECT_TRUE(ran.load());
+    node.set_owner_wakeup({});
+    node.stop();
+}
+
 TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     zetta::api::MainThreadBridge bridge;
     std::atomic<bool> work_ran{false};
@@ -1129,6 +1260,54 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     EXPECT_TRUE(work_ran.load());
     EXPECT_TRUE(coroutine_resumed.load());
     EXPECT_EQ(bridge.pending(), 0u);
+}
+
+TEST(MainThreadBridge, CancellationWaitsForQueuedOwnerWork) {
+    for (const bool cancel_before_queueing : {false, true}) {
+        SCOPED_TRACE(cancel_before_queueing);
+        zetta::api::MainThreadBridge bridge;
+        std::atomic<bool> work_ran{false};
+        std::atomic<bool> coroutine_resumed{false};
+        std::atomic<bool> completed{false};
+        std::stop_source cancellation;
+        if (cancel_before_queueing) cancellation.request_stop();
+
+        zetta::runtime::spawn(
+            zetta::runtime::with_stop_token(
+                await_bridge_work(bridge, work_ran, coroutine_resumed),
+                cancellation.get_token()),
+            [&] { completed.store(true); });
+        const auto queued_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (bridge.pending() == 0 &&
+               std::chrono::steady_clock::now() < queued_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(bridge.pending(), 1u);
+        cancellation.request_stop();
+        const auto cancelled_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < cancelled_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_FALSE(coroutine_resumed.load())
+            << "cancellation must not release borrowed request state";
+        EXPECT_FALSE(work_ran.load());
+
+        bridge.drain();
+        const auto completed_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < completed_deadline) {
+            bridge.drain();
+            std::this_thread::yield();
+        }
+        EXPECT_TRUE(completed.load());
+        EXPECT_TRUE(work_ran.load());
+        EXPECT_TRUE(coroutine_resumed.load());
+        EXPECT_EQ(bridge.pending(), 0u);
+    }
 }
 
 zetta::runtime::task<> await_throwing_bridge_work(zetta::api::MainThreadBridge& bridge,

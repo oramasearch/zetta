@@ -68,6 +68,13 @@ projection under `experiments/<uuid>/`: `experiment.json` plus one JSON file per
 assignment. Startup loads the projection, migrates local-only values into the
 document, and reconciles remote values without writing them back.
 
+Small changed-key ticks update only the affected definitions and assignments;
+null keys retain the complete-snapshot path. Parent definitions are applied
+before their assignments. Parent changes revisit current child keys, including
+assignments that arrived before their definition, and parent removal clears its
+child projection without deleting unrelated experiments. See
+[incremental solution reconciliation](../cluster/solution-reconciliation.md).
+
 `report` returns:
 
 - actual and expected size per allocation;

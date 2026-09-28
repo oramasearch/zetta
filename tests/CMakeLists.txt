@@ -90,6 +90,7 @@ add_executable(zetta-tests
   ml/test_methodology.cpp
   ml/test_solution.cpp
   ml/test_entity_resolution.cpp
+  ml/test_entity_resolution_partitions.cpp
   ml/test_survival.cpp
   ml/test_graph.cpp
   ml/test_graph_partitions.cpp
@@ -250,6 +251,7 @@ add_executable(zetta-tests
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
   cluster/test_replication.cpp
+  cluster/test_solution_replication.cpp
   cluster/test_data_replication.cpp
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
@@ -322,8 +324,10 @@ endif()
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
+add_dependencies(zetta-tests zetta)
 target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every
@@ -346,3 +350,17 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)
+
+# Process-level regression for #1078. This owns a real loopback listener and
+# launches the production binary, so it can distinguish exit(1) from SIGABRT.
+add_executable(zetta-refused-start-test
+  cluster/test_refused_start_exit.cpp
+)
+target_compile_features(zetta-refused-start-test PRIVATE cxx_std_26)
+target_compile_definitions(zetta-refused-start-test PRIVATE
+  ZETTA_BINARY_PATH="$<TARGET_FILE:zetta>")
+add_dependencies(zetta-refused-start-test zetta)
+add_test(NAME zetta-refused-start-exit COMMAND zetta-refused-start-test)
+set_tests_properties(zetta-refused-start-exit PROPERTIES
+  TIMEOUT 30
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")

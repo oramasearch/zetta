@@ -94,6 +94,11 @@ from the monitor back to that controller.
 
 ## Replication and ownership
 
+Small replication changes use the monitor prefix bucket (#1128); only named
+keys may update or remove a monitor. The complete-snapshot path remains for
+startup and full resync. See
+[solution reconciliation](../cluster/solution-reconciliation.md).
+
 Local mutations capture the entire validated monitor value under
 `monitor:<uuid>` before rewriting the disk projection. Peer reconciliation
 parses the same schema, materializes or updates the local handle, and never

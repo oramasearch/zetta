@@ -600,6 +600,7 @@ boost::http::status http_status_of(int status_code) {
         case 400: return boost::http::status::bad_request;
         case 403: return boost::http::status::forbidden;
         case 404: return boost::http::status::not_found;
+        case 409: return boost::http::status::conflict;
         case 422: return boost::http::status::unprocessable_entity;
         case 503: return boost::http::status::service_unavailable;
         default: return boost::http::status::internal_server_error;
@@ -609,6 +610,21 @@ boost::http::status http_status_of(int status_code) {
 }  // namespace
 
 struct ApiServer::Impl {
+    class RequestLifetime {
+    public:
+        explicit RequestLifetime(std::atomic<std::size_t>& requests)
+            : requests_(requests) {
+            requests_.fetch_add(1);
+        }
+
+        ~RequestLifetime() {
+            requests_.fetch_sub(1);
+        }
+
+    private:
+        std::atomic<std::size_t>& requests_;
+    };
+
     Node& node;
     const zetta::cluster::Cluster* cluster;
     ServerOptions options;
@@ -626,6 +642,8 @@ struct ApiServer::Impl {
     std::unique_ptr<boost::beast2::http_server> server;
     std::thread io_thread;
     std::atomic<bool> is_running{false};
+    std::atomic<bool> io_work_held{false};
+    std::atomic<std::size_t> requests_in_flight{0};
     unsigned short bound_port = 0;
     std::string failure_reason;
 
@@ -641,7 +659,9 @@ struct ApiServer::Impl {
     // an empty string for notifications (no response required).
     std::string dispatch(const nlohmann::json& request,
                          const std::string& acting_key, bool acting_is_user,
-                         const std::string& traceparent_header) {
+                         const std::string& traceparent_header,
+                         std::shared_ptr<zetta::runtime::async_event> wait_event = {},
+                         ApiResult* observed_result = nullptr) {
         if (!request.is_object() || request.value("jsonrpc", "") != "2.0") {
             return jsonrpc_error({}, -32600, "invalid JSON-RPC 2.0 request");
         }
@@ -706,6 +726,7 @@ struct ApiServer::Impl {
                                    &node.span_recorder(), &background,
                                    provisioners};
                 context.acting_is_user = acting_is_user;
+                context.wait_event = wait_event;
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -713,6 +734,7 @@ struct ApiServer::Impl {
             // bridge-aware wrapper below, so here `work` has already been
             // marshaled; see handle_mcp(). This branch never runs off-loop.
             work();
+            if (observed_result) *observed_result = call_result;
 
             nlohmann::json payload;
             payload["ok"] = call_result.ok;
@@ -764,14 +786,14 @@ struct ApiServer::Impl {
 
     // Serve one llms.txt page (#645): `page` is "index" (/llms.txt), "full"
     // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Auth is enforced
-    // at the router-seam gate (#745); rendering touches the Node, so it is
+    // at the router authorization filter (#745); rendering touches the Node, so it is
     // marshaled onto the owning loop via the bridge, wrapped in a span (every
     // operation is observable). Shared by the three GET routes in start().
     boost::http::route_task serve_llms(boost::http::route_params& route,
                                        std::string page) {
         namespace http = boost::http;
 
-        // Auth is enforced once, up front, by the router-seam gate (#745) —
+        // Auth is enforced once, up front, by the router authorization filter (#745) —
         // this route only runs for an already-authorized request.
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
@@ -824,7 +846,7 @@ struct ApiServer::Impl {
     // Serve one REST rendering of a capability (#618, docs/api/rest-openapi.md):
     // GET for reads (input in the query string, coerced by the input schema),
     // POST for actions/jobs (input as the JSON body). Auth is enforced at the
-    // router-seam gate (#745), and the call itself — validate, authorize +
+    // router authorization filter (#745), and the call itself — validate, authorize +
     // audit, handle, span —
     // is Registry::call on the owning loop, exactly the MCP path.
     boost::http::route_task serve_rest_capability(
@@ -832,10 +854,11 @@ struct ApiServer::Impl {
         std::shared_ptr<const Capability> capability) {
         namespace http = boost::http;
 
+        RequestLifetime request_lifetime(requests_in_flight);
         std::string response_body;
         http::status status = http::status::ok;
 
-        // Auth is enforced once, up front, by the router-seam gate (#745); this
+        // Auth is enforced once, up front, by the router authorization filter (#745); this
         // route only runs for an already-authorized request, and reads the
         // acting identity the gate resolved.
         const RequestIdentity identity = identity_of(route);
@@ -884,17 +907,44 @@ struct ApiServer::Impl {
                 zetta::observability::parse_traceparent(traceparent)
                     .value_or(zetta::observability::make_root_trace());
             ApiResult call_result;
-            // An offloadable capability (chat: a CPU/GPU model decode touching only
-            // the thread-safe replication store) runs on a pool worker so a long
-            // generation never pins the owner/tick loop. Everything else is marshaled
-            // onto the owning loop, where a handler may touch the Node freely.
-            if (capability->offloadable) {
-                call_result = co_await zetta::runtime::offload([&]() -> ApiResult {
+            if (capability->awaitable_read) {
+                auto wait_event =
+                    std::make_shared<zetta::runtime::async_event>();
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, identity.acting_key, trace,
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = identity.is_user;
+                    context.wait_event = wait_event;
+                    call_result = capability_registry.call(
+                        capability->name, input, context);
+                });
+                if (capability->awaitable_read->should_wait(call_result)) {
+                    const auto wait_for =
+                        capability->awaitable_read->wait_for(input);
+                    if (wait_for.count() > 0) {
+                        [[maybe_unused]] auto wait_result =
+                            co_await zetta::runtime::timeout(
+                                wait_event->wait(), wait_for);
+                        co_await bridge.run_on_owner([&] {
+                            ApiContext context{
+                                node, cluster, identity.acting_key, trace,
+                                &node.span_recorder(), &background};
+                            context.acting_is_user = identity.is_user;
+                            call_result = capability_registry.call(
+                                capability->name, input, context);
+                        });
+                    }
+                }
+            } else if (capability->offloadable) {
+                // Offloadable handlers (chat) touch only thread-safe state and
+                // run on the pool so generation never pins the owner loop.
+                auto call = [&]() -> ApiResult {
                     ApiContext context{node, cluster, identity.acting_key, trace,
                                        &node.span_recorder(), &background};
                     context.acting_is_user = identity.is_user;
                     return capability_registry.call(capability->name, input, context);
-                });
+                };
+                call_result = co_await zetta::runtime::offload(call);
                 // offload resumes us on a pool worker; hop back onto the owning
                 // loop before touching the connection. route.send below is a
                 // Corosio op bound to that loop's executor — resuming it on a pool
@@ -991,7 +1041,7 @@ struct ApiServer::Impl {
     // GET /v1/specs and /v1/specs/<name> (#646, docs/api/specs-index.md): the
     // spec index and each raw document — the OpenAPI document, capability
     // input/output schemas, boundary schemas — served from the C++ accessors,
-    // never from disk. Auth is enforced at the router-seam gate (#745);
+    // never from disk. Auth is enforced at the router authorization filter (#745);
     // rendering only reads the (start-frozen) registry and static accessors,
     // but is marshaled onto the
     // owning loop so the span lands in the node's ring (every operation is
@@ -1000,7 +1050,7 @@ struct ApiServer::Impl {
                                         std::string name) {
         namespace http = boost::http;
 
-        // Auth is enforced once, up front, by the router-seam gate (#745).
+        // Auth is enforced once, up front, by the router authorization filter (#745).
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
             traceparent = std::string(route.req.at("traceparent"));
@@ -1046,7 +1096,7 @@ struct ApiServer::Impl {
 
     // Serve one governed entity endpoint (#648, docs/api/serving.md): the
     // exposed-model predict route (POST, JSON body) or the exposed-index
-    // search route (GET, query string). Auth is enforced at the router-seam
+    // search route (GET, query string). Auth is enforced at the router authorization
     // gate (#745); everything else — authorize + audit, the exposure check, the
     // schema
     // boundary, the engine call, the serve:* span — is the HTTP-free serving
@@ -1059,7 +1109,7 @@ struct ApiServer::Impl {
         std::string response_body;
         http::status status = http::status::ok;
 
-        // Auth is enforced once, up front, by the router-seam gate (#745); read
+        // Auth is enforced once, up front, by the router authorization filter (#745); read
         // the acting identity it resolved for the serving-layer authorize.
         const RequestIdentity identity = identity_of(route);
 
@@ -1127,7 +1177,7 @@ struct ApiServer::Impl {
     }
 
     // GET /v1/openapi.json — the OpenAPI rendering. Auth is enforced once, up
-    // front, by the router-seam gate (#745).
+    // front, by the router authorization filter (#745).
     boost::http::route_task serve_openapi(boost::http::route_params& route) {
         namespace http = boost::http;
         route.status(http::status::ok);
@@ -3587,7 +3637,7 @@ bool ApiServer::start() {
     });
 
     // The ONE auth gate (#745, epic #743): a single middleware at the router
-    // seam that runs before EVERY gated route (cors handles the CORS preflight
+    // filter that runs before EVERY gated route (cors handles the CORS preflight
     // before it, so credential-less OPTIONS is not blocked). Auth is ALWAYS on
     // (#799) — there is exactly one mode, no toggle, no legacy shared secret, no
     // anonymous path. The bearer MUST resolve, through the token store (#744:
@@ -3660,6 +3710,7 @@ bool ApiServer::start() {
     });
 
     router.use("/mcp", [&impl](http::route_params& route) -> http::route_task {
+        Impl::RequestLifetime request_lifetime(impl.requests_in_flight);
         if (route.req.method() != http::method::post) {
             route.status(http::status::method_not_allowed);
             stamp_response_headers(route, "POST /mcp only");
@@ -3668,7 +3719,7 @@ bool ApiServer::start() {
             co_return http::route_done;
         }
 
-        // Auth already ran at the router-seam gate above; read the identity it
+        // Auth already ran at the router authorization filter above; read the identity it
         // resolved (a user id under --require-auth, else the presented bearer).
         const RequestIdentity identity = identity_of(route);
 
@@ -3690,13 +3741,26 @@ bool ApiServer::start() {
             if (request.is_discarded()) {
                 response_body = jsonrpc_error({}, -32700, "parse error");
             } else {
-                // Marshal the whole dispatch onto the loop that owns the
-                // Node; this coroutine suspends until drain() has run it.
+                auto wait_event = std::make_shared<zetta::runtime::async_event>();
+                ApiResult observed;
                 co_await impl.bridge.run_on_owner([&] {
                     response_body = impl.dispatch(
                         request, identity.acting_key, identity.is_user,
-                        traceparent);
+                        traceparent, wait_event, &observed);
                 });
+                if (observed.ok && request.value("method", "") == "tools/call") {
+                    const auto& params = request.at("params");
+                    const auto capability = impl.capability_registry.find(params.at("name").get<std::string>());
+                    if (capability && capability->awaitable_read && capability->awaitable_read->should_wait(observed)) {
+                        const auto wait_for = capability->awaitable_read->wait_for(params.value("arguments", nlohmann::json::object()));
+                        if (wait_for.count() > 0) {
+                            [[maybe_unused]] auto waited = co_await zetta::runtime::timeout(wait_event->wait(), wait_for);
+                            co_await impl.bridge.run_on_owner([&] {
+                                response_body = impl.dispatch(request, identity.acting_key, identity.is_user, traceparent);
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -3745,6 +3809,12 @@ bool ApiServer::start() {
                        -> http::route_task {
                        return impl.serve_rest_capability(route, capability);
                    });
+        if (capability->post_alias && method == http::method::get) {
+            router.add(http::method::post, rest_path(*capability),
+                [&impl, capability](http::route_params& route) -> http::route_task {
+                    return impl.serve_rest_capability(route, capability);
+                });
+        }
     }
 
     // The governed serving routes (#648, docs/api/serving.md): per-entity
@@ -3785,20 +3855,61 @@ bool ApiServer::start() {
         return false;
     }
     impl.bound_port = impl.server->local_endpoint().port();
+    // Keep run() alive while an offloaded request has no completion queued on
+    // this executor. Shutdown releases this only after those request
+    // coroutines have finished (#1077).
+    impl.io_context.get_executor().on_work_started();
+    impl.io_work_held.store(true);
     impl.server->start();
     impl.io_thread = std::thread([&impl] { impl.io_context.run(); });
     impl.is_running.store(true);
     return true;
 }
 
-void ApiServer::stop() {
+void ApiServer::stop_accepting() {
     Impl& impl = *impl_;
     if (!impl.is_running.exchange(false)) return;
     impl.server->stop();
-    impl.io_context.stop();
+}
+
+void ApiServer::stop() {
+    Impl& impl = *impl_;
+    stop_accepting();
+    if (!impl.io_thread.joinable()) return;
+
+    // tcp_server::stop requests cancellation but its connection coroutines
+    // still have to unwind on the live io_context. Keep both owner queues
+    // moving while they do: an offloaded request can return through the API
+    // bridge and its authorization can return through Node::run_on_owner.
+    // Destroying the io_context with either hop suspended can deadlock while
+    // its stop callback is being removed (#1077).
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        impl.bridge.drain();
+        impl.node.drain_owner_work();
+        impl.background.prune();
+        if (impl.requests_in_flight.load() == 0 &&
+            impl.bridge.pending() == 0) {
+            break;
+        }
+        impl.bridge.wait_for_work(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    const bool drained = impl.requests_in_flight.load() == 0 &&
+                         impl.bridge.pending() == 0;
+    if (impl.io_work_held.exchange(false)) {
+        impl.io_context.get_executor().on_work_finished();
+    }
+    if (!drained) {
+        std::fprintf(stderr,
+                     "zetta: API shutdown drain exceeded 5 seconds; "
+                     "stopping the io context\n");
+        impl.io_context.stop();
+    }
     if (impl.io_thread.joinable()) impl.io_thread.join();
-    // Unblock any coroutine still parked on the bridge.
     impl.bridge.drain();
+    impl.node.drain_owner_work();
+    if (drained) impl.server->join();
 }
 
 bool ApiServer::running() const { return impl_->is_running.load(); }
@@ -3816,6 +3927,8 @@ void ApiServer::wait_for_work(std::chrono::milliseconds max_idle) {
 void ApiServer::set_wakeup(std::function<void()> wakeup) {
     impl_->bridge.set_wakeup(std::move(wakeup));
 }
+
+void ApiServer::wake() { impl_->bridge.poke(); }
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
     return impl_->node.span_recorder();

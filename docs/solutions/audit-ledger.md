@@ -58,6 +58,11 @@ creates a second entry and never modifies its action. Reconciliation is
 idempotent by entry id, so repeated gossip cannot replace an already
 materialized record.
 
+Ledger additions also have their own incremental changed-key bucket (#1128),
+independent of the governance audit ID index. Full and incremental application
+both preserve immutable history; an omitted entry in another bucket is not a
+deletion. See [solution reconciliation](../cluster/solution-reconciliation.md).
+
 ## Querying and reconstruction
 
 `list_ledger` is the compact control-surface read. SQL provides filtering and

@@ -13,8 +13,10 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   tree are its projection. Local mutations are **captured** at the data-model
   layer (`Node`/`Database`/`Table`/stores hold a `ReplicationManager*`) so every
   write path replicates; `Node::tick()` **reconciles** the projection from the
-  document — **materialize-only, never re-capture** (no feedback loop) — then
-  persists.
+  document — **materialize-only, never re-capture** (no feedback loop). Changed
+  ticks use the changed-key journal; full reconcile is for startup, journal gaps,
+  and large batches. Persistence is debounced to at most once per second and
+  forced by `stop()`.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
   peer's action arrives already-audited as its own replicated `audit:` key.
 - **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`

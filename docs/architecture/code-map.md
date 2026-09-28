@@ -1,5 +1,12 @@
 # Code map
 
+Issue #1136 adds local navigation READMEs in `include/zetta/{api,governance,pubsub}`,
+`src/core/` and `src/core/{api,governance,observability,pubsub}`,
+`tests/{api,governance,pubsub}`, and `schemas/`. They link the implemented
+contracts to [pub/sub CRUD](../pubsub/crud.md), the new API/example page.
+The existing pub/sub stores own sparse payload mutation; the topic layer owns
+revisions/redelivery; registry declarations generate both transports and schemas.
+
 The annotated, file-by-file map of the zetta codebase — what every header and
 translation unit is for, which issue introduced it, and which library it builds
 into. This is the highest-fidelity map of the repo that exists: **keep it in
@@ -172,6 +179,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
+    entity_resolution.hpp  zetta::ml M-2 records, owned candidate pairs, scoring, conflict-safe entities, metrics, and resolved-table runner (#1041/#1072)
+    entity_resolution_job.hpp  zetta::ml::run_entity_resolution_job — distributed candidate ownership, iterative statistics allreduce, component merge, bounded pair streaming, and coordinated-launch contract (#1072)
     segmentation.hpp        zetta::ml — segmentation parameters, trainer, metrics and resolved-dataset runner (#1042; docs/ml/segmentation.md)
     segmentation_methodology.hpp M-3 graph/launch contracts, peer runner installation and typed report reader (#1042)
     methodology.hpp         zetta::ml::Methodology and its shape/ownership/run callback contract; ordered registry lookup and graph resolution (#1061)
@@ -478,8 +487,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     featurize_job.cpp       run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
-    entity_resolution.cpp   M-2 normalized blocking, deterministic pair ownership, Fellegi-Sunter EM or labelled-pair GBDT scoring, conflict-safe clustering, metrics, and table outputs (#1041)
-    entity_resolution_methodology.cpp  M-2 registry shape, graph ownership, resolved-dataset run adapter, Run/Model/output-table lineage (#1041)
+    entity_resolution.cpp   M-2 owner-filtered blocking, distributed Fellegi-Sunter EM or labelled-pair GBDT scoring, per-member conflict-safe components, deterministic component merge, metrics, and table outputs (#1041/#1072)
+    entity_resolution_job.cpp  M-2 JobRound adapter, collective pair-page transport, output-member streaming, and recorded distributed train job (#1072)
+    entity_resolution_methodology.cpp  M-2 registry shape, graph ownership, coordinated peer launch, resolved-dataset run adapter, Run/Model/output-table lineage (#1041/#1072)
     segmentation.cpp        native k-means training, global transforms, deterministic sampling, collective Lloyd rounds, selection and profiles (#1042)
     segmentation_job.cpp    owned-partition loader, JobRound adapter, Model and assignment/profile output tables with Run lineage (#1042)
     segmentation_graph.cpp  M-3 config schema and correctness gate: excluded roles, global transforms, K criterion and connected outputs (#1042)
@@ -725,20 +735,24 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app_test_suite.cpp        the in-app Test-suite panel (draw_test_suite + start_test; #462) — a thin renderer over the headless zetta::testkit catalog
   repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
-schemas/                    generated, drift-checked JSON schemas (the C++ embedded schema is the source of truth), including roi_readout_definition.schema.json and roi_readout.schema.json (#1108)
+schemas/                    generated, drift-checked JSON schemas (the C++ embedded schema is the source of truth), including the M-2 coordinated `entity_resolution_launch` boundary (#1072), roi_readout_definition.schema.json and roi_readout.schema.json (#1108)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
 docs/                       domain-organized system docs (see docs/README.md)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   solutions/                runtime solution foundations and complete S-1, S-2, S-3, S-4, S-12 module contracts; policy, holdouts, actions, monitoring, and ROI readouts
+    integration.md          module merge order, shared-code resolutions, scope, and native proof (#1122, #1128)
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   CMakeLists.txt            the test target — every test TU is listed here, grouped by domain
+  ml/test_entity_resolution.cpp  M-2 blocking, scoring, conflict-safe clustering, metric, and threshold tests (#1041/#1072)
+  ml/test_entity_resolution_partitions.cpp  three-member owned-pair, EM allreduce, bounded-stream, component-merge oracle equivalence, and malformed-launch refusal (#1072)
   ml/test_segmentation.cpp  segmentation recovery, preprocessing, selection, cluster equivalence and persisted output acceptance (#1042)
   ml/test_segmentation_methodology.cpp M-3/S-9/intent shape and graph-gate refusal tests (#1042)
   ml/test_segmentation_launch.cpp off-root registry submission over three owned partitions and single-node metric equivalence (#1042)
   solutions/test_experiment.cpp deterministic balance and restart stability, protected actions, attributed exemptions, malformed boundaries, and concurrent peer convergence (#1105)
   temp_dir.hpp              per-test isolated data_dir helper
+  cluster/test_refused_start_exit.cpp  process test: an occupied --listen port exits 1 without an abort (#1078)
   api/journey.hpp           the shared MCP-journey driver (#619): Journey/JourneyStep{tool, input, expect} DATA tables + saved-value flow + patient Poll, run by one transport-agnostic driver (layer 1 in-process / layer 2 JSON-RPC); failures name the offending step + assertion
   api/journeys_canonical.hpp  the three canonical journey tables (#619): UC-1 happy path (+ near-data trace read-back), gate-blocked deploy, dataset ingest + placement inspection — shared verbatim by test_action_journeys.cpp (layer 1) and test_mcp_server.cpp (layer 2)
   api/test_web_ui_studio.cpp  the imported Studio design contract over the pure web renderers (#874, docs/product/experience/design-sync.md): tokens (IBM Plex / Blue 60 / paired dark), the five-group shell, the vocabulary contract, icon semantics
@@ -751,6 +765,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime interface)
+  cluster/test_solution_replication.cpp  one-tick incremental solution projections, scoped removals, late parents, direct CRDT reads, and table-backed state (#1128)
   api/ util/ cluster/ data/ ddf/ ml/ solutions/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   solutions/test_audit_ledger.cpp  action/outcome chain reconstruction, append-only behavior, persistence, CRDT replication, SQL queryability, and schema rejection (#1107)

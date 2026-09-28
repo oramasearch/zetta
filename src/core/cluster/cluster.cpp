@@ -163,6 +163,13 @@ struct Cluster::State {
     // The application's handler for incoming signals. Set on any thread, read on
     // the network thread, so it's atomic.
     std::atomic<SignalHandler*> signal_handler{nullptr};
+    // Signal dispatches in flight on the network thread (#1131). A dispatch
+    // counts itself BEFORE it loads the handler, so after set_signal_handler
+    // swaps the pointer and waits for this to drain, no call can still be
+    // running in the previous handler: a component may restore its predecessor
+    // and then be destroyed safely.
+    std::atomic<int> dispatching{0};
+    std::atomic<std::thread::id> network_thread_id{};
 
     // Per-peer outbound queue of wire lines waiting to be sent. Producers run on
     // the caller's thread (request/send_event/broadcast_event) AND the network
@@ -708,7 +715,12 @@ void handle_signal(Cluster::State* self, const std::string& envelope,
         return;
     }
     signal->from = peer_node_id;
-    SignalHandler* handler = self->signal_handler.load(std::memory_order_acquire);
+    struct Dispatching {
+        std::atomic<int>& count;
+        explicit Dispatching(std::atomic<int>& c) : count(c) { count.fetch_add(1, std::memory_order_seq_cst); }
+        ~Dispatching() { count.fetch_sub(1, std::memory_order_seq_cst); }
+    } dispatching{self->dispatching};
+    SignalHandler* handler = self->signal_handler.load(std::memory_order_seq_cst);
     switch (signal->kind) {
         case SignalKind::Request: {
             const SignalResponse result =
@@ -1329,7 +1341,10 @@ void Cluster::start() {
     capy::run_async(state_->io_context.get_executor())(
         membership_loop(state_.get()));
 
-    state_->network_thread = std::thread([this] { state_->io_context.run(); });
+    state_->network_thread = std::thread([this] {
+        state_->network_thread_id.store(std::this_thread::get_id());
+        state_->io_context.run();
+    });
 }
 
 void Cluster::stop() {
@@ -1573,7 +1588,15 @@ bool is_connected(const Cluster::State& state, const std::string& node_id) {
 }  // namespace
 
 void Cluster::set_signal_handler(SignalHandler* handler) {
-    state_->signal_handler.store(handler, std::memory_order_release);
+    state_->signal_handler.store(handler, std::memory_order_seq_cst);
+    // Wait out any dispatch that may have loaded the previous handler (#1131),
+    // so the caller may destroy it once this returns. On the network thread
+    // itself (a handler swapping handlers inside a dispatch) the wait would
+    // count its own dispatch, so it is skipped there.
+    if (std::this_thread::get_id() == state_->network_thread_id.load()) return;
+    while (state_->dispatching.load(std::memory_order_seq_cst) != 0) {
+        std::this_thread::yield();
+    }
 }
 
 SignalHandler* Cluster::signal_handler() const {

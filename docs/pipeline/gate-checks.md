@@ -35,9 +35,8 @@ The reusable annotation and methodology-specific checks are:
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 | `S1*Check` family | `s1_point_in_time`, `s1_label_window`, `s1_temporal_validation`, `s1_group_split`, `s1_censoring`, `s1_calibration`, `s1_entity_resolution`, `s1_leakage_review`, `s1_level_composition` | an S-1 graph with future/live features, overlapping windows or groups, random validation, incomplete/censored labels, uncalibrated sampling, duplicate entities, leaky features, suspicious AUC, or a missing level stage |
 | `S2*Check` family | `s2_point_in_time_conversion`, `s2_post_qualification_leakage`, `s2_capacity_routing` | an S-2 graph with live/future CRM features, incomplete or overlapping conversion labels, post-qualification predictors, or routing without current owner, territory, and capacity evidence |
-
 | `S3*Check` family | `s3_short_tenure_censoring`, `s3_value_horizon`, `s3_entity_accounting` | an S-3 graph that treats immature value as complete, omits or mismatches its prediction horizon, or can count one customer more than once |
-
+| `S4*Check` family | `s4_regulatory_contact`, `s4_vulnerable_customer`, `s4_promise_to_pay_point_in_time` | an S-4 graph missing regulatory contact limits, vulnerable-customer exclusion, or point-in-time promise labels |
 | `S12*Check` family | `s12_no_automated_denial`, `s12_fairness_review`, `s12_document_confidence`, `s12_level_composition` | an S-12 graph that permits an automated denial, omits owned fairness review, routes low-confidence document fields without review, or does not match its registered level composition |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
@@ -113,6 +112,13 @@ label, then verifies that M-1 is a squared-error regression over that exact
 target and horizon. `s3_entity_accounting` requires the M-2 stage, a stable
 entity key, one-value-per-entity aggregation, and duplicate refusal. See
 [S-3](../solutions/S-3.md) for its data and operating contract.
+
+### S-4 composed solution checks
+
+S-4's three checks precede S-12 in registration order. They require explicit
+regulatory eligibility and contact limits, exclusion of vulnerable customers,
+and frozen promise-to-pay labels that exclude future updates. See
+[S-4](../solutions/S-4.md) for the policy and data contract.
 
 ### S-12 composed solution checks
 

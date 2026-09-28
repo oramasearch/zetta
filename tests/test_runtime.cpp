@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -17,7 +18,7 @@ namespace {
 
 zetta::runtime::task<int> inner() { co_return 20; }
 
-// co_await composes through the seam; result flows back out of block_on.
+// co_await composes through the runtime interface; result flows back out of block_on.
 zetta::runtime::task<int> outer() {
     const int partial = co_await inner();
     co_return partial + 22;
@@ -35,6 +36,31 @@ zetta::runtime::task<> set_flag(std::shared_ptr<bool> flag) {
 zetta::runtime::task<> record(std::shared_ptr<std::atomic<int>> sink, int value) {
     sink->store(value, std::memory_order_relaxed);
     co_return;
+}
+
+struct EventWaitCounts {
+    std::atomic<int> entered{0};
+    std::atomic<int> finished{0};
+    std::atomic<int> signaled{0};
+};
+
+zetta::runtime::task<> wait_for_event(
+    std::shared_ptr<zetta::runtime::async_event> event,
+    std::shared_ptr<EventWaitCounts> counts,
+    std::chrono::milliseconds timeout) {
+    ++counts->entered;
+    auto [error] = co_await zetta::runtime::timeout(event->wait(), timeout);
+    if (!error) ++counts->signaled;
+    ++counts->finished;
+}
+
+bool reaches_count(const std::atomic<int>& count, int expected) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (count.load() < expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return count.load() == expected;
 }
 
 }  // namespace
@@ -64,6 +90,52 @@ TEST(Runtime, SpawnRunsOffThreadAndSignalsCompletion) {
     }
     ASSERT_TRUE(done->load(std::memory_order_acquire));
     EXPECT_EQ(sink->load(std::memory_order_relaxed), 7);
+}
+
+TEST(Runtime, AsyncEventRetainsSignalBeforeWaitAndClears) {
+    auto event = std::make_shared<zetta::runtime::async_event>();
+    auto counts = std::make_shared<EventWaitCounts>();
+    event->set();
+    EXPECT_TRUE(event->is_set());
+    zetta::runtime::block_on(wait_for_event(event, counts, std::chrono::seconds(1)));
+    EXPECT_EQ(counts->signaled.load(), 1);
+
+    event->clear();
+    EXPECT_FALSE(event->is_set());
+    zetta::runtime::block_on(wait_for_event(event, counts, std::chrono::milliseconds(1)));
+    EXPECT_EQ(counts->finished.load(), 2);
+    EXPECT_EQ(counts->signaled.load(), 1);
+    event->set();
+}
+
+TEST(Runtime, AsyncEventBroadcastsAcrossThreadsWithoutLosingRegistration) {
+    auto event = std::make_shared<zetta::runtime::async_event>();
+    auto counts = std::make_shared<EventWaitCounts>();
+    constexpr int kWaiters = 500;
+    for (int index = 0; index < kWaiters; ++index) {
+        zetta::runtime::spawn(
+            wait_for_event(event, counts, std::chrono::seconds(5)), {});
+    }
+    EXPECT_TRUE(reaches_count(counts->entered, kWaiters));
+    event->set();
+    EXPECT_TRUE(reaches_count(counts->finished, kWaiters));
+    EXPECT_EQ(counts->signaled.load(), kWaiters);
+}
+
+TEST(Runtime, AsyncEventPublicationRacesTimeoutWithoutLeavingWaiters) {
+    auto counts = std::make_shared<EventWaitCounts>();
+    constexpr int kWaiters = 500;
+    std::vector<std::shared_ptr<zetta::runtime::async_event>> events;
+    for (int index = 0; index < kWaiters; ++index) {
+        auto event = std::make_shared<zetta::runtime::async_event>();
+        events.push_back(event);
+        zetta::runtime::spawn(
+            wait_for_event(event, counts, std::chrono::milliseconds(1)), {});
+    }
+    EXPECT_TRUE(reaches_count(counts->entered, kWaiters));
+    for (const auto& event : events) event->set();
+    EXPECT_TRUE(reaches_count(counts->finished, kWaiters));
+    for (const auto& event : events) event->set();
 }
 
 // --- parallel_for ------------------------------------------------------------
@@ -172,7 +244,7 @@ TEST(Runtime, OffloadReturnsResultFromAPoolWorker) {
 
 TEST(RuntimeParallelForDeathTest, ThrowingBodyAborts) {
     // parallel_for bodies must not throw — zetta-core never unwinds across a
-    // seam. A throwing body is a contract violation and aborts the process.
+    // public boundary. A throwing body is a contract violation and aborts the process.
     EXPECT_DEATH(
         zetta::runtime::parallel_for(
             500'000,

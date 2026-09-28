@@ -1,5 +1,12 @@
 # Audit trail
 
+Pub/sub CRUD (#1136) adds `pubsub_topic_updated`, `pubsub_event_updated`, and
+`pubsub_event_deleted`. The node adapter appends these on the owner thread.
+Event detail contains sequence, revision and before/after payload SHA-256
+hashes (null after deletion); actor, target and time use the standard envelope.
+No payload is copied into the audit. The activity feed names the corresponding
+topic/event change. See [pub/sub CRUD](../pubsub/crud.md#audit-and-durability).
+
 An **audit trail** records an immutable, append-only `AuditEvent` for every
 governed action — a **graph change**, a **deploy**, a **data-access** decision,
 a **compute-job lifecycle** event, or an **access-key issue/revoke** (e.g. a
@@ -36,7 +43,10 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | `time` | `std::string` | ISO-8601 UTC stamp of when the action was recorded. |
 
 Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
-chronologically as plain text); the trail is kept sorted by `(time, id)`.
+chronologically as plain text); the trail is kept sorted by `time`. A new
+event is inserted at its place (a local one lands at the end; a peer's older
+one is placed by binary search), and events sharing a stamp keep the order they
+arrived in. Loading the trail from disk sorts it by `(time, id)`.
 
 ## What emits an event
 
@@ -99,9 +109,41 @@ so the CRDT converges trivially and reconciliation only *adds* peer events (it
 never removes or updates one). `record_audit_event` captures `audit:<uuid>` into
 the document (when replicated) then materializes the on-disk file;
 `migrate_to_replication` captures any local-only events on start, and
-`reconcile_from_replication` materializes peer events merged in by gossip. The
+`reconcile_from_replication` materializes the full startup state, while changed
+ticks route only new `audit:` keys to the audit reconciler. The
 distributed, convergent, tamper-evident trail every node agrees on is a natural
 fit for the CRDT model.
+
+**Reconciliation cost (#1070).** Every tick whose document changed walks every
+`audit:` key, and every audited call changes the document, so on a busy node this
+runs about ten times a second over the whole trail. The node keeps an id index
+beside the trail: a known event is skipped before its value is parsed, and
+nothing is re-sorted, so the walk is linear. Before, each key was parsed and
+searched for linearly, which is O(n²) per tick. At 25k events, lake's bus Zetta
+fell to three ticks a second and every request waited over a second behind them.
+The whole-document snapshot and persist that remained are made incremental by #1079 (below).
+
+### Reconciliation cost (#1079)
+
+The append-only trail can dominate the replicated document, so a tick must not
+scan every historical event when one new event arrives. `ReplicationManager`
+keeps a parsed cache and changed-key journal; `Node::tick()` routes changed
+`audit:` keys directly to `reconcile_audit_events`. The node's audit ID index
+rejects known IDs before parsing and inserts a new event in chronological order.
+The full pass remains for startup, a journal gap, or a batch larger than one
+quarter of the live document.
+
+Persistence uses a one-second debounce rather than modifying the vendored
+Automerge implementation. A dirty document is fully saved at most once per
+second and is always saved by `stop()`. This keeps clean restarts durable while
+removing a full-document rewrite from each changed tick.
+
+On the 100,000-event regression fixture, 40 ticks with one new local event each
+took 15,639 ms before the incremental path and 4 ms after it. The timed region
+excludes fixture creation, startup reconciliation, shutdown persistence, and
+temporary-directory cleanup. Both measurements include the audit ID index
+prerequisite from #1073; the baseline retains the old snapshot, full reconcile,
+and per-tick persistence paths, isolating the changes in #1079.
 
 On disk, audit events project to a **single shared `audit/` folder** — one file
 per event — rather than a folder per event, the natural shape for a high-volume

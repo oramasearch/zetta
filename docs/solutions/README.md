@@ -4,6 +4,15 @@ Runtime foundations shared by deployed solutions: experimental measurement,
 action policy, monitoring, audit, and durable evidence that connects model scores
 and policy decisions to actions and measured outcomes.
 
+The integrated module implementations are complete for S-1, S-2, S-3, S-4,
+and S-12. S-5 through S-11 retain minimal defaults. This is the scope of
+the current landing PR, not completion of the full #1122 catalogue epic.
+See [integration.md](integration.md) for merge resolutions and proof.
+
+The workspace integration routes projected solution records through the engine's
+[incremental reconciliation](../cluster/solution-reconciliation.md), with
+one-tick checks for all added catalog families and existing table-backed state.
+
 - [S-1.md](S-1.md) — runnable churn and retention module: data roles,
   levels, policy and holdout defaults, action payloads, run sequence, and every
   domain refusal (#1110).
@@ -219,7 +228,8 @@ module-specific estimators exist.
 ## Composition and execution
 
 See [executable solution pipelines](executable-pipelines.md) for the input
-contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, and S-4 journeys.
+contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
+and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages

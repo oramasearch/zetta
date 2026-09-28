@@ -4,7 +4,7 @@
 D1, D2, D5, D21, D23 · **Code:** `include/zetta/pubsub/store.hpp`,
 `src/core/pubsub/store.cpp` · **Tests:** `tests/pubsub/test_stores.cpp`
 
-Every store implements the `EventStore` interface: an append-only sequence that
+Every store implements the `EventStore` interface: a monotonic sequence that
 readers address by **position** (1-based, monotonic). A position never depends on
 where the event lives (which ring, memory or disk), which is what lets readers
 cross rings and tiers without caring.
@@ -18,8 +18,8 @@ number of slots and its own mutex; it fills once, in order, and never wraps.
   is full, push a new ring (from the free list when one is spare), then append into
   it under the ring's mutex. **Lock order: stack, then ring.** Waiting readers are
   woken through the stack's condition variable.
-- **Read:** find the ring under the stack's mutex, then read under the ring's mutex
-  only, so readers of old rings do not hold up publishers.
+- **Read:** hold the stack mutex while reading under the ring mutex, preventing
+  a concurrent release from recycling the ring during the read.
 - **Release:** `release_before(position)` removes whole rings every reader has
   passed (the newest ring always stays) and keeps up to `free_list_limit` of them
   for reuse.
@@ -34,9 +34,29 @@ number of slots and its own mutex; it fills once, in order, and never wraps.
 
 ## QueueStore (the alternative)
 
-A `std::queue` with its own mutex and condition variable. It only has a front, so
+A deque of optional slots with its own mutex and condition variable. Delivery has a front, so
 `read` answers for `first_position()` alone and `release_before` pops: it feeds one
 reader and suits work-queue topics, not broadcast.
+
+## In-place mutation (#1136)
+
+`entries(from, limit, backward)` inspects held positions without consuming,
+including queued events beyond the front. Ring sequence metadata lets bounded
+pages skip unrelated spilled payloads; settings/subscriber inspection uses that
+metadata without loading event bodies. `replace(position, event)` edits a held slot;
+`replace(position, nullopt)` deletes it. Neither reindexes remaining positions
+nor changes the allocator. Counts exclude deleted slots. The queue advances its
+front over deleted entries; ring readers skip holes.
+
+An already-persisted ring is rewritten to a temporary file and atomically
+renamed before applying the in-memory change. Frames carry an optional `slot`
+index so sparse positions survive read-back and re-spill. Older contiguous
+frames remain readable. Frame headers also persist revision and edit metadata.
+Shutdown snapshots exclude holes and released entries. Startup can compact
+internal store positions because subscriptions are not persisted, but retains
+event sequences and the topic allocator high-water mark. In-memory edits use
+the same best-effort shutdown persistence as publishes; ephemeral topics never
+write event frames. See [crud.md](crud.md) for the node-local contract and D39.
 
 ## Waiting
 

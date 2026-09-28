@@ -71,7 +71,7 @@ std::uint64_t Topic::disk_bytes() const {
 
 std::uint64_t Topic::held_events() const {
     std::uint64_t total = 0;
-    for (const auto& level : levels_) total += level->next_position() - level->first_position();
+    for (const auto& level : levels_) total += level->held_events();
     return total;
 }
 
@@ -105,6 +105,9 @@ std::uint64_t Topic::min_position(std::size_t level) const {
 }
 
 void Topic::release_consumed() {
+    // An explicit retention policy keeps history independently of consumption.
+    const auto configured = settings();
+    if (configured.retention || configured.max_events) return;
     // With no subscribers, events are held (a later subscriber may start at the
     // oldest) until the limits say otherwise.
     for (std::size_t level = 0; level < levels_.size(); ++level) {
@@ -115,13 +118,15 @@ void Topic::release_consumed() {
     // Claims and TTL bookkeeping below every level's first position can go.
     std::uint64_t oldest_sequence = std::numeric_limits<std::uint64_t>::max();
     for (const auto& level : levels_) {
-        if (auto first = level->read(level->first_position()); first) {
-            oldest_sequence = std::min(oldest_sequence, first->sequence);
-        }
+        const auto positions = level->sequence_positions();
+        if (!positions.empty()) oldest_sequence = std::min(oldest_sequence, positions.front().second);
     }
     if (oldest_sequence == std::numeric_limits<std::uint64_t>::max()) oldest_sequence = next_sequence_.load();
     std::erase_if(claims_, [&](const auto& entry) { return entry.first < oldest_sequence; });
     std::erase_if(ttl_reported_, [&](std::uint64_t sequence) { return sequence < oldest_sequence; });
+    for (auto& [id, state] : subscriptions_) {
+        std::erase_if(state->delivered_sequences, [&](auto sequence) { return sequence < oldest_sequence; });
+    }
 }
 
 bool Topic::spill_one() {
@@ -225,6 +230,7 @@ bool Topic::disconnect_slowest() {
 
 Topic::AppendOutcome Topic::append(Event event) {
     AppendOutcome outcome;
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
     std::lock_guard append_lock(append_mutex_);
     {
         std::lock_guard lock(mutex_);
@@ -308,11 +314,14 @@ Topic::AppendOutcome Topic::append(Event event) {
     {
         std::lock_guard lock(mutex_);
         if (recipients && recipients->claims() != 0) claims_[sequence] = recipients->claims();
+        if (auto trimmed = trim_retention(); !trimmed.ok) log(LogLevel::Warn, trimmed.reason);
         ++publish_generation_;
         idle_since_.reset();
         if (subscriptions_.empty()) idle_since_ = SteadyClock::now();
+        waiters = take_waiters();
     }
     published_.notify_all();
+    for (const auto& waiter : waiters) waiter->set();
     outcome.sequence = sequence;
     return outcome;
 }
@@ -449,6 +458,7 @@ std::optional<Delivery> Topic::next_event(Subscription::State& state,
             state.in_flight[event->sequence] = {*event, SteadyClock::now() + effective.ack_deadline};
         }
         delivery.event = std::move(*event);
+        state.delivered_sequences.insert(delivery.sequence);
         return delivery;
     }
 }
@@ -459,6 +469,19 @@ std::optional<Delivery> Topic::receive(Subscription::State& state, std::chrono::
     std::unique_lock lock(mutex_);
     while (true) {
         if (state.closed || closing_) return std::nullopt;
+        if (!state.requested_redeliveries.empty()) {
+            auto entry = state.requested_redeliveries.begin();
+            Delivery delivery;
+            delivery.event = std::move(entry->second);
+            delivery.sequence = entry->first;
+            delivery.redelivery = true;
+            state.requested_redeliveries.erase(entry);
+            const auto effective = effective_for(delivery.event, state);
+            if (effective.guarantee != Guarantee::AtMostOnce) {
+                state.in_flight[delivery.sequence] = {delivery.event, SteadyClock::now() + effective.ack_deadline};
+            }
+            return delivery;
+        }
         // Redeliver an unacknowledged event whose deadline passed (at-least-once).
         const auto now = SteadyClock::now();
         for (auto& [sequence, flight] : state.in_flight) {
@@ -545,6 +568,7 @@ std::uint64_t Topic::missed(const Subscription::State& state) const {
 }
 
 void Topic::close_all(const std::string& reason) {
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
     {
         std::lock_guard lock(mutex_);
         closing_ = true;
@@ -552,15 +576,28 @@ void Topic::close_all(const std::string& reason) {
             state->closed = true;
             state->close_reason = reason;
         }
+        waiters = take_waiters();
     }
     published_.notify_all();
     released_.notify_all();
     for (auto& level : levels_) level->wake_all();
+    for (const auto& waiter : waiters) waiter->set();
 }
 
 void Topic::detach() {
     std::lock_guard lock(mutex_);
     owner_ = nullptr;
+}
+
+TopicMutation Topic::retire() {
+    std::lock_guard append_lock(append_mutex_);
+    close_all("topic dropped");
+    std::lock_guard lock(mutex_);
+    TopicMutation result{true, {}, {}};
+    for (auto& level : snapshot()) {
+        for (auto& event : level) result.changes.push_back({std::move(event), std::nullopt});
+    }
+    return result;
 }
 
 std::size_t Topic::subscription_count() const {
@@ -576,7 +613,9 @@ std::optional<SteadyTime> Topic::idle_since() const {
 // --- Maintenance -------------------------------------------------------------
 
 void Topic::maintain(SteadyTime now, std::chrono::milliseconds spill_log_interval) {
+    std::lock_guard append_lock(append_mutex_);
     std::lock_guard lock(mutex_);
+    if (auto trimmed = trim_retention(); !trimmed.ok) log(LogLevel::Warn, trimmed.reason);
     // Retention (D31): drop disconnected subscriptions whose retention ran out.
     for (auto entry = subscriptions_.begin(); entry != subscriptions_.end();) {
         auto& state = *entry->second;
@@ -684,21 +723,11 @@ std::vector<Event> Topic::read_from(std::uint64_t from_sequence, std::size_t max
     auto collect = [&] {
         std::vector<Event> events;
         for (auto& level : levels_) {
-            // Sequences only grow along a level's positions: binary-search the first.
-            std::uint64_t low = level->first_position();
-            std::uint64_t high = level->next_position();
-            while (low < high) {
-                const auto middle = low + (high - low) / 2;
-                auto event = level->read(middle);
-                if (event && event->sequence >= from_sequence) {
-                    high = middle;
-                } else {
-                    low = middle + 1;
-                }
-            }
-            for (auto position = low; position < level->next_position() && events.size() < max * levels_.size();
-                 ++position) {
-                if (auto event = level->read(position); event) events.push_back(std::move(*event));
+            std::size_t count = 0;
+            for (auto& [position, event] : level->entries(from_sequence, max)) {
+                if (event.sequence < from_sequence) continue;
+                events.push_back(std::move(event));
+                if (++count >= max) break;
             }
         }
         std::ranges::sort(events, {}, &Event::sequence);
@@ -715,6 +744,30 @@ std::vector<Event> Topic::read_from(std::uint64_t from_sequence, std::size_t max
     return collect();
 }
 
+void Topic::register_waiter(
+    const std::shared_ptr<runtime::async_event>& waiter) {
+    bool closed = false;
+    {
+        std::lock_guard lock(mutex_);
+        std::erase_if(waiters_, [](const auto& registered) {
+            return registered.expired();
+        });
+        closed = closing_;
+        if (!closed) waiters_.push_back(waiter);
+    }
+    if (closed) waiter->set();
+}
+
+std::vector<std::shared_ptr<runtime::async_event>> Topic::take_waiters() {
+    std::vector<std::shared_ptr<runtime::async_event>> waiters;
+    waiters.reserve(waiters_.size());
+    for (const auto& registered : waiters_) {
+        if (auto waiter = registered.lock()) waiters.push_back(std::move(waiter));
+    }
+    waiters_.clear();
+    return waiters;
+}
+
 std::vector<std::vector<Event>> Topic::snapshot() {
     std::vector<std::vector<Event>> result;
     for (auto& level : levels_) {
@@ -722,9 +775,7 @@ std::vector<std::vector<Event>> Topic::snapshot() {
             result.push_back(stack->snapshot_all());
         } else {
             std::vector<Event> events;
-            for (auto position = level->first_position(); position < level->next_position(); ++position) {
-                if (auto event = level->read(position); event) events.push_back(std::move(*event));
-            }
+            for (auto& [position, event] : level->entries()) events.push_back(std::move(event));
             result.push_back(std::move(events));
         }
     }
@@ -744,6 +795,204 @@ void Topic::restore(std::vector<std::vector<Event>> restored, std::uint64_t next
         }
     }
     next_sequence_.store(std::max(highest, next_sequence_.load()));
+}
+
+nlohmann::json Topic::inspect() const {
+    std::lock_guard lock(mutex_);
+    nlohmann::json subscribers = nlohmann::json::array();
+    std::uint64_t earliest = next_sequence_.load();
+    std::uint64_t held = 0;
+    std::vector<std::vector<std::pair<std::uint64_t, std::uint64_t>>> entries;
+    for (const auto& level : levels_) {
+        entries.push_back(level->sequence_positions());
+        held += entries.back().size();
+        for (const auto& [position, sequence] : entries.back()) earliest = std::min(earliest, sequence);
+    }
+    for (const auto& [id, state] : subscriptions_) {
+        if (state->closed) continue;
+        std::uint64_t next = next_sequence_.load();
+        std::uint64_t lag = 0;
+        const auto& positions = state->group ? state->group->positions : state->positions;
+        for (std::size_t level = 0; level < entries.size(); ++level) {
+            for (const auto& [position, sequence] : entries[level]) {
+                if (position < positions[level]) continue;
+                ++lag;
+                next = std::min(next, sequence);
+            }
+        }
+        subscribers.push_back({{"id", id}, {"subscriber", state->subscriber.to_string()},
+            {"positions", positions}, {"next_sequence", next}, {"lag", lag},
+            {"in_flight", state->in_flight.size()}, {"redeliveries", state->requested_redeliveries.size()},
+            {"connected", state->connected}, {"group", state->options.group.value_or("")}});
+    }
+    return {{"topic", address_.to_string()}, {"settings", topic_settings_json(settings())},
+        {"subscriber_count", subscribers.size()}, {"subscriptions", subscribers},
+        {"held_events", held}, {"earliest_sequence", earliest}, {"next_sequence", next_sequence_.load()}};
+}
+
+nlohmann::json Topic::browse(std::optional<std::uint64_t> from, std::size_t limit, bool backward) {
+    std::lock_guard lock(mutex_);
+    std::vector<Event> events;
+    std::uint64_t earliest = next_sequence_.load();
+    for (const auto& level : levels_) {
+        const auto positions = level->sequence_positions();
+        if (!positions.empty()) earliest = std::min(earliest, positions.front().second);
+        for (auto& [position, event] : level->entries(from, limit, backward)) {
+            events.push_back(std::move(event));
+        }
+        std::ranges::sort(events, [backward](const Event& left, const Event& right) {
+            return backward ? left.sequence > right.sequence : left.sequence < right.sequence;
+        });
+        if (events.size() > limit) events.resize(limit);
+    }
+    nlohmann::json result = nlohmann::json::array();
+    for (const auto& event : events) {
+        nlohmann::json headers = nlohmann::json::array();
+        for (const auto& [name, value] : event.headers) headers.push_back({{"name", name}, {"value", value}});
+        result.push_back({{"sequence", event.sequence}, {"id", event.id}, {"revision", event.revision},
+            {"from", event.envelope.from ? event.envelope.from->to_string() : ""},
+            {"published_at", std::chrono::duration_cast<std::chrono::milliseconds>(event.published_at.time_since_epoch()).count()},
+            {"payload", event.payload.bytes()}, {"size", event.payload.size()},
+            {"encoding", to_string(event.encoding)}, {"headers", headers},
+            {"edited_at", event.edited_at ? nlohmann::json(std::chrono::duration_cast<std::chrono::milliseconds>(
+                event.edited_at->time_since_epoch()).count()) : nlohmann::json()}, {"edited_by", event.edited_by}});
+    }
+    return {{"topic", address_.to_string()}, {"events", result}, {"earliest_sequence", earliest},
+        {"next_sequence", next_sequence_.load()}};
+}
+
+void Topic::forget_event(std::uint64_t sequence) {
+    claims_.erase(sequence);
+    ttl_reported_.erase(sequence);
+    for (auto& [id, state] : subscriptions_) {
+        state->in_flight.erase(sequence);
+        state->requested_redeliveries.erase(sequence);
+        state->delivered_sequences.erase(sequence);
+    }
+}
+
+TopicMutation Topic::trim_retention() {
+    const auto configured = settings();
+    if (!configured.retention && !configured.max_events) return {true, {}, {}};
+    if (!configured.retention && configured.max_events && held_events() <= *configured.max_events) {
+        return {true, {}, {}};
+    }
+    struct Held {
+        EventStore* store;
+        std::uint64_t position;
+        Event event;
+    };
+    std::vector<Held> held;
+    for (const auto& level : levels_) {
+        for (auto& [position, event] : level->entries()) held.push_back({level.get(), position, std::move(event)});
+    }
+    std::ranges::sort(held, [](const Held& left, const Held& right) {
+        return left.event.sequence < right.event.sequence;
+    });
+    const auto excess = configured.max_events && held.size() > *configured.max_events ? held.size() - *configured.max_events : 0;
+    TopicMutation result{true, {}, {}};
+    bool saved_sequence = false;
+    for (std::size_t index = 0; index < held.size(); ++index) {
+        auto& entry = held[index];
+        const bool expired = configured.retention && SystemClock::now() - entry.event.published_at >= *configured.retention;
+        if (index >= excess && !expired) continue;
+        if (!saved_sequence && owner() && !owner()->persist_sequence(*this)) {
+            return {false, "cannot persist topic sequence before retention trim", {}};
+        }
+        saved_sequence = true;
+        if (!entry.store->replace(entry.position, std::nullopt)) {
+            result.ok = false;
+            result.reason = "cannot persist retention removal; earlier removals are reported and audited";
+            return result;
+        }
+        forget_event(entry.event.sequence);
+        result.changes.push_back({std::move(entry.event), std::nullopt});
+    }
+    return result;
+}
+
+TopicMutation Topic::update_settings(const nlohmann::json& patch) {
+    for (const auto* field : {"lifecycle", "store", "ring_capacity", "inline_threshold", "priority_levels",
+                              "producer_queue", "dispatch", "exposed"}) {
+        if (patch.contains(field)) return {false, std::string(field) + " is immutable; recreate the topic", {}};
+    }
+    std::lock_guard append_lock(append_mutex_);
+    std::lock_guard lock(mutex_);
+    if (closing_) return {false, "topic is closed", {}};
+    auto value = topic_settings_json(settings());
+    value.merge_patch(patch);
+    const auto updated = parse_topic_settings(value);
+    if (owner() && !owner()->persist_definition(*this, &updated)) {
+        return {false, "cannot persist topic settings", {}};
+    }
+    {
+        std::lock_guard settings_lock(settings_mutex_);
+        settings_ = updated;
+    }
+    auto result = trim_retention();
+    released_.notify_all();
+    return result;
+}
+
+TopicMutation Topic::update_event(std::uint64_t sequence, std::string payload,
+                                  std::uint64_t expected_revision, const Address& actor, bool redeliver) {
+    std::lock_guard append_lock(append_mutex_);
+    std::unique_lock lock(mutex_);
+    if (closing_) return {false, "topic is closed", {}};
+    for (const auto& level : levels_) {
+        for (auto& [position, event] : level->entries(sequence, 1)) {
+            if (event.sequence != sequence) continue;
+            if (event.revision != expected_revision) return {false, "stale expected_revision", {}};
+            if (event.revision == std::numeric_limits<std::uint64_t>::max()) return {false, "revision exhausted", {}};
+            Event updated = event;
+            updated.payload = Payload::make(std::move(payload), settings().inline_threshold);
+            ++updated.revision;
+            updated.edited_at = SystemClock::now();
+            updated.edited_by = actor.to_string();
+            if (updated.memory_bytes() > event.memory_bytes() && over_limit(updated.memory_bytes() - event.memory_bytes())) {
+                return {false, "updated payload exceeds memory limit", {}};
+            }
+            if (!level->replace(position, updated)) return {false, "cannot persist event update", {}};
+            for (auto& [id, state] : subscriptions_) {
+                if (auto flight = state->in_flight.find(sequence); flight != state->in_flight.end()) flight->second.event = updated;
+                if (auto pending = state->requested_redeliveries.find(sequence); pending != state->requested_redeliveries.end()) pending->second = updated;
+                if (!redeliver || state->closed || !state->delivered_sequences.contains(sequence)) continue;
+                state->in_flight.erase(sequence);
+                state->requested_redeliveries[sequence] = updated;
+            }
+            ++publish_generation_;
+            auto waiters = take_waiters();
+            lock.unlock();
+            published_.notify_all();
+            for (const auto& waiter : waiters) waiter->set();
+            return {true, {}, {{std::move(event), std::move(updated)}}};
+        }
+    }
+    return {false, "event is not held", {}};
+}
+
+TopicMutation Topic::delete_events(const std::vector<std::uint64_t>& sequences,
+                                   std::optional<std::uint64_t> before) {
+    std::lock_guard append_lock(append_mutex_);
+    std::lock_guard lock(mutex_);
+    if (closing_) return {false, "topic is closed", {}};
+    const std::unordered_set<std::uint64_t> selected(sequences.begin(), sequences.end());
+    if (owner() && !owner()->persist_sequence(*this)) return {false, "cannot persist topic sequence", {}};
+    TopicMutation result{true, {}, {}};
+    for (const auto& level : levels_) {
+        for (auto& [position, event] : level->entries()) {
+            if (!(before ? event.sequence < *before : selected.contains(event.sequence))) continue;
+            if (!level->replace(position, std::nullopt)) {
+                result.ok = false;
+                result.reason = "cannot persist event removal; earlier removals are reported and audited";
+                return result;
+            }
+            forget_event(event.sequence);
+            result.changes.push_back({std::move(event), std::nullopt});
+        }
+    }
+    released_.notify_all();
+    return result;
 }
 
 // --- Subscription handle ------------------------------------------------------

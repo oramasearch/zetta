@@ -24,6 +24,7 @@
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -46,6 +47,21 @@
 namespace {
 
 enum class Mode { Headed, Headless };
+
+class NativeHttpTransportLifetime {
+public:
+    NativeHttpTransportLifetime() {
+        zetta::api::install_native_http_transport();
+    }
+
+    ~NativeHttpTransportLifetime() {
+        zetta::api::shutdown_native_http_transport();
+    }
+
+    NativeHttpTransportLifetime(const NativeHttpTransportLifetime&) = delete;
+    NativeHttpTransportLifetime& operator=(const NativeHttpTransportLifetime&) =
+        delete;
+};
 
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
@@ -334,13 +350,6 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Install the native coroutine HTTPS client into the connector transport
-    // seam (#827). zetta-core declares the seam but links no HTTP library, so
-    // the real client is a zetta-api TU that registers itself here — before
-    // anything can serve a connector query. Without this a connector query
-    // fails with "no outbound HTTP transport is installed", which is exactly
-    // what a build that deliberately has no egress should do.
-    zetta::api::install_native_http_transport();
 #ifdef ZETTA_WITH_POSTGRES
     // The libpqxx Postgres connector (#892) — registers into the connector runner
     // seam so a "postgres" source connection can run its read-only query. Built
@@ -450,6 +459,11 @@ int main(int argc, char** argv) {
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Keep the native coroutine HTTPS client alive only while the Node is
+    // alive. This guard joins the worker before Node destruction on every
+    // return path, including refused startup.
+    NativeHttpTransportLifetime native_http_transport;
 
     // Crash reports (#640, docs/architecture/observability.md): from here on a
     // fatal signal writes <data_dir>/crashes/<uuid>.json — stacktrace, recent
@@ -704,9 +718,16 @@ int main(int argc, char** argv) {
         // provisioners the headed control does (#621). The fleet + local
         // provisioner outlive the server (declared above).
         api_server->set_provisioner_resolver(provisioner_for);
+        // Work a pool worker queues on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) wakes the idle loop instead of waiting a tick (#1063).
+        node.set_owner_wakeup([server = api_server.get()] { server->wake(); });
     }
-    const auto drain_api = [&api_server] {
+    const auto drain_api = [&api_server, &node] {
         if (api_server) api_server->drain();
+        // Work pool workers queued on the owner (an offloaded call's gate, the
+        // pub/sub authorizer) runs on this wake too, not only inside the 10 Hz
+        // tick: otherwise each such hop costs up to a full tick (#1063).
+        node.drain_owner_work();
     };
     // The owning loop's idle wait — wakes the instant a request is enqueued so
     // the drain above runs immediately instead of on the next 10 Hz tick (#731).
@@ -767,10 +788,18 @@ int main(int argc, char** argv) {
         if (api_server) api_server->set_activity_hook({});
     }
 
+    node.set_owner_wakeup({});  // before the API server can go away
+    if (api_server) api_server->stop_accepting();
+    // Wake receive_events long polls before waiting for their connection
+    // coroutines. ApiServer::stop keeps both owner queues draining until the
+    // I/O thread has unwound, then the io_context can be destroyed safely
+    // (#1077).
+    if (node.pubsub()) node.pubsub()->shutdown();
+    if (api_server) {
+        api_server->stop();
+        api_server.reset();
+    }
     cluster.stop();
     node.stop();
-    // Stop the outbound HTTP client's io_context + join its thread, after the
-    // last thing that could issue a connector query has gone.
-    zetta::api::shutdown_native_http_transport();
     return rc;
 }

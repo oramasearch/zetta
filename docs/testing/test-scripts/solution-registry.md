@@ -19,8 +19,8 @@ snapshot cutoff, and supplied ROI economics. The complete input contract is in
    → It shows twelve catalogue modules and eight entries marked as sketches.
 2. Open Churn & Retention.
    → It returns typed policy, experiment, measurement and guardrail defaults,
-   `runnable: true`, and an empty `missing_components` list. S-2 and S-3 also
-   return complete policies and holdout designs. S-4 through S-12 are marked
+   `runnable: true`, and an empty `missing_components` list. S-2, S-3, S-4, and
+   S-12 also return complete policies and holdout designs. S-5 through S-11 are marked
    as minimal defaults.
 3. Create a project and choose level 1 of Churn & Retention against the customer table, supplying the foundation inputs above.
    → A Pipeline is created with three selected methodologies and real policy, experiment, monitor, and readout IDs; `preview` is false.

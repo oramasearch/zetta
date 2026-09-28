@@ -49,6 +49,23 @@ SELECT sku, qty FROM shop.items WHERE qty >= 3;
 Values: single-quoted strings (`''` escapes a quote), integers, decimals,
 optional leading `-`, `true` / `false` / `null`.
 
+### Ordering and paging (ORDER BY, LIMIT, OFFSET)
+
+```sql
+SELECT account, risk FROM churn.accounts ORDER BY risk DESC, account LIMIT 10;
+SELECT * FROM shop.items ORDER BY sku OFFSET 20 LIMIT 10;   -- either order; LIMIT ALL = none
+SELECT segment, COUNT(*) AS n FROM churn.events GROUP BY segment ORDER BY n DESC LIMIT 1;
+```
+
+They apply to the finished result of every path (a plain scan, a `GROUP BY`, a `system`
+table, a partition-only table scattered to its owners), in that order: sort, skip `OFFSET`,
+keep `LIMIT`. An `ORDER BY` key names a column of the result — a selected column, a
+`GROUP BY` key or an aggregate's alias (any column with `SELECT *`); another name is an
+error that says so. Numbers sort numerically, then booleans, then strings; `NULL` sorts
+last ascending and first descending, as in Postgres; ties keep the next key's order, then
+scan order. The whole result is still read before it is cut: `LIMIT` bounds what is
+returned, not what is scanned.
+
 ### Aggregation (GROUP BY)
 
 A `SELECT … GROUP BY` runs through the **[DDF engine](../ddf/ddf.md)** (ARC-12 /
@@ -426,9 +443,9 @@ magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 
 `WHERE` is a single-column predicate (no `AND`/`OR`); `GROUP BY` takes exactly
 one numeric key (no multi-key grouping, `HAVING`, or aggregating over `system`
-tables); no joins, ordering (`ORDER BY`), `UPDATE`, `DELETE`, multi-table queries,
-or `CREATE TABLE AS`; column types are parsed but not stored or enforced. These
-land behind the same AST/executor seam.
+tables); `ORDER BY` takes result columns only (no expressions); no joins,
+`UPDATE`, `DELETE`, multi-table queries, or `CREATE TABLE AS`; column types are
+parsed but not stored or enforced. These land in the same AST and executor.
 
 ## Adding a dialect
 

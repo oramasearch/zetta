@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -1911,6 +1912,79 @@ std::vector<nlohmann::json> crash_rows(const Node& node) {
 
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
+// Postgres' order for one ORDER BY key: numbers numerically, then booleans,
+// then strings; NULL (or a missing field) greatest, so last ascending and first
+// descending. Values of different kinds order by kind.
+int order_rank(const nlohmann::json& value) {
+    if (value.is_null()) return 4;
+    if (value.is_number()) return 0;
+    if (value.is_boolean()) return 1;
+    if (value.is_string()) return 2;
+    return 3;
+}
+
+int compare_for_order(const nlohmann::json& a, const nlohmann::json& b) {
+    const int ra = order_rank(a), rb = order_rank(b);
+    if (ra != rb) return ra < rb ? -1 : 1;
+    if (a.is_number()) {
+        const double x = a.get<double>(), y = b.get<double>();
+        return x < y ? -1 : (x > y ? 1 : 0);
+    }
+    if (a.is_boolean()) return a.get<bool>() == b.get<bool>() ? 0 : (a.get<bool>() ? 1 : -1);
+    if (a.is_string()) {
+        const int c = a.get_ref<const std::string&>().compare(b.get_ref<const std::string&>());
+        return c < 0 ? -1 : (c > 0 ? 1 : 0);
+    }
+    const std::string x = a.dump(), y = b.dump();
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+// ORDER BY, OFFSET and LIMIT over a finished SELECT result. Returns an error
+// when a key names a column the result does not have.
+std::optional<std::string> apply_order_and_limit(const SelectStmt& statement,
+                                                 QueryResult& result) {
+    if (!statement.order_by.empty()) {
+        for (const OrderKey& key : statement.order_by) {
+            const bool known =
+                statement.all ||
+                std::find(result.columns.begin(), result.columns.end(), key.column) !=
+                    result.columns.end() ||
+                (!result.rows.empty() && result.rows.front().contains(key.column));
+            if (!known && !result.rows.empty()) {
+                return "ORDER BY \"" + key.column +
+                       "\": order by a column of the result (a selected column, a "
+                       "GROUP BY key or an aggregate's alias)";
+            }
+        }
+        static const nlohmann::json null_value;
+        std::stable_sort(result.rows.begin(), result.rows.end(),
+                         [&](const nlohmann::json& a, const nlohmann::json& b) {
+                             for (const OrderKey& key : statement.order_by) {
+                                 const auto fa = a.find(key.column);
+                                 const auto fb = b.find(key.column);
+                                 int c = compare_for_order(
+                                     fa == a.end() ? null_value : *fa,
+                                     fb == b.end() ? null_value : *fb);
+                                 if (key.descending) c = -c;
+                                 if (c != 0) return c < 0;
+                             }
+                             return false;
+                         });
+    }
+    if (statement.offset > 0) {
+        const std::size_t drop = std::min(statement.offset, result.rows.size());
+        result.rows.erase(result.rows.begin(),
+                          result.rows.begin() + static_cast<std::ptrdiff_t>(drop));
+    }
+    if (statement.limit && result.rows.size() > *statement.limit) {
+        result.rows.resize(*statement.limit);
+    }
+    if (!statement.order_by.empty() || statement.offset > 0 || statement.limit) {
+        result.message = "SELECT " + std::to_string(result.rows.size());
+    }
+    return std::nullopt;
+}
+
 QueryResult select_over_rows(const SelectStmt& statement,
                              const std::vector<nlohmann::json>& source) {
     QueryResult result;
@@ -2180,7 +2254,7 @@ QueryResult Executor::execute(const Statement& stmt,
         return node_.find_virtual_table(ref.table);
     };
 
-    return std::visit(
+    QueryResult result = std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
                 if (s.name == kSystemDatabase) {
@@ -2961,6 +3035,11 @@ QueryResult Executor::execute(const Statement& stmt,
             },
         },
         stmt);
+    // ORDER BY / LIMIT / OFFSET apply to whichever path answered the SELECT.
+    if (const auto* select = std::get_if<SelectStmt>(&stmt); select && result.ok()) {
+        if (auto problem = apply_order_and_limit(*select, result)) return error(*problem);
+    }
+    return result;
 }
 
 std::optional<std::string> Executor::require_permission(

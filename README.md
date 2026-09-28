@@ -24,6 +24,10 @@ and the per-audience [experience contracts](docs/product/experience/README.md)
 
 ## Under the hood
 
+Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
+REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
+retention updates and audited deletions. Clustered pub/sub remains deferred (D39).
+
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*
 is one running instance — **headed** (default: an SDL3 + Dear ImGui desktop UI
@@ -121,6 +125,9 @@ What's inside, by domain (each links to that domain's docs):
   tasks, holdout, and ROI readout. S-5 through S-11 have explicitly minimal
   editable defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
+  Their projected records participate in the workspace engine's
+  [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
+  policy/decision and ROI stores read directly from replicated state.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

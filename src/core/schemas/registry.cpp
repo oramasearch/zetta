@@ -56,6 +56,7 @@
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
+#include "zetta/ml/entity_resolution_job.hpp"
 #include "zetta/ml/forecast_methodology.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
@@ -107,6 +108,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::solutions::as_of_join_spec_schema},
         // ml
         {"model", "model.schema.json", &zetta::ml::model_value_schema},
+        {"entity_resolution_launch", "entity_resolution_launch.schema.json",
+         &zetta::ml::entity_resolution_launch_schema},
         {"segmentation_config", "segmentation_config.schema.json",
          &zetta::ml::segmentation_config_schema},
         {"segmentation_launch", "segmentation_launch.schema.json",

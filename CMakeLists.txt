@@ -243,6 +243,9 @@ add_subdirectory(modules/http EXCLUDE_FROM_ALL)
 set(BOOST_BEAST2_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_BEAST2_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/beast2 EXCLUDE_FROM_ALL)
+# Beast2 compiles its HTTPS server into boost_beast2, so a shared Beast2
+# library must resolve Corosio's OpenSSL stream symbols itself (#1096).
+target_link_libraries(boost_beast2 PRIVATE Boost::corosio_openssl)
 
 # automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
 # DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
@@ -574,6 +577,7 @@ add_library(zetta-core STATIC
   src/core/ml/methodology_table.cpp
   src/core/ml/solution_table.cpp
   src/core/ml/entity_resolution.cpp
+  src/core/ml/entity_resolution_job.cpp
   src/core/ml/entity_resolution_methodology.cpp
   src/core/ml/graph.cpp
   src/core/ml/graph_job.cpp

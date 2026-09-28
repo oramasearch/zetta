@@ -60,8 +60,8 @@ M-1's `Write lifetime value predictions` output with `entity` /
 directly.
 S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
-S-12 binds the real claim output named `Publish claim referral
-scores`, with `claim_id` and `referral_score` columns in `claims_results`.
+S-12 binds the real claim output named `Publish claim referral scores`,
+with `claim_id` and `referral_score` columns in `claims_results`.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
