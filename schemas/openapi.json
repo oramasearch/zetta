@@ -6449,16 +6449,16 @@
     },
     "/v1/get_run_report": {
       "get": {
-        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042) Requires api:query.",
+        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. M-4 returns forecast backtests, seasonal-naive comparison, read/excluded data and ordered forecasts. M-7 returns anomaly metrics, ranked anomalies, output tables, and what was read or excluded. Assembled at query time from the run's model and its result tables, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042, #1043, #1046) Requires api:query.",
         "operationId": "get_run_report",
         "parameters": [
           {
-            "description": "how many at-risk entities or segment profiles to return (default 20). The whole population is ranked; this caps what comes back",
+            "description": "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, or forecast rows by series then timestamp. Limit applies after ordering",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "description": "how many at-risk entities or segment profiles to return (default 20). The whole population is ranked; this caps what comes back",
+              "description": "maximum rows returned (default 20): ranked entities, anomalies, segment profiles, or forecast rows by series then timestamp. Limit applies after ordering",
               "minimum": 1,
               "type": "integer"
             }
@@ -6505,20 +6505,32 @@
                     },
                     "value": {
                       "properties": {
+                        "anomalies": {
+                          "description": "M-7 rows ranked by anomaly score, with flags, threshold and robust contributors",
+                          "type": "array"
+                        },
                         "at_risk": {
                           "description": "the ranked entities with their risk and their evidence values, capped by `limit`",
                           "type": "array"
+                        },
+                        "baseline_comparison": {
+                          "description": "whether the forecast beat seasonal-naive in rolling-origin backtests",
+                          "type": "string"
                         },
                         "caveats": {
                           "description": "figures that are PRESENT but must not be read as results — a holdout too small to mean anything, a perfect score. `missing` says what the run cannot tell you; this says what it can and you should not believe",
                           "type": "array"
                         },
                         "dataset": {
-                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Absent when the model records no dataset facts",
+                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Anomaly detection records source, rows read/excluded, roles and unused columns. Forecasting records selected/excluded columns and rows/partitions/bytes read. Absent when the model records no dataset facts",
                           "type": "object"
                         },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
+                          "type": "array"
+                        },
+                        "forecast": {
+                          "description": "forecast-table rows with series, timestamp, point_forecast, lower and upper; ordered by series then timestamp before applying limit",
                           "type": "array"
                         },
                         "methodology": {
@@ -6530,11 +6542,34 @@
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates",
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates. Anomaly detection reports threshold, budget, alert rate and optional precision at k. Forecast models carry rolling-origin errors, seasonal-naive comparison and interval coverage. Next-best-action models return hit rate, IPS/DR and importance-weight diagnostics",
                           "type": "object"
                         },
                         "output_tables": {
-                          "description": "segmentation assignment/profile table references, availability and row counts",
+                          "description": "named result table references, availability and row counts",
+                          "type": "array"
+                        },
+                        "outputs": {
+                          "description": "forecast/recommendation output references, or survival and interval-calibration table references",
+                          "oneOf": [
+                            {
+                              "type": "array"
+                            },
+                            {
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "policy": {
+                          "description": "M-8 policy metrics, chronological ALS holdout facts, offline evaluation refusal when applicable, and causal warning",
+                          "type": "object"
+                        },
+                        "ranked_queue": {
+                          "description": "learning-to-rank rows: group, entity, score, rank, and observed relevance, capped by `limit`",
+                          "type": "array"
+                        },
+                        "recommendations": {
+                          "description": "M-8 entity-action rows ordered by entity then rank, including expected value, chosen action and why",
                           "type": "array"
                         },
                         "run": {
@@ -10425,6 +10460,16 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "duration_column": {
+                    "description": "survival duration column (default duration)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "feature_time_column": {
+                    "description": "survival feature cutoff column (default feature_time)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10439,6 +10484,16 @@
                   "intent": {
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
+                  },
+                  "interval_width": {
+                    "description": "survival interval width (default 30)",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
+                  "max_intervals": {
+                    "description": "survival horizon in intervals (default 12)",
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
@@ -10473,6 +10528,12 @@
                     "description": "M-6 binary treatment column",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "validation_fraction": {
+                    "description": "newest fraction held out for survival validation",
+                    "exclusiveMaximum": 1,
+                    "exclusiveMinimum": 0,
+                    "type": "number"
                   }
                 },
                 "required": [
