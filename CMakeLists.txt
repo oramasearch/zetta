@@ -556,6 +556,7 @@ add_library(zetta-core STATIC
   src/core/cloud/cloud_inspector.cpp
   src/core/pipeline/run.cpp
   src/core/ml/methodology.cpp
+  src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/entity_resolution.cpp
   src/core/ml/entity_resolution_methodology.cpp
@@ -572,6 +573,7 @@ add_library(zetta-core STATIC
   src/core/ml/speech_runner.cpp
   src/core/ml/speech_methodology.cpp
   src/core/ml/bandit_methodology.cpp
+  src/core/ml/optimization.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp

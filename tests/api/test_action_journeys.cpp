@@ -1800,6 +1800,77 @@ TEST_F(Uc1Journey, JourneyM15CompilesRunsAndReportsItsOwnTable) {
     EXPECT_TRUE(report.ok) << report.summary();
 }
 
+TEST_F(Uc1Journey, JourneyM16CompilesRunsAndReportsAFeasiblePlan) {
+  const std::string rows =
+      R"({"row_id":1,"variable":"item_a","objective":10,"lower_bound":0,"upper_bound":1,"integer":true,"current_value":0,"scenario":"base","constraint":"weight","coefficient":4,"sense":"<=","rhs":5})"
+      "\n"
+      R"({"row_id":2,"variable":"item_b","objective":6,"lower_bound":0,"upper_bound":1,"integer":true,"current_value":1,"scenario":"base","constraint":"weight","coefficient":2,"sense":"<=","rhs":5})"
+      "\n"
+      R"({"row_id":3,"variable":"item_c","objective":4,"lower_bound":0,"upper_bound":1,"integer":true,"current_value":1,"scenario":"base","constraint":"weight","coefficient":1,"sense":"<=","rhs":5})"
+      "\n";
+
+  journey::Journey optimization{"m16-optimization", {}};
+  optimization.steps = {
+      {"land the scenario and constraint table",
+       "upload_dataset",
+       {{"table_name", "knapsack"},
+        {"database", "operations"},
+        {"format", "jsonl"},
+        {"replication_factor", 1},
+        {"content", rows}},
+       {.checks = {journey::equals("/database", "operations"),
+                   journey::equals("/table", "knapsack"),
+                   journey::equals("/rows", 3)}}},
+      {"create the optimization project",
+       "create_project",
+       {{"name", "allocation"}}},
+      {"capture the allocation goal",
+       "capture_intent",
+       {{"project", "allocation"},
+        {"text", "Optimize a knapsack allocation under capacity"}},
+       {},
+       {{"input_id", "/input_id"}}},
+      {"compile the M-16 pipeline",
+       "compile_intent",
+       {{"project", "allocation"},
+        {"input_id", "$input_id"},
+        {"methodology", "M-16"},
+        {"hints", {{"source", "operations"}, {"table", "knapsack"}}}},
+       {.checks = {journey::equals("/methodology", "M-16"),
+                   journey::equals("/runnable", true)}},
+       {{"graph", "/name"}}},
+      {"run against the pipeline table",
+       "run",
+       {{"project", "allocation"}, {"graph", "$graph"}},
+       {.checks = {journey::equals("/engine", "optimization"),
+                   journey::equals("/status", "succeeded"),
+                   journey::equals("/solver_status", "optimal"),
+                   journey::not_empty("/plan_table"),
+                   journey::not_empty("/constraint_table")}},
+       {{"run_id", "/run_id"}}},
+      {"the durable run finished",
+       "get_run",
+       {{"run_id", "$run_id"}},
+       {.checks = {journey::equals("/status", "succeeded")}},
+       {},
+       journey::Poll{"/status", {"succeeded", "failed"}}},
+      {"the report carries objective, feasibility, gap, and tables",
+       "get_run_report",
+       {{"run_id", "$run_id"}},
+       {.checks = {journey::equals("/model/solver_status", "optimal"),
+                   journey::equals("/model/objective_value", 14.0),
+                   journey::equals("/model/current_plan_objective", 10.0),
+                   journey::equals("/model/feasible", 1.0),
+                   journey::equals("/model/optimality_gap", 0.0),
+                   journey::size_equals("/plan", 3),
+                   journey::any_element("/constraints", {{"/satisfied", true}}),
+                   journey::equals("/dataset/source", "operations.knapsack")}}},
+  };
+  const journey::JourneyReport report =
+      journey::run_journey(optimization, caller(), pump());
+  EXPECT_TRUE(report.ok) << report.summary();
+}
+
 // =====================================================================
 // Canonical journey 3 — dataset ingest: a local jsonl file becomes a
 // partitioned table whose placement reads back through get_dataset AND the

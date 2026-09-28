@@ -1034,6 +1034,54 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         return found->get<double>();
     };
 
+    if (model->kind() == "optimization") {
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"solver_status",
+             model->feature_schema().value("status", std::string("unknown"))}};
+        for (const char* key :
+             {"objective_value", "current_plan_objective", "objective_delta",
+              "feasible", "optimality_gap", "constraint_violations", "iterations",
+              "explored_nodes"}) {
+            if (const std::optional<double> value = number(key)) {
+                model_facts[key] = *value;
+            }
+        }
+        report["model"] = std::move(model_facts);
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const std::optional<double> input_rows = number("input_rows")) {
+            dataset["rows"] = *input_rows;
+        }
+        nlohmann::json excluded = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                excluded.push_back(log.message.substr(9));
+            }
+        }
+        if (!excluded.empty()) {
+            dataset["not_used"] = std::move(excluded);
+        }
+        if (!dataset.empty()) {
+            report["dataset"] = std::move(dataset);
+        }
+        if (const std::shared_ptr<zetta::data::Table> plan =
+                run_named_table(context.node, *run, "optimization plan")) {
+            report["plan"] = table_rows(plan);
+        }
+        if (const std::shared_ptr<zetta::data::Table> constraints =
+                run_named_table(context.node, *run, "constraint trace")) {
+            report["constraints"] = table_rows(constraints);
+        }
+        return ApiResult::success(std::move(report));
+    }
+
+
     if (model->kind() == "bandit") {
         nlohmann::json metric_facts = nlohmann::json::object();
         for (const char* key :
@@ -1049,7 +1097,6 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
                            {"kind", "bandit"},
                            {"metrics", metric_facts}};
         report["metrics"] = metric_facts;
-
         nlohmann::json dataset = nlohmann::json::object();
         for (const std::string& source : run->lineage().sources) {
             if (source.starts_with("dataset:")) {
@@ -3732,7 +3779,7 @@ const nlohmann::json& run_schema() {
           {"model_name",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "the registered model's name (default churn_model)"}}},
+            {"description", "the registered model or solver-result name"}}},
           {"algorithm",
            {{"type", "string"},
             {"enum", {"thompson", "linucb", "linear_thompson"}},
@@ -3883,7 +3930,22 @@ const nlohmann::json& run_schema() {
           {"trocr_directory",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "M-11: pinned native TrOCR checkpoint directory"}}}}}};
+            {"description", "M-11: pinned native TrOCR checkpoint directory"}}},
+
+          {"optimization",
+           {{"type", "object"},
+            {"additionalProperties", false},
+            {"description", "M-16 native LP/MIP solver controls"},
+            {"properties",
+             {{"maximize", {{"type", "boolean"}}},
+              {"iteration_limit", {{"type", "integer"}, {"minimum", 1}}},
+              {"node_limit", {{"type", "integer"}, {"minimum", 1}}},
+              {"time_limit_ms", {{"type", "integer"}, {"minimum", 1}}},
+              {"feasibility_tolerance",
+               {{"type", "number"}, {"exclusiveMinimum", 0}}},
+              {"integrality_tolerance",
+               {{"type", "number"}, {"exclusiveMinimum", 0}}},
+              {"seed", {{"type", "integer"}, {"minimum", 0}}}}}}}}}};
     return schema;
 }
 
@@ -3925,7 +3987,19 @@ const nlohmann::json& run_output_schema() {
             {"items", {{"type", "string"}}},
             {"description", "what was inferred rather than given — read these "
                             "before trusting the "
-                            "model"}}}}}};
+                            "model"}}},
+          {"solver_status",
+           {{"type", "string"},
+            {"description", "M-16 solver termination status"}}},
+          {"model_id", {{"type", "string"}}},
+          {"plan_table",
+           {{"type", "string"},
+            {"description",
+             "M-16 decision table; absent without a feasible plan"}}},
+          {"constraint_table",
+           {{"type", "string"},
+            {"description",
+             "M-16 independent constraint verification table"}}}}}};
     return schema;
 }
 

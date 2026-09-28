@@ -653,7 +653,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 22u);
+    ASSERT_EQ(gate.check_count(), 23u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -675,7 +675,8 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[18]->name(), "speech_pii_redaction");
     EXPECT_EQ(gate.checks()[19]->name(), "speech_local_audio");
     EXPECT_EQ(gate.checks()[20]->name(), "bandit_policy");
-    EXPECT_EQ(gate.checks()[21]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
+    EXPECT_EQ(gate.checks()[22]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -924,11 +925,70 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
         << "M-5 survival ships today";
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "graph"),
               implemented.end()) << "M-12 graph ML ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(), "optimization"),
+              implemented.end())
+        << "M-16 optimization ships today";
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
             << unshipped << " is not implemented; listing it here would make the check a lie";
     }
+}
+
+namespace {
+
+zetta::ir::ExecutionGraph optimization_graph(nlohmann::json attributes) {
+  zetta::ir::ExecutionGraph graph;
+  graph.add_node(zetta::ir::StepKind::Connect, "scenario table", {}, "source");
+  graph.add_node(zetta::ir::StepKind::Model, "optimization",
+                 std::move(attributes), "model");
+  graph.add_edge("source", "model");
+  return graph;
+}
+
+} // namespace
+
+TEST(OptimizationGraphCheck, CompleteContractPasses) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Pass) << result.reason;
+}
+
+TEST(OptimizationGraphCheck, PointForecastShapeIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"verify_constraints", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("scenario or quantile"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, UnverifiedPlanIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"report_solver_status", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("independently verify"), std::string::npos)
+      << result.reason;
+}
+
+TEST(OptimizationGraphCheck, MissingSolverStatusIsRefused) {
+  const auto graph = optimization_graph({{"model_kind", "optimization"},
+                                         {"scenario_input", true},
+                                         {"verify_constraints", true}});
+  const auto result =
+      zetta::pipeline::OptimizationContractCheck{}.evaluate(graph);
+  EXPECT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
+  EXPECT_NE(result.reason.find("solver status"), std::string::npos)
+      << result.reason;
 }
 
 // --- TemporalValidationCheck (#984, M-4) ---------------------------------------------------

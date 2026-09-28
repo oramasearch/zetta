@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 14;
+        const bool runnable = index <= 15;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
@@ -101,6 +101,8 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     EXPECT_TRUE(methodologies.front().runnable);
     EXPECT_FALSE(methodologies.front().partial);
     EXPECT_EQ(methodologies.front().id, "M-1");
+    EXPECT_TRUE(methodologies[15].runnable);
+    EXPECT_EQ(methodologies[15].id, "M-16");
     EXPECT_TRUE(methodologies[14].runnable);
     EXPECT_TRUE(methodologies[14].issue.empty());
     EXPECT_TRUE(methodologies[9].runnable);
@@ -225,6 +227,8 @@ TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {
     EXPECT_EQ(zetta::ml::find_methodology("entity_resolution")->id, "M-2");
     EXPECT_EQ(zetta::ml::find_methodology("segmentation")->id, "M-3");
     EXPECT_EQ(zetta::ml::find_methodology("S-1")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("S-4")->id, "M-1");
+    EXPECT_EQ(zetta::ml::find_methodology("optimization")->id, "M-16");
     EXPECT_EQ(zetta::ml::find_methodology("uplift")->id, "M-6");
     EXPECT_EQ(zetta::ml::find_methodology("S-11")->id, "M-8");
     EXPECT_EQ(zetta::ml::find_methodology("M-15")->id, "M-15");
@@ -261,6 +265,23 @@ TEST(MethodologyRegistry, M15BuildsAndOwnsItsBanditPipeline) {
     ASSERT_EQ(models.size(), 1u);
     EXPECT_EQ(models.front()->attributes.at("model_kind"), "bandit");
     EXPECT_EQ(models.front()->attributes.at("arms").size(), 2u);
+}
+
+TEST(MethodologyRegistry, M16BuildsAndOwnsItsOptimizationShape) {
+  const zetta::ml::Methodology *methodology =
+      zetta::ml::find_methodology("M-16");
+  ASSERT_NE(methodology, nullptr);
+  ASSERT_TRUE(methodology->build_shape);
+  const zetta::ir::ExecutionGraph graph = methodology->build_shape(
+      {.project = "operations",
+       .intent = "allocate replenishment under capacity",
+       .hints = {{"source", "operations"}, {"table", "decisions"}}});
+  EXPECT_TRUE(methodology->owns(graph));
+  EXPECT_EQ(zetta::ml::methodology_for_graph(graph), methodology);
+  const auto models = graph.nodes_of_kind(zetta::ir::StepKind::Model);
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models.front()->attributes.at("model_kind"), "optimization");
+  EXPECT_TRUE(models.front()->attributes.at("verify_constraints"));
 }
 
 TEST(MethodologyRegistry, ResolvesGraphsWithoutClaimingUnknownModelKinds) {

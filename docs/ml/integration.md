@@ -2,8 +2,8 @@
 
 The deploy branch combines the registry with M-3, M-7, M-4, M-2, M-5,
 M-6, M-8 and M-9, followed by M-12, M-13, M-11 and M-10 in round two.
-Round three adds M-14 speech and M-15 bandits. All fourteen source histories remain
-represented by merge commits. M-1 through M-15 are runnable; later methodologies retain
+Round three adds M-14 speech, M-15 bandits and M-16 optimization. All fifteen source
+histories remain represented by merge commits. M-1 through M-16 are runnable; later methodologies retain
 their unsupported status and issue links.
 
 ## Conflict decisions
@@ -24,8 +24,12 @@ their unsupported status and issue links.
 - M-15 does not take over S-11 from M-8: it remains reachable by its ID and
   bandit model kinds. Both lookup implementations prefer runnable entries
   before planned ones; the existing equivalent lookup is retained.
-- All twenty-two default gate checks are retained in methodology order after
-  the shared checks. Discovery requires all fifteen implemented methodologies
+- S-4 remains owned by M-1, the first method in the catalogue's collections
+  row. M-16 drops that primary lookup and stays reachable by ID, `optimization`
+  and `operations_research`. Its scenario, verification and solver-status
+  checks and its plan/constraint reports are retained alongside every method.
+- All twenty-three default gate checks are retained in methodology order after
+  the shared checks. Discovery requires all sixteen implemented methodologies
   runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
   including the graph-check refusal test; forecasting is now runnable and is
   no longer a valid unsupported-method fixture.
@@ -61,7 +65,7 @@ is changed beyond resolving the integration conflicts.
 The integration was rebuilt from the registry base without running any
 formatter. Conflict edits preserve the surrounding layout. Before publication,
 each file's added/deleted lines are compared with the sum of its changes across
-the fourteen source branches; only small integration documentation and regression
+the fifteen source branches; only small integration documentation and regression
 coverage may exceed that sum. The issue comment records the complete audit,
 the requested shared-file statistics, and normal versus whitespace-ignored totals.
 

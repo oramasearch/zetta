@@ -17,12 +17,13 @@
 // and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
 // gate failure (RULE-1 — no deploy without a passing gate).
 //
-// Both validate the annotations they read against the JSON Schema at the boundary
+// Both validate the annotations they read against the JSON Schema at the
+// boundary
 // (`graph_step_annotations_schema()` below), so malformed annotations
-// fail fast with a precise reason rather than being silently misread. A step that
-// carries none of the relevant annotations is simply skipped (it passes), so
-// these checks are opt-in per step and never penalise a graph that doesn't use
-// them.
+// fail fast with a precise reason rather than being silently misread. A step
+// that carries none of the relevant annotations is simply skipped (it passes),
+// so these checks are opt-in per step and never penalise a graph that doesn't
+// use them.
 namespace zetta::pipeline {
 
 // M-4's executable shape and mandatory correctness contract, including a
@@ -147,6 +148,15 @@ public:
 class LanguageTrainingAccessCheck final : public Check {
 public:
     std::string name() const override { return "language_training_access"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// M-16 requires scenario inputs, independent verification and solver status.
+class OptimizationContractCheck final : public Check {
+public:
+    std::string name() const override {
+        return "optimization_contract";
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 

@@ -1,7 +1,7 @@
 # Graph correctness checks
 
-The first **concrete** correctness checks that plug into the
-[correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
+The concrete correctness checks that plug into the
+[correctness gate](gate.md). They implement
 the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 `src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
@@ -31,6 +31,7 @@ The reusable annotation and methodology-specific checks are:
 | `SpeechPiiRedactionCheck` | `speech_pii_redaction` | a speech model that could store unfiltered transcript text |
 | `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
+| `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -263,6 +264,22 @@ wrong shape (`requires` as an array, a `features` entry without a `name`, an
 reason (`step "model" (n-model): malformed correctness annotations — /requires:
 …`). This is the issue's *"a mistyped graph fails with a clear reason"* applied to
 the annotations themselves.
+
+## `optimization_contract` — no unchecked or point-forecast plan
+
+An M-16 model step (`model_kind: "optimization"` or
+`"operations_research"`) must set all three contract flags to `true`:
+
+- `scenario_input`: the objective or constraints come from scenario or
+  quantile predictions, never one point prediction;
+- `verify_constraints`: the runner independently checks every bound and
+  constraint after solving and suppresses any violating plan; and
+- `report_solver_status`: every run reports termination status and MIP gap.
+
+The methodology's own compiler emits these flags. An edited or imported graph
+that removes any flag is refused before run. The runner enforces the same rules
+again at the table and solution boundaries; the graph check makes the unsafe
+shape impossible to deploy in the first place (#1055).
 
 ## Where it fits
 

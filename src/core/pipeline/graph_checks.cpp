@@ -586,6 +586,55 @@ CheckResult SurvivalCensoringCheck::evaluate(
             "survival steps preserve censoring and point-in-time boundaries"};
 }
 
+CheckResult OptimizationContractCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model || !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "optimization" && model_kind != "operations_research") {
+            continue;
+        }
+        const auto requires_true = [&](std::string_view attribute,
+                                       std::string reason) {
+            const auto found = node->attributes.find(attribute);
+            if (found == node->attributes.end() || !found->is_boolean() ||
+                !found->get<bool>()) {
+                return CheckResult{name(), CheckStatus::Fail,
+                                   node_label(*node) + ": " + reason};
+            }
+            return CheckResult{name(), CheckStatus::Pass, {}};
+        };
+        CheckResult result = requires_true(
+            "scenario_input",
+            "optimization requires scenario or quantile inputs; a point "
+            "forecast cannot represent plan risk");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "verify_constraints",
+            "optimization must independently verify every bound and "
+            "constraint before returning a plan");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+        result = requires_true(
+            "report_solver_status",
+            "optimization must report solver status and the MIP optimality gap");
+        if (result.status == CheckStatus::Fail) {
+            return result;
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "optimization plans require scenarios, independent "
+                       "verification, and status"};
+}
+
 CheckResult SchemaTypeCheck::evaluate(const ir::ExecutionGraph& graph) const {
     const auto fail = [this](std::string reason) {
         return CheckResult{name(), CheckStatus::Fail, std::move(reason)};

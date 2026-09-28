@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-15 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-16 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -219,6 +219,15 @@ audio are gate requirements and runner invariants. See
 
 S-11 resolves to M-8, its primary catalogue method. M-15 supports sequential
 allocation but is selected by methodology ID or its bandit model kinds, not S-11.
+
+## M-16 optimization implementation
+
+`src/core/ml/methodology_optimization.cpp` owns the optimization shape and
+adapter described in [optimization.md](optimization.md). It resolves the
+pipeline's connect-step table when `run` omits `dataset_path`, calls the native
+solver, and publishes the plan, constraint trace, solver-result record, and run
+report with lineage. S-4 remains owned by M-1, the catalogue's first method for collections
+prioritization; select optimization by M-16 or its model kinds.
 
 ## Adding a methodology
 

@@ -11,6 +11,7 @@ src/core/pipeline/intent_compiler.cpp         deterministic resolution
 include/zetta/ml/methodology.hpp              shape callback contract
 src/core/ml/methodology.cpp                   M-1 shape callback
 src/core/ml/survival_methodology.cpp          M-5 shape callback
+src/core/ml/methodology_optimization.cpp      M-16 shape and run callbacks
 ```
 
 ## Resolution order
@@ -85,6 +86,20 @@ table, normalizes and blocks candidate pairs, scores them with
 `model_kind: "entity_resolution"`, clusters conflict-safe matches, and writes
 the resolved-entity and match-pair tables. See
 [entity resolution](../ml/entity_resolution.md).
+
+## M-16 optimization shape
+
+M-16 compiles its own table-to-plan pipeline:
+
+```
+load_optimization_table → validate_optimization_model → solve_optimization_plan → publish_optimization_plan
+       connect                    clean                       model                         act
+```
+
+The model step carries `model_kind: "optimization"` plus the scenario-input,
+independent-verification, and status-reporting contract flags required by the
+correctness gate. The connect step's `source` and `table` are the default run
+dataset; callers can override them with `dataset_path`.
 
 ## Stored intent bridge
 
