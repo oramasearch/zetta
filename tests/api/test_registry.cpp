@@ -234,6 +234,21 @@ TEST_F(RegistryFixture, RefusesAnOffloadableEntryThatMutatesOrNeedsConsent) {
     }
 }
 
+TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
+    Capability entry{"awaitable_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, false, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.awaitable_read = zetta::api::AwaitableRead{
+        [](const nlohmann::json&) {
+            return std::chrono::milliseconds(1);
+        },
+        [](const ApiResult&) { return true; }};
+    EXPECT_FALSE(registry.add(std::move(entry)));
+}
+
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
     auto result = call("no_such_tool", nlohmann::json::object());
     EXPECT_FALSE(result.ok);

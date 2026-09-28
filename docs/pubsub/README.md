@@ -9,10 +9,11 @@ decision and its cost, is [../plans/pubsub/](../plans/pubsub/README.md); these p
 describe what is built.
 
 **Boundaries of stage 1:** one node (the cluster is stage 2, designed later), no
-partitions, no coroutines (subscribers are threads; every queue has its own mutex
-and condition variables), no durability guarantee (restart survival is best effort
-and logged), no rate limits. New JSON formats: the on-disk event frame header only
-([events.md](events.md)).
+partitions, thread-based subscribers (every queue has its own mutex and condition
+variables), no durability guarantee (restart survival is best effort and logged), no
+rate limits. The REST long poll is the exception: it suspends a coroutine on a topic
+event without holding a thread (#1076). New JSON formats: the on-disk event frame
+header only ([events.md](events.md)).
 
 - [events.md](events.md) — addresses (`kind:name`, prefix-glob wildcards), the
   envelope (from, sender stack, to/cc/bcc, reply-to, correlation id, topics-chain),
@@ -38,4 +39,4 @@ and logged), no rate limits. New JSON formats: the on-disk event frame header on
 - [node.md](node.md) — the node owns pub/sub: start and stop, the governance-backed
   authorizer, the `table:` drain, `system.pubsub_topics`, spans (#1029, #1031, #1032, #1034).
 - [exposure.md](exposure.md) — `create_topic`, `drop_topic`, `list_topics`,
-  `publish_event`, `receive_events`; only exposed topics are reachable (#1033).
+  `publish_event`, `receive_events`; exposed topics and coroutine long polls (#1033, #1076).

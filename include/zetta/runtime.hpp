@@ -8,10 +8,9 @@
 #include <utility>
 
 #include <boost/capy.hpp>
-#include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/test/run_blocking.hpp>
 
-// zetta's async runtime seam.
+// zetta's async runtime interface.
 //
 // zetta code uses `zetta::runtime::*` and never names `boost::capy` /
 // `boost::corosio` directly. The coroutine/IO/networking backend is the C++
@@ -34,7 +33,7 @@ template <class... Values>
 using io_result = boost::capy::io_result<Values...>;
 
 // A coroutine yielding an `io_result<Values…>` (i.e. `task<io_result<Values…>>`).
-// This is the shape the composition primitives below require, so an async seam
+// This is the shape the composition primitives below require, so an async interface
 // meant to be fanned out (connect::AsyncHttpTransport) returns an io_task rather
 // than a bare task.
 template <class... Values>
@@ -77,8 +76,24 @@ using thread_pool = boost::capy::thread_pool;
 // event.wait()` and are all resumed when any thread calls `set()` (each on
 // its own executor). The coroutine-first alternative to a condition
 // variable — the primitive cross-thread completion signaling goes through
-// (e.g. the API surface's MainThreadBridge).
-using async_event = boost::capy::async_event;
+// (e.g. the API surface's MainThreadBridge). The adapter serializes registration,
+// signaling and cancellation cleanup because the backend event itself permits
+// only one executor (#1076; docs/architecture/runtime.md).
+class async_event {
+public:
+    async_event();
+    async_event(const async_event&) = delete;
+    async_event& operator=(const async_event&) = delete;
+
+    io_task<> wait();
+    void set();
+    void clear();
+    bool is_set() const;
+
+private:
+    struct State;
+    std::shared_ptr<State> state_;
+};
 
 // Synchronous bridge: run `coroutine` to completion on the calling thread. Use
 // from non-coroutine code (main(), tests) to enter the async world. Backed by
@@ -101,11 +116,11 @@ Value block_on(task<Value> coroutine) {
 //
 // Schedule `coroutine` on the shared runtime pool and **return immediately** — the
 // coroutine runs concurrently while the caller keeps going. `on_complete` is
-// invoked once, when the coroutine finishes. This is the seam's off-the-caller-
+// invoked once, when the coroutine finishes. This is the runtime's off-the-caller-
 // thread primitive: it is how any long-running work (a provider CLI subprocess, a
 // network round-trip) is run without blocking a latency path such as the GUI
-// frame loop, WITHOUT any caller spawning a raw std::thread — the runtime seam is
-// that interface (see CLAUDE.md "async is coroutines, through the seam").
+// frame loop, WITHOUT any caller spawning a raw std::thread — the runtime is
+// that interface (see CLAUDE.md "async is coroutines, through the runtime").
 //
 // `on_complete` runs on a **pool worker thread**, so it must only touch
 // thread-safe state (atomics / a mutex) — never the UI or the Node directly. The
@@ -118,15 +133,6 @@ Value block_on(task<Value> coroutine) {
 // dangles once the temporary lambda is destroyed (same caveat as parallel_for).
 void spawn(task<> coroutine, std::function<void()> on_complete);
 
-// spawn() on a separate pool reserved for work that BLOCKS WAITING — a long poll
-// parked on a condition variable — rather than computing (#1063). A waiter holds
-// its thread for the whole wait, so on the shared pool (one thread per core) a
-// handful of long polls starve every offload and parallel_for behind them. This
-// pool is sized for waiting (kBlockingThreads), and nothing compute-bound goes
-// on it.
-inline constexpr unsigned kBlockingThreads = 64;
-void spawn_blocking(task<> coroutine, std::function<void()> on_complete);
-
 // --- Offload blocking work onto the pool, awaited as a coroutine ---------------
 //
 // Run a **blocking** callable on a runtime pool worker and resume the awaiting
@@ -134,7 +140,7 @@ void spawn_blocking(task<> coroutine, std::function<void()> on_complete);
 // This is the bridge for a backend adapter that can ONLY block (a vendored C
 // driver like libpq): the blocking call runs on a pool thread, so the caller's
 // coroutine — and every zetta network/main thread — is never pinned. It is the
-// seam's answer to "wrap a blocking library in coroutines without touching a raw
+// runtime's answer to "wrap a blocking library in coroutines without touching a raw
 // std::thread". Confine such a callable to the one adapter TU that names the
 // backend library (the module-split rule).
 //
@@ -163,22 +169,9 @@ task<std::invoke_result_t<Callable>> offload(Callable callable) {
     co_return std::move(**slot);
 }
 
-// offload() onto the blocking pool (spawn_blocking): for a callable that waits
-// (a long poll), never for compute.
-template <class Callable>
-task<std::invoke_result_t<Callable>> offload_blocking(Callable callable) {
-    using Result = std::invoke_result_t<Callable>;
-    auto slot = std::make_shared<std::optional<Result>>();
-    auto done = std::make_shared<async_event>();
-    spawn_blocking(detail_run_blocking<Callable, Result>(std::move(callable), slot),
-                   [done] { done->set(); });
-    [[maybe_unused]] auto ready = co_await done->wait();  // io_result: completion only
-    co_return std::move(**slot);
-}
-
 // --- Data parallelism: parallel_for over the shared runtime thread pool -------
 //
-// A blocking data-parallel primitive for CPU-bound work — the seam's answer to
+// A blocking data-parallel primitive for CPU-bound work — the runtime's answer to
 // "spread this loop across cores" without any caller naming `boost::capy`. The
 // heavy compute backend (zetta::compute::CpuDevice) and, later, the scheduler /
 // collectives are its consumers. It fans out onto one shared, process-wide
@@ -210,7 +203,7 @@ std::size_t parallel_chunks(std::size_t count,
 // thread with no pool dispatch.
 //
 // `body` must not throw. zetta-core compiles with -fexperimental-library and must
-// never unwind across a seam (the same discipline that makes compute operators
+// never unwind across a public boundary (the same discipline that makes compute operators
 // return ComputeStatus rather than throwing), so a body that raises an exception
 // is a contract violation and aborts the process rather than unwinding into the
 // coroutine backend.

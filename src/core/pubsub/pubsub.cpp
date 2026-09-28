@@ -838,7 +838,8 @@ PublishResult PubSub::publish_as(const Identity& identity, PublishRequest reques
 
 std::optional<std::vector<Event>> PubSub::read_events(const Identity& identity, const Address& address,
                                                       std::uint64_t from_sequence, std::size_t max,
-                                                      std::chrono::milliseconds wait, std::string* reason) {
+                                                      std::chrono::milliseconds wait, std::string* reason,
+                                                      std::shared_ptr<runtime::async_event> waiter) {
     if (!authorizer_->authorize(identity.principal, PubSubOperation::Subscribe, address)) {
         if (reason != nullptr) *reason = identity.principal.to_string() + " may not read " + address.to_string();
         audit("subscribe_refused", identity.principal, address, "no pubsub:subscribe");
@@ -849,6 +850,7 @@ std::optional<std::vector<Event>> PubSub::read_events(const Identity& identity, 
         if (reason != nullptr) *reason = address.to_string() + " does not exist";
         return std::nullopt;
     }
+    if (waiter) topic->register_waiter(waiter);
     return topic->read_from(from_sequence, std::max<std::size_t>(1, max), wait);
 }
 
