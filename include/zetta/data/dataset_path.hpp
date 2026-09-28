@@ -194,6 +194,30 @@ DatasetSampler default_dataset_sampler(Node& node,
 // integer in its first rows and fractional later, small enough to be free.
 inline constexpr std::size_t kDefaultSampleRows = 256;
 
+// A table resolved against the live dataset catalog and sampled through the
+// canonical query path. This is the shared read primitive behind contract
+// inference and dataset analysis: catalog lookup, degraded-data refusal, and
+// distributed reads belong in one place.
+struct SampledDataset {
+    std::string table_id;
+    std::string database;
+    std::string table;
+    std::uint64_t rows = 0;
+    std::vector<std::string> columns;
+    std::vector<nlohmann::json> sample;
+    std::string error;
+
+    bool ok() const { return error.empty(); }
+};
+
+// Resolve and sample a Table-form path. Directory paths, missing/empty tables,
+// degraded partition catalogs, and read failures are returned as path-qualified
+// errors. Passing `cluster` keeps partition-only reads on scatter/gather.
+SampledDataset sample_dataset(Node& node, const DatasetPath& path,
+                              const DatasetSampler& sampler = {},
+                              std::size_t sample_rows = kDefaultSampleRows,
+                              const zetta::cluster::Cluster* cluster = nullptr);
+
 // A `dataset_path` resolved against the live catalog: the table it names, and what
 // its columns mean.
 struct ResolvedDataset {
@@ -222,7 +246,8 @@ struct ResolvedDataset {
 ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
                                 const DatasetContract& overrides = {},
                                 const DatasetSampler& sampler = {},
-                                std::size_t sample_rows = kDefaultSampleRows);
+                                std::size_t sample_rows = kDefaultSampleRows,
+                                const zetta::cluster::Cluster* cluster = nullptr);
 
 nlohmann::json to_json(const DatasetContract& contract);
 std::optional<DatasetContract> dataset_contract_from_json(const nlohmann::json& value,

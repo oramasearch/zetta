@@ -93,10 +93,12 @@ and refusing them would fail on the most common warehouse shape there is.
 
 ## Resolution
 
-`resolve_dataset` resolves a Table-form path against the live catalog
+`sample_dataset` resolves a Table-form path against the live catalog
 (`Node::datasets()` — recomputed from the node tree joined with the partition catalog,
-never a stored copy), samples it, and infers the contract. It fails, non-throwing and
-with a path-qualified reason, when:
+never a stored copy) and samples it. `resolve_dataset` builds the training contract
+from that shared result; [`analyze_dataset`](featurization.md) builds semantic and
+table-shape evidence from it. Both fail, non-throwing and with a path-qualified reason,
+when:
 
 - the path is the Directory form (it says so rather than pretending);
 - no such database/table exists — naming the near-misses, or what the cluster does have;
@@ -105,8 +107,8 @@ with a path-qualified reason, when:
   fraction of the rows while looking perfectly healthy;
 - the table has no rows, or the contract cannot be inferred.
 
-Reading rows for typing goes through the injected `DatasetSampler`, so the inference is
-unit-testable against rows built in a test. The default reads through
+Reading rows for typing goes through the injected `DatasetSampler`, so contract and
+semantic inference are unit-testable against rows built in a test. The default reads through
 `query::QueryService`, which routes a partition-only table through the
 [scatter-gather select](scatter-gather-select.md).
 

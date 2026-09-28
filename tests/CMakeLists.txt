@@ -172,6 +172,7 @@ add_executable(zetta-tests
   data/test_import.cpp
   data/test_add_dataset.cpp
   data/test_dataset_path.cpp
+  data/test_featurize_plan.cpp
   connect/test_connector.cpp
   connect/test_postgres_connector.cpp
   connect/test_connection_store.cpp

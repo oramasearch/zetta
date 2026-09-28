@@ -351,21 +351,22 @@ DatasetSampler default_dataset_sampler(Node& node, const zetta::cluster::Cluster
     };
 }
 
-ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
-                                const DatasetContract& overrides,
-                                const DatasetSampler& sampler, std::size_t sample_rows) {
-    ResolvedDataset resolved;
-    const auto fail = [&resolved](std::string reason) -> ResolvedDataset {
-        resolved.error = std::move(reason);
-        return resolved;
+SampledDataset sample_dataset(Node& node, const DatasetPath& path,
+                              const DatasetSampler& sampler,
+                              std::size_t sample_rows,
+                              const zetta::cluster::Cluster* cluster) {
+    SampledDataset sampled;
+    const auto fail = [&sampled](std::string reason) -> SampledDataset {
+        sampled.error = std::move(reason);
+        return sampled;
     };
     if (path.kind != DatasetPathKind::Table) {
         return fail("dataset: '" + path.directory.string() +
                     "' is a directory path, not a database.table — load it with "
                     "load_churn_dataset instead");
     }
-    resolved.database = path.database;
-    resolved.table = path.table;
+    sampled.database = path.database;
+    sampled.table = path.table;
 
     // The live catalog, recomputed from the node tree joined with the partition
     // catalog — never a stored copy (RULE-7).
@@ -406,27 +407,54 @@ ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
                     " — training on it would train on part of the data");
     }
 
-    resolved.table_id = found->table_id;
-    resolved.rows = found->rows;
+    sampled.table_id = found->table_id;
+    sampled.database = found->database;
+    sampled.table = found->name;
+    sampled.rows = found->rows;
+    sampled.columns = found->columns;
     if (found->rows == 0) {
         return fail("dataset: '" + path.database + "." + path.table + "' has no rows");
     }
 
     std::string sample_error;
-    const DatasetSampler& read = sampler ? sampler : default_dataset_sampler(node);
-    const std::vector<nlohmann::json> sample =
+    const DatasetSampler read = sampler ? sampler : default_dataset_sampler(node, cluster);
+    sampled.sample =
         read(found->database, found->name, sample_rows, sample_error);
     if (!sample_error.empty()) {
         return fail("dataset: could not read '" + path.database + "." + path.table +
                     "': " + sample_error);
     }
-    if (sample.empty()) {
+    if (sampled.sample.empty()) {
         return fail("dataset: '" + path.database + "." + path.table +
                     "' returned no rows to type its columns from");
     }
+    return sampled;
+}
 
-    DatasetContractResult contract = infer_dataset_contract(found->columns, sample, overrides);
-    if (!contract.ok()) return fail(contract.error);
+ResolvedDataset resolve_dataset(Node& node, const DatasetPath& path,
+                                const DatasetContract& overrides,
+                                const DatasetSampler& sampler,
+                                std::size_t sample_rows,
+                                const zetta::cluster::Cluster* cluster) {
+    ResolvedDataset resolved;
+    const SampledDataset sampled =
+        sample_dataset(node, path, sampler, sample_rows, cluster);
+    if (!sampled.ok()) {
+        resolved.error = sampled.error;
+        return resolved;
+    }
+
+    resolved.table_id = sampled.table_id;
+    resolved.database = sampled.database;
+    resolved.table = sampled.table;
+    resolved.rows = sampled.rows;
+
+    DatasetContractResult contract =
+        infer_dataset_contract(sampled.columns, sampled.sample, overrides);
+    if (!contract.ok()) {
+        resolved.error = contract.error;
+        return resolved;
+    }
     resolved.contract = std::move(contract.contract);
     resolved.notes = std::move(contract.notes);
     return resolved;
