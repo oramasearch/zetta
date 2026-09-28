@@ -88,6 +88,10 @@ public:
     // push an SDL event so its event wait returns early). Call before start().
     void set_wakeup(std::function<void()> wakeup);
 
+    // Wake the owning loop now, from any thread, so its next tick runs without
+    // waiting out the idle interval (Node::set_owner_wakeup, #1063).
+    void wake();
+
     Registry& registry();
     // The node's span ring (convenience passthrough to Node::span_recorder()).
     observability::SpanRecorder& recorder();

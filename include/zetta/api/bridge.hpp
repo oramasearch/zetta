@@ -55,6 +55,11 @@ public:
     // after enqueue. Optional — headless uses wait_for_work instead.
     void set_wakeup(std::function<void()> wakeup);
 
+    // Wake the owning loop without queueing bridge work: its idle wait returns
+    // (and a headed loop's wakeup fires) so the loop ticks now. For work queued
+    // elsewhere that the tick drains — Node::run_on_owner (#1063).
+    void poke();
+
     std::size_t pending() const;
 
 private:
@@ -67,6 +72,7 @@ private:
     mutable std::mutex queue_mutex_;
     std::condition_variable work_ready_;  // wakes the owning loop's idle wait
     std::deque<PendingWork> queue_;
+    bool poked_ = false;  // a poke() the idle wait has not consumed yet
     std::function<void()> wakeup_;  // owner-loop wake for non-cv loops (headed)
 };
 

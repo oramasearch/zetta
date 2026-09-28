@@ -449,6 +449,7 @@ void Node::run_on_owner(const std::function<void()>& work) {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);
         owner_work_queue_.push_back(
             OwnerWork{work, [completed] { completed->set(); }});
+        if (owner_wakeup_) owner_wakeup_();
     }
     // Block this worker until the owner loop has executed the work. The wait
     // goes through the runtime's async_event, awaited to completion — the same
@@ -460,6 +461,11 @@ void Node::run_on_owner(const std::function<void()>& work) {
             -> zetta::runtime::task<> {
             [[maybe_unused]] auto ready = co_await event->wait();
         }(completed));
+}
+
+void Node::set_owner_wakeup(std::function<void()> wakeup) {
+    std::lock_guard<std::mutex> lock(owner_work_mutex_);
+    owner_wakeup_ = std::move(wakeup);
 }
 
 bool Node::on_owner_thread() const {
