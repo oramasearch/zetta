@@ -7480,6 +7480,9 @@ ApiResult handle_chat(const nlohmann::json& input, ApiContext& context) {
                             "leakage candidates for a landed dataset"},
         {"plan_features",
          "read a methodology-specific feature/exclusion plan or required dataset transform"},
+        {"list_solutions", "list the configured solution catalogue"},
+        {"get_solution",
+         "read one solution: {\"solution\": \"<S-1 through S-12 or B-1 through B-8>\"}"},
         {"list_models", "list the trained models and their measures"},
         {"get_model", "read one model: its measures, its feature columns, and "
                       "its ranked churn "
@@ -9359,6 +9362,7 @@ void register_core_capabilities(Registry& registry) {
 
     // Pub/sub (#1033), in its own TU (pubsub_capabilities.cpp).
     register_pubsub_capabilities(registry);
+    register_solution_capabilities(registry);
 
     // Versioned score-to-action policy (#1104).
     register_decision_policy_capabilities(registry);

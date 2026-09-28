@@ -4372,6 +4372,173 @@
         ]
       }
     },
+    "/v1/create_solution": {
+      "post": {
+        "description": "Compose a selected solution level through methodology registry callbacks and store its replicated preview Pipeline on the project; missing production components are returned. Requires orchestration:create_solution.",
+        "operationId": "create_solution",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "level": {
+                    "maximum": 4,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "project": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "solution": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "sources": {
+                    "description": "common callback hints plus optional M-id overrides",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "project",
+                  "solution",
+                  "level",
+                  "sources"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "graph": {
+                          "type": "string"
+                        },
+                        "level": {
+                          "type": "integer"
+                        },
+                        "methodologies": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "missing_components": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "issue": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "issue"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "preview": {
+                          "type": "boolean"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "solution": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "project",
+                        "solution",
+                        "level",
+                        "graph",
+                        "preview",
+                        "methodologies",
+                        "missing_components"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create solution preview",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_topic": {
       "post": {
         "description": "Create a pub/sub topic. Topics are engine-internal unless `exposed` is true; only exposed topics are reachable through publish_event, receive_events, list_topics and drop_topic. Requires orchestration:pubsub_create.",
@@ -9543,6 +9710,291 @@
         ]
       }
     },
+    "/v1/get_solution": {
+      "get": {
+        "description": "Read one catalogue solution or sketch by id, including every production dependency and tracking issue. No side effects. Requires api:query.",
+        "operationId": "get_solution",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "solution",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "solution": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action_patterns": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "autonomy_defaults": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action_class": {
+                                    "type": "string"
+                                  },
+                                  "autonomy": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "action_class",
+                                  "autonomy"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "capability_levels": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "level": {
+                                    "type": "integer"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "level",
+                                  "name",
+                                  "description"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "composition": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "methodology": {
+                                    "type": "string"
+                                  },
+                                  "minimum_level": {
+                                    "type": "integer"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "methodology",
+                                  "role",
+                                  "minimum_level"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "decision_policy_template": {
+                              "type": "string"
+                            },
+                            "guardrails": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "issue": {
+                              "type": "string"
+                            },
+                            "latency_classes": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "measurement_design": {
+                              "type": "string"
+                            },
+                            "missing_components": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "issue": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name",
+                                  "issue"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "pipeline_order": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "promise": {
+                              "type": "string"
+                            },
+                            "promotion_condition": {
+                              "type": "string"
+                            },
+                            "required_data_roles": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "description": {
+                                    "type": "string"
+                                  },
+                                  "required": {
+                                    "type": "boolean"
+                                  },
+                                  "role": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "role",
+                                  "required",
+                                  "description"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "runnable": {
+                              "type": "boolean"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "use_case": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "promise",
+                            "use_case",
+                            "composition",
+                            "pipeline_order",
+                            "action_patterns",
+                            "latency_classes",
+                            "autonomy_defaults",
+                            "required_data_roles",
+                            "decision_policy_template",
+                            "measurement_design",
+                            "guardrails",
+                            "capability_levels",
+                            "missing_components",
+                            "status",
+                            "runnable",
+                            "issue",
+                            "promotion_condition"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "solution"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get solution",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_spec": {
       "get": {
         "description": "Read one spec document by its list_specs name — 'openapi', '<capability>.input' / '<capability>.output', or a boundary schema name like 'run'. No side effects. Requires api:query.",
@@ -12060,6 +12512,285 @@
           }
         },
         "summary": "List runs",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_solutions": {
+      "get": {
+        "description": "Read all twelve catalogue solutions and eight Band-B sketches, including composition, data roles, governance, capability levels, and runnable status. No side effects. Requires api:query.",
+        "operationId": "list_solutions",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "solutions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "action_patterns": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "autonomy_defaults": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "action_class": {
+                                      "type": "string"
+                                    },
+                                    "autonomy": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "action_class",
+                                    "autonomy"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "capability_levels": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "level": {
+                                      "type": "integer"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "level",
+                                    "name",
+                                    "description"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "composition": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "methodology": {
+                                      "type": "string"
+                                    },
+                                    "minimum_level": {
+                                      "type": "integer"
+                                    },
+                                    "role": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "methodology",
+                                    "role",
+                                    "minimum_level"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "decision_policy_template": {
+                                "type": "string"
+                              },
+                              "guardrails": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "issue": {
+                                "type": "string"
+                              },
+                              "latency_classes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "measurement_design": {
+                                "type": "string"
+                              },
+                              "missing_components": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "issue": {
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "name",
+                                    "issue"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "pipeline_order": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "promise": {
+                                "type": "string"
+                              },
+                              "promotion_condition": {
+                                "type": "string"
+                              },
+                              "required_data_roles": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "description": {
+                                      "type": "string"
+                                    },
+                                    "required": {
+                                      "type": "boolean"
+                                    },
+                                    "role": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "role",
+                                    "required",
+                                    "description"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "runnable": {
+                                "type": "boolean"
+                              },
+                              "status": {
+                                "type": "string"
+                              },
+                              "use_case": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "promise",
+                              "use_case",
+                              "composition",
+                              "pipeline_order",
+                              "action_patterns",
+                              "latency_classes",
+                              "autonomy_defaults",
+                              "required_data_roles",
+                              "decision_policy_template",
+                              "measurement_design",
+                              "guardrails",
+                              "capability_levels",
+                              "missing_components",
+                              "status",
+                              "runnable",
+                              "issue",
+                              "promotion_condition"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "solutions"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List solutions",
         "tags": [
           "read"
         ]
@@ -15217,6 +15948,123 @@
           }
         },
         "summary": "Run a graph",
+        "tags": [
+          "job"
+        ]
+      }
+    },
+    "/v1/run_solution": {
+      "post": {
+        "description": "Run a composed preview's runnable methodology stages in order and return a durable Run with stage lineage; absent production foundation components are explicitly skipped. Requires orchestration:run_solution. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "run_solution",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "graph": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "project": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "engine": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "type": "boolean"
+                        },
+                        "run_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "run_id",
+                        "engine",
+                        "status",
+                        "preview"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Run solution preview",
         "tags": [
           "job"
         ]

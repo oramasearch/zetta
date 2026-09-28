@@ -96,6 +96,11 @@ What's inside, by domain (each links to that domain's docs):
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
   approaches: all 21 run today. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
+  The [solution registry](docs/solutions/README.md) lists the 12 catalogue
+  modules and eight Band-B sketches, then composes selected preview levels
+  through those methodology callbacks. Production readiness remains false
+  until the shared policy, action, experiment, monitoring, ledger, snapshot,
+  and readout components land.
   All 21 runnable methodologies check the [data-first feature plan](docs/data/featurization.md)
   before execution; `get_run_report` lists actual features and exclusions with reasons,
   including speech, bandits, optimization, grouped posteriors, stacking, labelling rules,

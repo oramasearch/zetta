@@ -62,6 +62,8 @@ const std::vector<PermissionEntry>& vocabulary() {
           {CapabilityDomain::Orchestration, "compile_intent"},
           {CapabilityDomain::Orchestration, "compile_n8n"},
           {CapabilityDomain::Orchestration, "compile_python"},
+          {CapabilityDomain::Orchestration, "create_solution"},
+          {CapabilityDomain::Orchestration, "run_solution"},
           {CapabilityDomain::Orchestration, "approve_plan"},
           {CapabilityDomain::Orchestration, "gate"},
           {CapabilityDomain::Orchestration, "deploy"},

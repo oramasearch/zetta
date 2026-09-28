@@ -71,6 +71,12 @@ The methodology registry journey in `test_action_journeys.cpp` discovers all
 verifies that all 21 methodologies are runnable, rejects an unmatched non-predictive intent,
 and refuses an incomplete segmentation graph at the correctness gate. Graph and
 project views expose `methodology` plus `runnable` (#1061).
+
+The solution-registry journey discovers 12 catalogue modules plus eight
+sketches, reads S-1's seven missing production components, composes CL-1 on a
+project through M-2, M-1, and M-3 callbacks, reads the replicated Pipeline back,
+runs the three preview stages in order, and verifies the durable parent Run's
+three lineage entries (#1102).
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset
 override, polls the Run and reads separation metrics, input/exclusion facts and
