@@ -101,6 +101,10 @@ What's inside, by domain (each links to that domain's docs):
   M-13 runs
   native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
   governed large-object reads.
+- **[Solution operations](docs/solutions/README.md)** — each solution can own a
+  replicated drift and guardrail monitor: input/score PSI, calibration,
+  closed-window cohort performance, bounded business metrics, pub/sub breach
+  events, and a durable retrain request (`zetta::solutions::Monitor`, #1106).
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

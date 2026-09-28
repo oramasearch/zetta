@@ -74,6 +74,7 @@
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/monitor.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -102,6 +103,9 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"workspace_profile", "workspace_profile.schema.json",
          &zetta::workspace::workspace_profile_value_schema},
         {"plan", "plan.schema.json", &zetta::billing::plan_value_schema},
+        // solutions
+        {"solution_monitor", "solution_monitor.schema.json",
+         &zetta::solutions::monitor_value_schema},
         {"calibration", "calibration.schema.json",
          &zetta::ml::calibration_schema},
         {"gbdt_model", "gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},

@@ -1,0 +1,312 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "bound": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "minimum"
+          ]
+        },
+        {
+          "required": [
+            "maximum"
+          ]
+        }
+      ],
+      "properties": {
+        "maximum": {
+          "type": "number"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "breach": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "input_psi",
+            "score_psi",
+            "calibration",
+            "guardrail"
+          ],
+          "type": "string"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "metric": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "monitor_id": {
+          "type": "string"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "retrain_requested": {
+          "type": "boolean"
+        },
+        "solution": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "monitor_id",
+        "solution",
+        "kind",
+        "metric",
+        "value",
+        "observed_at",
+        "retrain_requested"
+      ],
+      "type": "object"
+    },
+    "distribution": {
+      "additionalProperties": false,
+      "properties": {
+        "boundaries": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "breached": {
+          "type": "boolean"
+        },
+        "expected": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "observed": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "psi": {
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "boundaries",
+        "expected",
+        "observed",
+        "psi",
+        "breached",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "guardrail": {
+      "additionalProperties": false,
+      "properties": {
+        "bound": {
+          "$ref": "#/definitions/bound"
+        },
+        "breached": {
+          "type": "boolean"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "value": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "bound",
+        "breached",
+        "observed_at"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "breaches": {
+      "items": {
+        "$ref": "#/definitions/breach"
+      },
+      "type": "array"
+    },
+    "calibration": {
+      "additionalProperties": false,
+      "properties": {
+        "breached": {
+          "type": "boolean"
+        },
+        "brier_score": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "expected_calibration_error": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "samples": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "samples",
+        "expected_calibration_error",
+        "brier_score",
+        "breached",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "calibration_bins": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "calibration_error_threshold": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "cohorts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "accuracy": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "brier_score": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "closed_at": {
+            "type": "string"
+          },
+          "cohort": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "log_loss": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "samples": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "window": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "window",
+          "cohort",
+          "samples",
+          "accuracy",
+          "brier_score",
+          "log_loss",
+          "closed_at"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "created": {
+      "type": "string"
+    },
+    "guardrails": {
+      "items": {
+        "$ref": "#/definitions/guardrail"
+      },
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/definitions/distribution"
+      },
+      "type": "array"
+    },
+    "psi_threshold": {
+      "exclusiveMinimum": 0,
+      "type": "number"
+    },
+    "retrain_on_breach": {
+      "type": "boolean"
+    },
+    "retrain_requested": {
+      "type": "boolean"
+    },
+    "scores": {
+      "$ref": "#/definitions/distribution"
+    },
+    "solution": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "updated": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "solution",
+    "inputs",
+    "psi_threshold",
+    "calibration_error_threshold",
+    "calibration_bins",
+    "calibration",
+    "cohorts",
+    "guardrails",
+    "breaches",
+    "retrain_on_breach",
+    "retrain_requested",
+    "created",
+    "updated"
+  ],
+  "title": "zetta.SolutionMonitor",
+  "type": "object"
+}

@@ -63,6 +63,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Solution monitoring (#1106)** — a replicated monitor per solution records
+  input and score PSI, calibration, closed-window cohort performance, and
+  declared guardrails. New breach transitions publish to
+  `topic:solution-events`; configured monitors also set a durable retrain
+  request. See [solutions/monitor.md](solutions/monitor.md).
+
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
   intent compilation, and run dispatch. All 21 methodologies are runnable on the
   methodology integration branch (#1082), with all method-specific checks,
