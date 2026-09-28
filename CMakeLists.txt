@@ -580,6 +580,9 @@ add_library(zetta-core STATIC
   src/core/ml/optimization.cpp
   src/core/ml/bayesian.cpp
   src/core/ml/bayesian_methodology.cpp
+  src/core/ml/label_efficiency.cpp
+  src/core/ml/label_efficiency_methodology.cpp
+  src/core/ml/label_efficiency_runner.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp

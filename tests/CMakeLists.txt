@@ -97,6 +97,7 @@ add_executable(zetta-tests
   ml/test_speech_train_partitions.cpp
   ml/test_optimization.cpp
   ml/test_bayesian.cpp
+  ml/test_label_efficiency.cpp
   ml/test_model.cpp
   ml/test_next_best_action.cpp
   ml/test_next_best_action_methodology.cpp

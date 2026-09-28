@@ -23,3 +23,6 @@ decays. A number with no date is not evidence.
 - [M-10 language validation (2026-09-27)](language-validation-2026-09-27.md) — native tiny-BERT
   retrieval reached recall@1 1.0 and groundedness 1.0; distributed classifier statistics matched
   the single-node oracle across three members.
+- [label-efficiency validation (2026-09-27)](label-efficiency-validation-2026-09-27.md) — M-19
+  active learning and weak supervision validated on planted distributed tasks, including the
+  registry-driven API journey and gold-set isolation checks.

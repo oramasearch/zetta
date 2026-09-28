@@ -36,6 +36,7 @@ The reusable annotation and methodology-specific checks are:
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
+| `LabelEfficiencyGoldIsolationCheck` | `label_efficiency_gold_isolation` | an M-19 graph that treats weak labels as gold or does not reserve a disjoint gold split |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -85,6 +86,13 @@ kinds. It requires `stacking_predictions: "out_of_fold"`, `folds >= 2`, and
 `fold_strategy: "time_ordered"`. Each refusal names the required attribute, so
 an edited M-18 graph cannot silently turn its meta-model training into an
 in-sample fit or validate earlier observations from later data.
+### `label_efficiency_gold_isolation` — weak labels are not gold
+
+This check engages on `label_efficiency`, `active_learning`, and
+`weak_supervision` model steps. It requires `weak_labels_are_gold: false` and
+`gold_split: "disjoint"`. Missing, malformed, or contradictory values fail the
+gate before a run starts. The runtime uses the same rule when materializing the
+label queue and weak-label table; both exclude every reserved gold row.
 
 ## How a check reads a step
 

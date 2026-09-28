@@ -40,6 +40,7 @@ for model work.
 - [bandit.md](bandit.md) — M-15 native Thompson sampling, LinUCB, and linear Thompson sampling with allreduced per-arm state, constrained propensities, persisted policy tables, and registry execution (#1054).
 - [optimization.md](optimization.md) — M-16 native revised-simplex LP and best-bound branch-and-bound MIP: scenario table in, independently verified plan and constraint trace out (#1055).
 - [bayesian.md](bayesian.md) — M-17 native split-conformal intervals / classification sets and distributed Gibbs partial pooling, with measured hold-out coverage (#1056).
+- [label-efficiency.md](label-efficiency.md) — M-19 active learning plus a native weak-supervision label model, with queryable label-queue and probabilistic-label outputs (#1058).
 
 ## Methodology portfolio
 
@@ -68,7 +69,7 @@ carry `*`. Regenerate it with
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | variable*, objective*, constraint*, scenario*, group | plan, constraint trace, solver status | objective value, current plan objective, objective delta, constraint violations, optimality gap | runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
 | M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | entity*, label*, group*, time, prediction | posterior estimates, credible intervals, prediction intervals, prediction sets | empirical coverage, nominal coverage, mean interval width, mean prediction-set size | runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | entity*, feature*, label*, time | ensemble model, blended scores, meta-model weights | held-out ROC-AUC, log loss, lift over best single model | runnable | — |
-| M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | — | feature*, label | labels, review queue, label provenance | agreement, cost per label, downstream lift | not runnable | [#1058](https://github.com/oramasearch/zetta/issues/1058) |
+| M-19 | Label efficiency | The data supply chain | label_efficiency, active_learning, weak_supervision | label-efficient-training, support-ticket-triage | entity*, feature*, label* | label queue table, weak-label table | accuracy at labelling budget, labels saved, label-model gold accuracy | runnable | — |
 | M-20 | Privacy-preserving learning & synthetic data | The data supply chain | privacy_preserving, federated, synthetic_data | — | group*, feature* | private model, synthetic dataset, guarantee report | privacy budget, TSTR, attack success | not runnable | [#1059](https://github.com/oramasearch/zetta/issues/1059) |
 | M-21 | Online / streaming learning | Time & vigilance | online_learning, streaming | — | time*, feature*, label | online model, streaming scores | prequential loss, drift, latency | not runnable | [#1060](https://github.com/oramasearch/zetta/issues/1060) |
 <!-- methodology-table:end -->

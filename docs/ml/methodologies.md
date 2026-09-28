@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-18 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-19 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -256,6 +256,17 @@ calibration rows are disjoint from fitting rows.
 The runner in `src/core/ml/ensemble_runner.cpp` registers an `ensemble` Model and
 writes queryable blended-score and meta-weight tables with lineage. S-10 stays with M-1; select M-18 by ID or model kind. See [ensemble.md](ensemble.md) for its split guarantees and current
 multi-member adapter boundary.
+## M-19 label-efficiency implementation
+
+`src/core/ml/label_efficiency_methodology.cpp` builds a table-specific pipeline:
+connect the examples table, prepare numeric features, train the active and weak
+label models, then write the label queue and weak-label tables. Its ownership
+predicate recognizes `label_efficiency`, `active_learning`, and
+`weak_supervision` model steps.
+
+The callback resolves either the run request's `dataset_path` or the pipeline's
+own connect-step `source` and `table`, then starts the asynchronous runner in
+[`label-efficiency.md`](label-efficiency.md). The API handler remains generic.
 
 ## Adding a methodology
 

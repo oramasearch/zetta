@@ -3,8 +3,9 @@
 The deploy branch combines the registry with M-3, M-7, M-4, M-2, M-5,
 M-6, M-8 and M-9, followed by M-12, M-13, M-11 and M-10 in round two.
 Round three adds M-14 speech, M-15 bandits and M-16 optimization. Round four begins
-with M-17 Bayesian uncertainty and M-18 ensembling. All seventeen source histories
-remain represented by merge commits. M-1 through M-18 are runnable; later methodologies retain
+with M-17 Bayesian uncertainty, M-18 ensembling and M-19 label efficiency.
+All eighteen source histories remain represented by merge commits.
+M-1 through M-19 are runnable; later methodologies retain
 their unsupported status and issue links.
 
 ## Conflict decisions
@@ -32,8 +33,8 @@ their unsupported status and issue links.
 - M-18 also drops its S-10 primary claim: M-1 owns the catalogue row's first
   method. Ensembling keeps its ID/model-kind lookups, out-of-fold gate, and
   independent blended-score and meta-weight outputs.
-- All twenty-five default gate checks are retained in methodology order after
-  the shared checks. Discovery requires all eighteen implemented methodologies
+- All twenty-six default gate checks are retained in methodology order after
+  the shared checks. Discovery requires all nineteen implemented methodologies
   runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
   including the graph-check refusal test; forecasting is now runnable and is
   no longer a valid unsupported-method fixture.
@@ -77,7 +78,7 @@ is changed beyond resolving the integration conflicts.
 The integration was rebuilt from the registry base without running any
 formatter. Conflict edits preserve the surrounding layout. Before publication,
 each file's added/deleted lines are compared with the sum of its changes across
-the seventeen source branches; only small integration documentation and regression
+the eighteen source branches; only small integration documentation and regression
 coverage may exceed that sum. The issue comment records the complete audit,
 the requested shared-file statistics, and normal versus whitespace-ignored totals.
 

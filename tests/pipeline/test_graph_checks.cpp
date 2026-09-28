@@ -654,7 +654,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 25u);
+    ASSERT_EQ(gate.check_count(), 26u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -679,7 +679,8 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[21]->name(), "optimization_contract");
     EXPECT_EQ(gate.checks()[22]->name(), "uncertainty_validation");
     EXPECT_EQ(gate.checks()[23]->name(), "ensemble_out_of_fold");
-    EXPECT_EQ(gate.checks()[24]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[24]->name(), "label_efficiency_gold_isolation");
+    EXPECT_EQ(gate.checks()[25]->name(), "entity_resolution");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
@@ -832,6 +833,51 @@ TEST(SpeechGraphCheck, RefusesNonLocalAudio) {
     EXPECT_EQ(SpeechLocalAudioCheck{}.evaluate(graph).status, CheckStatus::Fail);
 }
 
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesWeakLabelsAsGold) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "label_efficiency"},
+             {"weak_labels_are_gold", true},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("never be treated as gold"),
+              std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, RefusesOverlappingGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "weak_supervision"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "overlapping"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("must be disjoint"), std::string::npos);
+}
+
+TEST(LabelEfficiencyGoldIsolationCheck, AcceptsDisjointGoldSplit) {
+    ExecutionGraph graph;
+    graph.add_node(
+        StepKind::Model, "label model",
+        json{{"model_kind", "active_learning"},
+             {"weak_labels_are_gold", false},
+             {"gold_split", "disjoint"}},
+        "label-model");
+
+    const CheckResult result =
+        zetta::pipeline::LabelEfficiencyGoldIsolationCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+}
+
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
     const ValidationReport report = zetta::pipeline::default_gate().run(clean_graph());
     EXPECT_TRUE(report.passed()) << report.checks.size();
@@ -941,6 +987,10 @@ TEST(MethodologyCheck, TheImplementedSetIsWhatTheEngineActuallyHas) {
     EXPECT_NE(std::find(implemented.begin(), implemented.end(), "ensemble"),
               implemented.end())
         << "M-18 out-of-fold stacking ships today";
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end())
+        << "M-19 label efficiency ships today";
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())
@@ -1363,6 +1413,9 @@ TEST(EpicAcceptance, TheImplementedMethodologySetIsHonest) {
         EXPECT_NE(std::find(implemented.begin(), implemented.end(), shipped),
                   implemented.end()) << shipped;
     }
+    EXPECT_NE(std::find(implemented.begin(), implemented.end(),
+                        "label_efficiency"),
+              implemented.end());
     for (const char* unshipped :
          {"online_learning"}) {
         EXPECT_EQ(std::find(implemented.begin(), implemented.end(), unshipped), implemented.end())

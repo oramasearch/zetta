@@ -27,6 +27,7 @@ Methodology make_m15_methodology();
 Methodology make_m16_methodology();
 Methodology make_m17_methodology();
 Methodology make_m18_methodology();
+Methodology make_m19_methodology();
 
 namespace {
 
@@ -97,13 +98,7 @@ const std::vector<Methodology>& methodologies() {
         make_m16_methodology(),
         make_m17_methodology(),
         make_m18_methodology(),
-        planned("M-19", "Label efficiency", "The data supply chain",
-                {"label_efficiency", "active_learning", "weak_supervision"}, {},
-                {"active learning", "weak supervision", "label efficiency"},
-                {input("feature", true, "unlabelled examples"),
-                 input("label", false, "gold labels")},
-                {"labels", "review queue", "label provenance"},
-                {"agreement", "cost per label", "downstream lift"}, 1058),
+        make_m19_methodology(),
         planned("M-20", "Privacy-preserving learning & synthetic data",
                 "The data supply chain",
                 {"privacy_preserving", "federated", "synthetic_data"}, {},

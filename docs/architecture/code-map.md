@@ -123,7 +123,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
-    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck + LabelEfficiencyGoldIsolationCheck — graph correctness checks (#309/#1058)
     run.hpp                 zetta::pipeline::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
     deployment_target.hpp   zetta::pipeline::DeploymentTarget — a placement (ENT-6; R1 local)
     deployment.hpp          zetta::pipeline::Deployment — a graph placed onto a target
@@ -181,6 +181,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     bandit.hpp              zetta::ml::BanditPolicy/BanditState/BanditParams and run_bandit_job — native Beta-Bernoulli Thompson sampling, LinUCB, and full-covariance linear Thompson sampling; constrained logged propensities and allreduced per-arm sufficient statistics (M-15; #1054)
     optimization.hpp        zetta::ml native LP/MIP problem, solver result, independent verification, scenario-table parser, distributed reduction callback, and table-running contract (#1055)
     bayesian.hpp            zetta::ml split-conformal regression/classification, hierarchical Gibbs posterior types, distributed allreduce job, and resolved-dataset runner (#1056)
+    label_efficiency.hpp    zetta::ml active-learning queue + weak-supervision label model, distributed through JobRound collectives (#1058)
+    label_efficiency_runner.hpp  resolved-table M-19 runner and asynchronous action handle; writes queue/weak-label tables with lineage (#1058)
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
     anomaly.hpp             zetta::ml — native M-7 anomaly types and algorithms: deterministic partition-assigned isolation forest, robust median/MAD contributions, causal KPI decomposition, exact contamination/alert-budget thresholding (#1046)
     anomaly_job.hpp         zetta::ml::run_anomaly_job — distributed tabular anomaly ComputeJob: tree and robust-summary allreduces, compact score gather, exact global budget, result broadcast; multi-member KPI refused in phase A (#1046)

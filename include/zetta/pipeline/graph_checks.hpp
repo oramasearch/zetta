@@ -280,6 +280,15 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// M-19 must reserve its deterministic gold split for evaluation. A graph that
+// permits weak labels to become gold, or does not declare a disjoint split,
+// would report label-model quality against its own inferred targets.
+class LabelEfficiencyGoldIsolationCheck final : public Check {
+public:
+    std::string name() const override { return "label_efficiency_gold_isolation"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).
