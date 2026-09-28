@@ -2,8 +2,9 @@
 
 The deploy branch combines the registry with M-3, M-7, M-4, M-2, M-5,
 M-6, M-8 and M-9, followed by M-12, M-13, M-11 and M-10 in round two.
-All twelve source histories remain represented by merge commits. M-1 through
-M-13 are runnable; later methodologies retain their unsupported status and issue links.
+Round three adds M-14 speech. All thirteen source histories remain represented
+by merge commits. M-1 through M-14 are runnable; later methodologies retain
+their unsupported status and issue links.
 
 ## Conflict decisions
 
@@ -20,8 +21,8 @@ M-13 are runnable; later methodologies retain their unsupported status and issue
   the catalogue calls anomaly detection M-5 and survival M-6. Its
   [S-8 framing](https://github.com/oramasearch/solutions-designs/blob/main/docs/plan/04-solutions-catalog.md#111-framing-methodology-correctness)
   explicitly lists anomaly detection first.
-- All eighteen default gate checks are retained in methodology order after
-  the shared checks. Discovery requires all thirteen implemented methodologies
+- All twenty-one default gate checks are retained in methodology order after
+  the shared checks. Discovery requires all fourteen implemented methodologies
   runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
   including the graph-check refusal test; forecasting is now runnable and is
   no longer a valid unsupported-method fixture.
@@ -40,6 +41,9 @@ M-13 are runnable; later methodologies retain their unsupported status and issue
   `run_named_table`, matching the shared helper introduced by the earlier
   integration. The audit of removed helper names found no other stale calls;
   churn/ranking retain `run_result_table` and uplift retains its named outputs.
+- Speech reports likewise select `redacted transcripts` through
+  `run_named_table`; consent, redaction and owner-local audio checks remain
+  independent requirements. M-14 claims no primary solution lookup.
 - The forecast branch's equivalent registry commit does not create duplicate
   entries. Documentation rows match the combined registry. Generated schemas
   are regenerated from code, not combined by hand.
@@ -54,7 +58,7 @@ is changed beyond resolving the integration conflicts.
 The integration was rebuilt from the registry base without running any
 formatter. Conflict edits preserve the surrounding layout. Before publication,
 each file's added/deleted lines are compared with the sum of its changes across
-the twelve source branches; only small integration documentation and regression
+the thirteen source branches; only small integration documentation and regression
 coverage may exceed that sum. The issue comment records the complete audit,
 the requested shared-file statistics, and normal versus whitespace-ignored totals.
 

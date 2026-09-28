@@ -566,6 +566,11 @@ add_library(zetta-core STATIC
   src/core/ml/vision_methodology.cpp
   src/core/ml/document_methodology.cpp
   src/core/ml/document_extraction.cpp
+  src/core/ml/speech_audio.cpp
+  src/core/ml/speech_whisper.cpp
+  src/core/ml/speech_train_job.cpp
+  src/core/ml/speech_runner.cpp
+  src/core/ml/speech_methodology.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp

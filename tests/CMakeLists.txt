@@ -91,6 +91,8 @@ add_executable(zetta-tests
   ml/test_vision_train_partitions.cpp
   ml/test_document_extraction.cpp
   ml/test_language.cpp
+  ml/test_speech.cpp
+  ml/test_speech_train_partitions.cpp
   ml/test_model.cpp
   ml/test_next_best_action.cpp
   ml/test_next_best_action_methodology.cpp

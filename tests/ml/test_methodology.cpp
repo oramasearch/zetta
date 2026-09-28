@@ -85,7 +85,7 @@ TEST(MethodologyRegistry, ListsAllTwentyOneInIdOrder) {
     const auto& methodologies = zetta::ml::methodologies();
     ASSERT_EQ(methodologies.size(), 21u);
     for (std::size_t index = 0; index < methodologies.size(); ++index) {
-        const bool runnable = index <= 12;
+        const bool runnable = index <= 13;
         EXPECT_EQ(methodologies[index].id, "M-" + std::to_string(index + 1));
         EXPECT_EQ(methodologies[index].runnable, runnable);
         EXPECT_EQ(static_cast<bool>(methodologies[index].build_shape),
@@ -194,6 +194,26 @@ TEST(MethodologyRegistry, LanguageBuildsItsOwnGroundedPipeline) {
     EXPECT_TRUE(model->attributes.at("governance_check"));
     EXPECT_TRUE(model->attributes.at("citations_required"));
     EXPECT_TRUE(model->attributes.at("refuse_without_retrieval"));
+}
+
+TEST(MethodologyRegistry, SpeechBuildsItsOwnRunnableShape) {
+  const auto *methodology = zetta::ml::find_methodology("M-14");
+  ASSERT_NE(methodology, nullptr);
+  ASSERT_TRUE(methodology->runnable);
+  const auto graph = methodology->build_shape(
+      {.project = "project",
+       .intent = "transcribe recordings",
+       .hints = {{"database", "media"},
+                 {"table", "calls"},
+                 {"checkpoint_model", "whisper-tiny"}}});
+  EXPECT_TRUE(methodology->owns(graph));
+  ASSERT_EQ(graph.node_count(), 4u);
+  const auto model = graph.find_node("transcribe_audio");
+  ASSERT_NE(model, nullptr);
+  EXPECT_EQ(model->attributes.at("model_kind"), "speech");
+  EXPECT_TRUE(model->attributes.at("consent_required").get<bool>());
+  EXPECT_TRUE(model->attributes.at("redact_pii").get<bool>());
+  EXPECT_TRUE(model->attributes.at("audio_local_only").get<bool>());
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {

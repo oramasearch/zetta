@@ -28,6 +28,10 @@ The reusable annotation and methodology-specific checks are:
 | `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 | `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
 
+| `SpeechConsentCheck` | `speech_consent` | a speech model that does not require an explicit boolean consent field |
+| `SpeechPiiRedactionCheck` | `speech_pii_redaction` | a speech model that could store unfiltered transcript text |
+| `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -178,6 +182,16 @@ column fails because the runner cannot know which rows must stay together.
 
 The M-13 shape emits both annotations. The runtime also performs the split from
 the named column, so the graph promise and the executed behavior agree.
+
+### Speech correctness checks
+
+Model steps with `model_kind: speech` or `audio` must set
+`consent_required: true`, name a non-empty `consent_column`, set
+`redact_pii: true`, and set `audio_local_only: true`. These declarations make a
+compiled graph that weakens any M-14 privacy rule fail before execution. The
+speech runner independently validates row consent before reading a blob and
+filters text before table insertion; graph annotations are not treated as proof
+that the underlying data complied.
 
 ## Example
 

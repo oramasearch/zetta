@@ -22,6 +22,7 @@ Methodology make_m10_methodology();
 Methodology make_m11_methodology();
 Methodology make_graph_methodology();
 Methodology make_m13_methodology();
+Methodology make_m14_methodology();
 
 namespace {
 
@@ -87,13 +88,7 @@ const std::vector<Methodology>& methodologies() {
         make_m11_methodology(),
         make_graph_methodology(),
         make_m13_methodology(),
-        planned("M-14", "Speech & audio analytics",
-                "Language, documents & perception", {"speech", "audio"}, {},
-                {"speech", "audio", "transcribe", "diarize"},
-                {input("audio", true, "audio recordings"),
-                 input("label", false, "transcripts or task labels")},
-                {"transcripts", "speaker segments", "audio scores"},
-                {"word error rate", "F1"}, 1053),
+        make_m14_methodology(),
         planned("M-15", "Bandits & sequential decisioning", "Action & decision",
                 {"bandit", "bandits", "sequential_decisioning"}, {},
                 {"bandit", "explore", "sequential decision"},

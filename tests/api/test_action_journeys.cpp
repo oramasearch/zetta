@@ -10,11 +10,14 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -40,6 +43,7 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/vision.hpp"
 #include "zetta/ml/language.hpp"
+#include "zetta/ml/speech.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -146,7 +150,42 @@ struct Uc1Journey : ActionJourneys {
     }
 };
 
-}  // namespace
+void append_speech_u16(std::string &bytes, std::uint16_t value) {
+  bytes.push_back(static_cast<char>(value & 0xff));
+  bytes.push_back(static_cast<char>((value >> 8) & 0xff));
+}
+
+void append_speech_u32(std::string &bytes, std::uint32_t value) {
+  for (int offset = 0; offset < 32; offset += 8) {
+    bytes.push_back(static_cast<char>((value >> offset) & 0xff));
+  }
+}
+
+std::string speech_test_wav() {
+  constexpr std::uint32_t sample_rate = 16000;
+  constexpr std::size_t samples = 8000;
+  std::string bytes = "RIFF";
+  append_speech_u32(bytes, 36 + samples * 2);
+  bytes += "WAVEfmt ";
+  append_speech_u32(bytes, 16);
+  append_speech_u16(bytes, 1);
+  append_speech_u16(bytes, 1);
+  append_speech_u32(bytes, sample_rate);
+  append_speech_u32(bytes, sample_rate * 2);
+  append_speech_u16(bytes, 2);
+  append_speech_u16(bytes, 16);
+  bytes += "data";
+  append_speech_u32(bytes, samples * 2);
+  for (std::size_t index = 0; index < samples; ++index) {
+    const double value =
+        0.5 * std::sin(2.0 * std::numbers::pi * 440.0 * index / sample_rate);
+    append_speech_u16(bytes, static_cast<std::uint16_t>(
+                                 static_cast<std::int16_t>(value * 32767.0)));
+  }
+  return bytes;
+}
+
+} // namespace
 
 // =====================================================================
 // Canonical journey 1 — UC-1 end to end: project → intent → compile → gate →
@@ -1598,6 +1637,101 @@ TEST_F(Uc1Journey, JourneyLanguageMethodologyCompilesRunsAndReports) {
     EXPECT_EQ(denied.error.code, "unauthorized");
     EXPECT_NE(denied.error.message.find("every requested training column"),
               std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneySpeechMethodologyCompilesRunsAndReports) {
+  auto database = node.create_database("media");
+  ASSERT_TRUE(database);
+  const auto audio =
+      database->large_objects().import_bytes("tone.wav", speech_test_wav());
+  ASSERT_TRUE(audio);
+
+  const fs::path source = fs::path(dir.path()) / "recordings.jsonl";
+  {
+    std::ofstream output(source);
+    output << nlohmann::json{{"recording", "call-1"},
+                             {"audio", audio->id},
+                             {"consent", true},
+                             {"reference_text", "test"}}
+                  .dump()
+           << '\n';
+  }
+  const ApiResult landed = call("add_dataset", {{"path", source.string()},
+                                                {"database", "media"},
+                                                {"table_name", "recordings"},
+                                                {"partition_count", 1},
+                                                {"replication_factor", 1}});
+  ASSERT_TRUE(landed.ok) << landed.error.message;
+
+  zetta::ml::WhisperConfig config;
+  config.mel_bins = 8;
+  config.model_width = 8;
+  config.encoder_heads = 2;
+  config.encoder_feed_forward = 16;
+  config.decoder_heads = 2;
+  config.decoder_feed_forward = 16;
+  config.max_source_positions = 32;
+  config.max_target_positions = 8;
+  config.vocabulary_size = 12;
+  config.timestamp_begin = 8;
+  auto checkpoint = zetta::ml::random_whisper_checkpoint(config, 17);
+  zetta::ml::ModelValue value;
+  value.name = "whisper-test";
+  value.kind = "speech_backbone";
+  value.feature_schema = {{"whisper_config", zetta::ml::to_json(config)},
+                          {"weights_origin", "random"},
+                          {"test_vocabulary", checkpoint.test_vocabulary}};
+  const auto model = node.create_model(std::move(value));
+  ASSERT_TRUE(model);
+  ASSERT_TRUE(model->set_weights(
+      zetta::autograd::serialize_safetensors(checkpoint.tensors)));
+
+  ASSERT_TRUE(call("create_project", {{"name", "speech journey"}}).ok);
+  const ApiResult captured =
+      call("capture_intent", {{"project", "speech journey"},
+                              {"text", "Transcribe consented recordings"}});
+  ASSERT_TRUE(captured.ok) << captured.error.message;
+  const ApiResult compiled =
+      call("compile_intent", {{"project", "speech journey"},
+                              {"input_id", captured.value.at("input_id")},
+                              {"methodology", "M-14"},
+                              {"name", "speech pipeline"},
+                              {"hints",
+                               {{"database", "media"},
+                                {"table", "recordings"},
+                                {"checkpoint_model", model->id()},
+                                {"maximum_new_tokens", 2}}}});
+  ASSERT_TRUE(compiled.ok) << compiled.error.message;
+  EXPECT_EQ(compiled.value.at("methodology"), "M-14");
+  EXPECT_TRUE(compiled.value.at("runnable"));
+
+  const ApiResult run = call("run", {{"project", "speech journey"},
+                                     {"graph", "speech pipeline"},
+                                     {"model_name", "journey transcript"}});
+  ASSERT_TRUE(run.ok) << run.error.message;
+  EXPECT_EQ(run.value.at("status"), "succeeded");
+  const ApiResult run_view =
+      call("get_run", {{"run_id", run.value.at("run_id")}});
+  ASSERT_TRUE(run_view.ok) << run_view.error.message;
+  EXPECT_EQ(run_view.value.at("status"), "succeeded");
+
+  const ApiResult report =
+      call("get_run_report", {{"run_id", run.value.at("run_id")}});
+  ASSERT_TRUE(report.ok) << report.error.message;
+  EXPECT_TRUE(report.value.at("model").contains("word_error_rate"));
+  ASSERT_EQ(report.value.at("output_tables").size(), 1u);
+  EXPECT_TRUE(report.value.at("output_tables")
+                  .front()
+                  .get<std::string>()
+                  .starts_with("speech_results.transcripts_"));
+  ASSERT_FALSE(report.value.at("transcripts").empty());
+  const auto &transcript = report.value.at("transcripts").front();
+  EXPECT_TRUE(transcript.contains("recording"));
+  EXPECT_TRUE(transcript.contains("segment"));
+  EXPECT_TRUE(transcript.contains("start"));
+  EXPECT_TRUE(transcript.contains("end"));
+  EXPECT_TRUE(transcript.contains("text"));
+  EXPECT_TRUE(transcript.contains("confidence"));
 }
 
 // =====================================================================

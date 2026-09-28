@@ -83,9 +83,9 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free: eighteen checks on the methodology integration branch (#1082).
+for free: twenty-one checks on the methodology integration branch (#1082).
 `NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck` and
-`TemporalValidationCheck` precede the M-2 through M-13 checks in methodology order,
+`TemporalValidationCheck` precede the M-2 through M-14 checks in methodology order,
 followed by [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md)
 (`#312` / TC-4). See [gate-checks.md](gate-checks.md). Method-specific checks
 engage on their own model kinds; shared annotation checks retain their opt-in

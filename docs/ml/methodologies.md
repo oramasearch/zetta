@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-13 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-14 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -195,6 +195,16 @@ connect step, enforces the source-disjoint and large-object access rules, calls
 the [native vision runner](vision.md), and returns the durable run id. The same
 run and report reads used by M-1 expose M-13's Model, prediction table, metrics,
 confusion matrix, and read/exclusion counts.
+
+## M-14 speech implementation
+
+M-14 owns `speech` and `audio` model steps. Its shape loads one recording table,
+decodes and prepares local audio, runs native Whisper, and writes a redacted
+transcript table. Its callback resolves the connect step's own database and
+table before calling the speech runner; it never substitutes a built-in dataset
+or structural execution. Consent, transcript privacy filtering, and node-local
+audio are gate requirements and runner invariants. See
+[speech.md](speech.md).
 
 ## Adding a methodology
 
