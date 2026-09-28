@@ -11,7 +11,7 @@ in the sibling directories.
 - [observability.md](observability.md) — **a foundation**: every operation captures intent · plan · performance · result shape as OTel-style spans threaded by trace id across surfaces and nodes; crash reports; feedback bundles; the traced test suite.
 - [coding-conventions.md](coding-conventions.md) — the canonical conventions reference: C++ style, the domain layout + namespace rule, boundaries/no-throw, interfaces, commit/branch flow.
 - [owner-gate.md](owner-gate.md) — the Node owner-thread gate (#624): `run_on_owner` lets background workers drive engine runs while node writes land on the owner loop.
-- [runtime.md](runtime.md) — `zetta::runtime` over Capy/Corosio: cross-thread events (#1076), `parallel_for`, and the migration plan.
+- [runtime.md](runtime.md) — `zetta::runtime` over Capy/Corosio: cross-thread events and fair IO scheduling (#1076), `parallel_for`, and the migration plan.
 - [schemas.md](schemas.md) — **schema as code**: the embedded C++ draft-07 schema is the source of truth; `schemas/*.json` is generated + drift-checked (#464).
 - [true-hybrid.md](true-hybrid.md) — one equal-peer cluster spanning heterogeneous hardware (CPU/GPU/ASIC, on-prem + cloud) and the interfaces that make it work, with a built-vs-planned matrix.
 - [code-audit.md](code-audit.md) — living codebase health audit: convention drift, redundancies, smells, and reconciliation against the wtm blueprint rules (RULE-* / NFR-*).

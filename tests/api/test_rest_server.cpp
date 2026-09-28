@@ -5,12 +5,16 @@
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -58,11 +62,21 @@ int open_http_request(unsigned short port, const std::string& method,
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
-    if (::connect(socket_descriptor, reinterpret_cast<sockaddr*>(&address),
-                  sizeof(address)) != 0) {
+    const int flags = ::fcntl(socket_descriptor, F_GETFL, 0);
+    ::fcntl(socket_descriptor, F_SETFL, flags | O_NONBLOCK);
+    const int connected = ::connect(
+        socket_descriptor, reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    pollfd pending{socket_descriptor, POLLOUT, 0};
+    int connect_error = 0;
+    socklen_t error_size = sizeof(connect_error);
+    if ((connected != 0 && errno != EINPROGRESS) ||
+        (connected != 0 && ::poll(&pending, 1, 1000) != 1) ||
+        ::getsockopt(socket_descriptor, SOL_SOCKET, SO_ERROR,
+                     &connect_error, &error_size) != 0 || connect_error != 0) {
         ::close(socket_descriptor);
         return -1;
     }
+    ::fcntl(socket_descriptor, F_SETFL, flags);
     // A bounded wait (#1007): a server that never answers must FAIL the test
     // (status 0, empty body), not park the suite in recv() forever — the hang is
     // exactly the failure some of these tests exist to catch.
@@ -136,6 +150,7 @@ struct RestServerFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     std::unique_ptr<zetta::api::ApiServer> server;
+    zetta::api::ServerOptions options;
     // Auth is always on (#799): seed the owner (admin) so this secret
     // authenticates as it; request() sends it by default so every fixture call
     // is a successful, authorized admin call.
@@ -144,7 +159,6 @@ struct RestServerFixture : ::testing::Test {
     void SetUp() override {
         ASSERT_TRUE(node.start());
         ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
-        zetta::api::ServerOptions options;
         options.port = 0;  // ephemeral
         server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
         ASSERT_TRUE(server->start()) << server->reason();
@@ -183,6 +197,20 @@ struct RestServerFixture : ::testing::Test {
     nlohmann::json json_of(const HttpResponse& response) {
         return nlohmann::json::parse(response.body, nullptr,
                                      /*allow_exceptions=*/false);
+    }
+};
+
+struct SmallConnectionCacheFixture : RestServerFixture {
+    void SetUp() override {
+        options.idle_connection_cache = 1;
+        RestServerFixture::SetUp();
+    }
+};
+
+struct ConnectionLimitFixture : SmallConnectionCacheFixture {
+    void SetUp() override {
+        options.max_connections = 2;
+        SmallConnectionCacheFixture::SetUp();
     }
 };
 
@@ -549,6 +577,203 @@ TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
               << std::chrono::duration<double, std::milli>(no_wait_elapsed).count()
               << " ms, registry "
               << no_wait_body.at("duration_ms").get<double>() << " ms\n";
+}
+
+TEST_F(SmallConnectionCacheFixture, FiveHundredHeldPollsLeaveTwentyFreshConnectionsFast) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:acceptance","exposed":true})").status,
+              200);
+    ASSERT_EQ(request("POST", "/v1/publish_event",
+                      R"({"topic":"acceptance","payload":"head"})").status,
+              200);
+    const std::size_t audit_before = node.audit_event_count();
+    constexpr std::size_t kLongPolls = 500;
+    constexpr std::size_t kProbes = 20;
+    OpenSockets long_polls;
+    for (std::size_t index = 0; index < kLongPolls; ++index) {
+        const int descriptor = open_http_request(
+            server->port(), "GET",
+            "/v1/receive_events?topic=acceptance&from_sequence=2&wait_ms=10000",
+            "", owner_secret);
+        ASSERT_GE(descriptor, 0) << "connect timed out at held poll " << index;
+        long_polls.descriptors.push_back(descriptor);
+        if ((index + 1) % 25 == 0) server->drain();
+    }
+    const auto registration_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() < audit_before + kLongPolls &&
+           std::chrono::steady_clock::now() < registration_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(node.audit_event_count(), audit_before + kLongPolls);
+
+    std::vector<HttpResponse> responses;
+    std::vector<double> elapsed_ms;
+    std::atomic<bool> finished{false};
+    std::thread client([&] {
+        for (std::size_t index = 0; index < kProbes; ++index) {
+            const auto started = std::chrono::steady_clock::now();
+            responses.push_back(http_request(
+                server->port(), "GET",
+                "/v1/receive_events?topic=acceptance&from_sequence=2&wait_ms=0",
+                "", owner_secret));
+            elapsed_ms.push_back(std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count());
+            if (responses.back().status != 200) break;
+        }
+        finished = true;
+    });
+    const auto probe_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!finished && std::chrono::steady_clock::now() < probe_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    const bool finished_with_polls_held = finished.load();
+    EXPECT_EQ(node.audit_event_count(), audit_before + kLongPolls + kProbes);
+
+    const auto published = request(
+        "POST", "/v1/publish_event",
+        R"({"topic":"acceptance","payload":"release"})");
+    EXPECT_EQ(published.status, 200) << published.body;
+    const auto cleanup_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!finished && std::chrono::steady_clock::now() < cleanup_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    client.join();
+    EXPECT_TRUE(finished_with_polls_held);
+    ASSERT_EQ(responses.size(), kProbes);
+    for (std::size_t index = 0; index < kProbes; ++index) {
+        ASSERT_EQ(responses[index].status, 200) << responses[index].body;
+        const auto body = json_of(responses[index]);
+        ASSERT_TRUE(body.at("ok").get<bool>()) << responses[index].body;
+        EXPECT_TRUE(body.at("value").at("events").empty());
+        EXPECT_LT(elapsed_ms[index], 5.0) << "fresh connection " << index;
+    }
+    std::cout << "#1076 500 held polls, 20 fresh connections: max wall "
+              << *std::max_element(elapsed_ms.begin(), elapsed_ms.end()) << " ms\n";
+}
+
+TEST_F(ConnectionLimitFixture, FullCapacityAcceptsAndRejectsPromptlyThenRecovers) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:limited","exposed":true})").status,
+              200);
+    const std::size_t audit_before = node.audit_event_count();
+    OpenSockets long_polls;
+    for (int index = 0; index < 2; ++index) {
+        const int descriptor = open_http_request(
+            server->port(), "GET", "/v1/receive_events?topic=limited&wait_ms=10000",
+            "", owner_secret);
+        ASSERT_GE(descriptor, 0);
+        long_polls.descriptors.push_back(descriptor);
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() < audit_before + 2 &&
+           std::chrono::steady_clock::now() < deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(node.audit_event_count(), audit_before + 2);
+    for (int index = 0; index < 20; ++index) {
+        const auto started = std::chrono::steady_clock::now();
+        const auto response = request(
+            "GET", "/v1/receive_events?topic=limited&wait_ms=0");
+        EXPECT_EQ(response.status, 503) << response.body;
+        EXPECT_EQ(json_of(response).at("error").at("code"), "busy");
+        EXPECT_LT(std::chrono::steady_clock::now() - started,
+                  std::chrono::milliseconds(100));
+    }
+    EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+
+    zetta::api::ApiContext context{
+        node, nullptr, "", zetta::observability::make_root_trace(),
+        &node.span_recorder()};
+    ASSERT_TRUE(server->registry().call(
+        "publish_event", nlohmann::json{{"topic", "limited"}, {"payload", "release"}},
+        context).ok);
+    const auto released = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() < audit_before + 5 &&
+           std::chrono::steady_clock::now() < released) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(node.audit_event_count(), audit_before + 5);
+    for (int& descriptor : long_polls.descriptors) {
+        const auto response = read_http_response(descriptor);
+        descriptor = -1;
+        EXPECT_EQ(response.status, 200) << response.body;
+    }
+    EXPECT_EQ(request("GET", "/v1/receive_events?topic=limited&wait_ms=0").status, 200);
+}
+
+TEST_F(RestServerFixture, StopWakesHeldLongPollsAndJoinsSessions) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:shutdown","exposed":true})").status,
+              200);
+    const auto audit_before = node.audit_event_count();
+    OpenSockets long_polls;
+    const int descriptor = open_http_request(
+        server->port(), "GET", "/v1/receive_events?topic=shutdown&wait_ms=30000",
+        "", owner_secret);
+    ASSERT_GE(descriptor, 0);
+    long_polls.descriptors.push_back(descriptor);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() == audit_before &&
+           std::chrono::steady_clock::now() < deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_EQ(node.audit_event_count(), audit_before + 1);
+    const auto started = std::chrono::steady_clock::now();
+    server->stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+    EXPECT_FALSE(server->running());
+    ASSERT_TRUE(server->start()) << server->reason();
+    EXPECT_EQ(request("GET", "/v1/receive_events?topic=shutdown&wait_ms=0").status, 200);
+}
+
+TEST_F(RestServerFixture, ZeroConnectionCapacityIsRejected) {
+    server->stop();
+    options.max_connections = 0;
+    server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
+    EXPECT_FALSE(server->start());
+    EXPECT_NE(server->reason().find("max_connections"), std::string::npos);
+}
+
+TEST_F(RestServerFixture, StopDrainsOffloadedOwnerWork) {
+    server->stop();
+    node.tick();  // adopt this thread as the real owner loop does
+    zetta::api::Capability capability{
+        "shutdown_offload", "Shutdown offload", "Exercise an offloaded owner hop",
+        nlohmann::json{{"type", "object"}}, {},
+        zetta::api::CapabilityKind::Read, {}, false, false,
+        [](const nlohmann::json&, zetta::api::ApiContext& context) {
+            context.node.run_on_owner([] {});
+            return zetta::api::ApiResult::success({});
+        }};
+    capability.offloadable = true;
+    ASSERT_TRUE(server->registry().add(std::move(capability)));
+    ASSERT_TRUE(server->start()) << server->reason();
+    auto owner_work_queued = std::make_shared<std::atomic<bool>>(false);
+    node.set_owner_wakeup([owner_work_queued] { *owner_work_queued = true; });
+    OpenSockets clients;
+    const int descriptor = open_http_request(
+        server->port(), "GET", "/v1/shutdown_offload", "", owner_secret);
+    ASSERT_GE(descriptor, 0);
+    clients.descriptors.push_back(descriptor);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!owner_work_queued->load() && std::chrono::steady_clock::now() < deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    ASSERT_TRUE(owner_work_queued->load());
+    const auto started = std::chrono::steady_clock::now();
+    server->stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+    node.set_owner_wakeup({});
 }
 
 TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {

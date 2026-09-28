@@ -90,6 +90,27 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   not only inside the 10 Hz `tick()`. Without both, each hop waited out a tick:
   `receive_events` took ~205 ms with no wait at all; it now takes under 1 ms.
 
+## Connection admission
+
+The HTTP adapter owns its accept loop and uses Beast2's HTTP parser/session logic
+for each admitted socket. It does not use the fixed TCP worker pool: that pool
+waited for an idle worker before accepting, so held long polls could fill the
+listen backlog and make new TCP connections time out (#1076).
+
+Sessions are created on demand. `ServerOptions::idle_connection_cache` controls
+only reuse of finished parser/serializer objects; `max_connections` is the
+separate, explicit admission cap. At that cap the listener still accepts and
+answers HTTP 503 / `busy` with `Retry-After: 1`, without entering the registry.
+`listen_backlog` requests the kernel's pending-connection queue size. Defaults,
+OS resource limits and the 500-held-polls/20-new-connections regression are in
+[pub/sub exposure](../pubsub/exposure.md#exposure-on-mcp-and-rest).
+
+Session sockets are closed on completion, including cached sessions. Shutdown
+closes the listener and sockets on their IO executor, signals pending poll events,
+and keeps draining owner work until all session coroutines finish. This preserves
+the lifetime of queued bridge callbacks. No capability schema or new JSON format
+is added.
+
 ## Auth, governance, audit — nothing new
 
 - **Bearer token = an `AccessKey` id.** Possession of the key id is the

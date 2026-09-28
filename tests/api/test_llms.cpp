@@ -245,8 +245,8 @@ TEST_F(LlmsHttpFixture, TopicAndFullPagesAreServed) {
 // Regression for #700: the beast2 worker reuses one response object across
 // requests without clearing its headers, so without the adapter's explicit
 // stamping, the FIRST response's Content-Length/ETag would stick to the
-// worker and truncate every later, longer body. One worker coroutine forces
-// every request through the same reused response object.
+// worker and truncate every later, longer body. A one-entry idle parser cache
+// sends these sequential requests through the same reused response object.
 TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
@@ -257,7 +257,7 @@ TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
     zetta::api::ServerOptions options;
     options.port = 0;
-    options.worker_coroutines = 1;
+    options.idle_connection_cache = 1;
     zetta::api::ApiServer server(node, nullptr, options);
     ASSERT_TRUE(server.start()) << server.reason();
 

@@ -32,6 +32,8 @@ Today the interface exposes:
 |---|---|---|
 | `task<T>` (default `task<>`) | `boost::capy::task<T>` | a coroutine returning `T` |
 | `thread_pool` | `boost::capy::thread_pool` | worker threads + an executor |
+| `run_async(executor)` | Capy launcher | start a task on a specific executor and retain its work until completion; HTTP accepts and sessions stay on their IO executor |
+| `yield()` | executor post | requeue the current coroutine so ready peers can run, without a timer or a blocking thread sleep |
 | `async_event` | serialized Capy event adapter | suspend without holding a thread; publish/close wakes all waiters on their executors (#1076) |
 | `block_on(task)` / `block_on(task<T>)` | Capy blocking runner | synchronous bridge: run a task to completion from non-coroutine code (e.g. `main()`, tests) and get its result |
 | `parallel_for(count, body)` | Capy `thread_pool` + `run_async` | blocking data-parallel fan-out: split `[0, count)` into chunks, run each on the shared pool, join before returning |
