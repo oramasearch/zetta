@@ -7,6 +7,7 @@
 #include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/ml/synthetic_private_job.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
@@ -717,6 +718,7 @@ void Node::start_coordinator() {
     zetta::ml::install_forecast_launch_runner(*launch_listener_, *this);
     zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
     zetta::ml::install_next_best_action_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_synthetic_private_launch_runner(*launch_listener_, *this);
     zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
                                                           *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,

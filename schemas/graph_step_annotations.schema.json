@@ -1,8 +1,13 @@
 {
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements, plus streaming event/label ordering. Only the named fields are constrained; a node may carry any other attributes.",
   "properties": {
+    "allowed_lateness": {
+      "description": "How far behind the maximum observed event time an event may arrive before exclusion.",
+      "minimum": 0,
+      "type": "number"
+    },
     "as_of": {
       "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$",
@@ -40,6 +45,10 @@
       "minLength": 1,
       "type": "string"
     },
+    "event_time_ordered": {
+      "description": "Streaming work is released in event-time order behind its watermark.",
+      "type": "boolean"
+    },
     "features": {
       "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
       "items": {
@@ -71,6 +80,13 @@
       },
       "type": "array"
     },
+    "future_event_policy": {
+      "description": "How streaming work prevents future events from entering the current decision.",
+      "enum": [
+        "buffer_until_watermark"
+      ],
+      "type": "string"
+    },
     "governance_check": {
       "description": "Requires runtime authorization before language training reads text.",
       "type": "boolean"
@@ -78,6 +94,13 @@
     "label": {
       "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
       "minLength": 1,
+      "type": "string"
+    },
+    "label_time_policy": {
+      "description": "A label may train the model only at or after its event time.",
+      "enum": [
+        "not_before_event_time"
+      ],
       "type": "string"
     },
     "outcome": {
@@ -96,6 +119,10 @@
       "type": "number"
     },
     "point_in_time_features": {
+      "type": "boolean"
+    },
+    "prequential": {
+      "description": "Metrics are computed test-then-train from the score made before an update.",
       "type": "boolean"
     },
     "redact_pii": {

@@ -293,7 +293,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("list_methodologies", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
-    for (std::size_t index = 0; index < 16; ++index) {
+    for (std::size_t index = 0; index < 21; ++index) {
         const auto& methodology = listed.value.at("methodologies")[index];
         EXPECT_EQ(methodology.at("id"), "M-" + std::to_string(index + 1));
         EXPECT_TRUE(methodology.at("runnable"));
@@ -384,10 +384,20 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
 
     const auto unavailable = call("compile_intent", {{"project", "portfolio"},
                                                      {"input_id", input_id},
-                                                     {"methodology", "M-21"}});
+                                                     {"methodology", "unregistered_model_kind"}});
     EXPECT_FALSE(unavailable.ok);
-    EXPECT_EQ(unavailable.error.code, "not_supported");
-    EXPECT_NE(unavailable.error.message.find("1060"), std::string::npos);
+    EXPECT_EQ(unavailable.error.code, "invalid_input");
+    EXPECT_NE(unavailable.error.message.find("unregistered_model_kind"), std::string::npos);
+
+    zetta::ir::ExecutionGraph unknown_graph;
+    unknown_graph.add_node(zetta::ir::StepKind::Model, "unknown model",
+                           {{"model_kind", "unregistered_model_kind"}}, "unknown");
+    ASSERT_TRUE(project->create_graph("unknown model graph", std::move(unknown_graph)));
+    const ApiResult refused = call(
+        "run", {{"project", "portfolio"}, {"graph", "unknown model graph"}});
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.error.code, "not_supported");
+    EXPECT_NE(refused.error.message.find("no registered methodology"), std::string::npos);
 }
 
 TEST_F(Uc1Journey, EntityResolutionCompilesAndRunsItsPipelinesTable) {
@@ -1872,6 +1882,400 @@ TEST_F(Uc1Journey, JourneyM16CompilesRunsAndReportsAFeasiblePlan) {
   const journey::JourneyReport report =
       journey::run_journey(optimization, caller(), pump());
   EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(ActionJourneys, JourneyBayesianMethodologyCompilesRunsAndReports) {
+    std::string content = "id,store,value\n";
+    for (int index = 1; index <= 120; ++index) {
+        const std::string store =
+            index % 3 == 0 ? "north" : (index % 3 == 1 ? "south" : "west");
+        const double center =
+            store == "north" ? 8.0 : (store == "south" ? 12.0 : 18.0);
+        content += std::to_string(index) + "," + store + "," +
+                   std::to_string(center + static_cast<double>(index % 7) / 10.0) +
+                   "\n";
+    }
+    const ApiResult uploaded =
+        call("upload_dataset", {{"table_name", "store_demand"},
+                                {"format", "csv"},
+                                {"content", content}});
+    ASSERT_TRUE(uploaded.ok) << uploaded.error.message;
+    ASSERT_EQ(uploaded.value.at("database"), "datasets");
+    ASSERT_EQ(uploaded.value.at("table"), "store_demand");
+
+    ASSERT_TRUE(call("create_project", {{"name", "uncertain demand"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "uncertain demand"},
+         {"text", "Estimate demand by store with honest uncertainty"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "uncertain demand"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-17"},
+         {"name", "store posterior"},
+         {"hints",
+          {{"database", "datasets"},
+           {"table", "store_demand"},
+           {"entity_column", "id"},
+           {"label_column", "value"},
+           {"group_column", "store"},
+           {"nominal_coverage", 0.9}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-17");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult started =
+        call("run", {{"project", "uncertain demand"},
+                     {"graph", "store posterior"},
+                     {"holdout_fraction", 0.25},
+                     {"seed", 1056},
+                     {"burn_in", 100},
+                     {"posterior_draws", 250}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    EXPECT_EQ(started.value.at("engine"), "bayesian");
+    EXPECT_EQ(started.value.at("status"), "succeeded");
+    EXPECT_TRUE(started.value.contains("output_table"));
+
+    const ApiResult run =
+        call("get_run", {{"run_id", started.value.at("run_id")}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("status"), "succeeded");
+
+    const ApiResult report =
+        call("get_run_report", {{"run_id", started.value.at("run_id")}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    ASSERT_TRUE(report.value.contains("uncertainty"));
+    const nlohmann::json& uncertainty = report.value.at("uncertainty");
+    EXPECT_DOUBLE_EQ(uncertainty.at("nominal_coverage").get<double>(), 0.9);
+    EXPECT_GE(uncertainty.at("empirical_coverage").get<double>(), 0.0);
+    EXPECT_LE(uncertainty.at("empirical_coverage").get<double>(), 1.0);
+    EXPECT_GT(uncertainty.at("mean_interval_width").get<double>(), 0.0);
+    EXPECT_NE(uncertainty.at("assumption").get<std::string>().find(
+                  "exchangeable"),
+              std::string::npos);
+    ASSERT_EQ(report.value.at("output_tables").size(), 1u);
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "datasets.store_demand");
+}
+
+TEST_F(Uc1Journey, JourneyEnsembleCompilesRunsAndReportsItsOutputs) {
+    std::string content = "entity,first,second,label\n";
+    for (int index = 0; index < 240; ++index) {
+        const double first = static_cast<double>((index * 17) % 101) / 100.0;
+        const double second = static_cast<double>((index * 43) % 103) / 102.0;
+        const bool first_region = index % 2 == 0;
+        const bool positive = first_region ? first > 0.48 : second > 0.52;
+        content += std::to_string(index) + "," + std::to_string(first) + "," +
+                   std::to_string(second) + "," +
+                   std::to_string(positive ? 1 : 0) + "\n";
+    }
+
+    journey::Journey ensemble{"m18-ensemble-registry-run", {}};
+    ensemble.steps = {
+        {"land the training table", "upload_dataset",
+         {{"table_name", "ensemble_training"},
+          {"format", "csv"},
+          {"content", content},
+          {"replication_factor", 1}},
+         {.checks = {journey::equals("/database", "datasets"),
+                     journey::equals("/table", "ensemble_training"),
+                     journey::equals("/rows", 240)}}},
+        {"create the project", "create_project", {{"name", "ensemble journey"}}},
+        {"capture the stacking goal", "capture_intent",
+         {{"project", "ensemble journey"},
+          {"text", "Blend complementary models for better decisions"}},
+         {.checks = {journey::not_empty("/input_id")}},
+         {{"input_id", "/input_id"}}},
+        {"compile M-18 over the landed table", "compile_intent",
+         {{"project", "ensemble journey"},
+          {"input_id", "$input_id"},
+          {"methodology", "M-18"},
+          {"name", "ensemble pipeline"},
+          {"hints",
+           {{"dataset_path", "datasets.ensemble_training"},
+            {"entity_column", "entity"},
+            {"label_column", "label"},
+            {"feature_columns", {"first", "second"}},
+            {"folds", 4}}}},
+         {.checks = {journey::equals("/methodology", "M-18"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/steps", 4)}},
+         {{"graph", "/name"}}},
+        {"approve the ensemble plan", "approve_plan",
+         {{"project", "ensemble journey"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"run the pipeline's own table", "run",
+         {{"project", "ensemble journey"}, {"graph", "$graph"}},
+         {.checks = {journey::equals("/engine", "ensemble"),
+                     journey::not_empty("/run_id")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the durable run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 5)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read lift, weights, lineage, and result tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {
+             journey::exists("/model/held_out_auc_lift_over_best_single"),
+             journey::exists("/model/best_single_held_out_auc"),
+             journey::size_equals("/meta_model_weights", 2),
+             journey::size_equals("/output_tables", 2),
+             journey::size_at_least("/at_risk", 1),
+             journey::exists("/at_risk/0/risk"),
+             journey::equals("/dataset/source", "datasets.ensemble_training")}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(ensemble, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(Uc1Journey, JourneyLabelEfficiencyCompilesAndRunsItsPipelineTable) {
+    const fs::path file = fs::path(dir.path()) / "label_examples.jsonl";
+    {
+        std::ofstream out(file);
+        for (int row = 0; row < 240; ++row) {
+            const double signal =
+                -1.0 + 2.0 * static_cast<double>(row) / 239.0;
+            const int label = signal >= 0.17 ? 1 : 0;
+            const int strong_vote = row % 10 == 0 ? 1 - label : label;
+            const int medium_vote = row % 5 == 0 ? 1 - label : label;
+            out << nlohmann::json{{"entity", row},
+                                  {"signal", signal},
+                                  {"strong_vote", strong_vote},
+                                  {"medium_vote", medium_vote},
+                                  {"label", label}}
+                       .dump()
+                << "\n";
+        }
+    }
+
+    const nlohmann::json functions = nlohmann::json::array(
+        {{{"name", "strong"},
+          {"column", "strong_vote"},
+          {"operator", "greater_equal"},
+          {"value", 0.5},
+          {"label", 1},
+          {"otherwise_label", 0}},
+         {{"name", "medium"},
+          {"column", "medium_vote"},
+          {"operator", "greater_equal"},
+          {"value", 0.5},
+          {"label", 1},
+          {"otherwise_label", 0}}});
+
+    journey::Journey label_efficiency{
+        "label-efficiency-registry-run",
+        {
+            {"land the examples table",
+             "add_dataset",
+             {{"path", file.string()},
+              {"database", "datasets"},
+              {"table_name", "label_examples"},
+              {"partition_count", 2}},
+             {.checks = {journey::equals("/rows", 240)}}},
+            {"create the project",
+             "create_project",
+             {{"name", "label factory"}},
+             {.checks = {journey::equals("/name", "label factory")}}},
+            {"capture the goal",
+             "capture_intent",
+             {{"project", "label factory"},
+              {"text", "Use active learning and weak supervision to label rows"}},
+             {}},
+            {"compile the M-19 pipeline",
+             "compile_intent",
+             {{"project", "label factory"},
+              {"methodology", "M-19"},
+              {"name", "label factory pipeline"},
+              {"hints",
+               {{"dataset_path", "datasets.label_examples"},
+                {"queue_size", 6},
+                {"initial_labels", 3},
+                {"gold_fraction", 0.25},
+                {"seed", 1058},
+                {"uncertainty", "entropy"},
+                {"diversity_weight", 0.15},
+                {"logistic_iterations", 8},
+                {"logistic_learning_rate", 0.3},
+                {"label_model_iterations", 20},
+                {"labelling_functions", functions}}}},
+             {.checks = {journey::equals("/methodology", "M-19"),
+                         journey::equals("/runnable", true)}}},
+            {"run the compiled pipeline against its connect-step table",
+             "run",
+             {{"project", "label factory"},
+              {"graph", "label factory pipeline"}},
+             {.checks = {journey::equals("/engine", "label_efficiency")}},
+             {{"run_id", "/run_id"}}},
+            {"wait for the label factory",
+             "get_run",
+             {{"run_id", "$run_id"}},
+             {.checks = {journey::equals("/status", "succeeded"),
+                         journey::size_equals("/outputs", 4)}},
+             {},
+             journey::Poll{"/status", {"succeeded", "failed"}}},
+            {"read metrics and output tables",
+             "get_run_report",
+             {{"run_id", "$run_id"}},
+             {.checks = {
+                  journey::equals("/run/status", "succeeded"),
+                  journey::size_equals("/output_tables", 2),
+                  journey::equals("/correctness/weak_labels_are_gold", false),
+                  journey::equals("/correctness/gold_split", "disjoint"),
+                  journey::predicate(
+                      "the report includes active and label-model accuracy",
+                      [](const nlohmann::json& metrics) {
+                          return metrics.contains("active_accuracy_at_budget") &&
+                                 metrics.contains("random_accuracy_at_budget") &&
+                                 metrics.contains("label_model_gold_accuracy");
+                      },
+                      "/model/metrics")}}},
+        }};
+
+    const journey::JourneyReport report = journey::run_journey(
+        label_efficiency, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
+    const fs::path file = fs::path(dir.path()) / "private_training.jsonl";
+    {
+        std::ofstream output(file);
+        for (int index = 0; index < 160; ++index) {
+            const double first = static_cast<double>(index) / 159.0;
+            const double second =
+                std::clamp(0.75 * first + 0.1 * std::sin(index), 0.0, 1.0);
+            output << nlohmann::json{{"entity", index},
+                                     {"first", first},
+                                     {"second", second},
+                                     {"label", first + second > 1.0 ? 1 : 0}}
+                              .dump()
+                   << '\n';
+        }
+    }
+
+    const ApiResult landed =
+        call("add_dataset", {{"path", file.string()},
+                             {"database", "privacy_source"},
+                             {"table_name", "records"},
+                             {"partition_count", 4}});
+    ASSERT_TRUE(landed.ok) << landed.error.message;
+    ASSERT_TRUE(call("create_project", {{"name", "privacy"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "privacy"},
+         {"text", "Create privacy-preserving synthetic training data"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "privacy"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-20"},
+         {"name", "private synthesis"},
+         {"hints", {{"source", "privacy_source"},
+                    {"table", "records"},
+                    {"epsilon", 4.0},
+                    {"delta", 1e-6}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-20");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult run = call(
+        "run", {{"project", "privacy"}, {"graph", "private synthesis"},
+                {"seed", 1059}, {"num_trees", 8}, {"max_depth", 2}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("engine"), "synthetic_private");
+    const std::string run_id = run.value.at("run_id");
+
+    const ApiResult record = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(record.ok) << record.error.message;
+    EXPECT_EQ(record.value.at("status"), "succeeded");
+    EXPECT_EQ(record.value.at("outputs").size(), 3u);
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("run").at("status"), "succeeded");
+    EXPECT_TRUE(report.value.at("privacy").contains("membership_auc"));
+    EXPECT_TRUE(report.value.at("privacy").contains("epsilon_spent"));
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "privacy_source.records");
+    ASSERT_EQ(report.value.at("outputs").size(), 3u);
+    EXPECT_EQ(report.value.at("outputs").front().at("kind"), "dataset");
+}
+
+TEST_F(ActionJourneys, JourneyStreamingMethodologyCompilesRunsAndReports) {
+    const auto database = node.create_database("stream_journey");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    for (std::size_t index = 0; index < 80; ++index) {
+        const double signal = index % 2 == 0 ? 0.0 : 1.0;
+        table->add_row({{"event_id", "journey-" + std::to_string(index)},
+                        {"account_id", static_cast<std::int64_t>(index)},
+                        {"event_time", static_cast<double>(index)},
+                        {"amount", signal},
+                        {"fraud", signal},
+                        {"label_time", static_cast<double>(index) + 0.5},
+                        {"comment", "excluded text"}});
+    }
+
+    journey::Journey streaming{"streaming-methodology", {}};
+    streaming.steps = {
+        {"create the project", "create_project", {{"name", "live fraud"}}},
+        {"capture the streaming intent", "capture_intent",
+         {{"project", "live fraud"},
+          {"text", "Score transaction events with online learning"}}},
+        {"compile M-21 with its event contract", "compile_intent",
+         {{"project", "live fraud"},
+          {"methodology", "M-21"},
+          {"name", "stream decisions"},
+          {"hints",
+           {{"source", "stream_journey"},
+            {"table", "events"},
+            {"entity_column", "account_id"},
+            {"time_column", "event_time"},
+            {"label_column", "fraud"},
+            {"label_time_column", "label_time"},
+            {"feature_columns", nlohmann::json::array({"amount"})},
+            {"input_topic", "journey.events"},
+            {"output_topic", "journey.scores"},
+            {"window_duration", 1.0}}}},
+         {.checks = {journey::equals("/methodology", "M-21"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/name", "stream decisions")}}},
+        {"approve the streaming plan", "approve_plan",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/approval", "approved")}}},
+        {"the event-time policy passes the gate", "gate",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/block_deploy", false)}}},
+        {"start the native streaming run", "run",
+         {{"project", "live fraud"}, {"graph", "stream decisions"}},
+         {.checks = {journey::equals("/engine", "streaming"),
+                     journey::equals("/status", "running")}},
+         {{"run_id", "/run_id"}}},
+        {"wait for the durable run", "get_run", {{"run_id", "$run_id"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_at_least("/outputs", 3)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read prequential metrics and output tables", "get_run_report",
+         {{"run_id", "$run_id"}},
+         {.checks = {
+             journey::equals("/model/kind", "streaming"),
+             journey::at_least("/model/evaluated_labels", 80),
+             journey::size_at_least("/outputs", 3),
+             journey::equals("/dataset/source", "stream_journey.events"),
+             journey::contains("/dataset/not_used/0", "comment")}}},
+        {"read scores back from the output topic", "receive_events",
+         {{"topic", "journey.scores"}, {"max", 100}},
+         {.checks = {journey::size_at_least("/events", 80)}}},
+    };
+    const journey::JourneyReport report =
+        journey::run_journey(streaming, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

@@ -30,7 +30,7 @@ const nlohmann::json& graph_step_annotations_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
   "title": "zetta.GraphStepAnnotations",
-  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements. Only the named fields are constrained; a node may carry any other attributes.",
+  "description": "The correctness annotations read by the gate's concrete checks: schema profiles, point-in-time metadata, and M-10 grounding and read-authorization requirements, plus streaming event/label ordering. Only the named fields are constrained; a node may carry any other attributes.",
   "type": "object",
   "properties": {
     "schema": {
@@ -153,6 +153,29 @@ const nlohmann::json& graph_step_annotations_schema() {
     },
     "caller_read_required": {
       "description": "Marks a source whose selected columns all require caller read access.",
+      "type": "boolean"
+    },
+    "event_time_ordered": {
+      "description": "Streaming work is released in event-time order behind its watermark.",
+      "type": "boolean"
+    },
+    "allowed_lateness": {
+      "description": "How far behind the maximum observed event time an event may arrive before exclusion.",
+      "type": "number",
+      "minimum": 0
+    },
+    "future_event_policy": {
+      "description": "How streaming work prevents future events from entering the current decision.",
+      "type": "string",
+      "enum": ["buffer_until_watermark"]
+    },
+    "label_time_policy": {
+      "description": "A label may train the model only at or after its event time.",
+      "type": "string",
+      "enum": ["not_before_event_time"]
+    },
+    "prequential": {
+      "description": "Metrics are computed test-then-train from the score made before an update.",
       "type": "boolean"
     }
   }
@@ -425,6 +448,48 @@ CheckResult TemporalValidationCheck::evaluate(const ir::ExecutionGraph& graph) c
                        "every time-ordered model is validated over time and uncalibrated"};
 }
 
+CheckResult LabelEfficiencyGoldIsolationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto kind = node->attributes.find("model_kind");
+        if (kind == node->attributes.end() || !kind->is_string()) {
+            continue;
+        }
+        const std::string model_kind = kind->get<std::string>();
+        if (model_kind != "label_efficiency" &&
+            model_kind != "active_learning" &&
+            model_kind != "weak_supervision") {
+            continue;
+        }
+        const auto weak_as_gold =
+            node->attributes.find("weak_labels_are_gold");
+        if (weak_as_gold == node->attributes.end() ||
+            !weak_as_gold->is_boolean() || weak_as_gold->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": weak labels must never be treated as gold; set "
+                    "`weak_labels_are_gold` to false"};
+        }
+        const auto split = node->attributes.find("gold_split");
+        if (split == node->attributes.end() || !split->is_string() ||
+            split->get<std::string>() != "disjoint") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": the gold evaluation set must be disjoint; set "
+                    "`gold_split` to `disjoint`"};
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "label-efficiency gold rows are declared disjoint from weak labels"};
+}
+
 const std::vector<std::string>& MethodologyCheck::implemented() {
     static const std::vector<std::string> kImplemented = [] {
         std::vector<std::string> result;
@@ -478,6 +543,260 @@ CheckResult MethodologyCheck::evaluate(const ir::ExecutionGraph& graph) const {
     return CheckResult{name(), CheckStatus::Pass,
                        "every model step names a methodology the engine can execute"};
 }
+
+CheckResult StreamingCorrectnessCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    const auto fail = [this](const ir::Node& node, std::string reason) {
+        return CheckResult{name(), CheckStatus::Fail,
+                           node_label(node) + ": " + std::move(reason)};
+    };
+    for (const auto& node : graph.nodes()) {
+        if (!node || node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        if (auto error = validate_annotations(node->attributes)) {
+            return fail(*node,
+                        "malformed correctness annotations — " + *error);
+        }
+        const std::string kind =
+            node->attributes.value("model_kind", std::string{});
+        if (kind != "streaming" && kind != "online_learning") {
+            continue;
+        }
+        if (!node->attributes.value("event_time_ordered", false)) {
+            return fail(*node,
+                        "streaming decisions must set event_time_ordered=true");
+        }
+        if (!node->attributes.contains("allowed_lateness")) {
+            return fail(*node,
+                        "streaming decisions must declare allowed_lateness");
+        }
+        if (node->attributes.value("future_event_policy", std::string{}) !=
+            "buffer_until_watermark") {
+            return fail(*node,
+                        "future_event_policy must be buffer_until_watermark");
+        }
+        if (node->attributes.value("label_time_policy", std::string{}) !=
+            "not_before_event_time") {
+            return fail(*node,
+                        "label_time_policy must be not_before_event_time");
+        }
+        if (!node->attributes.value("prequential", false)) {
+            return fail(*node,
+                        "streaming evaluation must set prequential=true");
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "streaming models order event time, delay labels, and evaluate test-then-train"};
+}
+
+CheckResult PrivacyBudgetCheck::evaluate(const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const ml::Methodology* methodology = ml::find_methodology(
+            node->attributes.value("model_kind", std::string{}));
+        if (methodology == nullptr || methodology->id != "M-20") {
+            continue;
+        }
+        const auto fail = [&](std::string reason) {
+            return CheckResult{name(), CheckStatus::Fail,
+                               node_label(*node) + ": " + std::move(reason)};
+        };
+        const auto number = [&](const char* key) -> std::optional<double> {
+            const auto value = node->attributes.find(key);
+            if (value == node->attributes.end() || !value->is_number()) {
+                return std::nullopt;
+            }
+            return value->get<double>();
+        };
+        const std::optional<double> epsilon = number("epsilon");
+        const std::optional<double> delta = number("delta");
+        const std::optional<double> maximum_epsilon = number("maximum_epsilon");
+        const std::optional<double> maximum_delta = number("maximum_delta");
+        const std::optional<double> clip_min = number("clip_min");
+        const std::optional<double> clip_max = number("clip_max");
+        if (!epsilon || !delta || !maximum_epsilon || !maximum_delta) {
+            return fail("epsilon, delta, maximum_epsilon, and maximum_delta must all be stated");
+        }
+        if (*epsilon <= 0.0 || *delta < 0.0 || *maximum_epsilon <= 0.0 ||
+            *maximum_delta < 0.0 || *delta >= 1.0 || *maximum_delta >= 1.0) {
+            return fail("privacy-budget values are outside their valid ranges");
+        }
+        if (*epsilon > *maximum_epsilon || *delta > *maximum_delta) {
+            return fail("requested epsilon/delta exceeds the enforced privacy budget");
+        }
+        if (!clip_min || !clip_max || *clip_min >= *clip_max) {
+            return fail("public clip_min and clip_max bounds are required for DP sensitivity");
+        }
+        const auto noise = node->attributes.find("noise");
+        if (noise == node->attributes.end() || !noise->is_string() ||
+            (noise->get<std::string>() != "gaussian" &&
+             noise->get<std::string>() != "laplace")) {
+            return fail("noise must state the gaussian or laplace mechanism");
+        }
+        if (noise->get<std::string>() == "gaussian" && *delta <= 0.0) {
+            return fail("the gaussian mechanism requires delta greater than zero");
+        }
+        const auto evaluation = node->attributes.find("privacy_evaluation");
+        if (evaluation == node->attributes.end() || !evaluation->is_boolean() ||
+            !evaluation->get<bool>()) {
+            return fail("privacy_evaluation must be true before synthetic output publication");
+        }
+    }
+    return CheckResult{name(), CheckStatus::Pass,
+                       "every synthetic_private step states and enforces its privacy budget"};
+}
+
+CheckResult EnsembleOutOfFoldCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const auto& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const std::optional<std::string> kind =
+            string_field(node->attributes, "model_kind");
+        if (!kind || (*kind != "ensemble" && *kind != "ensembling" &&
+                      *kind != "stacking")) {
+            continue;
+        }
+        const std::optional<std::string> predictions =
+            string_field(node->attributes, "stacking_predictions");
+        if (!predictions || *predictions != "out_of_fold") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble stacking_predictions must be `out_of_fold`; "
+                    "the meta-model may never fit in-sample base scores"};
+        }
+        const auto folds = node->attributes.find("folds");
+        if (folds == node->attributes.end() ||
+            !folds->is_number_integer() || folds->get<long long>() < 2) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble folds must be an integer of at least 2"};
+        }
+        const std::optional<std::string> refit =
+            string_field(node->attributes, "base_refit");
+        if (!refit || *refit != "all_training") {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": ensemble base_refit must be `all_training` after the "
+                    "stacker is fit"};
+        }
+        const std::optional<std::string> time =
+            string_field(node->attributes, "time_column");
+        if (time && !time->empty()) {
+            const std::optional<std::string> strategy =
+                string_field(node->attributes, "fold_strategy");
+            if (!strategy || *strategy != "time_ordered") {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": an ensemble with a time column must use "
+                        "`time_ordered` folds so validation never precedes training"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "every ensemble fits only out-of-fold scores and respects time order"};
+}
+
+
+CheckResult UncertaintyValidationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (node->kind != ir::StepKind::Model ||
+            !node->attributes.is_object()) {
+            continue;
+        }
+        const auto model_kind = node->attributes.find("model_kind");
+        if (model_kind == node->attributes.end() ||
+            !model_kind->is_string()) {
+            continue;
+        }
+        const std::string normalized_model_kind =
+            normalize_type(model_kind->get<std::string>());
+        if (normalized_model_kind != "bayesian" &&
+            normalized_model_kind != "probabilistic" &&
+            normalized_model_kind != "uncertainty") {
+            continue;
+        }
+        const auto coverage = node->attributes.find("coverage_checked");
+        if (coverage == node->attributes.end() || !coverage->is_boolean() ||
+            !coverage->get<bool>()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must set coverage_checked=true; "
+                    "nominal coverage is not evidence of observed coverage"};
+        }
+        const auto assumption =
+            node->attributes.find("exchangeability_assumption");
+        if (assumption == node->attributes.end() ||
+            !assumption->is_string() || assumption->get<std::string>().empty()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": Bayesian uncertainty must state its "
+                    "exchangeability_assumption"};
+        }
+        const auto nominal = node->attributes.find("nominal_coverage");
+        if (nominal == node->attributes.end() || !nominal->is_number() ||
+            nominal->get<double>() <= 0.0 || nominal->get<double>() >= 1.0) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": nominal_coverage must be a number between 0 and 1"};
+        }
+        const auto uncertainty_kind =
+            node->attributes.find("uncertainty_kind");
+        if (uncertainty_kind == node->attributes.end() ||
+            !uncertainty_kind->is_string()) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical or split_conformal"};
+        }
+        const std::string normalized_uncertainty_kind =
+            normalize_type(uncertainty_kind->get<std::string>());
+        const bool is_conformal =
+            normalized_uncertainty_kind == "split_conformal_regression" ||
+            normalized_uncertainty_kind == "split_conformal_classification";
+        if (normalized_uncertainty_kind != "hierarchical" && !is_conformal) {
+            return CheckResult{
+                name(), CheckStatus::Fail,
+                node_label(*node) +
+                    ": uncertainty_kind must name hierarchical, "
+                    "split_conformal_regression, or "
+                    "split_conformal_classification"};
+        }
+        if (is_conformal) {
+            const auto disjoint =
+                node->attributes.find("calibration_disjoint");
+            if (disjoint == node->attributes.end() ||
+                !disjoint->is_boolean() || !disjoint->get<bool>()) {
+                return CheckResult{
+                    name(), CheckStatus::Fail,
+                    node_label(*node) +
+                        ": split conformal calibration rows must be declared "
+                        "disjoint from fitting rows"};
+            }
+        }
+    }
+    return CheckResult{
+        name(), CheckStatus::Pass,
+        "Bayesian model steps measure coverage and state exchangeability"};
+}
+
 
 CheckResult EntityResolutionGraphCheck::evaluate(
     const ir::ExecutionGraph& graph) const {

@@ -64,11 +64,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 ## Current state (refresh me when it changes)
 
 - **Methodology registry (#1061)** — one 21-entry table drives discovery,
-  intent compilation, and run dispatch. M-1 through M-16 are runnable on the
+  intent compilation, and run dispatch. All 21 methodologies are runnable on the
   methodology integration branch (#1082), with all method-specific checks,
   runners and reports retained. S-11 resolves to M-8; M-6 remains selectable
-  by methodology ID and model kind. M-10 through M-13 add language, document, graph, and vision runners. Unsupported methodologies
-  name their tracking issues. See [ml/integration.md](ml/integration.md).
+  by methodology ID and model kind. M-17 through M-21 add Bayesian uncertainty,
+  stacking, label efficiency, privacy and streaming. Unknown model kinds remain
+  explicit refusals. See [ml/integration.md](ml/integration.md).
   [ml/methodologies.md](ml/methodologies.md) defines the extension contract and
   [ml/README.md](ml/README.md#methodology-portfolio) contains the generated table.
 

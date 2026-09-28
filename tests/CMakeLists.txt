@@ -82,6 +82,8 @@ add_executable(zetta-tests
   cloud/test_cloud_provider.cpp
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
+  ml/test_ensemble.cpp
+  ml/test_ensemble_train_partitions.cpp
   ml/test_methodology.cpp
   ml/test_entity_resolution.cpp
   ml/test_survival.cpp
@@ -94,6 +96,10 @@ add_executable(zetta-tests
   ml/test_speech.cpp
   ml/test_speech_train_partitions.cpp
   ml/test_optimization.cpp
+  ml/test_bayesian.cpp
+  ml/test_label_efficiency.cpp
+  ml/test_synthetic_private.cpp
+  ml/test_synthetic_private_partitions.cpp
   ml/test_model.cpp
   ml/test_next_best_action.cpp
   ml/test_next_best_action_methodology.cpp
@@ -169,6 +175,8 @@ add_executable(zetta-tests
   ml/test_uplift_partitions.cpp
   ml/test_rank.cpp
   ml/test_bandit.cpp
+  ml/test_streaming.cpp
+  ml/test_streaming_train_partitions.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
   ml/test_anomaly.cpp

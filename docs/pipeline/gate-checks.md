@@ -33,6 +33,15 @@ The reusable annotation and methodology-specific checks are:
 | `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 | `OptimizationContractCheck` | `optimization_contract` | an M-16 graph that allows point forecasts, skips independent constraint verification, or omits solver status and MIP gap reporting |
 
+| `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
+
+| `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
+| `LabelEfficiencyGoldIsolationCheck` | `label_efficiency_gold_isolation` | an M-19 graph that treats weak labels as gold or does not reserve a disjoint gold split |
+
+| `PrivacyBudgetCheck` | `privacy_budget` | an M-20 model with a missing or invalid epsilon/delta maximum, unknown noise mechanism, invalid public clipping bounds, or disabled privacy evaluation |
+
+| `StreamingCorrectnessCheck` | `streaming_correctness` | an M-21 model without event-time ordering, allowed lateness, future-event buffering, delayed-label protection, or prequential evaluation |
+
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
@@ -73,6 +82,29 @@ or another M-10 alias. `language_grounding` requires boolean
 every effective entity, label, feature, text, query, and relevant-id column
 before it reads rows. These graph flags do not replace runtime authorization;
 they make an edited plan that omits it fail verification.
+### `ensemble_out_of_fold` — honest stacking
+
+This check engages only for `ensemble`, `ensembling`, and `stacking` model
+kinds. It requires `stacking_predictions: "out_of_fold"`, `folds >= 2`, and
+`base_refit: "all_training"`. When `time_column` is non-empty it also requires
+`fold_strategy: "time_ordered"`. Each refusal names the required attribute, so
+an edited M-18 graph cannot silently turn its meta-model training into an
+in-sample fit or validate earlier observations from later data.
+### `label_efficiency_gold_isolation` — weak labels are not gold
+
+This check engages on `label_efficiency`, `active_learning`, and
+`weak_supervision` model steps. It requires `weak_labels_are_gold: false` and
+`gold_split: "disjoint"`. Missing, malformed, or contradictory values fail the
+gate before a run starts. The runtime uses the same rule when materializing the
+label queue and weak-label table; both exclude every reserved gold row.
+### `streaming_correctness` — M-21 event and label order
+
+This check engages only on model steps whose `model_kind` is `streaming` or
+`online_learning`. It requires `event_time_ordered: true`, a non-negative
+`allowed_lateness`, `future_event_policy: "buffer_until_watermark"`,
+`label_time_policy: "not_before_event_time"`, and `prequential: true`. Missing
+or contradictory policy blocks the graph before run. Runtime processing applies
+the same rules to each event; see [online and streaming learning](../ml/streaming.md).
 
 ## How a check reads a step
 
@@ -193,6 +225,37 @@ compiled graph that weakens any M-14 privacy rule fail before execution. The
 speech runner independently validates row consent before reading a blob and
 filters text before table insertion; graph annotations are not treated as proof
 that the underlying data complied.
+### `uncertainty_validation` — honest uncertainty for M-17
+
+Engages on a model step whose `model_kind` is `bayesian`, `probabilistic`, or
+`uncertainty`. It requires:
+
+- `coverage_checked: true`, because nominal coverage is a request rather than
+  evidence;
+- numeric `nominal_coverage` strictly between zero and one;
+- a non-empty `exchangeability_assumption`; and
+- an `uncertainty_kind` of `hierarchical`, `split_conformal_regression`, or
+  `split_conformal_classification`.
+
+A `split_conformal*` shape must additionally set
+`calibration_disjoint: true`. This graph check is backed by the runtime split
+validator, which rejects overlapping row indexes even if a hand-authored graph
+claims they are disjoint.
+### `privacy_budget` — an enforceable M-20 release
+
+This check engages only on a model step with
+`model_kind: "synthetic_private"`. It requires numeric `epsilon`, `delta`,
+`maximum_epsilon`, and `maximum_delta`; requested values must be within the
+stated maxima. Delta values must lie below 1, epsilon values must be positive,
+and the Gaussian mechanism requires a positive delta.
+
+The step must also name `noise` as `gaussian` or `laplace`, state numeric public
+`clip_min` and `clip_max` bounds with `clip_min < clip_max`, and set
+`privacy_evaluation: true`. This graph check makes the declared plan safe to
+submit. The M-20 runner repeats budget and bound validation against the actual
+run parameters and refuses publication if DCR or membership evaluation fails.
+The full mechanism and report are in
+[synthetic_private.md](../ml/synthetic_private.md).
 
 ## Example
 

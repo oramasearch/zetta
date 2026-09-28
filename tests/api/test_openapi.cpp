@@ -151,6 +151,24 @@ TEST(RestRendering, EveryCapabilityHasValidInputAndOutputSchemas) {
     }
 }
 
+TEST(OpenApi, RunReportSchemaPreservesMethodologyOutputShapes) {
+    const Registry registry = core_registry();
+    const auto report = registry.find("get_run_report");
+    ASSERT_TRUE(report);
+    const nlohmann::json& properties = report->output_schema.at("properties");
+    for (const char* field : {"uncertainty", "meta_model_weights", "privacy", "topics"}) {
+        EXPECT_TRUE(properties.contains(field)) << field;
+    }
+    nlohmann::json_schema::json_validator validator;
+    validator.set_root_schema(report->output_schema);
+    nlohmann::json facts = {{"run", nlohmann::json::object()},
+                            {"model", nlohmann::json::object()},
+                            {"outputs", nlohmann::json::array()}};
+    EXPECT_NO_THROW(validator.validate(facts));
+    facts["outputs"] = {{"survival", "survival_results.curves"}};
+    EXPECT_NO_THROW(validator.validate(facts));
+}
+
 TEST(OpenApi, DocumentMatchesTheRegistry) {
     const Registry registry = core_registry();
     const nlohmann::json document = zetta::api::openapi_document(registry);

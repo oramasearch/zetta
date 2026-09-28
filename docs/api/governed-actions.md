@@ -66,6 +66,8 @@ polled through the read surface: `get_run` / `system.runs` for status + logs,
   the objective/feasibility/gap metrics. A graph without a model runs
   **structurally** (DefaultStepExecutor) within the call and returns its run id
   plus terminal status directly.
+  M-17 reads the connect step's own table, fits its grouped posterior, writes
+  the output table and Run synchronously, and returns the succeeded Run id.
 - **`testsuite_run`** — `testkit::AsyncCaseRun`
   (`include/zetta/testkit/async_case_run.hpp`) creates the Run on the owner
   thread (project label `testkit`, graph label = the case id) so the id is

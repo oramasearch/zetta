@@ -6,10 +6,9 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-16 are runnable. M-10 builds
+callbacks for runnable implementations. All 21 methodologies are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
-writes its native model, metrics, tables, and lineage. The other entries link to
-their implementation issues.
+writes its native model, metrics, tables, and lineage.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -46,7 +45,10 @@ methodology, an explicit primary solution, registered keywords, or a clear
 supervised-prediction request, in that order. It calls only the selected
 entry's `build_shape`. Registered entries that are not runnable return
 `not_supported` with their name, id, and issue. An unmatched non-predictive
-intent is refused instead of receiving a placeholder graph.
+intent is refused instead of receiving a placeholder graph. When a catalogue
+solution composes several methodologies, its intent keywords select the
+matching entry; `S-10` therefore selects M-20 for privacy or synthetic-data
+intent and retains M-1 for its tabular prediction intent.
 
 `run` uses `methodology_for_graph()`. A graph whose model step belongs to an
 unimplemented methodology is refused with the same issue-bearing message. An
@@ -228,6 +230,65 @@ pipeline's connect-step table when `run` omits `dataset_path`, calls the native
 solver, and publishes the plan, constraint trace, solver-result record, and run
 report with lineage. S-4 remains owned by M-1, the catalogue's first method for collections
 prioritization; select optimization by M-16 or its model kinds.
+## M-17 Bayesian uncertainty
+
+`src/core/ml/bayesian_methodology.cpp` owns M-17's registry adapter:
+
+- `build_shape` creates a grouped-observation pipeline that reads the connect
+  step's own `source` and `table`, reserves a content-hash holdout, fits the
+  Gibbs partial-pooling model, and writes a posterior table;
+- `owns` recognizes `bayesian`, `probabilistic`, and `uncertainty`; and
+- `run` resolves the graph's table through `ResolvedDataset`, invokes the native
+  runner, and returns the completed Run and output table.
+
+The pipeline carries `coverage_checked`, `nominal_coverage`, and an explicit
+exchangeability statement. `UncertaintyValidationCheck` refuses a Bayesian
+shape that omits those facts; split-conformal shapes must also declare that
+calibration rows are disjoint from fitting rows.
+## M-18 ensembling and stacking
+
+`src/core/ml/ensemble_methodology.cpp` owns the M-18 callbacks:
+
+- `build_shape` creates a table connect, numeric-role validation, out-of-fold
+  ensemble model step, and blended-score/meta-weight output step;
+- `owns` recognizes only the registered ensemble model kinds; and
+- `run` resolves the connect step's `source` and `table`, applies the model
+  step's column roles, calls the native runner, and returns the durable Run.
+
+The runner in `src/core/ml/ensemble_runner.cpp` registers an `ensemble` Model and
+writes queryable blended-score and meta-weight tables with lineage. S-10 stays with M-1; select M-18 by ID or model kind. See [ensemble.md](ensemble.md) for its split guarantees and current
+multi-member adapter boundary.
+## M-19 label-efficiency implementation
+
+`src/core/ml/label_efficiency_methodology.cpp` builds a table-specific pipeline:
+connect the examples table, prepare numeric features, train the active and weak
+label models, then write the label queue and weak-label tables. Its ownership
+predicate recognizes `label_efficiency`, `active_learning`, and
+`weak_supervision` model steps.
+
+The callback resolves either the run request's `dataset_path` or the pipeline's
+own connect-step `source` and `table`, then starts the asynchronous runner in
+[`label-efficiency.md`](label-efficiency.md). The API handler remains generic.
+## M-20 privacy-preserving implementation
+
+`src/core/ml/synthetic_private_methodology.cpp` owns the `synthetic_private`
+model kind and builds M-20's connect, bounds/encoding, model, and publish
+pipeline. Its run callback resolves the graph's own landed table, drives the
+owned-partition job, and writes an evaluated synthetic table, DP model, privacy
+report, and lineage. The methodology's formal mechanism, empirical publication
+gate, inputs, metrics, and run examples are documented in
+[synthetic_private.md](synthetic_private.md).
+## M-21 streaming implementation
+
+`src/core/ml/streaming_methodology.cpp` builds and owns the event-time streaming
+shape and resolves its connect-step table. Its run callback starts the native
+runner in `src/core/ml/streaming.cpp`, which subscribes to the graph's input
+topic, computes per-entity window features, updates online logistic regression,
+publishes scores, persists weights, writes a score table with lineage, and
+exposes prequential metrics through `get_run_report`.
+
+The API handler contains no M-21-specific dispatch branch. The registry callback
+uses the same generic run path as M-1.
 
 ## Adding a methodology
 
