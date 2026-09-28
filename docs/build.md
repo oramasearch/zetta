@@ -69,6 +69,25 @@ cmake --build build
 The first configure clones the deps into `build/_deps/` (a few minutes);
 later builds are fast. `build/` is git-ignored.
 
+### Shared-library dependency check
+
+The shipped configuration remains static, but the shared variant verifies that
+each vendored library declares the runtime providers used by its own translation
+units. In particular, `boost_beast2` contains its HTTPS server and directly links
+Corosio's OpenSSL provider (#1096).
+
+Configure, build, and test the shared variant in a separate directory:
+
+```bash
+cmake -S . -B build-shared -G Ninja -DBUILD_SHARED_LIBS=ON
+cmake --build build-shared --target boost_beast2 -j 6
+cmake --build build-shared --target zetta-tests -j 6
+ctest --test-dir build-shared --output-on-failure
+```
+
+This check changes no runtime or wire format and does not change the default
+static build.
+
 ### Optional CUDA compute backend
 
 The accelerated-compute backends build into a `zetta-compute` static library that
