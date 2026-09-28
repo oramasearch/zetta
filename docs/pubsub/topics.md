@@ -28,7 +28,8 @@ Every field follows the standing rule. `delivery` (the topic's delivery layer),
 `lifecycle` (`Default` or `Ephemeral`), `store` (`RingStack` or `Queue`),
 `ring_capacity`, `inline_threshold`, `priority_levels` and `priority_aging`, memory and
 disk caps, `overflow`, `over_bound` (clamp or reject), `producer_queue` (appends go
-through the dispatcher, D23), `dispatch` (pin to a thread of its own or inline),
+through the dispatcher, D23), `dispatch` (override the node's shared-pool policy
+with `auto`, `per_key`, `pool`, or `inline`),
 `exposed` (D22), `topics_chain_max`, `default_ttl`, held-event `retention`,
 `max_events`, and topic `bounds`. The complete CRUD contract and examples are
 in [crud.md](crud.md). All are accepted under `create_topic.settings` and

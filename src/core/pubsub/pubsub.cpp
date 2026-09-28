@@ -290,8 +290,9 @@ PubSub::PubSub(PubSubConfig config, std::shared_ptr<Authorizer> authorizer, LogS
     }
     dispatcher_ = std::make_unique<Dispatcher>(
         DispatcherOptions{.mode = config_.dispatch_mode,
-                          .threshold = limits_.dispatch_threshold,
-                          .pool_threads = limits_.pool_threads},
+                          .topics_per_thread = limits_.topics_per_thread,
+                          .minimum_threads = limits_.dispatch_min_threads,
+                          .maximum_threads = limits_.dispatch_max_threads},
         log_);
     if (config_.idle_pump) dispatcher_->set_idle_pump(config_.idle_pump);
 }
@@ -427,7 +428,11 @@ void PubSub::start() {
             } else {
                 topics_[*address] = topic;
             }
-            if (settings.dispatch) dispatcher_->pin(address->to_string(), settings.dispatch);
+            if (settings.dispatch) {
+                dispatcher_->pin(address->to_string(), settings.dispatch);
+            } else {
+                dispatcher_->register_key(address->to_string());
+            }
         }
     }
     if (recovered_topics > 0 || torn > 0) {
@@ -647,7 +652,11 @@ bool PubSub::create_topic(const Identity& identity, const Address& address, Topi
         if (inbox_owner) inboxes_[*inbox_owner] = topic;
         else topics_[address] = topic;
     }
-    if (settings.dispatch) dispatcher_->pin(address.to_string(), settings.dispatch);
+    if (settings.dispatch) {
+        dispatcher_->pin(address.to_string(), settings.dispatch);
+    } else {
+        dispatcher_->register_key(address.to_string());
+    }
     persist_definition(*topic);
     entities_changed();
     return true;
@@ -749,6 +758,12 @@ std::shared_ptr<Topic> PubSub::ensure_system_topic(const Address& address, Topic
         topic = slot;
     }
     if (created) {
+        const auto dispatch = topic->settings().dispatch;
+        if (dispatch) {
+            dispatcher_->pin(address.to_string(), dispatch);
+        } else {
+            dispatcher_->register_key(address.to_string());
+        }
         persist_definition(*topic);
         entities_changed();
     }
@@ -770,6 +785,7 @@ std::shared_ptr<Topic> PubSub::inbox_topic_for(const Address& owner, bool create
         created = true;
     }
     if (created) {
+        dispatcher_->register_key(topic->address().to_string());
         persist_definition(*topic);
         entities_changed();
     }

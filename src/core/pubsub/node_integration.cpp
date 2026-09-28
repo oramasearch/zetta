@@ -144,6 +144,11 @@ std::vector<nlohmann::json> pubsub_topic_rows(const PubSub& pubsub) {
         row["slowest_lag_events"] = stats.slowest_lag_events;
         row["next_sequence"] = stats.next_sequence;
         row["dispatch_mode"] = std::string(to_string(pubsub.dispatch_mode()));
+        row["dispatch_threads"] = pubsub.dispatch_threads();
+        row["dispatch_keys"] = pubsub.dispatch_keys();
+        row["topics_per_dispatch_thread"] = pubsub.limits().topics_per_thread;
+        row["dispatch_min_threads"] = pubsub.limits().dispatch_min_threads;
+        row["dispatch_max_threads"] = pubsub.limits().dispatch_max_threads;
         rows.push_back(std::move(row));
     }
     return rows;

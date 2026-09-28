@@ -74,6 +74,10 @@ struct Options {
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
+    bool pubsub_dispatch_mode_from_cli = false;
+    bool pubsub_topics_per_thread_from_cli = false;
+    bool pubsub_dispatch_min_threads_from_cli = false;
+    bool pubsub_dispatch_max_threads_from_cli = false;
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -87,6 +91,17 @@ bool parse_uint16(const std::string& text, std::uint16_t& out) {
         return false;
     }
     out = static_cast<std::uint16_t>(value);
+    return true;
+}
+
+bool parse_positive_size(std::string_view text, std::size_t& out) {
+    std::size_t value = 0;
+    const auto [pointer, error] =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || pointer != text.data() + text.size() || value == 0) {
+        return false;
+    }
+    out = value;
     return true;
 }
 
@@ -128,6 +143,14 @@ void print_usage(const char* argv0) {
         "                      mTLS is always on — there is no plaintext mode\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
+        "  --pubsub-dispatch-mode MODE\n"
+        "                      pool (default), auto, per_key, or inline\n"
+        "  --pubsub-topics-per-thread N\n"
+        "                      Active keys per pool worker (default 250)\n"
+        "  --pubsub-dispatch-threads N\n"
+        "                      Minimum shared-pool workers (default 1)\n"
+        "  --pubsub-dispatch-max-threads N\n"
+        "                      Maximum workers (default detected CPU count)\n"
         "  --governance        Enforce consent gating on cloud-touching calls.\n"
         "                      OFF by default (#995): a consent-gated capability\n"
         "                      executes on the first call and the bypass is\n"
@@ -141,6 +164,10 @@ void print_usage(const char* argv0) {
         "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
         "  ZETTA_DATA_DIR      Database directory -> --data-dir\n"
         "  ZETTA_WEBAPP_DIR    Studio web app bundle -> --webapp-dir\n"
+        "  ZETTA_PUBSUB_DISPATCH_MODE -> --pubsub-dispatch-mode\n"
+        "  ZETTA_PUBSUB_TOPICS_PER_THREAD -> --pubsub-topics-per-thread\n"
+        "  ZETTA_PUBSUB_DISPATCH_THREADS -> --pubsub-dispatch-threads\n"
+        "  ZETTA_PUBSUB_DISPATCH_MAX_THREADS -> --pubsub-dispatch-max-threads\n"
         "  ZETTA_GOVERNANCE    1/true/yes/on -> --governance\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
@@ -240,6 +267,47 @@ Options parse_args(int argc, char** argv) {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
             o.node.preflight = false;
+        } else if (arg == "--pubsub-dispatch-mode") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-mode");
+            if (!value) break;
+            const auto mode = zetta::pubsub::parse_dispatch_mode(value);
+            if (!mode) {
+                std::fprintf(stderr,
+                             "zetta: --pubsub-dispatch-mode wants pool, auto, per_key, or inline\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.pubsub_dispatch_mode = *mode;
+            o.pubsub_dispatch_mode_from_cli = true;
+        } else if (arg == "--pubsub-topics-per-thread") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-topics-per-thread");
+            if (!value) break;
+            if (!parse_positive_size(value, o.node.pubsub_topics_per_thread)) {
+                std::fprintf(stderr, "zetta: --pubsub-topics-per-thread wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.pubsub_topics_per_thread_from_cli = true;
+        } else if (arg == "--pubsub-dispatch-threads") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-threads");
+            if (!value) break;
+            if (!parse_positive_size(value, o.node.pubsub_dispatch_min_threads)) {
+                std::fprintf(stderr, "zetta: --pubsub-dispatch-threads wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.pubsub_dispatch_min_threads_from_cli = true;
+        } else if (arg == "--pubsub-dispatch-max-threads") {
+            const char* value = take_value(argc, argv, i, o, "--pubsub-dispatch-max-threads");
+            if (!value) break;
+            std::size_t maximum = 0;
+            if (!parse_positive_size(value, maximum)) {
+                std::fprintf(stderr, "zetta: --pubsub-dispatch-max-threads wants a positive number\n");
+                o.bad_usage = true;
+                break;
+            }
+            o.node.pubsub_dispatch_max_threads = maximum;
+            o.pubsub_dispatch_max_threads_from_cli = true;
         } else if (arg == "--governance") {
             o.node.enforce_consent = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -251,6 +319,58 @@ Options parse_args(int argc, char** argv) {
         }
     }
     return o;
+}
+
+bool apply_pubsub_environment(Options& options) {
+    auto apply_size = [&](const char* name, bool set_on_command_line,
+                          std::size_t& destination) {
+        if (set_on_command_line) return true;
+        const char* value = std::getenv(name);
+        if (value == nullptr) return true;
+        if (parse_positive_size(value, destination)) return true;
+        std::fprintf(stderr, "zetta: %s wants a positive number\n", name);
+        return false;
+    };
+    if (!options.pubsub_dispatch_mode_from_cli) {
+        if (const char* value = std::getenv("ZETTA_PUBSUB_DISPATCH_MODE")) {
+            const auto mode = zetta::pubsub::parse_dispatch_mode(value);
+            if (!mode) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_PUBSUB_DISPATCH_MODE wants pool, auto, per_key, or inline\n");
+                return false;
+            }
+            options.node.pubsub_dispatch_mode = *mode;
+        }
+    }
+    if (!apply_size("ZETTA_PUBSUB_TOPICS_PER_THREAD",
+                    options.pubsub_topics_per_thread_from_cli,
+                    options.node.pubsub_topics_per_thread)) {
+        return false;
+    }
+    if (!apply_size("ZETTA_PUBSUB_DISPATCH_THREADS",
+                    options.pubsub_dispatch_min_threads_from_cli,
+                    options.node.pubsub_dispatch_min_threads)) {
+        return false;
+    }
+    if (!options.pubsub_dispatch_max_threads_from_cli) {
+        if (const char* value = std::getenv("ZETTA_PUBSUB_DISPATCH_MAX_THREADS")) {
+            std::size_t maximum = 0;
+            if (!parse_positive_size(value, maximum)) {
+                std::fprintf(stderr,
+                             "zetta: ZETTA_PUBSUB_DISPATCH_MAX_THREADS wants a positive number\n");
+                return false;
+            }
+            options.node.pubsub_dispatch_max_threads = maximum;
+        }
+    }
+    if (options.node.pubsub_dispatch_max_threads &&
+        *options.node.pubsub_dispatch_max_threads <
+            options.node.pubsub_dispatch_min_threads) {
+        std::fprintf(stderr,
+                     "zetta: pub/sub dispatch maximum threads must be at least the minimum\n");
+        return false;
+    }
+    return true;
 }
 
 // A node's identity (its cluster node id and replication actor id) must be STABLE
@@ -428,6 +548,9 @@ int main(int argc, char** argv) {
             opts.node.enforce_consent = value == "1" || value == "true" ||
                                         value == "yes" || value == "on";
         }
+    }
+    if (!apply_pubsub_environment(opts)) {
+        return 2;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a

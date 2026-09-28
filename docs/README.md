@@ -23,7 +23,8 @@ run / test.
 ## Domains
 
 Pub/sub [CRUD](pubsub/crud.md) covers node-local topic/message management on
-REST and MCP, non-consuming reads, revisions, retention and mutation auditing.
+REST and MCP, non-consuming reads, revisions, retention and mutation auditing;
+[dispatch](pubsub/dispatch.md) covers the shared topic-sized worker pool.
 
 | Domain | Covers |
 |---|---|

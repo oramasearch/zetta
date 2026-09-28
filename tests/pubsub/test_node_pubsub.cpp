@@ -40,12 +40,22 @@ TEST(NodePubSub, StartsWithTheNodeAndIsListedInSystemPubsubTopics) {
     ASSERT_TRUE(node.pubsub()->publish(kEngine, request).accepted);
 
     zetta::query::QueryService service{node};
-    auto result = service.run("SELECT topic, subscribers, held_events FROM system.pubsub_topics;", "");
+    auto result = service.run(
+        "SELECT topic, subscribers, held_events, dispatch_mode, dispatch_threads, "
+        "dispatch_keys, topics_per_dispatch_thread, dispatch_min_threads, "
+        "dispatch_max_threads FROM system.pubsub_topics;",
+        "");
     ASSERT_TRUE(result.ok()) << result.error;
     ASSERT_EQ(result.rows.size(), 1u);
     EXPECT_EQ(result.rows[0].at("topic").get<std::string>(), "topic:orders");
     EXPECT_EQ(result.rows[0].at("subscribers").get<std::size_t>(), 1u);
     EXPECT_EQ(result.rows[0].at("held_events").get<std::uint64_t>(), 1u);
+    EXPECT_EQ(result.rows[0].at("dispatch_mode"), "pool");
+    EXPECT_EQ(result.rows[0].at("dispatch_threads"), 1);
+    EXPECT_GE(result.rows[0].at("dispatch_keys").get<std::size_t>(), 1u);
+    EXPECT_EQ(result.rows[0].at("topics_per_dispatch_thread"), 250);
+    EXPECT_EQ(result.rows[0].at("dispatch_min_threads"), 1);
+    EXPECT_GE(result.rows[0].at("dispatch_max_threads").get<std::size_t>(), 1u);
 
     // Every pub/sub operation is a span in the node's ring (#1034).
     std::set<std::string> names;
@@ -55,6 +65,24 @@ TEST(NodePubSub, StartsWithTheNodeAndIsListedInSystemPubsubTopics) {
     EXPECT_TRUE(names.contains("pubsub:publish"));
     node.stop();
     EXPECT_EQ(node.pubsub(), nullptr);
+}
+
+TEST(NodePubSub, SizesThePoolForOneThousandTopics) {
+    zetta::test::TempDir directory;
+    auto config = config_for(directory);
+    config.preflight = false;
+    config.pubsub_dispatch_max_threads = 4;
+    zetta::Node node{config};
+    ASSERT_TRUE(node.start());
+    for (std::size_t topic = 0; topic < 1000; ++topic) {
+        ASSERT_TRUE(node.pubsub()->create_topic(
+            kEngine,
+            address("topic:sizing-" + std::to_string(topic)),
+            {}));
+    }
+    EXPECT_EQ(node.pubsub()->dispatch_keys(), 1000u);
+    EXPECT_EQ(node.pubsub()->dispatch_threads(), 4u);
+    node.stop();
 }
 
 TEST(NodePubSub, TableAddressesInsertRows) {

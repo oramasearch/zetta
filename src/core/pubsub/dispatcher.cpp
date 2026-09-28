@@ -1,9 +1,27 @@
 #include "zetta/pubsub/dispatcher.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <functional>
 
 namespace zetta::pubsub {
+namespace {
+
+thread_local bool running_dispatch_job = false;
+
+class DispatchJobScope {
+public:
+    DispatchJobScope() {
+        assert(!running_dispatch_job);
+        running_dispatch_job = true;
+    }
+
+    ~DispatchJobScope() {
+        running_dispatch_job = false;
+    }
+};
+
+}  // namespace
 
 std::string_view to_string(DispatchMode mode) {
     switch (mode) {
@@ -15,15 +33,28 @@ std::string_view to_string(DispatchMode mode) {
     return "auto";
 }
 
+std::optional<DispatchMode> parse_dispatch_mode(std::string_view mode) {
+    if (mode == "auto") return DispatchMode::Auto;
+    if (mode == "per_key" || mode == "per-key") return DispatchMode::PerKey;
+    if (mode == "pool") return DispatchMode::Pool;
+    if (mode == "inline") return DispatchMode::Inline;
+    return std::nullopt;
+}
+
 Dispatcher::Dispatcher(DispatcherOptions options, LogSink log)
     : options_(options), log_(std::move(log)) {
-    if (options_.pool_threads == 0) options_.pool_threads = 1;
+    if (options_.topics_per_thread == 0) options_.topics_per_thread = 1;
+    if (options_.minimum_threads == 0) options_.minimum_threads = 1;
+    if (options_.maximum_threads < options_.minimum_threads) {
+        options_.maximum_threads = options_.minimum_threads;
+    }
     if (options_.per_turn_cap == 0) options_.per_turn_cap = 1;
     switch (options_.mode) {
         case DispatchMode::Pool: current_ = DispatchMode::Pool; break;
         case DispatchMode::Inline: current_ = DispatchMode::Inline; break;
         default: current_ = DispatchMode::PerKey; break;
     }
+    maybe_resize_pool();
 }
 
 Dispatcher::~Dispatcher() { stop(); }
@@ -35,30 +66,43 @@ DispatchMode Dispatcher::effective_mode() const {
 
 std::size_t Dispatcher::key_count() const {
     std::lock_guard lock(mutex_);
-    return lanes_.size();
+    return registered_key_count();
+}
+
+std::size_t Dispatcher::pool_thread_count() const {
+    std::lock_guard lock(mutex_);
+    return pool_.size();
+}
+
+bool Dispatcher::blocking_allowed() {
+    return !running_dispatch_job;
+}
+
+void Dispatcher::assert_blocking_allowed() {
+    assert(blocking_allowed() && "a pub/sub dispatch job must never block its worker");
+}
+
+void Dispatcher::register_key(const std::string& key) {
+    std::lock_guard lock(mutex_);
+    if (stopping_) return;
+    auto& lane = lanes_[key];
+    lane.registered = true;
+    maybe_switch();
+    maybe_resize_pool();
 }
 
 void Dispatcher::pin(const std::string& key, std::optional<DispatchMode> mode) {
     std::lock_guard lock(mutex_);
+    auto& lane = lanes_[key];
+    lane.registered = true;
     if (mode) {
         pins_[key] = *mode;
     } else {
         pins_.erase(key);
     }
-}
-
-std::size_t Dispatcher::pool_worker_for(const std::string& key) const {
-    return std::hash<std::string>{}(key) % pool_.size();
-}
-
-void Dispatcher::ensure_pool() {
-    if (!pool_.empty()) return;
-    for (std::size_t index = 0; index < options_.pool_threads; ++index) {
-        pool_.push_back(std::make_unique<Worker>());
-    }
-    for (std::size_t index = 0; index < pool_.size(); ++index) {
-        pool_[index]->thread = std::thread([this, index] { run_pool_worker(index); });
-    }
+    maybe_switch();
+    maybe_resize_pool();
+    rebalance();
 }
 
 void Dispatcher::start_per_key_worker(const std::string& key) {
@@ -79,29 +123,134 @@ void Dispatcher::start_per_key_worker(const std::string& key) {
 bool Dispatcher::submit(const std::string& key, Job job) {
     std::unique_lock lock(mutex_);
     if (stopping_) return false;
-    const auto pinned = pins_.find(key);
-    const bool run_inline = (pinned != pins_.end() && pinned->second == DispatchMode::Inline) ||
-                            (pinned == pins_.end() && current_ == DispatchMode::Inline);
-    if (run_inline) {
+    auto& lane = lanes_[key];
+    lane.registered = true;
+    maybe_switch();
+    maybe_resize_pool();
+    if (mode_for_key(key) == DispatchMode::Inline) {
         lock.unlock();
         job();
         return true;
     }
-    auto& lane = lanes_[key];
     lane.jobs.push_back(std::move(job));
     ++outstanding_;
-    maybe_switch();
-    const bool per_key = (pinned != pins_.end() && pinned->second == DispatchMode::PerKey) ||
-                         current_ == DispatchMode::PerKey;
-    if (per_key) {
+    if (mode_for_key(key) == DispatchMode::PerKey) {
         start_per_key_worker(key);
         return true;
     }
-    ensure_pool();
-    auto& worker = *pool_[pool_worker_for(key)];
-    if (std::ranges::find(worker.ready, key) == worker.ready.end()) worker.ready.push_back(key);
-    worker.wake.notify_one();
+    if (lane.pool_worker == nullptr || !active_worker(lane.pool_worker)) {
+        lane.pool_worker = desired_worker(key);
+    }
+    if (lane.pool_worker != nullptr) enqueue_pool_key(key, *lane.pool_worker);
     return true;
+}
+
+DispatchMode Dispatcher::mode_for_key(const std::string& key) const {
+    if (const auto pinned = pins_.find(key); pinned != pins_.end() && pinned->second != DispatchMode::Auto) {
+        return pinned->second;
+    }
+    return current_;
+}
+
+std::size_t Dispatcher::registered_key_count() const {
+    return std::ranges::count_if(lanes_, [](const auto& entry) { return entry.second.registered; });
+}
+
+std::size_t Dispatcher::pooled_key_count() const {
+    return std::ranges::count_if(lanes_, [this](const auto& entry) {
+        return entry.second.registered && mode_for_key(entry.first) == DispatchMode::Pool;
+    });
+}
+
+std::size_t Dispatcher::desired_pool_threads() const {
+    const std::size_t pooled_keys = pooled_key_count();
+    const bool pool_selected = current_ == DispatchMode::Pool || pooled_keys != 0;
+    if (!pool_selected) return 0;
+    const std::size_t from_keys = pooled_keys == 0 ? 1 :
+        (pooled_keys + options_.topics_per_thread - 1) / options_.topics_per_thread;
+    return std::clamp(from_keys, options_.minimum_threads, options_.maximum_threads);
+}
+
+Dispatcher::Worker* Dispatcher::desired_worker(const std::string& key) const {
+    if (pool_.empty()) return nullptr;
+    return pool_[std::hash<std::string>{}(key) % pool_.size()].get();
+}
+
+bool Dispatcher::active_worker(const Worker* worker) const {
+    return std::ranges::any_of(pool_, [worker](const auto& candidate) {
+        return candidate.get() == worker;
+    });
+}
+
+void Dispatcher::enqueue_pool_key(const std::string& key, Worker& worker) {
+    auto lane = lanes_.find(key);
+    if (lane == lanes_.end() || lane->second.running || lane->second.queued ||
+        lane->second.jobs.empty()) {
+        return;
+    }
+    lane->second.queued = true;
+    lane->second.pool_worker = &worker;
+    worker.ready.push_back(key);
+    worker.wake.notify_one();
+}
+
+void Dispatcher::resize_pool(std::size_t threads) {
+    const std::size_t previous = pool_.size();
+    if (threads == previous) return;
+    if (threads > previous) {
+        while (pool_.size() < threads) {
+            auto worker = std::make_unique<Worker>();
+            auto* worker_pointer = worker.get();
+            pool_.push_back(std::move(worker));
+            worker_pointer->thread = std::thread([this, worker_pointer] {
+                run_pool_worker(worker_pointer);
+            });
+        }
+    } else {
+        while (pool_.size() > threads) {
+            auto worker = std::move(pool_.back());
+            pool_.pop_back();
+            worker->ready.clear();
+            worker->stop = true;
+            worker->wake.notify_all();
+            retired_.push_back(std::move(worker));
+        }
+    }
+    rebalance();
+    if (log_) {
+        log_(LogLevel::Info,
+             "dispatch: " + std::to_string(registered_key_count()) + " topics; pool " +
+                 std::to_string(previous) + " \xE2\x86\x92 " + std::to_string(threads) + " threads");
+    }
+}
+
+void Dispatcher::rebalance() {
+    for (auto& worker : pool_) worker->ready.clear();
+    for (auto& [key, lane] : lanes_) {
+        lane.queued = false;
+        const auto mode = mode_for_key(key);
+        if (mode == DispatchMode::Pool) {
+            if (!lane.running) lane.pool_worker = desired_worker(key);
+            if (!lane.running && lane.pool_worker != nullptr && !lane.jobs.empty()) {
+                enqueue_pool_key(key, *lane.pool_worker);
+            }
+            continue;
+        }
+        if (!lane.running) lane.pool_worker = nullptr;
+        if (mode == DispatchMode::PerKey && !lane.jobs.empty()) start_per_key_worker(key);
+    }
+    for (auto& [key, worker] : per_key_workers_) worker->wake.notify_all();
+    for (auto& worker : pool_) worker->wake.notify_all();
+}
+
+void Dispatcher::maybe_resize_pool() {
+    std::size_t target = desired_pool_threads();
+    if (target < pool_.size() && target >= options_.minimum_threads) {
+        const std::size_t shrink_boundary = target * options_.topics_per_thread;
+        const std::size_t margin = std::min(options_.shrink_hysteresis_keys, shrink_boundary);
+        if (pooled_key_count() > shrink_boundary - margin) target = pool_.size();
+    }
+    resize_pool(target);
 }
 
 void Dispatcher::note_done(std::unique_lock<std::mutex>& lock) {
@@ -114,20 +263,16 @@ void Dispatcher::run_per_key(const std::string& key) {
     std::unique_lock lock(mutex_);
     auto* worker = per_key_workers_.at(key).get();
     while (true) {
-        auto pinned = pins_.find(key);
-        const bool still_mine = (pinned != pins_.end() && pinned->second == DispatchMode::PerKey) ||
-                                current_ == DispatchMode::PerKey;
+        const bool still_mine = mode_for_key(key) == DispatchMode::PerKey;
         auto lane = lanes_.find(key);
         const bool has_work = lane != lanes_.end() && !lane->second.jobs.empty();
         if (!still_mine && !stopping_) {
             // The pool took over: hand any queued work to it and exit.
             if (has_work) {
-                ensure_pool();
-                auto& pool_worker = *pool_[pool_worker_for(key)];
-                if (std::ranges::find(pool_worker.ready, key) == pool_worker.ready.end()) {
-                    pool_worker.ready.push_back(key);
+                lane->second.pool_worker = desired_worker(key);
+                if (lane->second.pool_worker != nullptr) {
+                    enqueue_pool_key(key, *lane->second.pool_worker);
                 }
-                pool_worker.wake.notify_one();
             }
             worker->stop = true;
             return;
@@ -143,16 +288,22 @@ void Dispatcher::run_per_key(const std::string& key) {
         lane->second.jobs.pop_front();
         lane->second.running = true;
         lock.unlock();
-        job();
+        {
+            DispatchJobScope dispatch_job;
+            job();
+        }
         lock.lock();
-        lanes_[key].running = false;
+        auto after = lanes_.find(key);
+        if (after != lanes_.end()) after->second.running = false;
         note_done(lock);
+        if (after != lanes_.end() && !after->second.registered && after->second.jobs.empty()) {
+            lanes_.erase(after);
+        }
     }
 }
 
-void Dispatcher::run_pool_worker(std::size_t index) {
+void Dispatcher::run_pool_worker(Worker* worker) {
     std::unique_lock lock(mutex_);
-    auto* worker = pool_[index].get();
     while (true) {
         if (worker->ready.empty()) {
             if (worker->stop) return;
@@ -162,9 +313,21 @@ void Dispatcher::run_pool_worker(std::size_t index) {
         const std::string key = worker->ready.front();
         worker->ready.pop_front();
         auto lane = lanes_.find(key);
+        if (lane != lanes_.end()) lane->second.queued = false;
         if (lane == lanes_.end() || lane->second.jobs.empty()) continue;
+        if (mode_for_key(key) != DispatchMode::Pool || lane->second.pool_worker != worker) {
+            if (mode_for_key(key) == DispatchMode::PerKey) {
+                start_per_key_worker(key);
+            } else if (mode_for_key(key) == DispatchMode::Pool) {
+                lane->second.pool_worker = desired_worker(key);
+                if (lane->second.pool_worker != nullptr) {
+                    enqueue_pool_key(key, *lane->second.pool_worker);
+                }
+            }
+            continue;
+        }
         if (lane->second.running) {  // a retiring per-key worker is mid-job: come back
-            worker->ready.push_back(key);
+            enqueue_pool_key(key, *worker);
             worker->wake.wait_for(lock, std::chrono::milliseconds(1));
             continue;
         }
@@ -175,49 +338,71 @@ void Dispatcher::run_pool_worker(std::size_t index) {
             current->second.jobs.pop_front();
             current->second.running = true;
             lock.unlock();
-            job();
+            {
+                DispatchJobScope dispatch_job;
+                job();
+            }
             lock.lock();
-            lanes_[key].running = false;
+            current = lanes_.find(key);
+            if (current == lanes_.end()) break;
+            current->second.running = false;
             note_done(lock);
+            if (mode_for_key(key) != DispatchMode::Pool || desired_worker(key) != worker) break;
         }
         auto after = lanes_.find(key);
-        if (after != lanes_.end() && !after->second.jobs.empty()) worker->ready.push_back(key);
+        if (after == lanes_.end()) continue;
+        if (!after->second.registered && after->second.jobs.empty()) {
+            lanes_.erase(after);
+            continue;
+        }
+        if (mode_for_key(key) == DispatchMode::PerKey) {
+            after->second.pool_worker = nullptr;
+            if (!after->second.jobs.empty()) start_per_key_worker(key);
+        } else if (mode_for_key(key) == DispatchMode::Pool) {
+            after->second.pool_worker = desired_worker(key);
+            if (after->second.pool_worker != nullptr && !after->second.jobs.empty()) {
+                enqueue_pool_key(key, *after->second.pool_worker);
+            }
+        }
     }
 }
 
 void Dispatcher::maybe_switch() {
     if (options_.mode != DispatchMode::Auto) return;
-    const std::size_t keys = lanes_.size();
-    if (current_ == DispatchMode::PerKey && keys > options_.threshold) {
-        switch_to(DispatchMode::Pool, std::to_string(keys) + " topics > threshold " +
-                                          std::to_string(options_.threshold) + "; moving to a pool of " +
-                                          std::to_string(options_.pool_threads) + " threads");
-    } else if (current_ == DispatchMode::Pool && keys <= options_.threshold / 2) {
-        switch_to(DispatchMode::PerKey, std::to_string(keys) + " topics <= " +
-                                            std::to_string(options_.threshold / 2) +
-                                            " (half the threshold); back to a thread per topic");
+    const std::size_t keys = registered_key_count();
+    if (current_ == DispatchMode::PerKey && keys > options_.topics_per_thread) {
+        switch_to(DispatchMode::Pool, std::to_string(keys) + " topics > explicit Auto threshold " +
+                                          std::to_string(options_.topics_per_thread));
+    } else if (current_ == DispatchMode::Pool &&
+               keys + options_.shrink_hysteresis_keys <= options_.topics_per_thread) {
+        switch_to(DispatchMode::PerKey,
+                  std::to_string(keys) + " topics below explicit Auto threshold by " +
+                      std::to_string(options_.shrink_hysteresis_keys));
     }
 }
 
 void Dispatcher::switch_to(DispatchMode mode, std::string reason) {
     current_ = mode;
     if (log_) log_(LogLevel::Info, "dispatch: " + reason);
-    if (mode == DispatchMode::Pool) {
-        ensure_pool();
-        for (auto& [key, worker] : per_key_workers_) worker->wake.notify_one();  // they hand off and exit
-    }
+    maybe_resize_pool();
+    rebalance();
 }
 
 void Dispatcher::remove_key(const std::string& key) {
     std::lock_guard lock(mutex_);
     auto lane = lanes_.find(key);
-    if (lane != lanes_.end() && lane->second.jobs.empty() && !lane->second.running) lanes_.erase(lane);
+    if (lane != lanes_.end()) lane->second.registered = false;
+    if (lane != lanes_.end() && lane->second.jobs.empty() && !lane->second.running) {
+        lanes_.erase(lane);
+    }
     if (auto worker = per_key_workers_.find(key); worker != per_key_workers_.end()) {
         worker->second->stop = true;
         worker->second->wake.notify_one();
     }
     pins_.erase(key);
     maybe_switch();
+    maybe_resize_pool();
+    rebalance();
 }
 
 void Dispatcher::set_idle_pump(std::function<void()> pump) {

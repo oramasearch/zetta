@@ -20,16 +20,23 @@ injectable; tests fake a pod.
 three `ZETTA_POD_*` variables through `resourceFieldRef`. Limits are read from cgroups
 without it.
 
-`derive_limits` takes 25% of the memory budget for pub/sub, 50% of free disk for spill
-files, a dispatch threshold of 2 × CPUs and a pool of CPUs; every value can be
-overridden (`LimitOverrides`). It logs each input and result:
+`derive_limits` takes 25% of the memory budget for pub/sub and 50% of free disk for
+spill files. Dispatch defaults to one shared worker per 250 active pool keys, with a
+minimum of one worker and a maximum of the detected CPU count. Each value can be
+overridden (`LimitOverrides`). The node CLI and environment settings are listed in
+[dispatch.md](dispatch.md). Detection logs each input and result:
 
 ```
 pubsub: INFO memory budget 4.0 GiB (cgroup v2 memory.max /sys/fs/cgroup/kubepods/pod1; host 256.0 GiB ignored)
 pubsub: INFO memory for topics 1.0 GiB (25% of budget; override: pubsub.memory)
 pubsub: INFO spill disk 180.0 GiB (50% of 360.0 GiB free; statvfs /var/lib/zetta; override: pubsub.spill_disk)
-pubsub: INFO cpu 1.5 (cgroup v2 cpu.max 150000 100000); dispatch threshold 4 topics, pool 2 threads
+pubsub: INFO cpu 1.5 (cgroup v2 cpu.max 150000 100000); dispatch pool one thread per 250 topics, minimum 1, maximum 2 threads
 ```
+
+Topic-count growth and shrink are runtime decisions rather than resource detection.
+The pool grows immediately at each multiple of 250 and shrinks after the count is
+ten keys below the previous boundary. Resizes are logged and exposed in
+`system.node_metrics`.
 
 ## Overflow
 

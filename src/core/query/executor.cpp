@@ -44,6 +44,7 @@
 #include "zetta/util/timestamp.hpp"
 #include "zetta/testkit/test_suite.hpp"
 #include "zetta/pubsub/node_integration.hpp"
+#include "zetta/pubsub/pubsub.hpp"
 
 namespace zetta::query {
 namespace {
@@ -1720,6 +1721,25 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     row["net_percent"] =
         number_or_null(metrics.net_utilization_available, metrics.net_percent);
     row["sampled_at"] = metrics.sampled_at;
+    if (const auto* pubsub = node.pubsub()) {
+        row["pubsub_dispatch_mode"] =
+            std::string(zetta::pubsub::to_string(pubsub->dispatch_mode()));
+        row["pubsub_dispatch_threads"] = pubsub->dispatch_threads();
+        row["pubsub_dispatch_keys"] = pubsub->dispatch_keys();
+        row["pubsub_topics_per_dispatch_thread"] =
+            pubsub->limits().topics_per_thread;
+        row["pubsub_dispatch_min_threads"] =
+            pubsub->limits().dispatch_min_threads;
+        row["pubsub_dispatch_max_threads"] =
+            pubsub->limits().dispatch_max_threads;
+    } else {
+        row["pubsub_dispatch_mode"] = nlohmann::json();
+        row["pubsub_dispatch_threads"] = nlohmann::json();
+        row["pubsub_dispatch_keys"] = nlohmann::json();
+        row["pubsub_topics_per_dispatch_thread"] = nlohmann::json();
+        row["pubsub_dispatch_min_threads"] = nlohmann::json();
+        row["pubsub_dispatch_max_threads"] = nlohmann::json();
+    }
 
     return {std::move(row)};
 }

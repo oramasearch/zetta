@@ -3,7 +3,8 @@
 **Issues:** [#1029](https://github.com/oramasearch/zetta/issues/1029),
 [#1031](https://github.com/oramasearch/zetta/issues/1031),
 [#1032](https://github.com/oramasearch/zetta/issues/1032),
-[#1034](https://github.com/oramasearch/zetta/issues/1034) · **Code:**
+[#1034](https://github.com/oramasearch/zetta/issues/1034),
+[#1157](https://github.com/oramasearch/zetta/issues/1157) · **Code:**
 `include/zetta/pubsub/node_integration.hpp`, `src/core/pubsub/node_integration.cpp`,
 `src/core/node.cpp`, `src/core/query/executor.cpp` · **Tests:**
 `tests/pubsub/test_node_pubsub.cpp`
@@ -14,6 +15,9 @@ detected limits, registers the `table:` drain and reloads what the last run flus
 spilled. `stop()` flushes it within its budget before the replicated document is
 persisted, so SIGTERM (headless loop exits on the stop flag → `stop()`) flushes pub/sub
 (D20). `NodeConfig::pubsub_auto_create_prefixes` turns on auto-creation.
+`NodeConfig` also carries the dispatch mode, topics per thread, and minimum and
+maximum pool sizes. The CLI and environment names are listed in
+[dispatch.md](dispatch.md).
 
 - **Governance** (`make_node_authorizer`): `user:<id or name>` principals are checked
   with `Node::authorize_user` for the `pubsub:*` permission (`pubsub:publish`,
@@ -30,6 +34,7 @@ persisted, so SIGTERM (headless loop exits on the stop flag → `stop()`) flushe
   table's error topic.
 - **Observability**: `system.pubsub_topics` (topic, lifecycle, exposed, subscribers,
   held events, memory and disk bytes, spilling since, slowest subscriber and its lag,
-  next sequence, dispatch mode), and a span in the node's ring for every publish,
-  subscribe, ack, dead letter and topic create/drop (`pubsub:publish`, …) with its
-  intent, plan and result shape.
+  next sequence, dispatch mode, active keys, pool size and configured pool bounds),
+  the same node-wide dispatch values in `system.node_metrics`, and a span in the
+  node's ring for every publish, subscribe, ack, dead letter and topic create/drop
+  (`pubsub:publish`, …) with its intent, plan and result shape.

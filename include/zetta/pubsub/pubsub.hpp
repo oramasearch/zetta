@@ -80,7 +80,7 @@ struct TopicSettings {
     std::optional<OverflowPolicy> overflow;           // default: by guarantee (D10)
     OverBoundPolicy over_bound = OverBoundPolicy::Clamp;  // D8
     bool producer_queue = false;                      // D23: appends go through the dispatcher
-    std::optional<DispatchMode> dispatch;             // pin this topic to PerKey or Inline
+    std::optional<DispatchMode> dispatch;             // explicit per-topic dispatch override
     bool exposed = false;                             // D22: MCP/REST exposure
     std::size_t topics_chain_max = kDefaultTopicsChainDepth;
     std::optional<std::chrono::milliseconds> default_ttl;
@@ -261,7 +261,7 @@ struct PubSubConfig {
     std::filesystem::path data_directory;       // pubsub/ lives under it
     ResourceOverrides resource_overrides;
     LimitOverrides limit_overrides;
-    DispatchMode dispatch_mode = DispatchMode::Auto;
+    DispatchMode dispatch_mode = DispatchMode::Pool;
     // Name prefixes for which publishing or subscribing auto-creates a missing
     // topic (D16). Empty: auto-creation off. "" alone: every name.
     std::vector<std::string> auto_create_prefixes;
@@ -351,6 +351,12 @@ public:
     const PubSubLimits& limits() const { return limits_; }
     MimeRegistry& mime_types() { return mime_types_; }
     DispatchMode dispatch_mode() const { return dispatcher_->effective_mode(); }
+    std::size_t dispatch_threads() const {
+        return dispatcher_->pool_thread_count();
+    }
+    std::size_t dispatch_keys() const {
+        return dispatcher_->key_count();
+    }
 
     // Audit injection point.
     void set_audit_sink(std::function<void(const AuditRecord&)> sink);

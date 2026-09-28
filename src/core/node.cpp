@@ -511,6 +511,13 @@ bool Node::start() {
         zetta::pubsub::PubSubConfig pubsub_config;
         pubsub_config.data_directory = config_.data_dir;
         pubsub_config.auto_create_prefixes = config_.pubsub_auto_create_prefixes;
+        pubsub_config.dispatch_mode = config_.pubsub_dispatch_mode;
+        pubsub_config.limit_overrides.topics_per_thread =
+            config_.pubsub_topics_per_thread;
+        pubsub_config.limit_overrides.dispatch_min_threads =
+            config_.pubsub_dispatch_min_threads;
+        pubsub_config.limit_overrides.dispatch_max_threads =
+            config_.pubsub_dispatch_max_threads;
         // Drains and authorization marshal onto the owner loop; while stop()
         // waits for them on this thread, it keeps that queue moving.
         pubsub_config.idle_pump = [this] { if (on_owner_thread()) drain_owner_work(); };

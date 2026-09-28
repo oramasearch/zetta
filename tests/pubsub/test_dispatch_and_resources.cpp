@@ -1,7 +1,11 @@
 // Dispatch modes (D24) and resource detection (#1030, D11).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -32,7 +36,11 @@ struct CapturedLog {
 
 TEST(PubSubDispatcher, KeepsOrderPerKeyAndSwitchesToThePoolPastTheThreshold) {
     CapturedLog log;
-    Dispatcher dispatcher({.mode = DispatchMode::Auto, .threshold = 4, .pool_threads = 2}, log.sink());
+    Dispatcher dispatcher({.mode = DispatchMode::Auto,
+                           .topics_per_thread = 4,
+                           .minimum_threads = 1,
+                           .maximum_threads = 2},
+                          log.sink());
     std::mutex mutex;
     std::map<std::string, std::vector<int>> seen;
     for (int key = 0; key < 3; ++key) {
@@ -54,13 +62,250 @@ TEST(PubSubDispatcher, KeepsOrderPerKeyAndSwitchesToThePoolPastTheThreshold) {
     }
     dispatcher.drain();
     EXPECT_EQ(dispatcher.effective_mode(), DispatchMode::Pool);
-    EXPECT_TRUE(log.contains("dispatch: 5 topics > threshold 4"));
+    EXPECT_TRUE(log.contains("dispatch: 5 topics > explicit Auto threshold 4"));
     ASSERT_EQ(seen.size(), 10u);
     for (const auto& [key, order] : seen) {
         ASSERT_EQ(order.size(), 100u) << key;
         for (int index = 0; index < 100; ++index) EXPECT_EQ(order[index], index) << key;
     }
     dispatcher.stop();
+}
+
+TEST(PubSubDispatcher, PoolSizesFromActiveKeysAndShrinksWithHysteresis) {
+    CapturedLog log;
+    Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                           .topics_per_thread = 250,
+                           .minimum_threads = 1,
+                           .maximum_threads = 8,
+                           .shrink_hysteresis_keys = 10},
+                          log.sink());
+    EXPECT_EQ(dispatcher.pool_thread_count(), 1u);
+    for (std::size_t key = 0; key < 300; ++key) {
+        dispatcher.register_key("topic:" + std::to_string(key));
+    }
+    EXPECT_EQ(dispatcher.pool_thread_count(), 2u);
+    for (std::size_t key = 300; key < 1000; ++key) {
+        dispatcher.register_key("topic:" + std::to_string(key));
+    }
+    EXPECT_EQ(dispatcher.pool_thread_count(), 4u);
+    for (std::size_t key = 1000; key-- > 240;) {
+        dispatcher.remove_key("topic:" + std::to_string(key));
+    }
+    EXPECT_EQ(dispatcher.key_count(), 240u);
+    EXPECT_EQ(dispatcher.pool_thread_count(), 1u);
+    EXPECT_TRUE(log.contains("dispatch: 251 topics; pool 1 \xE2\x86\x92 2 threads"));
+    EXPECT_TRUE(log.contains("dispatch: 751 topics; pool 3 \xE2\x86\x92 4 threads"));
+    EXPECT_TRUE(log.contains("dispatch: 240 topics; pool 2 \xE2\x86\x92 1 threads"));
+}
+
+void expect_order_and_fairness(std::size_t threads) {
+    Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                           .topics_per_thread = 1,
+                           .minimum_threads = threads,
+                           .maximum_threads = threads,
+                           .per_turn_cap = 4},
+                          nullptr);
+    std::mutex mutex;
+    std::condition_variable gate;
+    bool first_started = false;
+    bool release_first = false;
+    std::vector<int> ordered;
+    std::vector<std::string> turns;
+    dispatcher.submit("topic:ordered", [&] {
+        std::unique_lock lock(mutex);
+        first_started = true;
+        gate.notify_one();
+        gate.wait(lock, [&] { return release_first; });
+        ordered.push_back(0);
+        turns.push_back("ordered");
+    });
+    {
+        std::unique_lock lock(mutex);
+        gate.wait(lock, [&] { return first_started; });
+    }
+    for (int index = 1; index < 200; ++index) {
+        dispatcher.submit("topic:ordered", [&, index] {
+            std::lock_guard lock(mutex);
+            ordered.push_back(index);
+            turns.push_back("ordered");
+        });
+    }
+
+    std::string peer = "topic:peer";
+    while (std::hash<std::string>{}(peer) % threads !=
+           std::hash<std::string>{}("topic:ordered") % threads) {
+        peer.push_back('x');
+    }
+    dispatcher.submit(peer, [&] {
+        std::lock_guard lock(mutex);
+        turns.push_back("peer");
+    });
+    {
+        std::lock_guard lock(mutex);
+        release_first = true;
+    }
+    gate.notify_one();
+    dispatcher.drain();
+
+    ASSERT_EQ(ordered.size(), 200u);
+    for (int index = 0; index < 200; ++index) {
+        EXPECT_EQ(ordered[index], index);
+    }
+    const auto peer_turn = std::ranges::find(turns, "peer");
+    ASSERT_NE(peer_turn, turns.end());
+    EXPECT_LE(std::distance(turns.begin(), peer_turn), 5);
+}
+
+TEST(PubSubDispatcher, KeepsOrderAndFairnessWithOnePoolThread) {
+    expect_order_and_fairness(1);
+}
+
+TEST(PubSubDispatcher, KeepsOrderAndFairnessWithSeveralPoolThreads) {
+    expect_order_and_fairness(4);
+}
+
+TEST(PubSubDispatcher, KeepsOrderAcrossGrowthAndShrink) {
+    Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                           .topics_per_thread = 250,
+                           .minimum_threads = 1,
+                           .maximum_threads = 4,
+                           .shrink_hysteresis_keys = 10,
+                           .per_turn_cap = 8},
+                          nullptr);
+    std::mutex mutex;
+    std::condition_variable gate;
+    bool first_started = false;
+    bool release_first = false;
+    bool second_started = false;
+    bool release_second = false;
+    std::thread::id first_worker;
+    std::thread::id second_worker;
+    std::vector<int> seen;
+    std::string target = "topic:resize";
+    while (std::hash<std::string>{}(target) % 2 == 0) {
+        target.push_back('x');
+    }
+    dispatcher.register_key(target);
+    for (std::size_t key = 0; key < 239; ++key) {
+        dispatcher.register_key("topic:" + std::to_string(key));
+    }
+    dispatcher.submit(target, [&] {
+        std::unique_lock lock(mutex);
+        first_started = true;
+        first_worker = std::this_thread::get_id();
+        gate.notify_one();
+        gate.wait(lock, [&] { return release_first; });
+        seen.push_back(0);
+    });
+    {
+        std::unique_lock lock(mutex);
+        gate.wait(lock, [&] { return first_started; });
+    }
+    dispatcher.submit(target, [&] {
+        std::unique_lock lock(mutex);
+        second_started = true;
+        second_worker = std::this_thread::get_id();
+        gate.notify_one();
+        gate.wait(lock, [&] { return release_second; });
+        seen.push_back(1);
+    });
+    for (int index = 2; index < 1000; ++index) {
+        dispatcher.submit(target, [&, index] {
+            std::lock_guard lock(mutex);
+            seen.push_back(index);
+        });
+    }
+    for (std::size_t key = 239; key < 299; ++key) {
+        dispatcher.register_key("topic:" + std::to_string(key));
+    }
+    EXPECT_EQ(dispatcher.pool_thread_count(), 2u);
+    {
+        std::lock_guard lock(mutex);
+        release_first = true;
+    }
+    gate.notify_one();
+    {
+        std::unique_lock lock(mutex);
+        gate.wait(lock, [&] { return second_started; });
+    }
+    EXPECT_NE(first_worker, second_worker);
+    for (std::size_t key = 299; key-- > 239;) {
+        dispatcher.remove_key("topic:" + std::to_string(key));
+    }
+    EXPECT_EQ(dispatcher.pool_thread_count(), 1u);
+    {
+        std::lock_guard lock(mutex);
+        release_second = true;
+    }
+    gate.notify_one();
+    dispatcher.drain();
+    ASSERT_EQ(seen.size(), 1000u);
+    for (int index = 0; index < 1000; ++index) {
+        EXPECT_EQ(seen[index], index);
+    }
+}
+
+TEST(PubSubDispatcher, MarksWorkerJobsAsNonBlocking) {
+    Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                           .minimum_threads = 1,
+                           .maximum_threads = 1},
+                          nullptr);
+    std::atomic<bool> blocking_allowed{true};
+    dispatcher.submit("topic:non-blocking", [&] {
+        blocking_allowed = Dispatcher::blocking_allowed();
+    });
+    dispatcher.drain();
+    EXPECT_FALSE(blocking_allowed.load());
+}
+
+#ifndef NDEBUG
+TEST(PubSubDispatcher, DebugBuildRejectsBlockingOnAWorker) {
+    EXPECT_DEATH(
+        {
+            Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                                   .minimum_threads = 1,
+                                   .maximum_threads = 1},
+                                  nullptr);
+            dispatcher.submit("topic:blocked", [] {
+                Dispatcher::assert_blocking_allowed();
+            });
+            dispatcher.drain();
+        },
+        "must never block");
+}
+#endif
+
+TEST(PubSubDispatcherBenchmark, DISABLED_ThroughputOneAndFourThreads) {
+    constexpr std::size_t kKeys = 1000;
+    constexpr std::size_t kJobsPerKey = 1000;
+    for (const std::size_t threads : {std::size_t{1}, std::size_t{4}}) {
+        Dispatcher dispatcher({.mode = DispatchMode::Pool,
+                               .topics_per_thread = kKeys,
+                               .minimum_threads = threads,
+                               .maximum_threads = threads},
+                              nullptr);
+        std::atomic<std::uint64_t> completed{0};
+        const auto started = std::chrono::steady_clock::now();
+        for (std::size_t key = 0; key < kKeys; ++key) {
+            const std::string name = "topic:" + std::to_string(key);
+            for (std::size_t job = 0; job < kJobsPerKey; ++job) {
+                dispatcher.submit(name, [&] {
+                    completed.fetch_add(1, std::memory_order_relaxed);
+                });
+            }
+        }
+        dispatcher.drain();
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
+        const double jobs_per_second =
+            static_cast<double>(completed.load()) / elapsed;
+        std::cout << "dispatch benchmark: threads=" << threads
+                  << " keys=" << kKeys
+                  << " jobs=" << completed.load()
+                  << " seconds=" << elapsed
+                  << " jobs_per_second=" << jobs_per_second << '\n';
+        EXPECT_EQ(completed.load(), kKeys * kJobsPerKey);
+    }
 }
 
 TEST(PubSubDispatcher, InlineRunsOnTheCallerAndPinsOverrideTheMode) {
@@ -133,13 +378,16 @@ TEST(PubSubResources, CgroupV2TightestAncestorWins) {
     const auto limits = derive_limits(budget, {}, log.sink());
     EXPECT_EQ(limits.memory_bytes, std::uint64_t{1} << 30);        // 25% of 4 GiB
     EXPECT_EQ(limits.spill_disk_bytes, std::uint64_t{180} << 30);  // 50% of 360 GiB
-    EXPECT_EQ(limits.pool_threads, 2u);                            // ceil(1.5)
-    EXPECT_EQ(limits.dispatch_threshold, 4u);
+    EXPECT_EQ(limits.topics_per_thread, 250u);
+    EXPECT_EQ(limits.dispatch_min_threads, 1u);
+    EXPECT_EQ(limits.dispatch_max_threads, 2u);                    // ceil(1.5)
     EXPECT_TRUE(log.contains("memory budget 4.0 GiB (cgroup v2 memory.max"));
     EXPECT_TRUE(log.contains("host 256.0 GiB ignored"));
     EXPECT_TRUE(log.contains("memory for topics 1.0 GiB (25% of budget; override: pubsub.memory)"));
     EXPECT_TRUE(log.contains("spill disk 180.0 GiB (50% of 360.0 GiB free"));
     EXPECT_TRUE(log.contains("cpu 1.5 (cgroup v2 cpu.max 150000 100000)"));
+    EXPECT_TRUE(log.contains(
+        "dispatch pool one thread per 250 topics, minimum 1, maximum 2 threads"));
 }
 
 TEST(PubSubResources, CgroupV1AndDownwardApi) {
@@ -175,8 +423,17 @@ TEST(PubSubResources, HostFallbackAndConfigurationOverrides) {
                                              ResourceOverrides{.memory_bytes = std::uint64_t{8} << 30});
     EXPECT_EQ(configured.memory.source, "configuration");
     CapturedLog log;
-    const auto limits = derive_limits(configured, LimitOverrides{.memory_bytes = 12345}, log.sink());
+    const auto limits = derive_limits(
+        configured,
+        LimitOverrides{.memory_bytes = 12345,
+                       .topics_per_thread = 100,
+                       .dispatch_min_threads = 3,
+                       .dispatch_max_threads = 5},
+        log.sink());
     EXPECT_EQ(limits.memory_bytes, 12345u);
+    EXPECT_EQ(limits.topics_per_thread, 100u);
+    EXPECT_EQ(limits.dispatch_min_threads, 3u);
+    EXPECT_EQ(limits.dispatch_max_threads, 5u);
     EXPECT_TRUE(log.contains("memory for topics 12.1 KiB (configuration)"));
 }
 

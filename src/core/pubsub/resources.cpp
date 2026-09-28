@@ -385,8 +385,12 @@ PubSubLimits derive_limits(const ResourceBudget& budget, const LimitOverrides& o
     limits.cpus = budget.cpus;
     limits.memory_bytes = overrides.memory_bytes.value_or(budget.memory.value / 4);
     limits.spill_disk_bytes = overrides.spill_disk_bytes.value_or(budget.disk_free.value / 2);
-    limits.dispatch_threshold = overrides.dispatch_threshold.value_or(2 * whole_cpus);
-    limits.pool_threads = overrides.pool_threads.value_or(whole_cpus);
+    limits.topics_per_thread = std::max<std::size_t>(1, overrides.topics_per_thread.value_or(250));
+    limits.dispatch_min_threads =
+        std::max<std::size_t>(1, overrides.dispatch_min_threads.value_or(1));
+    limits.dispatch_max_threads = std::max(
+        limits.dispatch_min_threads,
+        overrides.dispatch_max_threads.value_or(whole_cpus));
     limits.hold_publisher = overrides.hold_publisher.value_or(limits.hold_publisher);
     limits.shutdown_budget = overrides.shutdown_budget.value_or(limits.shutdown_budget);
 
@@ -408,9 +412,11 @@ PubSubLimits derive_limits(const ResourceBudget& budget, const LimitOverrides& o
                                  ? std::string(" (configuration)")
                                  : " (50% of " + format_bytes(budget.disk_free.value) + " free; " +
                                        budget.disk_free.source + "; override: pubsub.spill_disk)"));
-    log(LogLevel::Info, "cpu " + format_cpus(budget.cpus) + " (" + budget.cpu_source +
-                            "); dispatch threshold " + std::to_string(limits.dispatch_threshold) +
-                            " topics, pool " + std::to_string(limits.pool_threads) + " threads");
+    log(LogLevel::Info,
+        "cpu " + format_cpus(budget.cpus) + " (" + budget.cpu_source +
+            "); dispatch pool one thread per " + std::to_string(limits.topics_per_thread) +
+            " topics, minimum " + std::to_string(limits.dispatch_min_threads) +
+            ", maximum " + std::to_string(limits.dispatch_max_threads) + " threads");
     return limits;
 }
 

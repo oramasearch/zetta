@@ -71,8 +71,9 @@ struct PubSubLimits {
     std::uint64_t memory_bytes = 0;      // all topics on the node together
     std::uint64_t spill_disk_bytes = 0;  // spill files on the node together
     double cpus = 1.0;
-    std::size_t dispatch_threshold = 2;  // topics before the shared pool
-    std::size_t pool_threads = 1;
+    std::size_t topics_per_thread = 250;
+    std::size_t dispatch_min_threads = 1;
+    std::size_t dispatch_max_threads = 1;
     std::chrono::milliseconds hold_publisher{5'000};
     std::chrono::milliseconds shutdown_budget{25'000};
 };
@@ -80,15 +81,17 @@ struct PubSubLimits {
 struct LimitOverrides {
     std::optional<std::uint64_t> memory_bytes;
     std::optional<std::uint64_t> spill_disk_bytes;
-    std::optional<std::size_t> dispatch_threshold;
-    std::optional<std::size_t> pool_threads;
+    std::optional<std::size_t> topics_per_thread;
+    std::optional<std::size_t> dispatch_min_threads;
+    std::optional<std::size_t> dispatch_max_threads;
     std::optional<std::chrono::milliseconds> hold_publisher;
     std::optional<std::chrono::milliseconds> shutdown_budget;
 };
 
 // Proposed fractions (decision D11): pub/sub memory = 25% of the memory
-// budget, spill disk = 50% of free space, dispatch threshold = 2 x CPUs,
-// pool = CPUs. Logs one line per input and per derived value.
+// budget and spill disk = 50% of free space. Dispatch defaults to one shared
+// worker per 250 active keys, minimum one and maximum detected CPUs (#1157).
+// Logs one line per input and per derived value.
 PubSubLimits derive_limits(const ResourceBudget& budget, const LimitOverrides& overrides,
                            const LogSink& log);
 
