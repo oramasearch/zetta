@@ -31,7 +31,7 @@ for model work. M-21 adds event-time online logistic regression over pub/sub top
 - [integration.md](integration.md) — integration branch merge order, primary solution ownership, diff audit and native proof (#1082).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
 - [Data-first featurization](../data/featurization.md) — all 21 methodologies enforce run preconditions and report native feature/exclusion provenance, including grouped posteriors, stacking, labelling rules, private inputs, and event windows (#1062).
-- [entity_resolution.md](entity_resolution.md) — M-2 native multi-route blocking, probabilistic or labelled-pair scoring, conflict-safe clustering, result tables, and metrics (#1041).
+- [entity_resolution.md](entity_resolution.md) — M-2 distributed owned-pair blocking and scoring, allreduced EM, merged conflict-safe components, result tables, and metrics (#1041, #1072).
 - [next_best_action.md](next_best_action.md) — M-8 propensity composition, implicit-feedback ALS, hard policy constraints, recommendation tables, and offline IPS/DR evaluation (#1047).
 - [rank.md](rank.md) — M-9 native LambdaMART: whole-group validation, distributed histogram training, ranked-queue tables, NDCG@k, and yield at budget (#1048).
 - [vision.md](vision.md) — M-13 native PNG/JPEG decoding, frozen ViT embeddings, source-disjoint distributed head training, prediction tables, and evaluation reports (#1052).

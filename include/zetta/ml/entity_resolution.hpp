@@ -20,8 +20,9 @@ class Cluster;
 //
 // Candidate generation is deterministic across normalized exact identifiers,
 // sorted-name windows, and token MinHash/LSH. Each deduplicated pair has one
-// stable owner partition. Pair statistics are reducible through `allreduce`, so
-// members combine sufficient statistics rather than moving source rows.
+// stable owner partition. Members allreduce pair statistics, merge local
+// conflict-safe components, and stream scored pairs to the output member in
+// bounded pages.
 //
 // See docs/ml/entity_resolution.md.
 namespace zetta::ml {
@@ -154,6 +155,7 @@ EntityResolutionTableResult
 run_entity_resolution(Node &node, const data::ResolvedDataset &dataset,
                       const EntityResolutionParams &params = {},
                       std::string_view output_suffix = {},
-                      const cluster::Cluster *cluster = nullptr);
+                      const cluster::Cluster *cluster = nullptr,
+                      std::string_view output_node = {});
 
 } // namespace zetta::ml

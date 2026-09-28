@@ -8,6 +8,7 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/ml/synthetic_private_job.hpp"
+#include "zetta/ml/entity_resolution_job.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #include "zetta/ml/segmentation_methodology.hpp"
@@ -544,6 +545,8 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::ml::install_entity_resolution_launch_runner(*launch_listener_, *this,
+                                                       *cluster_);
     zetta::ml::install_segmentation_launch_runner(*launch_listener_, *this);
     zetta::ml::install_forecast_launch_runner(*launch_listener_, *this);
     zetta::ml::install_anomaly_launch_runner(*launch_listener_, *this);
