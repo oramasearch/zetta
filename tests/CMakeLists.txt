@@ -83,6 +83,7 @@ add_executable(zetta-tests
   cloud/test_cloud_inspector.cpp
   pipeline/test_run.cpp
   ml/test_methodology.cpp
+  ml/test_label_efficiency.cpp
   ml/test_model.cpp
   workspace/test_workspace_profile.cpp
   billing/test_plan.cpp
