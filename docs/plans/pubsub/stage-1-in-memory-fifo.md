@@ -1,10 +1,8 @@
 # Stage 1 — in-memory pub/sub specification
 
-**Status:** draft spec, revision 29 (2026-09-27): a consolidated rewrite of
-revisions 1–22 over decisions [D1–D39](decisions.md). Every section cites the
-decisions it comes from; anything marked *proposal* was filled in under the
-[standing rule](decisions.md#the-standing-rule-from-d6-d9-d10-d19) and can be
-overruled. Open items are listed at the end.
+**Status:** stage 1 is built; revision 30 (2026-09-28) records D24's shared
+dispatch-pool revision. The shipped contract lives in [../../pubsub/](../../pubsub/README.md).
+Every section cites the decisions it comes from; open items are listed at the end.
 
 ## 1. What stage 1 is
 
@@ -151,15 +149,15 @@ producers ──► producer queue ──► internal queue (TopicRingStack) ─
 
 The simplest configuration is the internal queue alone.
 
-**Dispatch (D24).** What moves events along the chain: a **dispatcher thread
-per topic** by default; a **shared pool** once the topic count passes a
-threshold or a heuristic fires; **inline** (the publisher's thread) by
-configuration. *Proposals:* threshold 2 × detected CPUs, pool size = detected
-CPUs, switch back at half the threshold, topics can be pinned to a mode, the
-pool serves topics round robin with a per-turn cap. Every switch is logged:
+**Dispatch (D24).** A shared pool moves events by default. It begins at one
+worker, grows at one worker per 250 active topics, and is capped at the detected
+CPU count unless configured otherwise. `PerKey`, `Inline`, and legacy `Auto`
+remain explicit choices. The pool serves keys round robin with a per-turn cap;
+resizing moves a key only between jobs. Growth is immediate at a boundary and
+shrink waits for a ten-topic margin. Every resize is logged:
 
 ```
-pubsub: INFO dispatch: 34 topics > threshold 32 (2 × 16 cpus); moving 32 topics to a pool of 16 threads
+pubsub: INFO dispatch: 251 topics; pool 1 → 2 threads
 ```
 
 ## 6. Subscribing and delivery

@@ -44,8 +44,9 @@ PubSubConfig test_config(const std::filesystem::path& directory,
     config.detect_resources = false;
     config.limits = PubSubLimits{.memory_bytes = memory,
                                  .spill_disk_bytes = std::uint64_t{256} << 20,
-                                 .dispatch_threshold = 8,
-                                 .pool_threads = 2,
+                                 .topics_per_thread = 250,
+                                 .dispatch_min_threads = 1,
+                                 .dispatch_max_threads = 2,
                                  .hold_publisher = 200ms,
                                  .shutdown_budget = 5000ms};
     config.maintenance_interval = 50ms;

@@ -53,6 +53,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/solutions/experiment.hpp"
+#include "zetta/pubsub/dispatcher.hpp"
 
 namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
@@ -89,6 +90,11 @@ struct NodeConfig {
     // one of these prefixes are auto-created on first use (D16); empty = off.
     bool pubsub = true;
     std::vector<std::string> pubsub_auto_create_prefixes;
+    zetta::pubsub::DispatchMode pubsub_dispatch_mode =
+        zetta::pubsub::DispatchMode::Pool;
+    std::size_t pubsub_topics_per_thread = 250;
+    std::size_t pubsub_dispatch_min_threads = 1;
+    std::optional<std::size_t> pubsub_dispatch_max_threads;
 };
 
 // Result of the startup integrity ("preflight") check — a snapshot of how sound

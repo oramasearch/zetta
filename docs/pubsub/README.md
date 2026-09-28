@@ -30,8 +30,9 @@ header only ([events.md](events.md)).
   recipients and claims; priority levels with aging; at-least-once and exactly-once (#1028).
 - [governance.md](governance.md) — the `Authorizer` injection point; identity-stamped
   envelopes; the sender-stack checks; clamp or reject; audit (#1029).
-- [dispatch.md](dispatch.md) — the `Dispatcher`: a thread per key, a pool past a
-  threshold, inline; per-key order; logged switches (#1026).
+- [dispatch.md](dispatch.md) — the `Dispatcher`: a shared pool by default, one
+  worker per 250 active keys within configured bounds; resize-safe ordering,
+  round-robin fairness, explicit per-key/inline modes and blocking guards (#1026, #1157).
 - [limits.md](limits.md) — detecting memory, CPU and disk from cgroups, the Downward API
   and the host; derived limits; overflow policies; spilling and its log lines (#1030).
 - [restart.md](restart.md) — the shutdown flush within a budget; best-effort reload,

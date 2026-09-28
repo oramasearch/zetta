@@ -26,7 +26,10 @@ and the per-audience [experience contracts](docs/product/experience/README.md)
 
 Pub/sub supports [node-local topic and message CRUD](docs/pubsub/crud.md) on
 REST and MCP: non-consuming browse, revision-checked edits, explicit redelivery,
-retention updates and audited deletions. Clustered pub/sub remains deferred (D39).
+retention updates and audited deletions. Its default dispatcher is a
+[shared pool sized at one worker per 250 active topics](docs/pubsub/dispatch.md),
+bounded by configurable minimum and maximum worker counts. Clustered pub/sub
+remains deferred (D39).
 
 This repo is Orama Zetta's core: a fast, equal-peer **CRDT-replicated** store
 with clustering, distributed compute, and a native ML pipeline. A *zetta node*

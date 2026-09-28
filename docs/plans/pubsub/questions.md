@@ -203,10 +203,11 @@ id per node.
 
 ## Round 14 — 2026-09-27
 
-26. ~~**What moves events along the chain**~~ → *Answered 2026-09-27 (Steve):
-    configurable; default a thread per topic, moving to a shared pool past a
-    topic-count threshold or when heuristics trigger; inline is also an option*
-    ([D24](decisions.md)). Original: **What moves events along the chain** (producer queue → internal queue →
+26. ~~**What moves events along the chain**~~ → *Answered 2026-09-27 and revised
+    2026-09-28 (Steve): configurable; the default is a shared pool beginning at
+    one worker and growing at one worker per 250 active topics; dedicated and
+    inline dispatch remain explicit options* ([D24](decisions.md)). Original:
+    **What moves events along the chain** (producer queue → internal queue →
     consumer queues)? (a) a **dispatcher thread per topic**: simple, one thread
     per topic; (b) a **shared pool** of dispatcher threads serving every topic:
     bounded threads, needs fairness between topics; or (c) **no dispatcher**: the

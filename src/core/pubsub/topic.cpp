@@ -250,6 +250,8 @@ Topic::AppendOutcome Topic::append(Event event) {
         const auto hold_limit =
             owner() != nullptr ? owner()->limits().hold_publisher : std::chrono::milliseconds(0);
         auto hold = [&]() -> bool {
+            Dispatcher::assert_blocking_allowed();
+            if (!Dispatcher::blocking_allowed()) return false;
             std::unique_lock lock(mutex_);
             ++held_publishers_;
             const bool freed = released_.wait_for(lock, hold_limit, [&] {
@@ -465,6 +467,10 @@ std::optional<Delivery> Topic::next_event(Subscription::State& state,
 
 std::optional<Delivery> Topic::receive(Subscription::State& state, std::chrono::milliseconds timeout,
                                        std::vector<DeferredDeadLetter>& dead_letters) {
+    if (timeout.count() > 0) {
+        Dispatcher::assert_blocking_allowed();
+        if (!Dispatcher::blocking_allowed()) timeout = std::chrono::milliseconds(0);
+    }
     const auto deadline = SteadyClock::now() + timeout;
     std::unique_lock lock(mutex_);
     while (true) {
@@ -736,6 +742,8 @@ std::vector<Event> Topic::read_from(std::uint64_t from_sequence, std::size_t max
     };
     auto events = collect();
     if (!events.empty() || wait.count() <= 0) return events;
+    Dispatcher::assert_blocking_allowed();
+    if (!Dispatcher::blocking_allowed()) return {};
     {
         std::unique_lock lock(mutex_);
         const auto generation = publish_generation_;
