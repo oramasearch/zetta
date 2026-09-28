@@ -152,6 +152,7 @@ add_executable(zetta-tests
   ml/test_gbdt.cpp
   ml/test_backtest.cpp
   ml/test_forecast.cpp
+  ml/test_forecast_runner.cpp
   ml/test_lag_features.cpp
   ml/test_temporal_split.cpp
   ml/test_gbdt_train_partitions.cpp

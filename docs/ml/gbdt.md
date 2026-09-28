@@ -1,9 +1,10 @@
 # Distributed histogram GBDT training (`zetta::ml`)
 
-Histogram gradient-boosted decision trees with a **binary logistic** objective —
-the native training engine for UC-1 churn (FEAT-6 / ENT-14, #390; part of the
-native distributed accelerated-compute pass, #264). This is the differentiator:
-zetta **trains a model on the customer's own data**, rather than running inference
+Histogram gradient-boosted decision trees with **binary logistic** and
+**squared-error** objectives. Binary logistic is the native training engine for
+UC-1 churn (FEAT-6 / ENT-14, #390; part of the native distributed
+accelerated-compute pass, #264), while squared error supports native forecasting.
+Zetta **trains a model on the customer's own data**, rather than running inference
 over a rented model.
 
 It builds on everything that landed before it — the
@@ -22,14 +23,17 @@ and the [job coordinator](../compute/job-coordinator.md).
 ## What a histogram GBDT is, briefly
 
 A model is a base score plus an **ordered ensemble of small regression trees**.
-Each boosting round fits one tree to the gradient/Hessian of the binary log-loss
-at the current predictions:
+For binary logistic training, each boosting round fits one tree to the
+gradient/Hessian of the binary log-loss at the current predictions:
 
 ```
 p_i = sigmoid(raw_i)          # current predicted probability
 g_i = p_i - y_i               # gradient of the log-loss
 h_i = p_i (1 - p_i)           # Hessian
 ```
+
+Squared-error training uses the residual gradient and a unit Hessian while
+retaining the same distributed histogram and tree-building path.
 
 A tree is grown level by level. At every (tree-node, feature) the feature's values
 are **binned** into a small number of equal-width bins, and the per-bin sums of
@@ -180,8 +184,8 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
 
 ## Scope + what's next
 
-- **Objective:** binary logistic (log-loss) only. Other objectives (multiclass,
-  regression) extend `GbdtModel::objective` + the gradient/Hessian formulas.
+- **Objective:** binary logistic (log-loss) and squared-error regression.
+  Multiclass objectives remain out of scope.
 - **Histogram:** host-side reference today; a device-native weighted-histogram
   kernel (and the parent-minus-sibling subtraction trick) are later optimizations
   behind the same API.

@@ -168,6 +168,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+    forecast.hpp            zetta::ml::ForecastParams/ForecastResult/train_forecast_partitions — lagged squared-error forecasting with rolling temporal origins, seasonal-naive FVA, and residual-quantile intervals (#1043)
+    forecast_runner.hpp     zetta::ml::run_forecast_job/run_forecast_table — distributed ComputeJob and ResolvedDataset entry points; write a `forecast` Model plus forecast table, RunOutputs, and lineage (#1043)
   workspace/                the Workspace Profile domain (docs/workspace/)
     workspace_profile.hpp   zetta::workspace::WorkspaceProfile — the environment/role/daily-work + approved-source-refs entity behind Discover Opportunities (#886); value + JSON Schema (parse_workspace_profile_value), modeled on Model
   billing/                  the metered-usage + plan domain (docs/billing/)
@@ -421,6 +423,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
+    forecast.cpp            zetta::ml — refit-at-origin backtesting, recursive multi-step prediction, per-fold/mean MAE·MASE·sMAPE·FVA, and distributed residual intervals (#1043)
+    forecast_runner.cpp     zetta::ml — verify per-series ownership, bridge JobRound allreduce into forecasting, load resolved owned partitions, and write root model/table outputs with lineage (#1043)
     gbdt_train_job.cpp      run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast); opt-in checkpoint/restart (resume the partial model, allreduce-min the cluster resume round, checkpoint each round via TrainHooks; #468) (zetta-core; #390/#391)
     gbdt_score.cpp          zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
     gbdt_score_job.cpp      run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
@@ -603,6 +607,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)
   api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
+  ml/test_forecast.cpp / ml/test_forecast_runner.cpp
+                            temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
 build/generated/            embedded font header (generated; git-ignored)
 ```
 
