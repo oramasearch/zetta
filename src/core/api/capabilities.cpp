@@ -635,6 +635,57 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
         return found->get<double>();
     };
 
+    if (model->kind() == "entity_resolution") {
+        nlohmann::json model_facts = {
+            {"id", model->id()},
+            {"name", model->name()},
+            {"kind", model->kind()},
+            {"metrics", metrics},
+        };
+        if (const auto method = model->feature_schema().find("scoring_method");
+            method != model->feature_schema().end() && method->is_string()) {
+            model_facts["scoring_method"] = *method;
+        }
+        report["model"] = std::move(model_facts);
+
+        nlohmann::json dataset = nlohmann::json::object();
+        for (const std::string& source : run->lineage().sources) {
+            if (source.starts_with("dataset:")) {
+                dataset["source"] = source.substr(8);
+            }
+        }
+        if (const auto rows = number("input_rows")) {
+            dataset["rows_read"] = *rows;
+        }
+        if (const auto rows = number("excluded_rows")) {
+            dataset["rows_excluded"] = *rows;
+        }
+        nlohmann::json not_used = nlohmann::json::array();
+        for (const zetta::pipeline::RunLogEntry& log : run->logs()) {
+            if (log.message.starts_with("dataset: not used:")) {
+                not_used.push_back(log.message.substr(18));
+            }
+        }
+        if (!not_used.empty()) {
+            dataset["not_used"] = std::move(not_used);
+        }
+        report["dataset"] = std::move(dataset);
+
+        nlohmann::json output_tables = nlohmann::json::array();
+        for (const zetta::pipeline::RunOutput& output : run->outputs()) {
+            if (output.kind == "dataset") {
+                output_tables.push_back(
+                    {{"name", output.name}, {"table", output.ref}});
+            }
+        }
+        report["output_tables"] = std::move(output_tables);
+        report["thresholds"] =
+            {{"match", metrics.value("match_threshold", 0.0)},
+             {"review", metrics.value("review_threshold", 0.0)},
+             {"non_match", "below review"}};
+        return ApiResult::success(std::move(report));
+    }
+
     nlohmann::json model_facts = {{"id", model->id()}, {"name", model->name()}};
     if (const auto held = number("held_out_auc")) {
         model_facts["held_out_auc"] = *held;

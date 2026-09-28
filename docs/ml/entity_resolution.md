@@ -65,7 +65,7 @@ The seed controls MinHash and pair ownership. Input records are sorted by their
 source key before candidate generation, so partition and iteration order do not
 change assignments. Fellegi–Sunter EM exposes an allreduce callback for its
 sufficient statistics so a distributed caller can bind it to the compute
-collective. The table runner reads partitioned source rows through the query
+collective. The registry runner reads partitioned source rows through the query
 service, then performs final EM and clustering on the coordinating member.
 Clustering requires the globally ordered high-confidence edge set because every
 transitive union must be checked against all verified identifiers.
@@ -80,6 +80,16 @@ cmake --build build -j 6 --target zetta-tests
 The focused tests plant duplicates with name and address typos, assert pairwise
 F1 above 0.9 with B-cubed metrics, prove a verified-key bridge is not merged,
 and compare one partition with three partitions.
+
+## Running it
+
+The registry integration compiles M-2 into its own connect, normalize/block,
+score, cluster, and output pipeline. Run input names the pipeline table through
+the connect step's `source` and `table`; an explicit `dataset_path` may override
+that table. The run may also override its column contract and thresholds. Poll
+the Run to completion, then query its two dataset outputs or call
+`get_run_report` for the metrics, thresholds, source, exclusions, and output
+table references.
 
 ## Boundaries and deferred work
 

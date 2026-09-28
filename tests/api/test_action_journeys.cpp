@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -23,6 +24,8 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -167,6 +170,8 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
     EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
     EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
+    EXPECT_EQ(listed.value.at("methodologies")[1].at("id"), "M-2");
+    EXPECT_TRUE(listed.value.at("methodologies")[1].at("runnable"));
 
     ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
     const ApiResult captured =
@@ -245,6 +250,137 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, EntityResolutionCompilesAndRunsItsPipelinesTable) {
+    std::shared_ptr<zetta::data::Database> database =
+        node.create_database("datasets");
+    ASSERT_TRUE(database);
+    std::shared_ptr<zetta::data::Table> table =
+        database->create_table("resolution_records");
+    ASSERT_TRUE(table);
+    const std::vector<nlohmann::json> rows = {
+        {{"id", 1},
+         {"record_id", 1},
+         {"source", "crm"},
+         {"name", "Alice Johnson"},
+         {"address", "10 Pine Street"},
+         {"email", "alice@example.com"},
+         {"phone", "604-555-0101"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "alice"},
+         {"label", true},
+         {"date", 10}},
+        {{"id", 2},
+         {"record_id", 101},
+         {"source", "billing"},
+         {"name", "Alyce Johnson"},
+         {"address", "10 Pine St"},
+         {"email", "ALICE@example.com"},
+         {"phone", "6045550101"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "alice"},
+         {"label", true},
+         {"date", 11}},
+        {{"id", 3},
+         {"record_id", 2},
+         {"source", "crm"},
+         {"name", "Bob Martinez"},
+         {"address", "22 Oak Avenue"},
+         {"email", "bob@example.com"},
+         {"phone", "604-555-0102"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "bob"},
+         {"label", false},
+         {"date", 20}},
+        {{"id", 4},
+         {"record_id", 102},
+         {"source", "billing"},
+         {"name", "Bbo Martinez"},
+         {"address", "22 Oak Ave"},
+         {"email", "bob@example.com"},
+         {"phone", "6045550102"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "bob"},
+         {"label", false},
+         {"date", 21}},
+        {{"id", 5},
+         {"record_id", 3},
+         {"source", "crm"},
+         {"name", "Carol Singh"},
+         {"address", "9 Cedar Road"},
+         {"email", "carol@example.com"},
+         {"phone", "604-555-0103"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "carol"},
+         {"label", true},
+         {"date", 30}},
+        {{"id", 6},
+         {"record_id", 103},
+         {"source", "billing"},
+         {"name", "Carol Sing"},
+         {"address", "9 Cedar Rd"},
+         {"email", "carol@example.com"},
+         {"phone", "6045550103"},
+         {"email_verified", true},
+         {"phone_verified", true},
+         {"truth_entity", "carol"},
+         {"label", true},
+         {"date", 31}},
+    };
+    for (const nlohmann::json& row : rows) {
+        table->add_row(row);
+    }
+
+    ASSERT_TRUE(call("create_project", {{"name", "identity"}}).ok);
+    const ApiResult captured =
+        call("capture_intent",
+             {{"project", "identity"},
+              {"text", "Resolve customer records across source systems"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "identity"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-2"},
+         {"hints", {{"source", "datasets"},
+                    {"table", "resolution_records"}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-2");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult run = call(
+        "run", {{"project", "identity"},
+                {"graph", compiled.value.at("name")}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("engine"), "entity_resolution");
+
+    const ApiResult run_view =
+        call("get_run", {{"run_id", run.value.at("run_id")}});
+    ASSERT_TRUE(run_view.ok) << run_view.error.message;
+    EXPECT_EQ(run_view.value.at("status"), "succeeded");
+    ASSERT_EQ(run_view.value.at("outputs").size(), 4u);
+
+    const ApiResult report =
+        call("get_run_report", {{"run_id", run.value.at("run_id")}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("model").at("kind"), "entity_resolution");
+    EXPECT_GT(
+        report.value.at("model").at("metrics").at("pairwise_f1").get<double>(),
+        0.9);
+    EXPECT_DOUBLE_EQ(report.value.at("thresholds").at("match").get<double>(),
+                     0.82);
+    EXPECT_DOUBLE_EQ(report.value.at("thresholds").at("review").get<double>(),
+                     0.55);
+    EXPECT_EQ(report.value.at("thresholds").at("non_match"), "below review");
+    EXPECT_EQ(report.value.at("output_tables").size(), 2u);
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "datasets.resolution_records");
 }
 
 // =====================================================================

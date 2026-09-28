@@ -72,6 +72,16 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-2 refuses graphs that omit the information needed to enforce its runtime
+// safety rules. Blocking keys and both decision thresholds must be explicit,
+// and clustering must declare the verified-identifier conflict policy.
+class EntityResolutionGraphCheck final : public Check {
+public:
+    std::string name() const override { return "entity_resolution_profile"; }
+
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

@@ -7,14 +7,15 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+Three checks ship here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All three are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
@@ -82,6 +83,16 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `entity_resolution_profile` — mandatory M-2 safety declarations
+
+Every `entity_resolution` model step must declare a non-empty `blocking_keys`
+array, numeric `review_threshold` and `match_threshold` values satisfying
+`0 <= review < match <= 1`, and
+`conflict_policy: reject_verified_identifier_conflicts`. A missing or weaker
+declaration fails before execution. The runtime enforces the same thresholds
+and checks whole clusters before each union, preventing a fuzzy bridge from
+merging records across incompatible verified identifiers.
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -112,7 +123,7 @@ typed fields it needs and features all dated before the cutoff:
 }
 ```
 
-Both checks pass and the gate allows deploy. Change `revenue` to `"string"` in the
+The applicable checks pass and the gate allows deploy. Change `revenue` to `"string"` in the
 source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
 
@@ -122,7 +133,7 @@ source profile and `schema_type` fails; add a feature with `"data_as_of":
 using namespace zetta;
 
 ir::ExecutionGraph graph = *ir::from_json(document);   // the compiled graph
-ValidationReport report = default_gate().run(graph);   // ships both #309 checks
+ValidationReport report = default_gate().run(graph);   // runs the default checks
 if (report.block_deploy) {
     // RULE-1: refuse to deploy; report.checks carries the per-check reasons.
 }
@@ -145,11 +156,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
+These checks implement the `Check` interface the [gate](gate.md) defines, alongside the
 trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
-result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+result format** here. The earlier UC-1 resolution-output check (`#312`) remains
+alongside the M-2 profile check.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report
