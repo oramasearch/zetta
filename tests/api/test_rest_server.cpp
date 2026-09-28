@@ -5,15 +5,23 @@
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
@@ -40,6 +48,8 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/version.hpp"
 
+extern char** environ;
+
 namespace {
 
 struct HttpResponse {
@@ -47,14 +57,11 @@ struct HttpResponse {
     std::string body;
 };
 
-// A deliberately dumb blocking HTTP/1.1 client: one request, Connection:
-// close. Runs on a helper thread while the test thread drains the server's
-// bridge (the owning-loop role).
-HttpResponse http_request(unsigned short port, const std::string& method,
-                          const std::string& target, const std::string& body,
-                          const std::string& bearer = {}) {
+int open_http_request(unsigned short port, const std::string& method,
+                      const std::string& target, const std::string& body,
+                      const std::string& bearer = {}) {
     int socket_descriptor = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_descriptor < 0) return {};
+    if (socket_descriptor < 0) return -1;
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -62,7 +69,7 @@ HttpResponse http_request(unsigned short port, const std::string& method,
     if (::connect(socket_descriptor, reinterpret_cast<sockaddr*>(&address),
                   sizeof(address)) != 0) {
         ::close(socket_descriptor);
-        return {};
+        return -1;
     }
     // A bounded wait (#1007): a server that never answers must FAIL the test
     // (status 0, empty body), not park the suite in recv() forever — the hang is
@@ -78,8 +85,21 @@ HttpResponse http_request(unsigned short port, const std::string& method,
     request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     request += "Connection: close\r\n\r\n";
     request += body;
-    ::send(socket_descriptor, request.data(), request.size(), 0);
+    std::size_t sent = 0;
+    while (sent < request.size()) {
+        const ssize_t written =
+            ::send(socket_descriptor, request.data() + sent, request.size() - sent, 0);
+        if (written <= 0) {
+            ::close(socket_descriptor);
+            return -1;
+        }
+        sent += static_cast<std::size_t>(written);
+    }
+    return socket_descriptor;
+}
 
+HttpResponse read_http_response(int socket_descriptor) {
+    if (socket_descriptor < 0) return {};
     std::string response;
     char buffer[4096];
     ssize_t received = 0;
@@ -99,6 +119,217 @@ HttpResponse http_request(unsigned short port, const std::string& method,
     }
     return parsed;
 }
+
+// A deliberately dumb blocking HTTP/1.1 client: one request, Connection:
+// close. Runs on a helper thread while the test thread drains the server's
+// bridge (the owning-loop role).
+HttpResponse http_request(unsigned short port, const std::string& method,
+                          const std::string& target, const std::string& body,
+                          const std::string& bearer = {}) {
+    return read_http_response(
+        open_http_request(port, method, target, body, bearer));
+}
+
+unsigned short unused_loopback_port() {
+    int socket_descriptor = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (socket_descriptor < 0) return 0;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = 0;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::bind(socket_descriptor, reinterpret_cast<sockaddr*>(&address),
+               sizeof(address)) != 0) {
+        ::close(socket_descriptor);
+        return 0;
+    }
+    socklen_t address_size = sizeof(address);
+    if (::getsockname(socket_descriptor,
+                      reinterpret_cast<sockaddr*>(&address),
+                      &address_size) != 0) {
+        ::close(socket_descriptor);
+        return 0;
+    }
+    const unsigned short port = ntohs(address.sin_port);
+    ::close(socket_descriptor);
+    return port;
+}
+
+class ChildProcess {
+public:
+    ~ChildProcess() {
+        if (pid_ <= 0) return;
+        ::kill(pid_, SIGKILL);
+        ::waitpid(pid_, nullptr, 0);
+    }
+
+    void set(pid_t pid) {
+        pid_ = pid;
+    }
+
+    bool wait_until(std::chrono::steady_clock::time_point deadline,
+                    int& status) {
+        while (std::chrono::steady_clock::now() < deadline) {
+            const pid_t result = ::waitpid(pid_, &status, WNOHANG);
+            if (result == pid_) {
+                pid_ = -1;
+                return true;
+            }
+            if (result < 0) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
+    }
+
+private:
+    pid_t pid_ = -1;
+};
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+}
+
+TEST(Shutdown, SigtermWithLongPollsInFlightExitsPromptly) {
+    zetta::test::TempDir dir;
+    const unsigned short cluster_port = unused_loopback_port();
+    ASSERT_NE(cluster_port, 0);
+    unsigned short api_port = unused_loopback_port();
+    while (api_port == cluster_port) {
+        api_port = unused_loopback_port();
+    }
+    ASSERT_NE(api_port, 0);
+    ASSERT_NE(cluster_port, api_port);
+
+    const std::string cluster_listen =
+        "127.0.0.1:" + std::to_string(cluster_port);
+    const std::string api_listen = "127.0.0.1:" + std::to_string(api_port);
+    const std::string data_directory = (dir.path() / "node").string();
+    const std::filesystem::path log_path = dir.path() / "node.log";
+    const std::string owner_secret = "shutdown-owner-secret";
+    std::vector<std::string> arguments{
+        ZETTA_TEST_BINARY,
+        "--headless",
+        "--no-preflight",
+        "--data-dir",
+        data_directory,
+        "--listen",
+        cluster_listen,
+        "--mcp-listen",
+        api_listen,
+        "--admin-token",
+        owner_secret,
+    };
+    std::vector<char*> argument_pointers;
+    for (std::string& argument : arguments) {
+        argument_pointers.push_back(argument.data());
+    }
+    argument_pointers.push_back(nullptr);
+    std::vector<std::string> environment;
+    for (char** variable = environ; *variable != nullptr; ++variable) {
+        const std::string value = *variable;
+        if (!value.starts_with("PATH=")) environment.push_back(value);
+    }
+    // Startup provisioner detection must not find or invoke cloud CLIs in this
+    // process-boundary test. The node itself uses native libraries and needs no
+    // Homebrew executable at runtime.
+    environment.emplace_back("PATH=/usr/bin:/bin");
+    std::vector<char*> environment_pointers;
+    for (std::string& variable : environment) {
+        environment_pointers.push_back(variable.data());
+    }
+    environment_pointers.push_back(nullptr);
+
+    posix_spawn_file_actions_t file_actions;
+    ASSERT_EQ(posix_spawn_file_actions_init(&file_actions), 0);
+    ASSERT_EQ(posix_spawn_file_actions_addopen(
+                  &file_actions, STDOUT_FILENO, log_path.c_str(),
+                  O_WRONLY | O_CREAT | O_TRUNC, 0600),
+              0);
+    ASSERT_EQ(posix_spawn_file_actions_adddup2(
+                  &file_actions, STDOUT_FILENO, STDERR_FILENO),
+              0);
+    pid_t child_pid = -1;
+    const int spawn_result =
+        posix_spawn(&child_pid, ZETTA_TEST_BINARY, &file_actions, nullptr,
+                    argument_pointers.data(), environment_pointers.data());
+    posix_spawn_file_actions_destroy(&file_actions);
+    ASSERT_EQ(spawn_result, 0);
+    ASSERT_GT(child_pid, 0);
+
+    std::atomic<int> started{0};
+    std::atomic<int> finished{0};
+    std::vector<std::jthread> clients;
+    ChildProcess child;
+    child.set(child_pid);
+
+    HttpResponse readiness;
+    const auto startup_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < startup_deadline) {
+        readiness = http_request(api_port, "GET", "/v1/openapi.json", "");
+        if (readiness.status == 200) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_EQ(readiness.status, 200) << read_text(log_path);
+
+    const HttpResponse created = http_request(
+        api_port, "POST", "/v1/create_topic",
+        R"({"topic":"shutdown","exposed":true,"lifecycle":"ephemeral"})",
+        owner_secret);
+    ASSERT_EQ(created.status, 200) << created.body << '\n' << read_text(log_path);
+
+    constexpr int kLongPolls = 11;
+    for (int index = 0; index < kLongPolls; ++index) {
+        clients.emplace_back([&] {
+            ++started;
+            const HttpResponse response = http_request(
+                api_port, "GET",
+                "/v1/receive_events?topic=shutdown&wait_ms=30000", "",
+                owner_secret);
+            (void)response;
+            ++finished;
+        });
+    }
+    const auto clients_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (started.load() != kLongPolls &&
+           std::chrono::steady_clock::now() < clients_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(started.load(), kLongPolls);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    ASSERT_EQ(finished.load(), 0) << "long polls were not in flight";
+
+    const auto stop_started = std::chrono::steady_clock::now();
+    ASSERT_EQ(::kill(child_pid, SIGTERM), 0);
+    int status = 0;
+    const bool exited = child.wait_until(
+        stop_started + std::chrono::seconds(3), status);
+    const auto elapsed = std::chrono::steady_clock::now() - stop_started;
+
+    EXPECT_TRUE(exited) << "node did not exit after SIGTERM\n"
+                        << read_text(log_path);
+    if (exited) {
+        EXPECT_TRUE(WIFEXITED(status))
+            << "termination signal: " << (WIFSIGNALED(status) ? WTERMSIG(status) : 0)
+            << '\n' << read_text(log_path);
+        if (WIFEXITED(status)) {
+            EXPECT_EQ(WEXITSTATUS(status), 0) << read_text(log_path);
+        }
+    }
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
+}
+
+struct OpenSockets {
+    std::vector<int> descriptors;
+
+    ~OpenSockets() {
+        for (const int descriptor : descriptors) {
+            if (descriptor >= 0) ::close(descriptor);
+        }
+    }
+};
 
 struct RestServerFixture : ::testing::Test {
     zetta::test::TempDir dir;
@@ -410,6 +641,175 @@ TEST_F(RestServerFixture, OpenApiDocumentIsServed) {
     ASSERT_TRUE(document.is_object()) << served.body;
     EXPECT_EQ(document, zetta::api::openapi_document(server->registry()));
     EXPECT_TRUE(document.at("paths").contains("/v1/server_info"));
+}
+
+// #1076: a long poll is a suspended coroutine, not a blocking-pool job. Five
+// hundred concurrent waits must all register, and a no-wait receive must still
+// reach the owner loop and finish immediately. Publishing wakes every waiter;
+// each long poll makes exactly one more governed call to collect the event.
+TEST_F(RestServerFixture, FiveHundredLongPollsLeaveNoWaitReceivesFast) {
+    const auto created = request(
+        "POST", "/v1/create_topic",
+        R"({"topic":"topic:stress","exposed":true})");
+    ASSERT_EQ(created.status, 200) << created.body;
+
+    constexpr std::size_t kLongPolls = 500;
+    const std::size_t audit_before = node.audit_event_count();
+    OpenSockets long_polls;
+    long_polls.descriptors.reserve(kLongPolls);
+    for (std::size_t index = 0; index < kLongPolls; ++index) {
+        const int descriptor = open_http_request(
+            server->port(), "GET",
+            "/v1/receive_events?topic=stress&wait_ms=5000", "",
+            owner_secret);
+        ASSERT_GE(descriptor, 0) << "long poll " << index;
+        long_polls.descriptors.push_back(descriptor);
+        if ((index + 1) % 25 == 0) server->drain();
+    }
+
+    const auto registration_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() < audit_before + kLongPolls &&
+           std::chrono::steady_clock::now() < registration_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    const bool all_registered =
+        node.audit_event_count() >= audit_before + kLongPolls;
+
+    HttpResponse no_wait;
+    std::atomic<bool> no_wait_finished{false};
+    const auto no_wait_started = std::chrono::steady_clock::now();
+    std::thread no_wait_client([&] {
+        no_wait = http_request(
+            server->port(), "GET",
+            "/v1/receive_events?topic=stress&wait_ms=0", "",
+            owner_secret);
+        no_wait_finished = true;
+    });
+    const auto fast_deadline =
+        no_wait_started + std::chrono::milliseconds(100);
+    while (!no_wait_finished &&
+           std::chrono::steady_clock::now() < fast_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    const bool finished_while_waiters_parked = no_wait_finished.load();
+    const auto no_wait_elapsed =
+        std::chrono::steady_clock::now() - no_wait_started;
+
+    zetta::api::ApiContext context{
+        node, nullptr, "", zetta::observability::make_root_trace(),
+        &node.span_recorder()};
+    const auto published = server->registry().call(
+        "publish_event",
+        nlohmann::json{{"topic", "stress"}, {"payload", "wake"}},
+        context);
+    EXPECT_TRUE(published.ok) << published.error.message;
+
+    const auto completion_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!no_wait_finished &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    no_wait_client.join();
+
+    const auto expected_audits = audit_before + (kLongPolls * 2) + 2;
+    while (all_registered && node.audit_event_count() < expected_audits &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+
+    EXPECT_TRUE(all_registered)
+        << "every long poll must register without waiting for a pool thread";
+    EXPECT_TRUE(finished_while_waiters_parked)
+        << "the no-wait receive did not finish within 100 ms";
+    EXPECT_LT(no_wait_elapsed, std::chrono::milliseconds(5));
+    ASSERT_EQ(no_wait.status, 200) << no_wait.body;
+    const nlohmann::json no_wait_body = json_of(no_wait);
+    ASSERT_TRUE(no_wait_body.at("ok").get<bool>()) << no_wait.body;
+    EXPECT_LT(no_wait_body.at("duration_ms").get<double>(), 5.0);
+    EXPECT_EQ(node.audit_event_count(), expected_audits)
+        << "each long poll may make only its initial and final governed calls";
+    if (all_registered && node.audit_event_count() == expected_audits) {
+        for (int& descriptor : long_polls.descriptors) {
+            const auto response = read_http_response(descriptor);
+            descriptor = -1;
+            ASSERT_EQ(response.status, 200) << response.body;
+            const auto body = json_of(response);
+            ASSERT_TRUE(body.at("ok").get<bool>()) << response.body;
+            ASSERT_EQ(body.at("value").at("events").size(), 1);
+        }
+    }
+    std::cout << "#1076 500 long polls: no-wait wall "
+              << std::chrono::duration<double, std::milli>(no_wait_elapsed).count()
+              << " ms, registry "
+              << no_wait_body.at("duration_ms").get<double>() << " ms\n";
+}
+
+TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:timeout","exposed":true})")
+                  .status,
+              200);
+    const std::size_t audit_before = node.audit_event_count();
+    const auto started = std::chrono::steady_clock::now();
+    const auto response = request(
+        "GET", "/v1/receive_events?topic=timeout&wait_ms=20");
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    ASSERT_EQ(response.status, 200) << response.body;
+    const auto body = json_of(response);
+    ASSERT_TRUE(body.at("ok").get<bool>()) << response.body;
+    EXPECT_TRUE(body.at("value").at("events").empty());
+    EXPECT_GE(elapsed, std::chrono::milliseconds(20));
+    EXPECT_LT(elapsed, std::chrono::seconds(2));
+    EXPECT_EQ(node.audit_event_count(), audit_before + 2);
+}
+
+TEST_F(RestServerFixture, DroppingATopicWakesItsLongPoll) {
+    ASSERT_EQ(request("POST", "/v1/create_topic",
+                      R"({"topic":"topic:closing","exposed":true})")
+                  .status,
+              200);
+    const std::size_t audit_before = node.audit_event_count();
+    HttpResponse waiting;
+    std::atomic<bool> finished{false};
+    std::thread client([&] {
+        waiting = http_request(
+            server->port(), "GET",
+            "/v1/receive_events?topic=closing&wait_ms=5000", "",
+            owner_secret);
+        finished = true;
+    });
+    const auto registration_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (node.audit_event_count() < audit_before + 1 &&
+           std::chrono::steady_clock::now() < registration_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    const bool registered = node.audit_event_count() >= audit_before + 1;
+
+    const auto dropped = request(
+        "POST", "/v1/drop_topic", R"({"topic":"closing"})");
+    EXPECT_EQ(dropped.status, 200) << dropped.body;
+    const auto completion_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!finished &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        server->drain();
+        std::this_thread::yield();
+    }
+    client.join();
+
+    EXPECT_TRUE(registered);
+    EXPECT_EQ(waiting.status, 404) << waiting.body;
+    EXPECT_EQ(json_of(waiting).at("error").at("code"), "not_found");
+    EXPECT_EQ(node.audit_event_count(), audit_before + 3);
 }
 
 // The spec index over the wire (#646, docs/api/specs-index.md): GET /v1/specs

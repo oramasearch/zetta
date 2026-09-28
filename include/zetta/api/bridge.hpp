@@ -37,8 +37,10 @@ public:
     // for the owning loop and resume once it has run. `work` must be quick
     // (it executes inside a tick) and must not throw — a throw is contained
     // by drain() (logged; the awaiting coroutine still resumes, #1007), but
-    // whatever the work was meant to produce is lost. Compose a timeout at
-    // the call site (the adapter maps a timed-out wait to a busy error).
+    // whatever the work was meant to produce is lost. Once queued, cancellation
+    // is deferred until the work completes: the closure can borrow the awaiting
+    // request's frame. Shutdown must keep draining until those calls return
+    // (#1077; docs/api/registry-design.md).
     runtime::task<> run_on_owner(std::function<void()> work);
 
     // Called by the owning loop each tick/frame. Executes every queued work

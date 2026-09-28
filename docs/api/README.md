@@ -11,7 +11,7 @@ MCP/HTTP work.
 - [registry-design.md](registry-design.md) — **read first**: the settled design
   — one registry/many renderings, the main-thread bridge, auth = AccessKey +
   audit-on-authorize, long work = Run/ComputeJob handles (no new job infra),
-  the error mapping, the consent challenge.
+  the error mapping, the consent challenge, and awaitable REST reads (#1076).
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
 - [governed-actions.md](governed-actions.md) — action parity (#617): the
@@ -37,8 +37,8 @@ MCP/HTTP work.
   client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
   it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
 - [../pubsub/exposure.md](../pubsub/exposure.md) — pub/sub on the control surface
-  (#1033): create_topic / drop_topic / list_topics / publish_event / receive_events,
-  reaching only topics created `exposed` (engine-internal by default).
+  (#1033, #1076): create_topic / drop_topic / list_topics / publish_event / receive_events,
+  exposed topics and long polls that suspend without holding threads.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,

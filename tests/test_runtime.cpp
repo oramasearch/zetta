@@ -18,7 +18,7 @@ namespace {
 
 zetta::runtime::task<int> inner() { co_return 20; }
 
-// co_await composes through the seam; result flows back out of block_on.
+// co_await composes through the runtime interface; result flows back out of block_on.
 zetta::runtime::task<int> outer() {
     const int partial = co_await inner();
     co_return partial + 22;
@@ -36,6 +36,31 @@ zetta::runtime::task<> set_flag(std::shared_ptr<bool> flag) {
 zetta::runtime::task<> record(std::shared_ptr<std::atomic<int>> sink, int value) {
     sink->store(value, std::memory_order_relaxed);
     co_return;
+}
+
+struct EventWaitCounts {
+    std::atomic<int> entered{0};
+    std::atomic<int> finished{0};
+    std::atomic<int> signaled{0};
+};
+
+zetta::runtime::task<> wait_for_event(
+    std::shared_ptr<zetta::runtime::async_event> event,
+    std::shared_ptr<EventWaitCounts> counts,
+    std::chrono::milliseconds timeout) {
+    ++counts->entered;
+    auto [error] = co_await zetta::runtime::timeout(event->wait(), timeout);
+    if (!error) ++counts->signaled;
+    ++counts->finished;
+}
+
+bool reaches_count(const std::atomic<int>& count, int expected) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (count.load() < expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    return count.load() == expected;
 }
 
 }  // namespace
@@ -65,6 +90,52 @@ TEST(Runtime, SpawnRunsOffThreadAndSignalsCompletion) {
     }
     ASSERT_TRUE(done->load(std::memory_order_acquire));
     EXPECT_EQ(sink->load(std::memory_order_relaxed), 7);
+}
+
+TEST(Runtime, AsyncEventRetainsSignalBeforeWaitAndClears) {
+    auto event = std::make_shared<zetta::runtime::async_event>();
+    auto counts = std::make_shared<EventWaitCounts>();
+    event->set();
+    EXPECT_TRUE(event->is_set());
+    zetta::runtime::block_on(wait_for_event(event, counts, std::chrono::seconds(1)));
+    EXPECT_EQ(counts->signaled.load(), 1);
+
+    event->clear();
+    EXPECT_FALSE(event->is_set());
+    zetta::runtime::block_on(wait_for_event(event, counts, std::chrono::milliseconds(1)));
+    EXPECT_EQ(counts->finished.load(), 2);
+    EXPECT_EQ(counts->signaled.load(), 1);
+    event->set();
+}
+
+TEST(Runtime, AsyncEventBroadcastsAcrossThreadsWithoutLosingRegistration) {
+    auto event = std::make_shared<zetta::runtime::async_event>();
+    auto counts = std::make_shared<EventWaitCounts>();
+    constexpr int kWaiters = 500;
+    for (int index = 0; index < kWaiters; ++index) {
+        zetta::runtime::spawn(
+            wait_for_event(event, counts, std::chrono::seconds(5)), {});
+    }
+    EXPECT_TRUE(reaches_count(counts->entered, kWaiters));
+    event->set();
+    EXPECT_TRUE(reaches_count(counts->finished, kWaiters));
+    EXPECT_EQ(counts->signaled.load(), kWaiters);
+}
+
+TEST(Runtime, AsyncEventPublicationRacesTimeoutWithoutLeavingWaiters) {
+    auto counts = std::make_shared<EventWaitCounts>();
+    constexpr int kWaiters = 500;
+    std::vector<std::shared_ptr<zetta::runtime::async_event>> events;
+    for (int index = 0; index < kWaiters; ++index) {
+        auto event = std::make_shared<zetta::runtime::async_event>();
+        events.push_back(event);
+        zetta::runtime::spawn(
+            wait_for_event(event, counts, std::chrono::milliseconds(1)), {});
+    }
+    EXPECT_TRUE(reaches_count(counts->entered, kWaiters));
+    for (const auto& event : events) event->set();
+    EXPECT_TRUE(reaches_count(counts->finished, kWaiters));
+    for (const auto& event : events) event->set();
 }
 
 // --- parallel_for ------------------------------------------------------------
@@ -171,50 +242,9 @@ TEST(Runtime, OffloadReturnsResultFromAPoolWorker) {
     EXPECT_NE(*ran_on, caller);             // …on a pool worker, not the caller
 }
 
-// #1063: waiters park on the blocking pool, so compute offloads are never
-// starved behind them. Before, a long poll held one of the shared pool's
-// one-thread-per-core workers for its whole wait; on an 8-core node eight bus
-// long polls stalled every other offload for up to 10 s.
-TEST(Runtime, WaitersOnTheBlockingPoolNeverStarveComputeOffloads) {
-    const unsigned waiters = std::max(2u, std::thread::hardware_concurrency()) * 2;
-    std::atomic<bool> release{false};
-    std::atomic<unsigned> parked{0};
-    std::atomic<unsigned> finished{0};
-    for (unsigned i = 0; i < waiters; ++i) {
-        zetta::runtime::spawn_blocking(
-            [](std::atomic<bool>* release, std::atomic<unsigned>* parked)
-                -> zetta::runtime::task<> {
-                ++*parked;
-                while (!release->load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                co_return;
-            }(&release, &parked),
-            [&finished] { ++finished; });
-    }
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (parked.load() < waiters && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    ASSERT_EQ(parked.load(), waiters) << "every waiter holds a blocking-pool thread";
-
-    // With more waiters parked than there are cores, a compute offload still runs.
-    const auto started = std::chrono::steady_clock::now();
-    const int result = zetta::runtime::block_on(
-        []() -> zetta::runtime::task<int> {
-            co_return co_await zetta::runtime::offload([] { return 7; });
-        }());
-    EXPECT_EQ(result, 7);
-    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
-
-    release = true;
-    while (finished.load() < waiters && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    EXPECT_EQ(finished.load(), waiters);
-}
-
 TEST(RuntimeParallelForDeathTest, ThrowingBodyAborts) {
     // parallel_for bodies must not throw — zetta-core never unwinds across a
-    // seam. A throwing body is a contract violation and aborts the process.
+    // public boundary. A throwing body is a contract violation and aborts the process.
     EXPECT_DEATH(
         zetta::runtime::parallel_for(
             500'000,
