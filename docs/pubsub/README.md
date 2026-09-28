@@ -41,4 +41,4 @@ header only ([events.md](events.md)).
 - [node.md](node.md) — the node owns pub/sub: start and stop, the governance-backed
   authorizer, the `table:` drain, `system.pubsub_topics`, spans (#1029, #1031, #1032, #1034).
 - [exposure.md](exposure.md) — `create_topic`, `drop_topic`, `list_topics`,
-  `publish_event`, `receive_events`; exposed topics and coroutine long polls (#1033, #1076).
+  `publish_event`, `receive_events`; coroutine long polls, independent accepts and explicit capacity (#1033, #1076).

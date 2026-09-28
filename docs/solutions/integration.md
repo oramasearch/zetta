@@ -22,11 +22,18 @@ acceptance remain outside this work order.
 - The `dev` merge retains pub/sub CRUD, incremental solution reconciliation,
   distributed entity resolution, API changes, and their tests. Generated
   schemas are rebuilt from the combined capability registry.
+- The final `dev` refresh also retains #1100's asynchronous connection
+  admission, explicit overload response, IO-executor runtime helpers, and
+  long-poll regression tests. Its public-header changes require both native
+  build trees to be discarded and configured afresh before the final proof.
 
 No new JSON or wire format is introduced by the integration itself. Caller
 snapshot cutoffs, delivery credentials, and ROI economics remain required.
 
 ## Verification
+
+The counts below record the proof before the final #1100 refresh. A fresh
+static/shared proof is required for the refreshed tree before it is pushed.
 
 Native static and shared-dependency suites are run separately with at most
 six build jobs. The complete `zetta-tests` binary supplies the proof counts;

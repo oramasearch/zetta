@@ -38,9 +38,36 @@ The runtime event adapter serializes registration, publish and cancellation clea
 across threads. Its lock is held only while updating the event's waiter list; suspended
 HTTP requests hold neither that lock nor a thread.
 
-**Capacity:** a waiting call holds an HTTP worker coroutine and its small coroutine
-frame, but no thread. The server has 1,024 connection workers by default; the stress
-case keeps 500 long polls registered while a no-wait receive remains below 5 ms.
+**Capacity:** a waiting call holds a socket and a session coroutine, but no thread.
+The accept loop never waits for a free session: it accepts first and allocates a
+session on demand. The old fixed pool waited for an idle worker **before** `accept()`;
+once every worker held a poll, new connections filled the kernel backlog and then
+timed out during TCP connect. Merely increasing that pool did not remove the coupling.
+The accept loop yields to ready session work after every 32 accepts, so a continuous
+reconnect burst cannot monopolize the IO executor. Startup logs the configured cap,
+idle cache and requested backlog; saturation logs the 503 policy.
+
+The regression holds 500 polls with `from_sequence` past the topic head and
+`wait_ms=10000`, then opens 20 fresh no-wait connections. Each must connect and answer
+within 5 ms, even with the idle parser cache limited to one object.
+
+Remaining per-node limits are explicit in `ServerOptions`:
+
+| Option | Default | Meaning |
+|---|---:|---|
+| `max_connections` | 4096 | Admitted HTTP sessions, including long polls, keep-alive and clients still sending headers/bodies. At capacity the listener continues accepting and returns HTTP 503 with `error.code=busy`, `Retry-After: 1` and `Connection: close`. |
+| `idle_connection_cache` | 32 | Completed parser/serializer objects retained for reuse. Cached objects hold no open socket; this is not a limit on active sessions. |
+| `listen_backlog` | 1024 | Requested kernel queue for pending TCP connections; the OS can clamp it. Held, admitted polls do not occupy this queue. |
+
+The application cap is not a promise of unlimited capacity: process/system file
+descriptor limits, memory and kernel queues still apply. Provision descriptors for
+the chosen session cap plus the listener, a transient overload-rejection socket, and
+the node's other files and connections. If `accept()` reports resource exhaustion,
+the server logs the error and retries after an asynchronous delay so existing sessions
+can finish. The overload response write is bounded to 50 ms; it never waits for a
+held poll to finish. Shutdown wakes polls and drains their owner-thread work before
+releasing sessions. No new capability schema or JSON format is introduced.
+
 **Streaming subscriptions over SSE are a later slice**; the long poll is what stage 1
 ships. No new JSON format beyond the capability schemas (in
 `schemas/openapi.json`).

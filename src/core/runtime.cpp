@@ -87,6 +87,28 @@ bool async_event::is_set() const {
     return state_->event.is_set();
 }
 
+task<> yield() {
+    struct Yield {
+        boost::capy::continuation continuation;
+
+        bool await_ready() const noexcept {
+            return false;
+        }
+
+        std::coroutine_handle<> await_suspend(
+            std::coroutine_handle<> coroutine,
+            const boost::capy::io_env* environment) noexcept {
+            continuation.h = coroutine;
+            environment->executor.post(continuation);
+            return std::noop_coroutine();
+        }
+
+        void await_resume() const noexcept {
+        }
+    };
+    co_await Yield{};
+}
+
 namespace {
 
 // One shared worker pool for the whole process. Created on first use with one
