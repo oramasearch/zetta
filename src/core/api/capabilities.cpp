@@ -44,6 +44,7 @@
 #include "zetta/ml/methodology.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/score_table.hpp"
+#include "zetta/ml/segmentation_methodology.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/pipeline/deployment.hpp"
@@ -500,13 +501,14 @@ const nlohmann::json& get_run_report_schema() {
          {{"run_id",
            {{"type", "string"},
             {"minLength", 1},
-            {"description",
-             "the run's uuid (system.runs.run_id, or the `report` output's ref)"}}},
+            {"description", "the run's uuid (system.runs.run_id, or the "
+                            "`report` output's ref)"}}},
           {"limit",
            {{"type", "integer"},
             {"minimum", 1},
             {"description",
-             "how many at-risk entities to return, highest risk first (default 20). "
+             "how many at-risk entities or segment profiles to return (default "
+             "20). "
              "The whole population is ranked; this caps what comes back"}}}}}};
     return schema;
 }
@@ -516,39 +518,61 @@ const nlohmann::json& get_run_report_output_schema() {
         {"type", "object"},
         {"required", {"run", "model"}},
         {"properties",
-         {{"run", {{"type", "object"},
-                   {"description", "run id, graph, status, and when it finished"}}},
+         {{"run",
+           {{"type", "object"},
+            {"description", "run id, graph, status, and when it finished"}}},
           {"dataset",
            {{"type", "object"},
             {"description",
              "what the model was built from: accounts, events, churn_rate, "
-             "majority_class_accuracy (the accuracy a constant answer scores), and "
-             "the feature columns. Absent when the model records no dataset facts"}}},
+             "majority_class_accuracy (the accuracy a constant answer scores), "
+             "and "
+             "the feature columns. Segmentation reports the source table, "
+             "read/clustered/excluded rows, fitted features and excluded "
+             "columns. Absent when the model records no dataset facts"}}},
           {"model",
            {{"type", "object"},
             {"description",
-             "id, name, and the metrics. `held_out_*` is present only when the run "
-             "asked for a holdout; when it is absent the only figures available are "
-             "in-sample and they flatter (#953)"}}},
+             "id, name, and the metrics. `held_out_*` is present only when the "
+             "run "
+             "asked for a holdout; when it is absent the only figures "
+             "available are "
+             "in-sample and they flatter (#953). Segmentation instead carries "
+             "clustering metrics, chosen_k_reason and k_candidates"}}},
           {"drivers",
            {{"type", "array"},
-            {"description", "feature -> weight, strongest first. A weight is what "
-                            "the model leaned on, not a cause"}}},
+            {"description",
+             "feature -> weight, strongest first. A weight is what "
+             "the model leaned on, not a cause"}}},
           {"at_risk",
            {{"type", "array"},
             {"description",
              "the ranked entities with their risk and their evidence values, "
              "capped by `limit`"}}},
+          {"methodology",
+           {{"type", "string"},
+            {"description", "methodology id for typed reports"}}},
+          {"output_tables",
+           {{"type", "array"},
+            {"description", "segmentation assignment/profile table references, "
+                            "availability and row counts"}}},
+          {"segments",
+           {{"type", "array"},
+            {"description", "segment sizes, shares, original-unit centers and "
+                            "descriptive labels"}}},
           {"caveats",
            {{"type", "array"},
-            {"description",
-             "figures that are PRESENT but must not be read as results — a holdout "
-             "too small to mean anything, a perfect score. `missing` says what the "
-             "run cannot tell you; this says what it can and you should not believe"}}},
+            {"description", "figures that are PRESENT but must not be read as "
+                            "results — a holdout "
+                            "too small to mean anything, a perfect score. "
+                            "`missing` says what the "
+                            "run cannot tell you; this says what it can and "
+                            "you should not believe"}}},
           {"missing",
            {{"type", "array"},
             {"description",
-             "fields a report would want that this run cannot supply, each saying "
+             "fields a report would want that this run cannot supply, each "
+             "saying "
              "why. Stated rather than omitted so a writer does not quietly "
              "substitute its own number"}}}}}};
     return schema;
@@ -626,6 +650,11 @@ ApiResult handle_get_run_report(const nlohmann::json& input, ApiContext& context
             "run '" + id +
                 "' has no resolvable model output, so there are no measured "
                 "numbers to report");
+    }
+
+    if (model->kind() == "segmentation") {
+        return ApiResult::success(zetta::ml::segmentation_run_report(
+            context.node, *run, *model, limit));
     }
 
     const nlohmann::json& metrics = model->metrics();
@@ -6305,21 +6334,25 @@ void register_core_capabilities(Registry& registry) {
         handle_get_run});
 
     registry.add(Capability{
-        "get_run_report",
-        "Get a run's report facts",
-        "Read the facts a finished run produced — how good the model is (held-out "
+        "get_run_report", "Get a run's report facts",
+        "Read the facts a finished run produced — how good the model is "
+        "(held-out "
         "first, in-sample beside it), what drives the outcome, and the ranked "
-        "at-risk list with its evidence. Assembled at query time from the run's "
+        "at-risk list with its evidence. Assembled at query time from the "
+        "run's "
         "model and its at-risk table, so it cannot drift from them. Anything a "
-        "report would want and this run cannot supply is listed in `missing` with "
-        "the reason, rather than left blank. No side effects. (#958)",
-        get_run_report_schema(),
-        get_run_report_output_schema(),
-        CapabilityKind::Read,
-        Operation{CapabilityDomain::Api, "query"},
+        "report would want and this run cannot supply is listed in `missing` "
+        "with "
+        "the reason, rather than left blank. For M-3 segmentation, returns K "
+        "selection, "
+        "separation and stability metrics, input/exclusion facts and "
+        "assignment/profile "
+        "tables instead of supervised risk metrics. No side effects. (#958, "
+        "#1042)",
+        get_run_report_schema(), get_run_report_output_schema(),
+        CapabilityKind::Read, Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
-        /*requires_consent=*/false,
-        handle_get_run_report});
+        /*requires_consent=*/false, handle_get_run_report});
 
     registry.add(Capability{
         "propose_improvement",

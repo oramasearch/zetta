@@ -664,6 +664,10 @@ add_library(zetta-core STATIC
   src/core/ml/gbdt_score.cpp
   src/core/ml/explain_row.cpp
   src/core/ml/score_table.cpp
+  src/core/ml/segmentation.cpp
+  src/core/ml/segmentation_job.cpp
+  src/core/ml/segmentation_graph.cpp
+  src/core/ml/segmentation_methodology.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
   src/core/ml/local_featurize_train_job.cpp

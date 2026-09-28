@@ -10,6 +10,7 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -179,10 +180,9 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("compile_intent", {{"project", "portfolio"},
                                 {"input_id", input_id},
                                 {"methodology", "M-3"}});
-    EXPECT_FALSE(explicit_m3.ok);
-    EXPECT_EQ(explicit_m3.error.code, "not_supported");
-    EXPECT_NE(explicit_m3.error.message.find("M-3"), std::string::npos);
-    EXPECT_NE(explicit_m3.error.message.find("1042"), std::string::npos);
+    ASSERT_TRUE(explicit_m3.ok) << explicit_m3.error.message;
+    EXPECT_EQ(explicit_m3.value.at("methodology"), "M-3");
+    EXPECT_TRUE(explicit_m3.value.at("runnable"));
 
     const ApiResult solution =
         call("compile_intent", {{"project", "portfolio"},
@@ -193,11 +193,13 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_EQ(solution.value.at("methodology"), "M-1");
     EXPECT_TRUE(solution.value.at("runnable"));
 
-    const ApiResult by_keyword = call(
-        "compile_intent", {{"project", "portfolio"}, {"input_id", input_id}});
-    EXPECT_FALSE(by_keyword.ok);
-    EXPECT_EQ(by_keyword.error.code, "not_supported");
-    EXPECT_NE(by_keyword.error.message.find("1042"), std::string::npos);
+    const ApiResult by_keyword =
+        call("compile_intent", {{"project", "portfolio"},
+                                {"input_id", input_id},
+                                {"name", "segments from intent"}});
+    ASSERT_TRUE(by_keyword.ok) << by_keyword.error.message;
+    EXPECT_EQ(by_keyword.value.at("methodology"), "M-3");
+    EXPECT_TRUE(by_keyword.value.at("runnable"));
 
     const ApiResult unknown =
         call("capture_intent",
@@ -226,7 +228,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
              {{"project", "portfolio"}, {"graph", "segmentation graph"}});
     ASSERT_TRUE(graph_view.ok) << graph_view.error.message;
     EXPECT_EQ(graph_view.value.at("methodology"), "M-3");
-    EXPECT_FALSE(graph_view.value.at("runnable"));
+    EXPECT_TRUE(graph_view.value.at("runnable"));
 
     const ApiResult project_view = call("get_project", {{"name", "portfolio"}});
     ASSERT_TRUE(project_view.ok) << project_view.error.message;
@@ -235,7 +237,7 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         if (entry.at("name") == "segmentation graph") {
             found = true;
             EXPECT_EQ(entry.at("methodology"), "M-3");
-            EXPECT_FALSE(entry.at("runnable"));
+            EXPECT_TRUE(entry.at("runnable"));
         }
     }
     EXPECT_TRUE(found);
@@ -243,8 +245,210 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     const ApiResult run = call(
         "run", {{"project", "portfolio"}, {"graph", "segmentation graph"}});
     EXPECT_FALSE(run.ok);
-    EXPECT_EQ(run.error.code, "not_supported");
-    EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+    EXPECT_EQ(run.error.code, "engine_error");
+    EXPECT_NE(run.error.message.find("blocked by gate"), std::string::npos);
+
+    const auto unavailable = call("compile_intent", {{"project", "portfolio"},
+                                                     {"input_id", input_id},
+                                                     {"methodology", "M-2"}});
+    EXPECT_FALSE(unavailable.ok);
+    EXPECT_EQ(unavailable.error.code, "not_supported");
+    EXPECT_NE(unavailable.error.message.find("1041"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, SegmentationMethodologyRunsItsPipelinesCustomerTable) {
+    std::string content;
+    for (int group = 0; group < 3; ++group) {
+        for (int index = 0; index < 30; ++index) {
+            const double noise = std::sin(static_cast<double>(index)) * 0.05;
+            const nlohmann::json row = {
+                {"customer_id", group * 30 + index + 1},
+                {"spend", 10.0 + group * 100.0 + noise},
+                {"visits", 2.0 + group * 20.0 + noise},
+                {"tenure", 60.0 - group * 25.0 + noise},
+                {"region",
+                 std::vector<std::string>{"north", "south", "west"}[group]},
+                {"outcome", {{"never_read", true}}}};
+            content += row.dump() + "\n";
+        }
+    }
+    journey::Journey segments{"customer-segmentation", {}};
+    segments.steps = {
+        {"land the customer's table",
+         "upload_dataset",
+         {{"database", "crm"},
+          {"table_name", "customers"},
+          {"format", "jsonl"},
+          {"content", content}}},
+        {"read the landed table",
+         "get_dataset",
+         {{"database", "crm"}, {"dataset", "customers"}},
+         {.checks = {journey::equals("/rows", 90)}}},
+        {"create the project", "create_project", {{"name", "customer-groups"}}},
+        {"read the project",
+         "get_project",
+         {{"name", "customer-groups"}},
+         {.checks = {journey::equals("/name", "customer-groups")}}},
+        {"describe the goal",
+         "capture_intent",
+         {{"project", "customer-groups"},
+          {"text", "segment my customers into groups"}}},
+        {"read the captured intent",
+         "get_project",
+         {{"name", "customer-groups"}},
+         {.checks = {journey::size_equals("/inputs", 1)}}},
+        {"compile M-3 with the customer's source",
+         "compile_intent",
+         {{"project", "customer-groups"},
+          {"methodology", "M-3"},
+          {"name", "customer segments"},
+          {"hints",
+           {{"source", "crm"},
+            {"table", "customers"},
+            {"maximum_k", 5},
+            {"restarts", 2}}}},
+         {.checks = {journey::equals("/methodology", "M-3"),
+                     journey::equals("/runnable", true),
+                     journey::equals("/steps", 5)}}},
+        {"read the own pipeline",
+         "get_graph",
+         {{"project", "customer-groups"}, {"graph", "customer segments"}},
+         {.checks = {journey::equals("/methodology", "M-3"),
+                     journey::equals("/runnable", true)}}},
+        {"run without a dataset override",
+         "run",
+         {{"project", "customer-groups"}, {"graph", "customer segments"}},
+         {.checks = {journey::equals("/engine", "segmentation"),
+                     journey::equals("/status", "running")}},
+         {{"segmentation_run", "/run_id"}}},
+        {"wait for trained outputs",
+         "get_run",
+         {{"run_id", "$segmentation_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/outputs", 4),
+                     journey::contains_element("/lineage/sources",
+                                               "dataset:crm.customers"),
+                     journey::any_element("/outputs", {{"/kind", "report"}})}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read the measured segments",
+         "get_run_report",
+         {{"run_id", "$segmentation_run"}},
+         {.checks = {journey::equals("/methodology", "M-3"),
+                     journey::equals("/model/metrics/chosen_k", 3),
+                     journey::at_least("/model/metrics/silhouette", 0.9),
+                     journey::exists("/model/metrics/davies_bouldin"),
+                     journey::exists("/model/metrics/stability"),
+                     journey::not_empty("/model/chosen_k_reason"),
+                     journey::size_equals("/model/k_candidates", 4),
+                     journey::equals("/dataset/table", "crm.customers"),
+                     journey::equals("/dataset/read_rows", 90),
+                     journey::equals("/dataset/clustered_rows", 90),
+                     journey::contains_element("/dataset/excluded_columns",
+                                               "customer_id"),
+                     journey::contains_element("/dataset/excluded_columns",
+                                               "outcome"),
+                     journey::size_equals("/segments", 3),
+                     journey::any_element(
+                         "/output_tables",
+                         {{"/name", "segment assignments"}, {"/rows", 90}}),
+                     journey::any_element(
+                         "/output_tables",
+                         {{"/name", "segment profiles"}, {"/rows", 3}})}}},
+        {"limit the profile preview",
+         "get_run_report",
+         {{"run_id", "$segmentation_run"}, {"limit", 1}},
+         {.checks = {journey::size_equals("/segments", 1)}}},
+    };
+    const auto report = journey::run_journey(segments, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
+TEST_F(Uc1Journey,
+       SegmentationMethodologyRefusesMissingTableAndUnsafeOverrides) {
+    ASSERT_TRUE(call("create_project", {{"name", "missing-source"}}).ok);
+    ASSERT_TRUE(
+        call("capture_intent", {{"project", "missing-source"},
+                                {"text", "segment my customers into groups"}})
+            .ok);
+    const auto compiled = call("compile_intent", {{"project", "missing-source"},
+                                                  {"solution", "S-9"},
+                                                  {"name", "segments"}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    const auto missing =
+        call("run", {{"project", "missing-source"}, {"graph", "segments"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_NE(missing.error.message.find("datasets.customers"),
+              std::string::npos);
+    const auto unsafe =
+        call("run", {{"project", "missing-source"},
+                     {"graph", "segments"},
+                     {"dataset",
+                      {{"entity_column", "customer"},
+                       {"feature_columns", {"customer", "spend"}}}}});
+    EXPECT_FALSE(unsafe.ok);
+    EXPECT_NE(unsafe.error.message.find("entity key"), std::string::npos);
+    const auto supervised = call("run", {{"project", "missing-source"},
+                                         {"graph", "segments"},
+                                         {"holdout_fraction", 0.2}});
+    EXPECT_FALSE(supervised.ok);
+    EXPECT_NE(supervised.error.message.find("no supervised holdout"),
+              std::string::npos);
+    EXPECT_TRUE(node.runs().empty());
+}
+
+TEST_F(Uc1Journey, SegmentationMethodologyRecordsTrainingFailureOnItsRun) {
+    journey::Journey failed{"unsuitable-segmentation-data", {}};
+    failed.steps = {
+        {"land entities without usable variation",
+         "upload_dataset",
+         {{"table_name", "customers"},
+          {"format", "jsonl"},
+          {"content", "{\"customer_id\":1,\"spend\":10}\n{\"customer_id\":2,"
+                      "\"spend\":10}\n"}}},
+        {"read the table",
+         "get_dataset",
+         {{"dataset", "customers"}},
+         {.checks = {journey::equals("/rows", 2)}}},
+        {"create the project",
+         "create_project",
+         {{"name", "constant-customers"}}},
+        {"read the project",
+         "get_project",
+         {{"name", "constant-customers"}},
+         {.checks = {journey::equals("/name", "constant-customers")}}},
+        {"capture segmentation intent",
+         "capture_intent",
+         {{"project", "constant-customers"},
+          {"text", "segment my customers into groups"}}},
+        {"read the intent",
+         "get_project",
+         {{"name", "constant-customers"}},
+         {.checks = {journey::size_equals("/inputs", 1)}}},
+        {"compile the intent",
+         "compile_intent",
+         {{"project", "constant-customers"}, {"name", "segments"}},
+         {.checks = {journey::equals("/methodology", "M-3")}}},
+        {"read the graph",
+         "get_graph",
+         {{"project", "constant-customers"}, {"graph", "segments"}},
+         {.checks = {journey::equals("/runnable", true)}}},
+        {"submit a real training job",
+         "run",
+         {{"project", "constant-customers"}, {"graph", "segments"}},
+         {.checks = {journey::equals("/engine", "segmentation")}},
+         {{"run", "/run_id"}}},
+        {"the job fails with evidence, never structurally succeeds",
+         "get_run",
+         {{"run_id", "$run"}},
+         {.checks = {journey::equals("/status", "failed"),
+                     journey::not_empty("/logs"),
+                     journey::size_equals("/outputs", 0)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+    };
+    const auto report = journey::run_journey(failed, caller(), pump());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 // =====================================================================

@@ -79,11 +79,11 @@ TEST(IntentCompilerTest, RecognizesChurnSynonyms) {
 
 TEST(IntentCompilerTest, ExplicitUnavailableMethodologyIsRefusedWithItsIssue) {
     zetta::pipeline::IntentCompileOptions options;
-    options.methodology = "M-3";
+    options.methodology = "M-2";
     std::string error;
     EXPECT_FALSE(compile_intent("Group customers", options, &error));
-    EXPECT_NE(error.find("Segmentation / clustering (M-3)"), std::string::npos);
-    EXPECT_NE(error.find("1042"), std::string::npos);
+    EXPECT_NE(error.find("Entity resolution (M-2)"), std::string::npos);
+    EXPECT_NE(error.find("1041"), std::string::npos);
 }
 
 TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
@@ -95,11 +95,15 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
-TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
+TEST(IntentCompilerTest, SegmentationKeywordBuildsItsOwnShape) {
     std::string error;
-    EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));
-    EXPECT_NE(error.find("Segmentation / clustering (M-3)"), std::string::npos);
-    EXPECT_NE(error.find("1042"), std::string::npos);
+    const auto compiled =
+        compile_intent("segment my customers into groups", &error);
+    ASSERT_TRUE(compiled) << error;
+    EXPECT_EQ(compiled->methodology, "M-3");
+    EXPECT_TRUE(compiled->graph.has_node("train_segments"));
+    EXPECT_FALSE(compiled->graph.has_node("train_churn_model"));
+    EXPECT_EQ(compiled->graph.node_count(), 5u);
 }
 
 TEST(IntentCompilerTest, UnrecognizedNonPredictiveIntentListsWhatRuns) {

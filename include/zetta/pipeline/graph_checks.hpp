@@ -78,6 +78,14 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// M-3 must keep entity/outcome roles out of features and execute its own
+// globally fitted preprocessing and assignment/profile output graph.
+class SegmentationCheck final : public Check {
+  public:
+    std::string name() const override;
+    CheckResult evaluate(const ir::ExecutionGraph &graph) const override;
+};
+
 // Data-leakage / point-in-time check (#309): for an ML step that declares
 // `features` (with an `as_of` cutoff), no feature may draw on data dated after
 // the cutoff (`data_as_of` > `as_of` — a point-in-time violation) and no feature
@@ -95,4 +103,4 @@ public:
 // drift-checked by tests/test_schemas.cpp (#646).
 const nlohmann::json& graph_step_annotations_schema();
 
-}  // namespace zetta::pipeline
+} // namespace zetta::pipeline

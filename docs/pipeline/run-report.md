@@ -118,6 +118,9 @@ tool list, and the agent's read-tool allowlist.
 
 ## Later slices
 
-- Non-churn engines: any `StepExecutor` can emit a `report` output; only the churn one
-  records the facts behind it so far.
+- M-3 segmentation also emits a `report` output. Its typed report contains
+  `model.metrics`, `model.chosen_k_reason`, `model.k_candidates`, input table and
+  row counts, fitted features, excluded columns, `output_tables` and a bounded
+  `segments` preview. It does not invent churn accuracy or an at-risk list for
+  unsupervised clusters. See [segmentation.md](../ml/segmentation.md).
 - A `system.run_reports` read view, if listing them ever beats reading them one by one.

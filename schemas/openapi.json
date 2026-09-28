@@ -6449,16 +6449,16 @@
     },
     "/v1/get_run_report": {
       "get": {
-        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. No side effects. (#958) Requires api:query.",
+        "description": "Read the facts a finished run produced — how good the model is (held-out first, in-sample beside it), what drives the outcome, and the ranked at-risk list with its evidence. Assembled at query time from the run's model and its at-risk table, so it cannot drift from them. Anything a report would want and this run cannot supply is listed in `missing` with the reason, rather than left blank. For M-3 segmentation, returns K selection, separation and stability metrics, input/exclusion facts and assignment/profile tables instead of supervised risk metrics. No side effects. (#958, #1042) Requires api:query.",
         "operationId": "get_run_report",
         "parameters": [
           {
-            "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+            "description": "how many at-risk entities or segment profiles to return (default 20). The whole population is ranked; this caps what comes back",
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
-              "description": "how many at-risk entities to return, highest risk first (default 20). The whole population is ranked; this caps what comes back",
+              "description": "how many at-risk entities or segment profiles to return (default 20). The whole population is ranked; this caps what comes back",
               "minimum": 1,
               "type": "integer"
             }
@@ -6514,24 +6514,36 @@
                           "type": "array"
                         },
                         "dataset": {
-                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Absent when the model records no dataset facts",
+                          "description": "what the model was built from: accounts, events, churn_rate, majority_class_accuracy (the accuracy a constant answer scores), and the feature columns. Segmentation reports the source table, read/clustered/excluded rows, fitted features and excluded columns. Absent when the model records no dataset facts",
                           "type": "object"
                         },
                         "drivers": {
                           "description": "feature -> weight, strongest first. A weight is what the model leaned on, not a cause",
                           "type": "array"
                         },
+                        "methodology": {
+                          "description": "methodology id for typed reports",
+                          "type": "string"
+                        },
                         "missing": {
                           "description": "fields a report would want that this run cannot supply, each saying why. Stated rather than omitted so a writer does not quietly substitute its own number",
                           "type": "array"
                         },
                         "model": {
-                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
+                          "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953). Segmentation instead carries clustering metrics, chosen_k_reason and k_candidates",
                           "type": "object"
+                        },
+                        "output_tables": {
+                          "description": "segmentation assignment/profile table references, availability and row counts",
+                          "type": "array"
                         },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
+                        },
+                        "segments": {
+                          "description": "segment sizes, shares, original-unit centers and descriptive labels",
+                          "type": "array"
                         }
                       },
                       "required": [

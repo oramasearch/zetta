@@ -7,17 +7,25 @@ the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
-Two checks ship here:
+The reusable annotation checks and the M-3-specific check are:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
+All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
+
+`SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
+It validates the nested `segmentation` config against `segmentation_config_schema()`
+and requires matching preparation/model contracts. Its implementation and refusal
+tests live in `src/core/ml/segmentation_graph.cpp` and
+`tests/ml/test_segmentation_methodology.cpp`. See the full
+[segmentation correctness rules](../ml/segmentation.md#running-it).
 
 ## How a check reads a step
 

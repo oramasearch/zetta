@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m3_methodology();
 
 namespace {
 
@@ -70,13 +71,7 @@ const std::vector<Methodology>& methodologies() {
                  input("group", false, "source system or entity type")},
                 {"entity map", "match evidence"},
                 {"pair precision", "pair recall", "blocking recall"}, 1041),
-        planned("M-3", "Segmentation / clustering", "Identity & structure",
-                {"segmentation", "clustering", "cluster"}, {"S-9"},
-                {"segment", "cluster", "group", "persona", "cohort"},
-                {input("entity", true, "entities to segment"),
-                 input("feature", true, "attributes used for grouping")},
-                {"segment assignments", "segment profiles"},
-                {"silhouette", "stability", "cluster size"}, 1042),
+        make_m3_methodology(),
         planned(
             "M-4", "Time-series forecasting", "Time & vigilance",
             {"forecast", "forecasting", "time_series"}, {"S-5", "S-6"},

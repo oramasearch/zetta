@@ -66,10 +66,14 @@ testsuite_run submit-then-poll, and the denied-key negative);
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 
 The methodology registry journey in `test_action_journeys.cpp` discovers all
-21 entries, compiles S-1 through M-1, verifies issue-bearing refusals for M-3
-and segmentation keywords, rejects an unmatched non-predictive intent, refuses
-a segmentation model at run time, and reads back `methodology` plus `runnable`
-from both graph and project views (#1061).
+21 entries, compiles S-1 through M-1 and M-3 through explicit selection or keywords,
+verifies issue-bearing refusals for M-2, rejects an unmatched non-predictive intent,
+and refuses an incomplete segmentation graph at the correctness gate. Graph and
+project views expose `methodology` plus `runnable` (#1061).
+`Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
+table, creates a project, captures and compiles M-3, runs without a dataset
+override, polls the Run and reads separation metrics, input/exclusion facts and
+assignment/profile tables back through `get_run_report` (#1042).
 
 ## Rules
 
