@@ -183,6 +183,10 @@ struct SegmentationRunOptions {
     std::string model_name = "segmentation";
     std::string output_database = "segmentation_results";
     std::string round_tag;
+    // A registry submission supplies its already-visible Run and writer. Empty
+    // values retain the native runner's root-created Run behavior.
+    std::string run_id;
+    std::string output_node;
     std::chrono::milliseconds timeout{10000};
 };
 
@@ -190,6 +194,7 @@ struct SegmentationRunResult {
     SegmentationResult segmentation;
     compute::JobStatus status = compute::JobStatus::Queued;
     bool is_root = false;
+    std::uint64_t read_rows = 0;
     std::string job_id;
     std::string run_id;
     std::string model_id;
@@ -204,7 +209,8 @@ struct SegmentationRunResult {
 
 // Run segmentation over a resolved table using the Node's live JobCoordinator.
 // Invoke concurrently on every collective participant. Only the deterministic
-// root writes the replicated Model, Run, assignment table, and profile table.
+// root writes the replicated Model, Run, assignment table, and profile table
+// unless options.output_node designates the initiating registry member.
 SegmentationRunResult
 run_segmentation(Node &node, const zetta::data::ResolvedDataset &dataset,
                  SegmentationParams params = {},

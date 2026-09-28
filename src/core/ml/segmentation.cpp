@@ -1347,6 +1347,7 @@ bool segmentation_excludes_column(const std::string &column,
     return same_name(column, params.entity_column) ||
            same_name(column, params.label_column) ||
            is_identifier_name(column) || name == "label" || name == "target" ||
+           name == "outcome" ||
            std::any_of(params.excluded_columns.begin(),
                        params.excluded_columns.end(),
                        [&](const auto &excluded) {

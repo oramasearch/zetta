@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 is runnable. M-10 is marked partial
+callbacks for runnable implementations. M-1 and M-3 are runnable. M-10 is marked partial
 because retrieval and indexes ship, but it does not yet provide a methodology
 runner. The other entries link to their implementation issues.
 
@@ -66,6 +66,17 @@ structural graphs are runnable, while unknown model kinds are not.
 The API handler contains no M-1-specific branch. Its only decisions are registry
 resolution, support checks, structural execution for graphs without a model,
 and callback dispatch.
+
+## M-3 segmentation implementation
+
+M-3 is implemented in `segmentation_methodology.cpp`, with its own
+connect → global feature preparation → segmentation model → assignment/profile
+output graph. M-3, S-9 and segmentation keywords compile this shape. Its runner
+resolves the connect step's table without a supervised label, coordinates the
+native trainer across owned partitions, and returns a durable Run immediately.
+`get_run_report` reads measured K selection, separation, stability, input/exclusion
+facts and both output table references. The `SegmentationCheck` is part of the
+default gate. See [segmentation.md](segmentation.md#running-it).
 
 ## Adding a methodology
 

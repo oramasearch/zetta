@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "zetta/cluster/collectives.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -296,8 +297,19 @@ nlohmann::json model_feature_schema(const SegmentationResult &result) {
              {"robust", feature.robust},
              {"rare_bucket", feature.rare_bucket}});
     }
+    nlohmann::json candidates = nlohmann::json::array();
+    for (const auto &candidate : result.metrics.tried) {
+        candidates.push_back(
+            {{"k", candidate.k},
+             {"inertia", candidate.inertia},
+             {"silhouette", candidate.silhouette},
+             {"davies_bouldin", candidate.davies_bouldin},
+             {"minimum_share", candidate.minimum_share},
+             {"satisfies_minimum_share", candidate.satisfies_minimum_share}});
+    }
     return {{"features", std::move(features)},
             {"excluded_columns", result.model.excluded_columns},
+            {"k_candidates", std::move(candidates)},
             {"chosen_k_reason", result.metrics.chosen_k_reason}};
 }
 
@@ -319,7 +331,8 @@ bool materialize_outputs(Node &node,
                          const SegmentationRunOptions &options,
                          SegmentationRunResult &output) {
     std::shared_ptr<zetta::pipeline::Run> run =
-        node.create_run(options.project, options.graph);
+        options.run_id.empty() ? node.create_run(options.project, options.graph)
+                               : node.find_run(options.run_id);
     if (!run) {
         output.error = "segmentation: could not create the Run record";
         return false;
@@ -335,7 +348,17 @@ bool materialize_outputs(Node &node,
     model_value.project = options.project;
     model_value.run = run->id();
     model_value.feature_schema = model_feature_schema(output.segmentation);
+    model_value.feature_schema["dataset"] = {
+        {"table", dataset.database + "." + dataset.table},
+        {"table_id", dataset.table_id},
+        {"contract", zetta::data::to_json(dataset.contract)},
+        {"notes", dataset.notes}};
     model_value.metrics = model_metrics(output.segmentation);
+    model_value.metrics["read_rows"] = output.read_rows;
+    model_value.metrics["clustered_rows"] =
+        output.segmentation.assignments.size();
+    model_value.metrics["excluded_rows"] =
+        output.read_rows - output.segmentation.assignments.size();
     const std::shared_ptr<Model> model =
         node.create_model(std::move(model_value));
     if (!model ||
@@ -406,7 +429,8 @@ bool materialize_outputs(Node &node,
     run->set_outputs(
         {{"model", options.model_name, model->id()},
          {"dataset", "segment assignments", output.assignment_table},
-         {"dataset", "segment profiles", output.profile_table}});
+         {"dataset", "segment profiles", output.profile_table},
+         {"report", "run report", run->id()}});
     zetta::pipeline::RunLineage lineage;
     lineage.sources = {"dataset:" + dataset.database + "." + dataset.table};
     lineage.steps = {"global preprocessing", "k-means|| initialization",
@@ -419,7 +443,9 @@ bool materialize_outputs(Node &node,
         {zetta::util::now_iso8601(), "info",
          "chosen k=" + std::to_string(output.segmentation.metrics.chosen_k) +
              ": " + output.segmentation.metrics.chosen_k_reason});
-    run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    if (options.run_id.empty()) {
+        run->set_status(zetta::pipeline::RunStatus::Succeeded);
+    }
     return true;
 }
 
@@ -449,6 +475,7 @@ Outcome train_on_round(Node &node, const zetta::data::ResolvedDataset &dataset,
                                 "owned partitions"
                               : output.error};
     }
+    output.read_rows = static_cast<std::uint64_t>((*readiness)[1]);
     SegmentationCollectives collectives;
     collectives.allreduce = [&](const std::string &name,
                                 const std::vector<double> &local,
@@ -468,6 +495,15 @@ Outcome train_on_round(Node &node, const zetta::data::ResolvedDataset &dataset,
     if (!output.segmentation.ok()) {
         return {.ok = false, .detail = output.segmentation.status.message};
     }
+    auto &excluded = output.segmentation.model.excluded_columns;
+    excluded.insert(excluded.end(), params.excluded_columns.begin(),
+                    params.excluded_columns.end());
+    excluded.push_back(params.entity_column);
+    excluded.push_back(params.label_column);
+    std::erase(excluded, std::string{});
+    std::sort(excluded.begin(), excluded.end());
+    excluded.erase(std::unique(excluded.begin(), excluded.end()),
+                   excluded.end());
 
     return {.ok = true, .detail = {}};
 }
@@ -495,20 +531,44 @@ Outcome persist_on_round(Node &node,
             }
         }
     }
-    // Final assignment materialization is intentionally root-local in Phase
-    // A. Training exchanges partials; this output step gathers entity
-    // assignments.
+    // Final tables are deliberately materialized on one member. A registry
+    // submission may originate off-root: send the gathered assignments through
+    // the existing broadcast so that member can finish its already-visible Run.
+    bool writer = output.is_root;
+    if (!options.output_node.empty()) {
+        node.run_on_owner([&] {
+            writer =
+                node.coordinated_launch() != nullptr &&
+                node.coordinated_launch()->node_id() == options.output_node;
+        });
+        const auto assignments = round.broadcast(
+            tag + ".writer_assignments",
+            output.is_root ? encode_assignments(output.segmentation.assignments)
+                           : std::vector<double>{},
+            options.timeout);
+        if (!assignments) {
+            return {.ok = false,
+                    .detail =
+                        "segmentation: writer assignment broadcast failed"};
+        }
+        if (writer && !output.is_root) {
+            output.segmentation.assignments.clear();
+            if (!decode_assignments(*assignments,
+                                    output.segmentation.assignments)) {
+                return {.ok = false,
+                        .detail = "segmentation: malformed writer assignments"};
+            }
+        }
+    }
     bool written = true;
-    if (output.is_root) {
+    if (writer) {
         node.run_on_owner([&] {
             written = materialize_outputs(node, dataset, options, output);
         });
     }
-    const auto persisted = round.broadcast(
-        tag + ".persisted",
-        output.is_root ? std::vector<double>{written ? 1.0 : 0.0}
-                       : std::vector<double>{},
-        options.timeout);
+    const auto persisted =
+        round.allreduce(tag + ".persisted", {writer && written ? 1.0 : 0.0},
+                        zetta::cluster::CollectiveOp::Sum, options.timeout);
     if (!persisted || persisted->size() != 1 || (*persisted)[0] != 1.0) {
         return {.ok = false,
                 .detail =

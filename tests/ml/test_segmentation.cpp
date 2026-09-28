@@ -528,7 +528,7 @@ TEST(SegmentationRunner,
     EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded);
     EXPECT_EQ(run->lineage().sources,
               (std::vector<std::string>{"dataset:customers.entities"}));
-    EXPECT_EQ(run->outputs().size(), 3u);
+    EXPECT_EQ(run->outputs().size(), 4u);
 
     const auto output_database =
         host.node.find_database("segmentation_results");

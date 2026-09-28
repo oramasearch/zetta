@@ -76,10 +76,10 @@ What's inside, by domain (each links to that domain's docs):
   rank-at-risk**, **exact TreeSHAP** explanation, a registered **Model** entity
   (weights as verified large-object bodies), all proven by a **native
   correctness oracle** (no Python/XGBoost anywhere).
-  The [segmentation trainer](docs/ml/segmentation.md) also produces entity assignments
-  and segment profiles; registry and intent integration follow in Phase B of #1042.
+  [M-3 segmentation](docs/ml/segmentation.md) runs from customer-table intents,
+  producing entity assignments, descriptive segment profiles and separation metrics.
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
+  approaches: M-1 and M-3 run today, M-10 has partial retrieval support, and the others
   name their implementation issues. Intent compilation and run dispatch use
   this registry and refuse unsupported model work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;

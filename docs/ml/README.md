@@ -5,10 +5,11 @@ distributed C++ over the [DDF](../ddf/ddf.md) + [compute](../compute/compute-dev
 Python / XGBoost / foreign runtime, ADR-17). The M-1 reference pipeline trains a
 histogram GBDT (allreduced histograms, SPMD) → calibrate → explain with exact TreeSHAP → score/rank
 — each a recorded `ComputeJob`, producing a registered `Model`, proven correct by a native oracle
-rather than a reference runtime. The segmentation Phase-A runner adds entity assignments and
-descriptive segment profiles; its methodology adapter is deferred. Read here for model work.
+rather than a reference runtime. M-3 segmentation compiles its own customer-table graph,
+runs distributed k-means and reports entity assignments, descriptive profiles and separation
+metrics through the methodology registry. Read here for model work.
 
-- [segmentation.md](segmentation.md) — native distributed k-means, global preprocessing, selection diagnostics, assignments and profiles (#1042 Phase A).
+- [segmentation.md](segmentation.md) — runnable M-3 / S-9: native distributed k-means, global preprocessing, graph checks, table outputs and run reports (#1042).
 
 - [models.md](models.md) — the `Model` entity: replicated metadata + weights as a peer-to-peer large-object body + the `system.models` registry (ENT-14 / FEAT-6).
 - [gbdt.md](gbdt.md) — distributed histogram GBDT training (binary logistic): per-node histograms allreduced each round, single-node == multi-node; produces a `Model` (`train_gbdt`, #390).
@@ -31,7 +32,7 @@ carry `*`. Regenerate it with
 |---|---|---|---|---|---|---|---|---|---|
 | M-1 | Tabular supervised learning | The tabular decision core | gbdt, gradient_boosting, classifier, classification, regression, score, tabular | S-1, S-2, S-3, S-4, S-10 | entity*, label*, time | model, scores, drivers, ranked entities | ROC-AUC, PR-AUC, log loss, Brier score, lift | runnable | — |
 | M-2 | Entity resolution | Identity & structure | entity_resolution, entity-resolution | — | entity*, group | entity map, match evidence | pair precision, pair recall, blocking recall | not runnable | [#1041](https://github.com/oramasearch/zetta/issues/1041) |
-| M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature* | segment assignments, segment profiles | silhouette, stability, cluster size | not runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
+| M-3 | Segmentation / clustering | Identity & structure | segmentation, clustering, cluster | S-9 | entity*, feature*, label, time | model, segment assignments, segment profiles, run report | chosen k, silhouette, Davies-Bouldin, stability (ARI), inertia per k, segment size/share | runnable | [#1042](https://github.com/oramasearch/zetta/issues/1042) |
 | M-4 | Time-series forecasting | Time & vigilance | forecast, forecasting, time_series | S-5, S-6 | time*, label*, group | forecasts, prediction intervals | MAE, RMSE, WAPE, forecast value added | not runnable | [#1043](https://github.com/oramasearch/zetta/issues/1043) |
 | M-5 | Survival / time-to-event | The tabular decision core | survival, time_to_event | S-8 | entity*, time*, label* | risk curves, expected time to event | concordance, time-dependent AUC, IPCW Brier | not runnable | [#1044](https://github.com/oramasearch/zetta/issues/1044) |
 | M-6 | Causal inference & uplift | Action & decision | causal, uplift | — | entity*, treatment*, label* | treatment effects, targeting policy | uplift, Qini, policy value | not runnable | [#1045](https://github.com/oramasearch/zetta/issues/1045) |

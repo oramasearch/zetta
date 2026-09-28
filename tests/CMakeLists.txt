@@ -162,6 +162,8 @@ add_executable(zetta-tests
   ml/test_native_oracle.cpp
   ml/test_gbdt_score.cpp
   ml/test_segmentation.cpp
+  ml/test_segmentation_methodology.cpp
+  ml/test_segmentation_launch.cpp
   ml/test_playbook.cpp
   compute/test_compute_device.cpp
   compute/test_cpu_device.cpp

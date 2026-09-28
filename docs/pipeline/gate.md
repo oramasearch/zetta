@@ -19,6 +19,11 @@ see [gate-checks.md](gate-checks.md)) and the
 implement the same `Check` seam and plug in without touching the gate;
 `default_gate()` registers each.
 
+The baseline also registers `SegmentationCheck` (#1042). It refuses unsafe entity
+or outcome features, non-global transforms, invalid K/minimum-share settings and
+incomplete assignment/profile graphs for M-3; other graphs pass it vacuously.
+See [segmentation.md](../ml/segmentation.md#running-it).
+
 ## The shape
 
 ```
