@@ -543,16 +543,16 @@ TEST(MethodologyCheck, AnUnimplementedMethodologyFailsAndSaysWhatToDo) {
     zetta::ir::ExecutionGraph graph;
     const auto connect = graph.add_node(zetta::ir::StepKind::Connect, "source");
     const auto model = graph.add_node(zetta::ir::StepKind::Model, "model",
-                                      nlohmann::json{{"model_kind", "forecast"}});
+                                      nlohmann::json{{"model_kind", "online_learning"}});
     graph.add_edge(connect->id, model->id);
 
     const zetta::pipeline::CheckResult result =
         zetta::pipeline::MethodologyCheck{}.evaluate(graph);
     ASSERT_EQ(result.status, zetta::pipeline::CheckStatus::Fail);
-    EXPECT_NE(result.reason.find("Time-series forecasting (M-4)"),
+    EXPECT_NE(result.reason.find("Online / streaming learning (M-21)"),
               std::string::npos)
         << "the reason must name the methodology that was refused";
-    EXPECT_NE(result.reason.find("1043"), std::string::npos)
+    EXPECT_NE(result.reason.find("1060"), std::string::npos)
         << "the reason must name the methodology's implementation issue";
 }
 
