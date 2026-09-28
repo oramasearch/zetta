@@ -367,6 +367,59 @@ zetta::ir::ExecutionGraph bound_s8_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_s9_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("S-9");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, {});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2024-01-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["s9_correctness"] = {
+        {"audience",
+         {{"consent_required", true},
+          {"consent_column", "consent"},
+          {"suppression_column", "suppressed"},
+          {"channel_eligibility_column", "channel_eligible"},
+          {"missing_evidence_action", "no_contact"},
+          {"suppressed_action", "no_contact"}}},
+        {"contact_caps",
+         {{"lifetime", 4},
+          {"maximum_actions", 1},
+          {"window_seconds", 604800},
+          {"contacts_column", "contacts"},
+          {"recent_actions_column", "recent_actions"},
+          {"include_recorded_decisions", true},
+          {"at_cap_action", "no_contact"}}},
+        {"primary_score",
+         {{"methodology", "M-1"},
+          {"output_name", "outbound response scores"},
+          {"entity_column", "entity"},
+          {"score_column", "response_propensity"}}}};
+    for (const auto& model :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["selection_basis"] = "incremental_uplift";
+            model->attributes["positive_uplift_only"] = true;
+            model->attributes["non_positive_uplift_action"] = "no_contact";
+        }
+    }
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -451,6 +504,15 @@ void expect_s8_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_s9_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
@@ -476,7 +538,7 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.templates.minimal,
                       solution.id != "S-1" && solution.id != "S-2" &&
                       solution.id != "S-3" && solution.id != "S-4" &&
-                      solution.id != "S-12" && solution.id != "S-5" && solution.id != "S-8" && solution.id != "S-7");
+                      solution.id != "S-12" && solution.id != "S-5" && solution.id != "S-9" && solution.id != "S-8" && solution.id != "S-7");
             EXPECT_FALSE(solution.composition.empty());
             EXPECT_FALSE(solution.action_patterns.empty());
             EXPECT_FALSE(solution.latency_classes.empty());
@@ -1200,6 +1262,92 @@ TEST(SolutionRegistry, S8EveryLevelBuildsThroughRegisteredMethodologies) {
         const auto manifest = graph.find_node("solution_manifest");
         ASSERT_TRUE(manifest);
         const std::size_t expected = level >= 3 ? 4u : 3u;
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
+        for (std::size_t stage = 1; stage <= expected; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(
+                             graph, static_cast<int>(stage))
+                             .empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, AutomatedOutboundEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* outbound =
+        zetta::ml::find_solution("S-9");
+    ASSERT_NE(outbound, nullptr);
+    EXPECT_TRUE(outbound->runnable);
+    EXPECT_EQ(outbound->issue,
+              "https://github.com/oramasearch/zetta/issues/1118");
+    EXPECT_FALSE(outbound->templates.minimal);
+    EXPECT_EQ(outbound->action_patterns.size(), 2u);
+    EXPECT_EQ(outbound->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(outbound->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"journey_sent"}));
+    ASSERT_EQ(outbound->templates.guardrails.size(), 5u);
+    EXPECT_EQ(outbound->templates.guardrails.front().metric,
+              "unsubscribe_rate");
+    EXPECT_EQ(outbound->templates.guardrails.back().direction,
+              "minimum");
+    EXPECT_EQ(outbound->templates.measurement.outcome, "response");
+
+    const nlohmann::json policy = outbound->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("contact_cap"), 4);
+    EXPECT_EQ(policy.at("actions").at("copy_review").at("autonomy"),
+              "A1");
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+    EXPECT_EQ(policy.at("exclusion_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, S9ChecksRefuseUnsafeAudienceAndPropensityCases) {
+    const auto accepted = zetta::pipeline::default_gate().run(bound_s9_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto consent = bound_s9_graph();
+    consent.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["audience"]["consent_required"] =
+            false;
+    expect_s9_failure(consent, "s9_consent_suppression");
+
+    auto suppression = bound_s9_graph();
+    suppression.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["audience"]
+                   ["suppressed_action"] = "send";
+    expect_s9_failure(suppression, "s9_consent_suppression");
+
+    auto caps = bound_s9_graph();
+    caps.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["contact_caps"]
+                   ["maximum_actions"] = 0;
+    expect_s9_failure(caps, "s9_contact_caps");
+
+    auto churn_source = bound_s9_graph();
+    churn_source.find_node("solution_manifest")
+        ->attributes["s9_correctness"]["primary_score"]["score_column"] =
+            "risk";
+    expect_s9_failure(churn_source, "s9_uplift_over_propensity");
+
+    auto propensity_only = bound_s9_graph(2);
+    for (const auto& model :
+         propensity_only.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) == "uplift") {
+            model->attributes["selection_basis"] = "response_propensity";
+        }
+    }
+    expect_s9_failure(propensity_only, "s9_uplift_over_propensity");
+}
+
+TEST(SolutionRegistry, S9EveryLevelBuildsThroughRegisteredMethodologies) {
+    const std::vector<std::size_t> expected_stages = {3u, 4u, 5u, 6u};
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_s9_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        const std::size_t expected = expected_stages[level - 1];
         EXPECT_EQ(manifest->attributes.at("methodologies").size(), expected);
         for (std::size_t stage = 1; stage <= expected; ++stage) {
             EXPECT_FALSE(zetta::ml::solution_stage_graph(

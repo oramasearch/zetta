@@ -72,6 +72,9 @@ emitted horizon. M-5 writes one row per asset and horizon, so the runtime select
 that real row and carries `hazard`, `survival`, `expected_time`, and
 `median_survival` into the decision and CMMS payload. It never substitutes the
 M-1 churn table.
+S-9 binds the real M-1 `outbound response scores` output in
+`solution_methodology_results`, with `entity` and `response_propensity`.
+At levels 2–4, M-6 treatment effects supply positive-uplift targeting.
 Inputs and score scales for the remaining modules stay their catalogue module's
 responsibility while their templates are minimal.
 
@@ -118,6 +121,10 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-8 rows carry the selected risk horizon and expected failure timing; its
    monitor observes safety, false work, missed failure, sensor drift,
    maintenance capacity, and execution.
+
+   S-9 rows carry audience tier, segment, journey, channel, consent and
+   suppression evidence, and contact counts. Its monitor observes unsubscribe,
+   complaint, consent-violation, contact-frequency, and execution rates.
 
 A failed child, invalid score join, or unacknowledged delivery fails the parent
 Run with a reason. Earlier durable records are retained for diagnosis; this is
@@ -208,3 +215,10 @@ future asset, retains censored assets, selects a real M-5 horizon, proves
 holdout suppression, checks the CMMS work-order payload and all six guardrails,
 records a centered 0.18 failure-avoidance effect, and verifies the estimate and
 95% confidence interval recover it.
+
+`SolutionJourney.AutomatedOutboundRespectsEligibilityCapsAndRecoversPlantedEffect`
+builds and runs S-9 over partitioned synthetic engagement data. It excludes a
+future observation, protects permanent holdouts, refuses ineligible and capped
+contacts, inspects delivered journey evidence, observes all five guardrails,
+records response outcomes with a 0.12 treatment effect, and checks that the
+estimate and 95% confidence interval recover the planted effect.

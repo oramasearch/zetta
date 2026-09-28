@@ -748,6 +748,49 @@ CheckResult s8_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* s9_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "S-9") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "S-9 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("s9_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "S-9 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult s9_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound S-9 Pipeline to validate"};
+}
+
+CheckResult s9_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult s9_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* object_field(const json& value, const char* name) {
     if (!value.is_object()) {
         return nullptr;
@@ -2292,6 +2335,125 @@ CheckResult S8PostFailureMaintenanceLeakageCheck::evaluate(
     }
     return s8_success(
         name(), "S-8 excludes post-failure maintenance leakage");
+}
+
+CheckResult S9ConsentSuppressionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* audience = object_field(*profile, "audience");
+    if (audience == nullptr ||
+        !audience->value("consent_required", false) ||
+        audience->value("consent_column", std::string{}).empty() ||
+        audience->value("suppression_column", std::string{}).empty() ||
+        audience->value("channel_eligibility_column", std::string{}).empty() ||
+        audience->value("missing_evidence_action", std::string{}) !=
+            "no_contact" ||
+        audience->value("suppressed_action", std::string{}) !=
+            "no_contact") {
+        return s9_failure(
+            name(), "S-9 requires explicit consent, suppression, and channel "
+                    "eligibility evidence; missing or suppressed rows must be "
+                    "no-contact");
+    }
+    return s9_success(
+        name(), "S-9 audience rows require current consent and suppression evidence");
+}
+
+CheckResult S9ContactCapsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* caps = object_field(*profile, "contact_caps");
+    if (caps == nullptr || caps->value("lifetime", 0) <= 0 ||
+        caps->value("maximum_actions", 0) <= 0 ||
+        caps->value("window_seconds", 0) <= 0 ||
+        caps->value("contacts_column", std::string{}).empty() ||
+        caps->value("recent_actions_column", std::string{}).empty() ||
+        !caps->value("include_recorded_decisions", false) ||
+        caps->value("at_cap_action", std::string{}) != "no_contact") {
+        return s9_failure(
+            name(), "S-9 journeys require positive lifetime and rolling contact "
+                    "caps, supplied count columns, persisted-decision counting, "
+                    "and no-contact at the cap");
+    }
+    return s9_success(
+        name(), "S-9 lifetime and rolling contact caps include persisted decisions");
+}
+
+CheckResult S9UpliftOverPropensityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        s9_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return s9_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return s9_failure(name(), error);
+    }
+    const json* score = object_field(*profile, "primary_score");
+    if (score == nullptr ||
+        score->value("methodology", std::string{}) != "M-1" ||
+        score->value("output_name", std::string{}) !=
+            "outbound response scores" ||
+        score->value("entity_column", std::string{}) != "entity" ||
+        score->value("score_column", std::string{}) !=
+            "response_propensity") {
+        return s9_failure(
+            name(), "S-9 must bind its primary M-1 outbound response table; "
+                    "the churn score artifact is not a valid decision source");
+    }
+    if (!has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-2") ||
+        !has_methodology(graph, "M-3")) {
+        return s9_failure(
+            name(), "S-9 requires M-2 identity, M-1 response propensity, and "
+                    "M-3 audience stages at every level");
+    }
+    if (level >= 2) {
+        const ir::Node* uplift = model_kind(graph, "uplift");
+        if (!has_methodology(graph, "M-6") || uplift == nullptr ||
+            uplift->attributes.value("selection_basis", std::string{}) !=
+                "incremental_uplift" ||
+            !uplift->attributes.value("positive_uplift_only", false) ||
+            uplift->attributes.value("non_positive_uplift_action",
+                                     std::string{}) != "no_contact") {
+            return s9_failure(
+                name(), "S-9 level 2 and above must select on positive M-6 "
+                        "incremental uplift, never response propensity alone");
+        }
+    }
+    if (level >= 3 && !has_methodology(graph, "M-8")) {
+        return s9_failure(name(), "S-9 level 3 requires M-8 journey arbitration");
+    }
+    if (level >= 4 && !has_methodology(graph, "M-10")) {
+        return s9_failure(name(), "S-9 level 4 requires M-10 grounded language assistance");
+    }
+    return s9_success(
+        name(), level >= 2
+                    ? "S-9 prioritizes positive incremental uplift over propensity"
+                    : "S-9 uses the outbound response artifact until randomized uplift is available");
 }
 
 bool TemporalValidationCheck::is_time_ordered(std::string_view model_kind) {

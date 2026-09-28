@@ -190,6 +190,9 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S8CensoringCheck>());
     gate.add_check(std::make_shared<S8SensorDriftCheck>());
     gate.add_check(std::make_shared<S8PostFailureMaintenanceLeakageCheck>());
+    gate.add_check(std::make_shared<S9ConsentSuppressionCheck>());
+    gate.add_check(std::make_shared<S9ContactCapsCheck>());
+    gate.add_check(std::make_shared<S9UpliftOverPropensityCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());

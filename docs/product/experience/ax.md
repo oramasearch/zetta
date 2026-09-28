@@ -107,7 +107,9 @@ relay it to a person.
   refusals, candidate drivers, forum reports, a decision log, protected cells,
   and a non-claimable phased readout. S-8 has complete maintenance
   defaults, censoring/sensor/leakage refusals, governed CMMS tasks, and holdout
-  ROI. S-6 and S-9 through S-11 are marked minimal.
+  ROI. S-9 has full outbound defaults, consent/suppression and contact-limit
+  refusals, positive-uplift targeting, capped journeys, and holdout ROI.
+  S-6, S-10, and S-11 are marked minimal.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,

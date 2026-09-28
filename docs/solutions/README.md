@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-7, S-8, and S-12. S-6 and S-9 through S-11 retain minimal defaults. This is the scope of
+S-5, S-7, S-8, S-9, and S-12. S-6, S-10, and S-11 retain minimal defaults. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -41,6 +41,10 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-8.md](S-8.md) — runnable predictive-maintenance module: censoring-aware
   failure timing, sensor/leakage refusals, CMMS work orders, holdout, and
   planted-effect proof (#1117).
+
+- [S-9.md](S-9.md) — runnable automated outbound module: consented audiences,
+  capped journeys, positive-uplift targeting, holdout, and response proof
+  (#1118).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -257,9 +261,28 @@ S-8 is the complete predictive-maintenance default:
 | Guardrails | unsafe/false work orders, missed failures, sensor PSI, capacity utilization, and execution rate |
 | Measurement | holdout; named `failure_avoided` outcome per asset over 30 days |
 
+S-9 is the complete automated-outbound default:
+
+| Setting | Executable default |
+|---|---|
+| Priority | score ≥ 0.7; outbound journey, A2, one-hour SLA |
+| Standard | score ≥ 0.4; nurture journey, A2, one-day SLA |
+| Low | score ≥ 0; deliberate no-contact recommendation, A0 |
+| Approval | optional copy review; A1 |
+| Contact limits | four lifetime contacts; one outbound action per seven days; nurture per fourteen days |
+| Eligibility | `consent` and `channel_eligible` must be true; `suppressed` must be false |
+| Exclusions | `suppressed`, `unsubscribed`, and `do_not_contact` suppress delivery |
+| Budget / stop | zero monetary spend; kill switch off |
+| Experiment | independent 10% holdout probability in each score tier; remaining entities enter `journey_sent` |
+| Guardrails | unsubscribe ≤ 0.01; complaints ≤ 0.005; zero consent violations; contact frequency ≤ 1; execution ≥ 0.95 |
+| Measurement | holdout; named `response` outcome per entity over 30 days |
+
+S-9 action payloads carry journey, channel, consent/suppression evidence,
+contact counts, SLA, and audience decision cell through the shared action path.
+
 ### Minimal defaults
 
-**S-6 and S-9 through S-11 are minimal**, marked `minimal_template: true`. Their module
+**S-6, S-10, and S-11 are minimal**, marked `minimal_template: true`. Their module
 issues refine the business settings; none is presented as a completed
 industry-specific policy. Each uses priority score ≥ 0.7, otherwise no contact,
 an explicit `eligible == true` predicate, `excluded == true` suppression,
@@ -270,7 +293,6 @@ require an owner-approved policy change before spending.
 | Module | Priority action / autonomy | Measurement design / outcome | Initial guardrail maximum |
 |---|---|---|---|
 | S-6 | draft order / A0 | phased / service_level | spend overruns: 0 |
-| S-9 | outbound journey / A2 | holdout / response | complaints: 0 |
 | S-10 | fraud-review task / A1 | champion_challenger / fraud_loss | false declines: 0 |
 | S-11 | eligible-action review / A1 | uplift_cells / net_value | consent violations: 0 |
 
@@ -283,7 +305,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-7, S-8, and S-12 journeys.
+S-5, S-7, S-8, S-9, and S-12 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -309,6 +331,10 @@ M-4 context with a seasonal-naive baseline.
 For S-8, it refuses discarded censoring, missing or future sensor baselines,
 and post-failure maintenance leakage. M-5 supplies the decision table; levels
 3 and 4 also require M-7.
+
+For S-9, it refuses missing consent/suppression eligibility, absent or disabled
+contact caps, a churn-table decision binding, and propensity-only selection
+where M-6 uplift is available. Levels 2–4 add M-6, M-8, and M-10 respectively.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

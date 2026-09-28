@@ -130,7 +130,9 @@ What's inside, by domain (each links to that domain's docs):
   and honest phased readouts. S-8 is runnable at all four levels with
   censoring-aware failure timing, sensor-drift and post-failure leakage refusals,
   governed CMMS work orders, permanent holdouts, and failure-avoidance ROI.
-  S-6 and S-9 through S-11 have explicitly minimal editable defaults. Snapshot
+  S-9 is runnable at all four levels with consent and suppression checks,
+  contact limits, positive-uplift targeting, capped journeys, protected
+  holdouts, and response ROI. S-6, S-10, and S-11 retain minimal defaults. Snapshot
   cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while

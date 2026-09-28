@@ -124,6 +124,10 @@ struct ChurnPipelineConfig {
     std::string entity_column = "entity";   // the integer entity key (in both shards)
     std::size_t top_k = 0;                   // at-risk list / playbook cap (0 = all)
     std::string model_name = "churn_model";  // the registered Model's human name
+    std::string result_database = "churn_results";
+    std::string result_table_prefix = "at_risk_";
+    std::string result_entity_column = "account";
+    std::string result_score_column = "risk";
 
     // Optional refs stamped on every ComputeJob this executor creates (observability
     // in system.jobs); the Run is labelled separately via GraphExecutor.

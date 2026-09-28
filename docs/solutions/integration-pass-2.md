@@ -24,6 +24,14 @@ the first landing (#1152), preserving S-1, S-2, S-3, S-4, and S-12.
    selection, CMMS payloads, six monitor observations, and the planted-effect
    journey. The optional positive decision-source horizon extends the existing
    foundation schema; OpenAPI will be regenerated from code. Gate count: 61.
+4. S-9 Automated Outbound (#1148): retain consent/suppression and contact-cap
+   checks, positive-uplift targeting from level 2, outbound defaults and score
+   artifacts, connector evidence, guardrails, and all registry/journey tests.
+   M-1 combines the outbound shape with lead conversion, continuous value,
+   collections, and claims. Result naming uses explicit graph attributes,
+   then regression defaults or coordinated-run options, retaining every
+   module's database and columns. Outbound and value consent counters stay
+   separate. Both gate regressions enumerate all 64 checks.
 
 Each incoming branch is joined with a merge commit. No formatter is run.
 After each merge, the per-file line counts are audited against both parents.

@@ -124,6 +124,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   work-order payloads, and a failure-avoidance ROI readout. See
   [solutions/S-8.md](solutions/S-8.md).
 
+- **S-9 Automated Outbound (#1118)** — runnable at levels 1–4 with
+  M-1/M-3/M-2, optional M-6/M-8/M-10 stages, consent and suppression
+  eligibility, persisted contact limits, positive-uplift targeting, capped
+  journey delivery, tier holdouts, and a response ROI readout. See
+  [solutions/S-9.md](solutions/S-9.md).
+
 - **Solution monitoring (#1106)** — a replicated monitor per solution records
   input and score PSI, calibration, closed-window cohort performance, and
   declared guardrails. New breach transitions publish to

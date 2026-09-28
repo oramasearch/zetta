@@ -45,6 +45,8 @@ The reusable annotation and methodology-specific checks are:
 
 | `S8*Check` family | `s8_censoring`, `s8_sensor_drift`, `s8_post_failure_maintenance_leakage` | an S-8 graph that discards censored assets, lacks a bounded pre-decision sensor baseline, or uses maintenance facts recorded after failure |
 
+| `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
+
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
 | `EnsembleOutOfFoldCheck` | `ensemble_out_of_fold` | an M-18 step that asks the meta-model to fit in-sample scores, uses fewer than two folds, skips the full-training base refit, or uses non-temporal folds with a time column |
@@ -180,6 +182,22 @@ blocklist that no selected feature may match.
 hints, and optional `sources.correctness` overrides. `run_solution` checks the
 stored profile again. See [S-8](../solutions/S-8.md) for the complete module
 contract.
+
+### S-9 composed solution checks
+
+The S-9 checks engage only for a bound S-9 manifest. The consent and
+suppression check requires named boolean evidence for consent, suppression, and
+channel eligibility, plus no-contact behavior for an ineligible row. The cap
+check requires positive lifetime and rolling limits, named contact-count
+evidence, persisted prior decisions, and no contact at the limit.
+
+The uplift check requires M-1, M-2, and M-3 at every level and binds the primary
+decision to M-1's `outbound response scores` table using `entity` and
+`response_propensity`, rather than a churn result. Levels 2–4 require M-6 and
+positive incremental uplift selection with no contact for non-positive effects;
+levels 3 and 4 add M-8, and level 4 adds M-10. The bound profile is created and
+persisted by `create_solution`, then checked again by `run_solution`. See
+[S-9](../solutions/S-9.md) for the full contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

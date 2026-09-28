@@ -69,7 +69,17 @@ Lockouts, active work orders, and untrusted sensor evidence suppress action.
 The rolling cap is one work order per seven days. Its permanent 10% holdout and
 `work_order` cell measure `failure_avoided` over 30 days.
 
-S-6 and S-9 through S-11 intentionally provide minimal starter policies derived from
+S-9 defines priority/standard/low response floors of 0.7/0.4/0.0. Priority
+entities select an A2 outbound journey with a one-hour SLA; standard entities
+select an A2 nurture journey with a one-day SLA; low entities select no contact.
+An optional copy review is A1. Current consent, no suppression, and channel
+eligibility are mandatory, while suppression, unsubscribe, and do-not-contact
+evidence block delivery. The lifetime cap is four contacts. Outbound is limited
+to one action in seven days and nurture to one in fourteen. Its deterministic
+experiment keeps 10% as permanent holdout and assigns the remainder to
+`journey_sent`.
+
+S-6, S-10, and S-11 intentionally provide minimal starter policies derived from
 their catalogue actions. They require explicit eligibility, suppress excluded
 entities, set a zero spending budget, use conservative authority for high-stakes
 work, and leave the kill switch off. Their module issues refine these defaults.
@@ -94,6 +104,9 @@ measurement remains descriptive until its module-specific estimator ships.
 
 S-8 observes unsafe and false work orders, missed failures, sensor PSI,
 maintenance capacity, and action execution.
+
+S-9 uses the `journey_sent` treatment cell and observes unsubscribe, complaint,
+consent-violation, contact-frequency, and action-execution metrics.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40

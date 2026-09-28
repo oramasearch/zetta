@@ -35,7 +35,6 @@ namespace {
 // Where a churn run publishes its at-risk list so SQL, Studio, and the agent can
 // read it (#915). One database for every churn pipeline's results; the per-pipeline
 // table inside it is replaced on each run.
-constexpr const char* kChurnResultsDatabase = "churn_results";
 constexpr const char* kLifetimeValueResultsDatabase = "clv_results";
 }  // namespace
 
@@ -621,16 +620,16 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) co
         config_.params.objective == "squared_error";
     const std::string result_database =
         string_attribute(step, "result_database",
-                         lifetime_value ? kLifetimeValueResultsDatabase : kChurnResultsDatabase);
+                         lifetime_value ? kLifetimeValueResultsDatabase : config_.result_database);
     const std::string table_prefix =
         string_attribute(step, "result_table_prefix",
-                         lifetime_value ? "lifetime_value_" : "at_risk_");
+                         lifetime_value ? "lifetime_value_" : config_.result_table_prefix);
     const std::string entity_column =
         string_attribute(step, "entity_output_column",
-                         lifetime_value ? "entity" : "account");
+                         lifetime_value ? "entity" : config_.result_entity_column);
     const std::string score_column =
         string_attribute(step, "score_output_column",
-                         lifetime_value ? "predicted_value" : "risk");
+                         lifetime_value ? "predicted_value" : config_.result_score_column);
 
     // Materialize the ranked list as a real queryable table (#915). The output
     // contract is supplied by the methodology shape so another domain can reuse

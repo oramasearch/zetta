@@ -497,6 +497,31 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// S-9's domain adaptations (#1118). Outbound audiences require current consent
+// and suppression evidence, every journey is bounded by persisted contact caps,
+// and levels with randomized history must select on positive uplift rather than
+// mistaking response propensity for incremental effect.
+class S9ConsentSuppressionCheck final : public Check {
+public:
+    std::string name() const override { return "s9_consent_suppression"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S9ContactCapsCheck final : public Check {
+public:
+    std::string name() const override { return "s9_contact_caps"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class S9UpliftOverPropensityCheck final : public Check {
+public:
+    std::string name() const override { return "s9_uplift_over_propensity"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // M-6 causal correctness: treatment and outcome roles must be explicit and
 // distinct, overlap bounds may not weaken the supported [0.05,0.95] policy,
 // and outcome-like or post-treatment features are refused before execution.
