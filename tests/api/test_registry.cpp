@@ -234,6 +234,21 @@ TEST_F(RegistryFixture, RefusesAnOffloadableEntryThatMutatesOrNeedsConsent) {
     }
 }
 
+TEST_F(RegistryFixture, RefusesAnInvalidAwaitableRead) {
+    Capability entry{"awaitable_action", "", "",
+                     nlohmann::json{{"type", "object"}}, {},
+                     CapabilityKind::Action, {}, false, false,
+                     [](const nlohmann::json&, ApiContext&) {
+                         return ApiResult::success({});
+                     }};
+    entry.awaitable_read = zetta::api::AwaitableRead{
+        [](const nlohmann::json&) {
+            return std::chrono::milliseconds(1);
+        },
+        [](const ApiResult&) { return true; }};
+    EXPECT_FALSE(registry.add(std::move(entry)));
+}
+
 TEST_F(RegistryFixture, UnknownCapabilityFailsClearly) {
     auto result = call("no_such_tool", nlohmann::json::object());
     EXPECT_FALSE(result.ok);
@@ -948,6 +963,54 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
     EXPECT_TRUE(work_ran.load());
     EXPECT_TRUE(coroutine_resumed.load());
     EXPECT_EQ(bridge.pending(), 0u);
+}
+
+TEST(MainThreadBridge, CancellationWaitsForQueuedOwnerWork) {
+    for (const bool cancel_before_queueing : {false, true}) {
+        SCOPED_TRACE(cancel_before_queueing);
+        zetta::api::MainThreadBridge bridge;
+        std::atomic<bool> work_ran{false};
+        std::atomic<bool> coroutine_resumed{false};
+        std::atomic<bool> completed{false};
+        std::stop_source cancellation;
+        if (cancel_before_queueing) cancellation.request_stop();
+
+        zetta::runtime::spawn(
+            zetta::runtime::with_stop_token(
+                await_bridge_work(bridge, work_ran, coroutine_resumed),
+                cancellation.get_token()),
+            [&] { completed.store(true); });
+        const auto queued_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (bridge.pending() == 0 &&
+               std::chrono::steady_clock::now() < queued_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_EQ(bridge.pending(), 1u);
+        cancellation.request_stop();
+        const auto cancelled_deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < cancelled_deadline) {
+            std::this_thread::yield();
+        }
+        EXPECT_FALSE(coroutine_resumed.load())
+            << "cancellation must not release borrowed request state";
+        EXPECT_FALSE(work_ran.load());
+
+        bridge.drain();
+        const auto completed_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!completed.load() &&
+               std::chrono::steady_clock::now() < completed_deadline) {
+            bridge.drain();
+            std::this_thread::yield();
+        }
+        EXPECT_TRUE(completed.load());
+        EXPECT_TRUE(work_ran.load());
+        EXPECT_TRUE(coroutine_resumed.load());
+        EXPECT_EQ(bridge.pending(), 0u);
+    }
 }
 
 zetta::runtime::task<> await_throwing_bridge_work(zetta::api::MainThreadBridge& bridge,

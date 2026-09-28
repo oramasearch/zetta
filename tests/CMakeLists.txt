@@ -276,8 +276,10 @@ endif()
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
+add_dependencies(zetta-tests zetta)
 target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every

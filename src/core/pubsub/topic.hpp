@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "zetta/pubsub/pubsub.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta::pubsub {
 
@@ -110,6 +111,10 @@ public:
     // Held events with sequence >= from, oldest first, at most `max`; waits up to
     // `wait` when there are none.
     std::vector<Event> read_from(std::uint64_t from_sequence, std::size_t max, std::chrono::milliseconds wait);
+    // Register before a no-wait read; append or close signals every registered
+    // one-shot event. Weak ownership lets a timed-out route retire without a
+    // cross-thread unregister call (#1076).
+    void register_waiter(const std::shared_ptr<runtime::async_event>& waiter);
 
     // Every held event per level (the shutdown flush; spilled rings are read back).
     std::vector<std::vector<Event>> snapshot();
@@ -133,6 +138,7 @@ private:
     bool disconnect_slowest();                                                           // mutex_ held
     void note_spill(std::uint64_t freed);
     void close_state(Subscription::State& state, std::string reason);                    // mutex_ held
+    std::vector<std::shared_ptr<runtime::async_event>> take_waiters();                   // mutex_ held
     PubSub* owner() const { return owner_.load(); }
     void log(LogLevel level, const std::string& message) const;
 
@@ -150,6 +156,7 @@ private:
     std::condition_variable published_;
     std::condition_variable released_;
     std::uint64_t publish_generation_ = 0;
+    std::vector<std::weak_ptr<runtime::async_event>> waiters_;
     std::size_t held_publishers_ = 0;
     bool closing_ = false;
 

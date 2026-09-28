@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/consent.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta {
 class Node;
@@ -89,7 +91,7 @@ class BackgroundActions;
 
 // Resolves a provision target id ("local", "azure", …) to the configured
 // Provisioner the embedding wired for it — the consent-gated `add_nodes`
-// capability's backend seam. Null function or null result = that target has
+// capability's backend interface. Null function or null result = that target has
 // no provisioner wired here (the handler fails with a clear reason; nothing
 // is provisioned). The returned pointer is non-owning and must outlive the
 // server (the same contract as App::set_provisioner).
@@ -149,6 +151,12 @@ struct ApiContext {
     // permissions and the audit trail apply to the inner call exactly as they
     // would to a direct one. Null outside a registry call.
     const Registry* registry = nullptr;
+
+    // REST supplies this one-shot event for an awaitable read. The handler
+    // registers it before its no-wait read, so a publish between that read and
+    // the route's co_await cannot be missed (#1076). Other renderings leave it
+    // empty and receive the same immediate answer as wait_ms 0.
+    std::shared_ptr<runtime::async_event> wait_event;
 };
 
 using CapabilityHandler =
@@ -161,6 +169,15 @@ using CapabilityHandler =
 // without a challenge — the same input-aware gate the headed GUI applies.
 using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
     const nlohmann::json& input, ApiContext& context)>;
+
+// REST-only execution policy for a registry read that may suspend without
+// holding a thread. Registry::call remains the one governed call path: the
+// route calls it once for the initial no-wait read and, only when should_wait
+// says the result is empty, once after the event or timeout (#1076).
+struct AwaitableRead {
+    std::function<std::chrono::milliseconds(const nlohmann::json& input)> wait_for;
+    std::function<bool(const ApiResult& result)> should_wait;
+};
 
 // One entry on the control surface. `input_schema` is draft-07 JSON Schema
 // (schema-as-code — declared next to the handler, validated at the boundary
@@ -192,10 +209,9 @@ struct Capability {
     // still runs its authorization + audit gate on the owner thread (#1063), and
     // add() refuses an offloadable entry that mutates or requires consent.
     bool offloadable = false;
-    // The offloadable handler may block WAITING (receive_events' long poll): REST
-    // runs it on the blocking pool (runtime::offload_blocking), so waiters never
-    // hold the compute pool's threads (#1063). Meaningless without offloadable.
-    bool blocks = false;
+    // An empty REST read may suspend on a runtime event, bounded by wait_for,
+    // then make one final governed call. No thread is held while it waits.
+    std::optional<AwaitableRead> awaitable_read;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh
