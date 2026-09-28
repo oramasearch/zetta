@@ -16,8 +16,10 @@ The reusable annotation and methodology-specific checks are:
 | `TemporalValidationCheck` | `temporal_validation` | a time-ordered model without time-aware validation |
 | `EntityResolutionGraphCheck` | `entity_resolution_profile` | an M-2 model that omits blocking keys, valid match/review thresholds, or verified-identifier conflict rejection |
 | `SegmentationCheck` | `segmentation` | entity/outcome features, non-global preprocessing, an incorrect K criterion or minimum share, malformed parameters and disconnected assignment/profile outputs |
+| `ForecastGraphCheck` | `forecast_correctness` | an M-4 graph with invalid temporal backtests, future features, calibration, or no seasonal-naive baseline |
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
 | `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
+| `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
 

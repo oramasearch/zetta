@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 
@@ -132,6 +133,17 @@ TEST(MethodologyRegistry, RankBuildsItsOwnRunnableShape) {
     EXPECT_EQ(models.front()->attributes.at("split_strategy"), "group");
     EXPECT_EQ(models.front()->attributes.at("feature_availability"),
               "ranking_time");
+}
+
+TEST(MethodologyRegistry, PrimarySolutionsHaveOneOwner) {
+    std::map<std::string, std::string> owners;
+    for (const zetta::ml::Methodology& methodology : zetta::ml::methodologies()) {
+        for (const std::string& solution : methodology.solutions) {
+            const auto [owner, inserted] = owners.emplace(solution, methodology.id);
+            EXPECT_TRUE(inserted) << solution << " claimed by " << owner->second
+                                  << " and " << methodology.id;
+        }
+    }
 }
 
 TEST(MethodologyRegistry, ResolvesIdsModelKindsAndPrimarySolutions) {

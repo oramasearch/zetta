@@ -25,6 +25,7 @@ for model work.
 - [explaining-one-row.md](explaining-one-row.md) — "why is THIS one at risk": exact per-row TreeSHAP for one account, recomputed from the Model, contributions that sum to the score (`explain`, #948 step 6).
 - [tree-shap.md](tree-shap.md) — exact path-dependent TreeSHAP over the trained trees: per-entity drivers + an allreduced global mean-|φ| ranking (`tree_shap`, #393).
 - [native-oracle.md](native-oracle.md) — the native correctness oracle: committed goldens + analytic micro-tests + cross-cluster equivalence, no reference runtime (`load_golden_oracle`, RSK-8 / #395).
+- [integration.md](integration.md) — integration branch merge order, primary solution ownership, diff audit and native proof (#1082).
 - [methodologies.md](methodologies.md) — the 21-entry methodology registry, compile resolution, run dispatch, and extension contract (#1061).
 - [entity_resolution.md](entity_resolution.md) — M-2 native multi-route blocking, probabilistic or labelled-pair scoring, conflict-safe clustering, result tables, and metrics (#1041).
 - [next_best_action.md](next_best_action.md) — M-8 propensity composition, implicit-feedback ALS, hard policy constraints, recommendation tables, and offline IPS/DR evaluation (#1047).

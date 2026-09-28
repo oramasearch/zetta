@@ -566,7 +566,7 @@ const nlohmann::json& get_run_report_output_schema() {
           {"outputs",
            {{"oneOf", {{{"type", "array"}}, {{"type", "object"}}}},
             {"description",
-             "forecast output references, or survival and interval-calibration table references"}}},
+             "forecast/recommendation output references, or survival and interval-calibration table references"}}},
           {"forecast",
            {{"type", "array"},
             {"description",

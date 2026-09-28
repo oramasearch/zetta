@@ -83,12 +83,13 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free — `NonEmptyGraphCheck`, then the concrete `#309` checks (`SchemaTypeCheck`,
-`DataLeakageCheck` — see [gate-checks.md](gate-checks.md)), then the
-[`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). The `#309`
-and entity-resolution checks are opt-in per step, so a graph that carries none of
-their annotations still passes. As further concrete checks land they are
-registered there too.
+for free: thirteen checks on the methodology integration branch (#1082).
+`NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck` and
+`TemporalValidationCheck` precede the M-2 through M-9 checks in methodology order,
+followed by [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md)
+(`#312` / TC-4). See [gate-checks.md](gate-checks.md). Method-specific checks
+engage on their own model kinds; shared annotation checks retain their opt-in
+behavior. An unannotated graph without a matching model kind still passes.
 
 ## Using it
 

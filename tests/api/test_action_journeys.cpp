@@ -175,12 +175,11 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
         call("list_methodologies", nlohmann::json::object());
     ASSERT_TRUE(listed.ok) << listed.error.message;
     ASSERT_EQ(listed.value.at("methodologies").size(), 21u);
-    EXPECT_EQ(listed.value.at("methodologies").front().at("id"), "M-1");
-    EXPECT_TRUE(listed.value.at("methodologies").front().at("runnable"));
-    EXPECT_EQ(listed.value.at("methodologies")[6].at("id"), "M-7");
-    EXPECT_TRUE(listed.value.at("methodologies")[6].at("runnable"));
-    EXPECT_EQ(listed.value.at("methodologies")[1].at("id"), "M-2");
-    EXPECT_TRUE(listed.value.at("methodologies")[1].at("runnable"));
+    for (std::size_t index = 0; index < 9; ++index) {
+        const auto& methodology = listed.value.at("methodologies")[index];
+        EXPECT_EQ(methodology.at("id"), "M-" + std::to_string(index + 1));
+        EXPECT_TRUE(methodology.at("runnable"));
+    }
 
     ASSERT_TRUE(call("create_project", {{"name", "portfolio"}}).ok);
     const ApiResult captured =
@@ -929,6 +928,10 @@ TEST_F(Uc1Journey, SurvivalMethodologyRunsItsPipelinesTable) {
     EXPECT_TRUE(report.value.at("model").contains("integrated_brier_score"));
     EXPECT_EQ(report.value.at("dataset").at("source"),
               "datasets.survival_subjects");
+    EXPECT_EQ(report.value.at("dataset").at("features"),
+              nlohmann::json::array({"risk_feature"}));
+    ASSERT_FALSE(report.value.at("drivers").empty());
+    EXPECT_EQ(report.value.at("drivers")[0].at("feature"), "risk_feature");
     EXPECT_TRUE(report.value.at("outputs").contains("survival_table"));
     EXPECT_TRUE(report.value.at("outputs").contains("interval_calibration"));
 }
