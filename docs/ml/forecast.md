@@ -105,6 +105,9 @@ and collective tags, so the same data, params, and seed produce the same result.
 
 ## Boundaries and later work
 
+Phase A provides the native trainer and resolved-table runner. It does not yet
+make forecasting runnable through the methodology registry or public API.
+
 No new wire or JSON boundary is introduced. Numeric partials use the existing
 schema-validated `CollectiveMessage`; model weights use the existing `GbdtModel`
 boundary, expanded to admit its already-supported `squared_error` objective.

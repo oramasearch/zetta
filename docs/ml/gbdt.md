@@ -59,8 +59,9 @@ each round:
    `allreduce(Min)` / `allreduce(Max)` makes the bin edges identical on every node
    (so a row bins the same way everywhere). A node with no rows contributes the
    identities (`+inf` / `-inf`).
-2. **Global base rate.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
-   `logit(Σy / n)` over the whole cluster.
+2. **Global base score.** A node's `[Σy, n]` is `allreduce(Sum)`'d; the base score is
+   `logit(Σy / n)` for binary logistic or the continuous target mean `Σy / n`
+   for squared error over the whole cluster.
 3. **Gradient histograms.** At each tree level, each node builds the
    gradient/Hessian histograms over only its **local** rows, then those per-node
    histograms are **summed across the cluster** with one `allreduce(Sum)`.
