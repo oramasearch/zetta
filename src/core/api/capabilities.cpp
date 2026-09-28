@@ -2860,6 +2860,161 @@ ApiResult handle_list_methodologies(const nlohmann::json&, ApiContext&) {
     return ApiResult::success({{"methodologies", std::move(entries)}});
 }
 
+// --- solutions audit ledger (#1107) -----------------------------------------
+
+nlohmann::json ledger_entry_output_item_schema() {
+    nlohmann::json schema = zetta::solutions::audit_ledger_entry_schema();
+    for (nlohmann::json& choice : schema["oneOf"]) {
+        choice["required"].push_back("id");
+    }
+    return schema;
+}
+
+const nlohmann::json& record_action_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"subject", "score_id", "score", "decision", "action",
+          "actor_kind", "model_version", "policy_version", "agent_version",
+          "cell", "cost", "currency", "score_at", "decision_at",
+          "action_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"subject", {{"type", "string"}, {"minLength", 1}}},
+          {"score_id", {{"type", "string"}, {"minLength", 1}}},
+          {"score", {{"type", "number"}}},
+          {"decision", {{"type", "string"}, {"minLength", 1}}},
+          {"action",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the action taken; use `no_contact` for a deliberate hold"}}},
+          {"actor_kind", {{"type", "string"}, {"enum", {"agent", "human"}}}},
+          {"actor",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the acting agent or human; defaults to the authenticated caller"}}},
+          {"model_version", {{"type", "string"}, {"minLength", 1}}},
+          {"policy_version", {{"type", "string"}, {"minLength", 1}}},
+          {"agent_version", {{"type", "string"}, {"minLength", 1}}},
+          {"cell", {{"type", "string"}, {"minLength", 1}}},
+          {"cost", {{"type", "number"}, {"minimum", 0}}},
+          {"currency", {{"type", "string"}, {"minLength", 1}}},
+          {"score_at", {{"type", "string"}, {"minLength", 1}}},
+          {"decision_at", {{"type", "string"}, {"minLength", 1}}},
+          {"action_at", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& record_outcome_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"action_id", "outcome", "value", "currency", "source",
+          "occurred_at"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"action_id", {{"type", "string"}, {"minLength", 1}}},
+          {"outcome", {{"type", "string"}, {"minLength", 1}}},
+          {"value", {{"type", "number"}}},
+          {"currency", {{"type", "string"}, {"minLength", 1}}},
+          {"source",
+           {{"type", "string"}, {"enum", {"connector", "manual"}}}},
+          {"occurred_at", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& record_ledger_entry_output_schema() {
+    static const nlohmann::json schema = ledger_entry_output_item_schema();
+    return schema;
+}
+
+const nlohmann::json& list_ledger_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_ledger_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"entries"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"entries",
+           {{"type", "array"}, {"items", ledger_entry_output_item_schema()}}}}}};
+    return schema;
+}
+
+ApiResult handle_record_action(const nlohmann::json& input,
+                               ApiContext& context) {
+    zetta::solutions::ActionLedgerValue value;
+    value.subject = input.at("subject").get<std::string>();
+    value.score_id = input.at("score_id").get<std::string>();
+    value.score = input.at("score").get<double>();
+    value.decision = input.at("decision").get<std::string>();
+    value.action = input.at("action").get<std::string>();
+    value.actor_kind = zetta::solutions::action_actor_kind_from(
+        input.at("actor_kind").get<std::string>()).value();
+    value.actor = input.value(
+        "actor", context.acting_key.empty() ? std::string{"local"}
+                                             : context.acting_key);
+    value.model_version = input.at("model_version").get<std::string>();
+    value.policy_version = input.at("policy_version").get<std::string>();
+    value.agent_version = input.at("agent_version").get<std::string>();
+    value.cell = input.at("cell").get<std::string>();
+    value.cost = input.at("cost").get<double>();
+    value.currency = input.at("currency").get<std::string>();
+    value.score_at = input.at("score_at").get<std::string>();
+    value.decision_at = input.at("decision_at").get<std::string>();
+    value.action_at = input.at("action_at").get<std::string>();
+    const auto entry = context.node.record_action(std::move(value));
+    if (!entry) {
+        return ApiResult::failure(
+            "engine_error", "record_action rejected the ledger record");
+    }
+    nlohmann::json output = entry->metadata();
+    output["id"] = entry->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_record_outcome(const nlohmann::json& input,
+                                ApiContext& context) {
+    const std::string action_id = input.at("action_id").get<std::string>();
+    const auto action = context.node.find_ledger_entry(action_id);
+    if (!action || action->kind() != zetta::solutions::LedgerEntryKind::Action) {
+        return ApiResult::failure(
+            "not_found", "no action ledger entry with id '" + action_id + "'",
+            "/action_id");
+    }
+    zetta::solutions::OutcomeLedgerValue value;
+    value.action_id = action_id;
+    value.outcome = input.at("outcome").get<std::string>();
+    value.value = input.at("value").get<double>();
+    value.currency = input.at("currency").get<std::string>();
+    value.source = zetta::solutions::outcome_source_from(
+        input.at("source").get<std::string>()).value();
+    value.occurred_at = input.at("occurred_at").get<std::string>();
+    const auto entry = context.node.record_outcome(std::move(value));
+    if (!entry) {
+        return ApiResult::failure(
+            "engine_error", "record_outcome rejected the ledger record");
+    }
+    nlohmann::json output = entry->metadata();
+    output["id"] = entry->id();
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_list_ledger(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json entries = nlohmann::json::array();
+    for (const auto& entry : context.node.ledger_entries()) {
+        nlohmann::json document = entry->metadata();
+        document["id"] = entry->id();
+        entries.push_back(std::move(document));
+    }
+    return ApiResult::success({{"entries", std::move(entries)}});
+}
+
 // --- create_project ----------------------------------------------------------
 
 const nlohmann::json& create_project_schema() {
@@ -8254,6 +8409,19 @@ void register_core_capabilities(Registry& registry) {
         /*requires_consent=*/false, handle_list_methodologies});
 
     registry.add(Capability{
+        "list_ledger",
+        "List the solutions audit ledger",
+        "Read the immutable score, decision, action and outcome reward stream in "
+        "chronological order; no side effects.",
+        list_ledger_schema(),
+        list_ledger_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_ledger});
+
+    registry.add(Capability{
         "submit_feedback",
         "Submit feedback",
         "Snapshot a feedback bundle — your description plus the relevant "
@@ -8280,6 +8448,32 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    registry.add(Capability{
+        "record_action",
+        "Record a decision and action",
+        "Append one immutable score, decision and action record, including "
+        "deliberate no-contact, to the replicated solutions reward ledger.",
+        record_action_schema(),
+        record_ledger_entry_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "record_action"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_record_action});
+
+    registry.add(Capability{
+        "record_outcome",
+        "Record an action outcome",
+        "Append one immutable connector or manual outcome referencing an existing "
+        "action in the replicated solutions reward ledger.",
+        record_outcome_schema(),
+        record_ledger_entry_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "record_outcome"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_record_outcome});
 
     registry.add(Capability{
         "delete_project",

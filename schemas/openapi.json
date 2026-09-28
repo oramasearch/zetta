@@ -8860,6 +8860,256 @@
         ]
       }
     },
+    "/v1/list_ledger": {
+      "get": {
+        "description": "Read the immutable score, decision, action and outcome reward stream in chronological order; no side effects. Requires api:query.",
+        "operationId": "list_ledger",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "entries": {
+                          "items": {
+                            "$schema": "http://json-schema.org/draft-07/schema#",
+                            "description": "One immutable action or outcome in the solutions reward ledger (#1107).",
+                            "oneOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "action_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "actor": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "actor_kind": {
+                                    "enum": [
+                                      "agent",
+                                      "human"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "agent_version": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "cell": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "cost": {
+                                    "minimum": 0,
+                                    "type": "number"
+                                  },
+                                  "currency": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "decision": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "decision_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "const": "action"
+                                  },
+                                  "model_version": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "policy_version": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "recorded_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "score": {
+                                    "type": "number"
+                                  },
+                                  "score_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "score_id": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "subject": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "subject",
+                                  "score_id",
+                                  "score",
+                                  "decision",
+                                  "action",
+                                  "actor_kind",
+                                  "actor",
+                                  "model_version",
+                                  "policy_version",
+                                  "agent_version",
+                                  "cell",
+                                  "cost",
+                                  "currency",
+                                  "score_at",
+                                  "decision_at",
+                                  "action_at",
+                                  "recorded_at",
+                                  "id"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "action_id": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "currency": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "kind": {
+                                    "const": "outcome"
+                                  },
+                                  "occurred_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "outcome": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "recorded_at": {
+                                    "minLength": 1,
+                                    "type": "string"
+                                  },
+                                  "source": {
+                                    "enum": [
+                                      "connector",
+                                      "manual"
+                                    ],
+                                    "type": "string"
+                                  },
+                                  "value": {
+                                    "type": "number"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action_id",
+                                  "outcome",
+                                  "value",
+                                  "currency",
+                                  "source",
+                                  "occurred_at",
+                                  "recorded_at",
+                                  "id"
+                                ],
+                                "type": "object"
+                              }
+                            ],
+                            "title": "zetta.AuditLedgerEntry"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "entries"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List the solutions audit ledger",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_methodologies": {
       "get": {
         "description": "Read the complete methodology portfolio, including model kinds, primary solutions, data roles, outputs, metrics, implementation status, and tracking issues. No side effects. Requires api:query.",
@@ -11261,6 +11511,613 @@
         "summary": "Receive events",
         "tags": [
           "read"
+        ]
+      }
+    },
+    "/v1/record_action": {
+      "post": {
+        "description": "Append one immutable score, decision and action record, including deliberate no-contact, to the replicated solutions reward ledger. Requires orchestration:record_action.",
+        "operationId": "record_action",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "description": "the action taken; use `no_contact` for a deliberate hold",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "action_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "actor": {
+                    "description": "the acting agent or human; defaults to the authenticated caller",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "actor_kind": {
+                    "enum": [
+                      "agent",
+                      "human"
+                    ],
+                    "type": "string"
+                  },
+                  "agent_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cell": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "cost": {
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "currency": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decision": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decision_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "policy_version": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "score": {
+                    "type": "number"
+                  },
+                  "score_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "score_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "subject": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "subject",
+                  "score_id",
+                  "score",
+                  "decision",
+                  "action",
+                  "actor_kind",
+                  "model_version",
+                  "policy_version",
+                  "agent_version",
+                  "cell",
+                  "cost",
+                  "currency",
+                  "score_at",
+                  "decision_at",
+                  "action_at"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "description": "One immutable action or outcome in the solutions reward ledger (#1107).",
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "action_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "actor": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "actor_kind": {
+                              "enum": [
+                                "agent",
+                                "human"
+                              ],
+                              "type": "string"
+                            },
+                            "agent_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "cell": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "cost": {
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "currency": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "decision": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "decision_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "action"
+                            },
+                            "model_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "policy_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "recorded_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "score": {
+                              "type": "number"
+                            },
+                            "score_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "score_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "subject": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "subject",
+                            "score_id",
+                            "score",
+                            "decision",
+                            "action",
+                            "actor_kind",
+                            "actor",
+                            "model_version",
+                            "policy_version",
+                            "agent_version",
+                            "cell",
+                            "cost",
+                            "currency",
+                            "score_at",
+                            "decision_at",
+                            "action_at",
+                            "recorded_at",
+                            "id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "currency": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "outcome"
+                            },
+                            "occurred_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "outcome": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "recorded_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "source": {
+                              "enum": [
+                                "connector",
+                                "manual"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "action_id",
+                            "outcome",
+                            "value",
+                            "currency",
+                            "source",
+                            "occurred_at",
+                            "recorded_at",
+                            "id"
+                          ],
+                          "type": "object"
+                        }
+                      ],
+                      "title": "zetta.AuditLedgerEntry"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Record a decision and action",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/record_outcome": {
+      "post": {
+        "description": "Append one immutable connector or manual outcome referencing an existing action in the replicated solutions reward ledger. Requires orchestration:record_outcome.",
+        "operationId": "record_outcome",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "action_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "currency": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "outcome": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "source": {
+                    "enum": [
+                      "connector",
+                      "manual"
+                    ],
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "action_id",
+                  "outcome",
+                  "value",
+                  "currency",
+                  "source",
+                  "occurred_at"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "description": "One immutable action or outcome in the solutions reward ledger (#1107).",
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "action_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "actor": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "actor_kind": {
+                              "enum": [
+                                "agent",
+                                "human"
+                              ],
+                              "type": "string"
+                            },
+                            "agent_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "cell": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "cost": {
+                              "minimum": 0,
+                              "type": "number"
+                            },
+                            "currency": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "decision": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "decision_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "action"
+                            },
+                            "model_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "policy_version": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "recorded_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "score": {
+                              "type": "number"
+                            },
+                            "score_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "score_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "subject": {
+                              "minLength": 1,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "subject",
+                            "score_id",
+                            "score",
+                            "decision",
+                            "action",
+                            "actor_kind",
+                            "actor",
+                            "model_version",
+                            "policy_version",
+                            "agent_version",
+                            "cell",
+                            "cost",
+                            "currency",
+                            "score_at",
+                            "decision_at",
+                            "action_at",
+                            "recorded_at",
+                            "id"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "action_id": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "currency": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "id": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "const": "outcome"
+                            },
+                            "occurred_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "outcome": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "recorded_at": {
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "source": {
+                              "enum": [
+                                "connector",
+                                "manual"
+                              ],
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "action_id",
+                            "outcome",
+                            "value",
+                            "currency",
+                            "source",
+                            "occurred_at",
+                            "recorded_at",
+                            "id"
+                          ],
+                          "type": "object"
+                        }
+                      ],
+                      "title": "zetta.AuditLedgerEntry"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Record an action outcome",
+        "tags": [
+          "action"
         ]
       }
     },

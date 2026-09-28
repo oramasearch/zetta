@@ -260,6 +260,11 @@ are a materialized *projection* of it.** Concretely:
     outputs, lineage }` — one execution of a deployed graph (a top-level entity).
     The value is **validated against a JSON Schema** before it is trusted, at
     both entry points (disk + a peer's CRDT value). See [runs.md](../pipeline/runs.md).
+  - `ledger:<entry_uuid>` → one immutable action or outcome record. Actions
+    preserve score, decision, actor, model/policy/agent versions, experiment
+    cell, cost, and evidence timestamps; outcomes reference their action. Each
+    value is schema-validated before materialization under
+    `<data_dir>/ledger/`. See [audit-ledger.md](../solutions/audit-ledger.md).
   - `model:<model_uuid>` → `{ name, kind, project, run, feature_schema, metrics,
     created, weights: { size, sha256 } }` — a trained model (a top-level entity).
     Like a large object, only the **metadata** rides in the document; the

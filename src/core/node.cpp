@@ -257,6 +257,7 @@ bool Node::start() {
     load_user_roles();
     load_policies();
     load_audit_events();
+    load_ledger_entries();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -273,12 +274,12 @@ bool Node::start() {
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
         "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
         "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
-        "%zu audit events)\n",
+        "%zu audit events, %zu ledger entries)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
         indexes_.size(), jobs_.size(), dataset_partitions_.size(),
         principals_.size(), users_.size(), roles_.size(), tokens_.size(),
-        audit_events_.size());
+        audit_events_.size(), ledger_entries_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -3133,6 +3134,123 @@ std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
     return event;
 }
 
+// ----- solutions reward ledger (immutable, replicated as ledger:<uuid>) -----
+
+fs::path Node::ledger_dir() const {
+    return fs::path(config_.data_dir) / "ledger";
+}
+
+void Node::load_ledger_entries() {
+    ledger_entries_.clear();
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    if (!fs::exists(root, error_code)) {
+        return;
+    }
+    for (const auto& entry : fs::directory_iterator(root, error_code)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") {
+            continue;
+        }
+        std::ifstream input(entry.path());
+        const nlohmann::json document = nlohmann::json::parse(
+            input, nullptr, /*allow_exceptions=*/false);
+        std::string error;
+        const std::optional<zetta::solutions::LedgerEntryValue> value =
+            document.is_discarded()
+                ? std::nullopt
+                : zetta::solutions::parse_audit_ledger_entry(document, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid ledger entry %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        document.is_discarded() ? "unparseable JSON"
+                                                : error.c_str());
+            continue;
+        }
+        ledger_entries_.push_back(
+            std::make_shared<zetta::solutions::LedgerEntry>(
+                entry.path().stem().string(), *value, root));
+    }
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_action(
+    zetta::solutions::ActionLedgerValue value) {
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::record_outcome(
+    zetta::solutions::OutcomeLedgerValue value) {
+    const std::shared_ptr<zetta::solutions::LedgerEntry> action =
+        find_ledger_entry(value.action_id);
+    if (!action || action->kind() != zetta::solutions::LedgerEntryKind::Action) {
+        return nullptr;
+    }
+    const std::string id = zetta::util::new_uuid();
+    value.recorded_at = zetta::util::now_iso8601();
+    zetta::solutions::LedgerEntryValue entry_value = std::move(value);
+    if (!zetta::solutions::validate_audit_ledger_entry(
+            zetta::solutions::to_json(entry_value))) {
+        return nullptr;
+    }
+    if (replication_ != nullptr) {
+        replication_->set(catalog::ledger_key(id),
+                          zetta::solutions::to_json(entry_value));
+    }
+    return materialize_ledger_entry(id, std::move(entry_value));
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::find_ledger_entry(
+    const std::string& id) const {
+    for (const auto& entry : ledger_entries_) {
+        if (entry->id() == id) {
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::solutions::LedgerEntry> Node::materialize_ledger_entry(
+    std::string id, zetta::solutions::LedgerEntryValue value) {
+    if (const auto existing = find_ledger_entry(id)) {
+        return existing;
+    }
+    const fs::path root = ledger_dir();
+    std::error_code error_code;
+    fs::create_directories(root, error_code);
+    if (error_code) {
+        return nullptr;
+    }
+    auto entry = std::make_shared<zetta::solutions::LedgerEntry>(
+        std::move(id), std::move(value), root);
+    entry->persist_meta();
+    ledger_entries_.push_back(entry);
+    std::sort(ledger_entries_.begin(), ledger_entries_.end(),
+              [](const auto& left, const auto& right) {
+                  if (left->recorded_at() != right->recorded_at()) {
+                      return left->recorded_at() < right->recorded_at();
+                  }
+                  return left->id() < right->id();
+              });
+    return entry;
+}
+
 zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
                                const zetta::governance::Operation& operation) const {
     auto key = find_access_key(key_id);
@@ -3439,6 +3557,12 @@ void Node::migrate_to_replication() {
                               event->metadata());
         }
     }
+    for (const auto& entry : ledger_entries_) {
+        if (!already_replicated(catalog::ledger_key(entry->id()))) {
+            replication_->set(catalog::ledger_key(entry->id()),
+                              entry->metadata());
+        }
+    }
 }
 
 // ----- replication: apply the document to the local projection --------------
@@ -3468,6 +3592,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_user_roles(snapshot);
     reconcile_policies(snapshot);
     reconcile_audit_events(snapshot);
+    reconcile_ledger_entries(snapshot);
 }
 
 void Node::rebalance_partitions_on_membership_change(
@@ -4205,6 +4330,20 @@ void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
                   if (a->time() != b->time()) return a->time() < b->time();
                   return a->id() < b->id();
               });
+}
+
+void Node::reconcile_ledger_entries(const nlohmann::json& snapshot) {
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kLedgerPrefix);
+        if (id.empty()) {
+            continue;
+        }
+        const std::optional<zetta::solutions::LedgerEntryValue> parsed =
+            zetta::solutions::parse_audit_ledger_entry(value);
+        if (parsed) {
+            materialize_ledger_entry(std::move(id), *parsed);
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {

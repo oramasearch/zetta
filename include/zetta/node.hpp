@@ -39,6 +39,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/query/distributed_select.hpp"
+#include "zetta/solutions/audit_ledger.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
@@ -664,6 +665,22 @@ public:
     }
     std::size_t audit_event_count() const { return audit_events_.size(); }
 
+    // The solutions reward ledger (#1107). Both methods append a fresh,
+    // immutable record; outcomes reference an existing action and never update
+    // it. There is deliberately no mutation or deletion API.
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_action(
+        zetta::solutions::ActionLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> record_outcome(
+        zetta::solutions::OutcomeLedgerValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> find_ledger_entry(
+        const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>> ledger_entries() const {
+        return ledger_entries_;
+    }
+    std::size_t ledger_entry_count() const {
+        return ledger_entries_.size();
+    }
+
     // The capability decision (ENT-22): `operation` is allowed iff the key holds
     // a matching, unexpired capability as of the current time. Deny-by-default —
     // an unknown/empty key id, or no matching (live) capability, denies. The
@@ -988,6 +1005,10 @@ private:
     void load_audit_events();
     std::filesystem::path audit_dir() const;
 
+    // Rebuild the immutable solutions ledger from data_dir/ledger.
+    void load_ledger_entries();
+    std::filesystem::path ledger_dir() const;
+
     // Rebuild principals_ by scanning config_.data_dir. Called from start().
     void load_principals();
     std::shared_ptr<zetta::governance::Principal> find_principal_by_id(const std::string& id) const;
@@ -1037,6 +1058,7 @@ private:
     void reconcile_principals(const nlohmann::json& snapshot);
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
+    void reconcile_ledger_entries(const nlohmann::json& snapshot);
     void reconcile_users(const nlohmann::json& snapshot);
     void reconcile_roles(const nlohmann::json& snapshot);
     void reconcile_tokens(const nlohmann::json& snapshot);
@@ -1102,6 +1124,8 @@ private:
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
                                                         zetta::governance::AuditEventValue value);
+    std::shared_ptr<zetta::solutions::LedgerEntry> materialize_ledger_entry(
+        std::string id, zetta::solutions::LedgerEntryValue value);
 
     NodeConfig config_;
     zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -1152,6 +1176,8 @@ private:
     std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>>
+        ledger_entries_;  // sorted (recorded_at, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials

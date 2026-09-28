@@ -622,6 +622,7 @@ add_library(zetta-core STATIC
   src/core/governance/token.cpp
   src/core/governance/user_role.cpp
   src/core/governance/policy.cpp
+  src/core/solutions/audit_ledger.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/data/partition_body.cpp

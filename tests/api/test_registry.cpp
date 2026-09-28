@@ -64,7 +64,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        86u); // +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        89u); // +3 audit-ledger capabilities (#1107), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -110,7 +110,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
          {"get_project", "get_run", "get_model", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
           "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
-          "list_methodologies"}) {
+          "list_methodologies", "list_ledger"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     const ApiResult methodologies =
@@ -128,7 +128,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "compile_intent", "compile_n8n", "compile_python", "approve_plan", "gate", "deploy", "run",
           "add_dataset", "testsuite_run", "expose_model", "unexpose_model",
           "expose_index", "unexpose_index", "create_workspace_profile",
-          "update_workspace_profile", "create_plan", "update_plan"}) {
+          "update_workspace_profile", "create_plan", "update_plan",
+          "record_action", "record_outcome"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,
@@ -151,6 +152,76 @@ TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
     EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, {},
                                          CapabilityKind::Read,
                                          {}, false, false, nullptr}));
+}
+
+TEST_F(RegistryFixture, JourneyReconstructsScoreActionOutcomeChain) {
+    const nlohmann::json action_input = {
+        {"subject", "account-42"},
+        {"score_id", "score-42"},
+        {"score", 0.91},
+        {"decision", "retain"},
+        {"action", "no_contact"},
+        {"actor_kind", "human"},
+        {"model_version", "churn-v7"},
+        {"policy_version", "retention-policy-v3"},
+        {"agent_version", "agent-v5"},
+        {"cell", "holdout"},
+        {"cost", 0.0},
+        {"currency", "USD"},
+        {"score_at", "2026-09-28T10:00:00.000Z"},
+        {"decision_at", "2026-09-28T10:00:01.000Z"},
+        {"action_at", "2026-09-28T10:00:02.000Z"}};
+
+    const ApiResult action = call("record_action", action_input);
+    ASSERT_TRUE(action.ok) << action.error.message;
+    EXPECT_EQ(action.value.at("kind"), "action");
+    EXPECT_EQ(action.value.at("actor"), "local");
+    const std::string action_id = action.value.at("id").get<std::string>();
+    const nlohmann::json immutable_action = action.value;
+
+    const ApiResult outcome = call(
+        "record_outcome",
+        {{"action_id", action_id},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "connector"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    ASSERT_TRUE(outcome.ok) << outcome.error.message;
+    EXPECT_EQ(outcome.value.at("action_id"), action_id);
+
+    const ApiResult listed = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("entries").size(), 2u);
+    bool found_action = false;
+    bool found_outcome = false;
+    for (const auto& entry : listed.value.at("entries")) {
+        if (entry.at("kind") == "action") {
+            found_action = entry == immutable_action;
+        }
+        if (entry.at("kind") == "outcome") {
+            found_outcome = entry.at("action_id") == action_id;
+        }
+    }
+    EXPECT_TRUE(found_action);
+    EXPECT_TRUE(found_outcome);
+
+    const ApiResult sql = call(
+        "sql", {{"statement", "SELECT * FROM system.ledger;"}});
+    ASSERT_TRUE(sql.ok) << sql.error.message;
+    ASSERT_EQ(sql.value.at("rows").size(), 2u);
+
+    const ApiResult orphan = call(
+        "record_outcome",
+        {{"action_id", "missing"},
+         {"outcome", "renewed"},
+         {"value", 1200.0},
+         {"currency", "USD"},
+         {"source", "manual"},
+         {"occurred_at", "2026-10-28T10:00:00.000Z"}});
+    EXPECT_FALSE(orphan.ok);
+    EXPECT_EQ(orphan.error.code, "not_found");
+    EXPECT_EQ(node.ledger_entry_count(), 2u);
 }
 
 // #1007: a handler that throws must still produce an answer. The exception used

@@ -101,6 +101,11 @@ What's inside, by domain (each links to that domain's docs):
   M-13 runs
   native PNG/JPEG → ViT transfer learning with source-disjoint evaluation and
   governed large-object reads.
+- **[Solutions](docs/solutions/README.md)** — the replicated, append-only
+  **audit ledger** connects every score and policy decision to the agent or
+  human action taken (including deliberate no-contact) and its connector or
+  manual outcome, preserving versions, experiment cell, cost, and timestamps
+  for reward and ROI consumers.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

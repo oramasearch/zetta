@@ -147,6 +147,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_methodologies` | read | api:query | all 21 registered methodologies, their data and result contracts, primary solutions, model kinds, implementation status, and tracking issues |
+| `list_ledger` | read | api:query | immutable action and outcome entries from the replicated [solutions audit ledger](../solutions/audit-ledger.md) |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `get_run_report` | read | api:query | finished-run facts: M-1 quality/risk; M-7 anomaly metrics, ranked findings, output tables, and read/excluded input facts |
@@ -154,6 +155,8 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
+| `record_action` | action | orchestration:record_action | append score, decision, action, actor, versions, experiment cell, cost, and timestamps to the solutions audit ledger |
+| `record_outcome` | action | orchestration:record_outcome | append a connector or manual outcome referencing an existing action entry |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
