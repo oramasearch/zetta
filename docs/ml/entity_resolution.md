@@ -1,6 +1,7 @@
 # Entity resolution
 
-Implemented for [#1041](https://github.com/oramasearch/zetta/issues/1041),
+Implemented for [#1041](https://github.com/oramasearch/zetta/issues/1041) and
+distributed in [#1072](https://github.com/oramasearch/zetta/issues/1072),
 methodology M-2 with model kind `entity_resolution`.
 
 ## What it does
@@ -63,12 +64,24 @@ thresholds. Blocking recall is not presented when labels are absent.
 
 The seed controls MinHash and pair ownership. Input records are sorted by their
 source key before candidate generation, so partition and iteration order do not
-change assignments. Fellegi–Sunter EM exposes an allreduce callback for its
-sufficient statistics so a distributed caller can bind it to the compute
-collective. The registry runner reads partitioned source rows through the query
-service, then performs final EM and clustering on the coordinating member.
-Clustering requires the globally ordered high-confidence edge set because every
-transitive union must be checked against all verified identifiers.
+change assignments. A coordinated registry run launches the same deterministic
+record directory on every participant. Each blocking route retains and scores
+only the candidate pairs assigned to that participant by the stable owner hash;
+no participant assembles the global candidate set.
+
+Every Fellegi–Sunter iteration allreduces the participant-local match,
+non-match, and agreement sufficient statistics through its `JobRound`, using a
+distinct collective tag per iteration. Labelled scoring uses the same existing
+distributed GBDT histogram reduction and combines the calibration class counts
+and held-out examples through the job collectives.
+
+Each participant conflict-checks its ordered match edges and sends only its
+component memberships and confidence to the output participant. Using the
+shared record directory, the output participant deterministically merges those
+components, rechecks verified email, verified phone, and
+one-record-per-source constraints, then broadcasts the canonical assignments
+and confidences. Match-pair rows move to the output table in bounded pages
+after scoring. The full pair list is never retained by the output participant.
 
 ## How to verify
 
@@ -79,7 +92,10 @@ cmake --build build -j 6 --target zetta-tests
 
 The focused tests plant duplicates with name and address typos, assert pairwise
 F1 above 0.9 with B-cubed metrics, prove a verified-key bridge is not merged,
-and compare one partition with three partitions.
+and run three real cluster members through `JobRound`. The partition test proves
+that every pair has exactly one owner, bounded output streaming covers every
+pair, and merged assignments and metrics, including a conflicting verified-key
+bridge, match the single-member oracle.
 
 ## Running it
 
@@ -91,8 +107,10 @@ the Run to completion, then query its two dataset outputs or call
 `get_run_report` for the metrics, thresholds, source, exclusions, and output
 table references.
 
-## Boundaries and deferred work
+## Boundaries
 
-No hosted model, embedded Python, foreign ML runtime, or new wire format is
-introduced. Pair sufficient statistics use the existing collective vector
-transport. Lake opportunity wiring is outside this change.
+No hosted model, embedded Python, or foreign ML runtime is introduced. Numeric
+sufficient statistics, component memberships, and bounded pair pages use the
+existing collective vector transport. The coordinated launch payload is
+validated by the generated `entity_resolution_launch` schema before a peer
+reads data or creates a job.

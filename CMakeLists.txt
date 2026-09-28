@@ -563,6 +563,7 @@ add_library(zetta-core STATIC
   src/core/ml/methodology_optimization.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/entity_resolution.cpp
+  src/core/ml/entity_resolution_job.cpp
   src/core/ml/entity_resolution_methodology.cpp
   src/core/ml/graph.cpp
   src/core/ml/graph_job.cpp

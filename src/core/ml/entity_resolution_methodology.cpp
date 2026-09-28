@@ -7,9 +7,15 @@
 #include <string>
 #include <utility>
 
+#include <nlohmann/json-schema.hpp>
+
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/entity_resolution.hpp"
+#include "zetta/ml/entity_resolution_job.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -19,6 +25,8 @@
 
 namespace zetta::ml {
 namespace {
+
+constexpr const char *kEntityResolutionLaunchKind = "entity_resolution";
 
 bool m2_owns(const ir::ExecutionGraph &graph) {
   for (const auto &node : graph.nodes()) {
@@ -147,6 +155,60 @@ nlohmann::json metrics_json(const EntityResolutionResult &result,
   return metrics;
 }
 
+nlohmann::json params_json(const EntityResolutionParams &params) {
+  return {{"seed", params.seed},
+          {"sorted_neighbourhood_window",
+           params.sorted_neighbourhood_window},
+          {"match_threshold", params.match_threshold},
+          {"review_threshold", params.review_threshold},
+          {"one_record_per_source", params.one_record_per_source},
+          {"source_column", params.source_column},
+          {"record_id_column", params.record_id_column},
+          {"name_column", params.name_column},
+          {"address_column", params.address_column},
+          {"email_column", params.email_column},
+          {"phone_column", params.phone_column},
+          {"date_column", params.date_column},
+          {"email_verified_column", params.email_verified_column},
+          {"phone_verified_column", params.phone_verified_column},
+          {"truth_entity_column", params.truth_entity_column}};
+}
+
+EntityResolutionParams params_from_json(const nlohmann::json &value) {
+  EntityResolutionParams params;
+  params.seed = value.at("seed");
+  params.sorted_neighbourhood_window =
+      value.at("sorted_neighbourhood_window");
+  params.match_threshold = value.at("match_threshold");
+  params.review_threshold = value.at("review_threshold");
+  params.one_record_per_source = value.at("one_record_per_source");
+  params.source_column = value.at("source_column");
+  params.record_id_column = value.at("record_id_column");
+  params.name_column = value.at("name_column");
+  params.address_column = value.at("address_column");
+  params.email_column = value.at("email_column");
+  params.phone_column = value.at("phone_column");
+  params.date_column = value.at("date_column");
+  params.email_verified_column = value.at("email_verified_column");
+  params.phone_verified_column = value.at("phone_verified_column");
+  params.truth_entity_column = value.at("truth_entity_column");
+  return params;
+}
+
+nlohmann::json launch_payload(const data::ResolvedDataset &dataset,
+                              const EntityResolutionParams &params,
+                              const std::string &suffix,
+                              const std::string &output_node) {
+  return {{"database", dataset.database},
+          {"table", dataset.table},
+          {"table_id", dataset.table_id},
+          {"rows", dataset.rows},
+          {"notes", dataset.notes},
+          {"params", params_json(params)},
+          {"output_suffix", suffix},
+          {"output_node", output_node}};
+}
+
 api::ApiResult run_m2(RunRequest &request) {
   if (request.context == nullptr || request.project == nullptr ||
       request.graph == nullptr) {
@@ -235,8 +297,39 @@ api::ApiResult run_m2(RunRequest &request) {
   run->add_log({util::now_iso8601(), "info",
                 "entity resolution read dataset: " + dataset_name});
 
+  std::vector<std::string> roster;
+  std::string output_node;
+  if (context.node.job_coordinator() != nullptr) {
+    roster = context.node.job_coordinator()->collectives().participants();
+  }
+  if (roster.size() > 1) {
+    if (!request.input.value("coordinate", true)) {
+      run->set_status(pipeline::RunStatus::Failed);
+      return api::ApiResult::failure(
+          "invalid_input",
+          "entity resolution requires coordinate=true when the cluster has "
+          "peers");
+    }
+    if (context.node.coordinated_launch() == nullptr ||
+        context.cluster == nullptr) {
+      run->set_status(pipeline::RunStatus::Failed);
+      return api::ApiResult::failure(
+          "engine_error",
+          "entity resolution requires an attached coordinated compute cluster");
+    }
+    output_node = context.node.coordinated_launch()->node_id();
+    compute::CoordinatedLaunchRequest launch;
+    launch.id = run->id();
+    launch.kind = kEntityResolutionLaunchKind;
+    launch.initiator = output_node;
+    launch.participants = roster;
+    launch.payload = launch_payload(dataset, params, run->id().substr(0, 8),
+                                    output_node);
+    context.node.coordinated_launch()->fan_out(launch);
+  }
   const EntityResolutionTableResult table_result = run_entity_resolution(
-      context.node, dataset, params, run->id().substr(0, 8), context.cluster);
+      context.node, dataset, params, run->id().substr(0, 8), context.cluster,
+      output_node);
   if (!table_result.ok()) {
     run->add_log({util::now_iso8601(), "error", table_result.resolution.error});
     run->set_status(pipeline::RunStatus::Failed);
@@ -309,6 +402,55 @@ api::ApiResult run_m2(RunRequest &request) {
        {"dataset_notes", dataset.notes}});
 }
 
+class EntityResolutionLaunchErrors
+    : public nlohmann::json_schema::error_handler {
+public:
+  std::string reason;
+
+  void error(const nlohmann::json::json_pointer &path,
+             const nlohmann::json &, const std::string &message) override {
+    if (reason.empty()) {
+      reason = path.to_string() + ": " + message;
+    }
+  }
+};
+
+compute::CoordinatedLaunchListener::LaunchOutcome run_peer(
+    Node &node, cluster::Cluster &cluster,
+    compute::CoordinatedLaunchListener &listener,
+    const compute::CoordinatedLaunchRequest &launch) {
+  static const nlohmann::json_schema::json_validator validator(
+      entity_resolution_launch_schema());
+  EntityResolutionLaunchErrors errors;
+  validator.validate(launch.payload, errors);
+  if (!errors.reason.empty()) {
+    return {false, "entity resolution launch: " + errors.reason};
+  }
+  if (!compute::participant_rank(launch, listener.node_id()) ||
+      node.job_coordinator() == nullptr ||
+      launch.participants !=
+          node.job_coordinator()->collectives().participants() ||
+      launch.payload.at("output_node") != launch.initiator) {
+    return {false,
+            "entity resolution launch roster or writer no longer matches "
+            "the cluster"};
+  }
+  data::ResolvedDataset dataset;
+  dataset.database = launch.payload.at("database");
+  dataset.table = launch.payload.at("table");
+  dataset.table_id = launch.payload.at("table_id");
+  dataset.rows = launch.payload.at("rows");
+  dataset.notes =
+      launch.payload.at("notes").get<std::vector<std::string>>();
+  const EntityResolutionTableResult result = run_entity_resolution(
+      node, dataset, params_from_json(launch.payload.at("params")),
+      launch.payload.at("output_suffix").get<std::string>(), &cluster,
+      launch.payload.at("output_node").get<std::string>());
+  return {result.ok(),
+          result.ok() ? "entity resolution peer completed"
+                      : result.resolution.error};
+}
+
 } // namespace
 
 Methodology make_m2_methodology() {
@@ -335,6 +477,64 @@ Methodology make_m2_methodology() {
   methodology.owns = m2_owns;
   methodology.run = run_m2;
   return methodology;
+}
+
+const nlohmann::json &entity_resolution_launch_schema() {
+  static const nlohmann::json schema = [] {
+    nlohmann::json result = {
+        {"$schema", "http://json-schema.org/draft-07/schema#"},
+        {"title", "zetta.EntityResolutionLaunch"},
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"required",
+         {"database", "table", "table_id", "rows", "notes", "params",
+          "output_suffix", "output_node"}}};
+    for (const auto *key : {"database", "table", "table_id",
+                            "output_suffix", "output_node"}) {
+      result["properties"][key] = {{"type", "string"}, {"minLength", 1}};
+    }
+    result["properties"]["rows"] = {{"type", "integer"}, {"minimum", 0}};
+    result["properties"]["notes"] = {
+        {"type", "array"}, {"items", {{"type", "string"}}}};
+    nlohmann::json params = {
+        {"type", "object"},
+        {"additionalProperties", false},
+        {"required",
+         {"seed", "sorted_neighbourhood_window", "match_threshold",
+          "review_threshold", "one_record_per_source", "source_column",
+          "record_id_column", "name_column", "address_column",
+          "email_column", "phone_column", "date_column",
+          "email_verified_column", "phone_verified_column",
+          "truth_entity_column"}}};
+    params["properties"]["seed"] = {{"type", "integer"}, {"minimum", 0}};
+    params["properties"]["sorted_neighbourhood_window"] = {
+        {"type", "integer"}, {"minimum", 2}};
+    params["properties"]["match_threshold"] = {
+        {"type", "number"}, {"minimum", 0.0}, {"maximum", 1.0}};
+    params["properties"]["review_threshold"] = {
+        {"type", "number"}, {"minimum", 0.0}, {"maximum", 1.0}};
+    params["properties"]["one_record_per_source"] = {{"type", "boolean"}};
+    for (const auto *key :
+         {"source_column", "record_id_column", "name_column",
+          "address_column", "email_column", "phone_column", "date_column",
+          "email_verified_column", "phone_verified_column",
+          "truth_entity_column"}) {
+      params["properties"][key] = {{"type", "string"}};
+    }
+    result["properties"]["params"] = std::move(params);
+    return result;
+  }();
+  return schema;
+}
+
+void install_entity_resolution_launch_runner(
+    compute::CoordinatedLaunchListener &listener, Node &node,
+    cluster::Cluster &cluster) {
+  listener.set_runner(
+      kEntityResolutionLaunchKind,
+      [&node, &cluster, &listener](const auto &launch) {
+        return run_peer(node, cluster, listener, launch);
+      });
 }
 
 } // namespace zetta::ml
