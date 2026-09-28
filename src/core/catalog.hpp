@@ -82,6 +82,9 @@
 //                          solutions reward ledger (#1107); action records carry
 //                          score, decision, versions, cell, cost and timestamps,
 //                          while outcome records reference the action id
+//   roi_readout:<uuid>  -> { id, solution, version, project, graph, experiment,
+//                          roi_model, created_by, created }  (one immutable
+//                          customer-supplied ROI configuration version; #1108)
 //   user:<uuid>        -> { name, status, created }        (an authenticatable
 //                          identity — conceptually a Principal of kind User in
 //                          the FEAT-9 access model; a top-level entity — see
@@ -165,6 +168,7 @@ inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
 inline constexpr std::string_view kLedgerPrefix = "ledger:";
+inline constexpr std::string_view kRoiReadoutPrefix = "roi_readout:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
 inline constexpr std::string_view kManifestPrefix = "mfst:";
 inline constexpr std::string_view kUserPrefix = "user:";
@@ -253,6 +257,9 @@ inline std::string audit_key(const std::string& audit_id) {
 }
 inline std::string ledger_key(const std::string& ledger_id) {
     return std::string(kLedgerPrefix) + ledger_id;
+}
+inline std::string roi_readout_key(const std::string& readout_id) {
+    return std::string(kRoiReadoutPrefix) + readout_id;
 }
 inline std::string partition_key(const std::string& partition_id) {
     return std::string(kPartitionPrefix) + partition_id;

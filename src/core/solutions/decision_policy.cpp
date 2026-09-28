@@ -821,6 +821,28 @@ std::optional<DecisionRecord> DecisionPolicyStore::get_decision(
     return parse_decision_record(*found);
 }
 
+std::vector<DecisionRecord> DecisionPolicyStore::decisions() const {
+    std::vector<DecisionRecord> records;
+    const Json snapshot = replication_.snapshot();
+    for (const auto& [key, value] : snapshot.items()) {
+        if (!key.starts_with(std::string(zetta::catalog::kDecisionPrefix))) {
+            continue;
+        }
+        if (const auto record = parse_decision_record(value)) {
+            records.push_back(*record);
+        }
+    }
+    std::ranges::sort(
+        records,
+        [](const DecisionRecord& left, const DecisionRecord& right) {
+            if (left.created != right.created) {
+                return left.created < right.created;
+            }
+            return left.id < right.id;
+        });
+    return records;
+}
+
 std::optional<DecisionRecord> DecisionPolicyStore::approve(
     const std::string& decision_id,
     std::string actor,

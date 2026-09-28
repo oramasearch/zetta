@@ -108,7 +108,11 @@ What's inside, by domain (each links to that domain's docs):
 - **[Solutions](docs/solutions/README.md)** — replicated foundations for audit,
   policy, experiments, and solution monitoring, including drift, calibration,
   cohort performance, guardrails, breach events, retrain requests, and durable
-  score-to-outcome evidence.
+  score-to-outcome evidence. Versioned
+  [ROI readouts](docs/solutions/roi-readout.md) combine correctness,
+  treated-minus-holdout effects with confidence intervals, customer-supplied
+  economics, operations, and redacted audit evidence without exposing raw
+  responses.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` interface;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.
@@ -126,6 +130,9 @@ What's inside, by domain (each links to that domain's docs):
   entities deterministically across holdout, treatment, exploration, and
   below-line cells; protects control populations before model-driven actions;
   and reports balance, exemption erosion, and uplift-training rows.
+  `get_roi_readout` turns those assignments and the audit ledger into a
+  versioned customer readout, and refuses incrementality when measured holdout
+  outcomes are unavailable.
 - **[The programmatic control surface](docs/api/README.md)** — one **capability
   registry** where each entry renders three ways at once: an **MCP tool**, a
   **REST route**, and a palette action. An embedded Beast2 server (both run

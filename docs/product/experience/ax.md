@@ -29,7 +29,7 @@ relay it to a person.
   ([#646](https://github.com/oramasearch/zetta/issues/646),
   [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
-  JSON Schema in the system (capability schemas + all 86 schema-as-code
+  JSON Schema in the system (capability schemas + all 92 schema-as-code
   boundary schemas, served from their C++ accessors) as one navigable index
   of objects — discovery without reading source, drift-checked through the
   same table the build enforces.
@@ -43,6 +43,12 @@ relay it to a person.
   breaches, and the durable retrain request by solution name or monitor UUID.
   MCP and REST return the same schema-validated record, and the agent tool is
   read-only ([monitor.md](../../solutions/monitor.md), #1106).
+- **Solution value is evidence-backed**: `get_roi_readout` reads the configured
+  graph's correctness result, aggregate experiment lift with confidence
+  intervals, customer-supplied economics, guardrails, agent operations, and a
+  redacted audit extract. Without measured holdout outcomes it explicitly
+  refuses an incrementality or ROI claim
+  ([roi-readout.md](../../solutions/roi-readout.md), #1108).
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key

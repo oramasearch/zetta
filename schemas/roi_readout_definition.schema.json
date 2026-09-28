@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "One immutable version of a solution's ROI readout configuration (#1108).",
+  "properties": {
+    "created": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "created_by": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "experiment": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "graph": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "project": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "roi_model": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "investment": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "outcome": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "value_per_outcome": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "outcome",
+        "value_per_outcome",
+        "investment",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "solution": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "id",
+    "solution",
+    "version",
+    "project",
+    "graph",
+    "experiment",
+    "roi_model",
+    "created_by",
+    "created"
+  ],
+  "title": "zetta.RoiReadoutDefinition",
+  "type": "object"
+}

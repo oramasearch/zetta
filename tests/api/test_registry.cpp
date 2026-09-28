@@ -16,6 +16,7 @@
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
@@ -31,6 +32,7 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -64,7 +66,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        98u); // +3 audit-ledger capabilities (#1107), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        99u); // +get_roi_readout (#1108), +3 audit-ledger capabilities (#1107), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -110,7 +112,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("testsuite_list"));
     // The #616 read-parity slice: typed detail reads + list_* siblings.
     for (const char* name :
-         {"get_project", "get_run", "get_model", "get_monitor", "get_job", "get_index",
+         {"get_project", "get_run", "get_model", "get_monitor", "get_roi_readout", "get_job", "get_index",
           "get_dataset", "list_runs", "list_models", "list_jobs",
           "list_indexes", "list_datasets", "analyze_dataset", "plan_features",
           "list_methodologies", "list_ledger", "get_policy"}) {
@@ -144,6 +146,55 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
     EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
+}
+
+TEST(RoiReadoutCapability, JourneyReturnsUnclaimableWithoutHoldoutOutcomes) {
+    zetta::test::TempDir directory;
+    zetta::cluster::ReplicationManager replication{zetta::util::new_uuid()};
+    zetta::Node node{{directory.path().string(), false}, &replication};
+    ASSERT_TRUE(node.start());
+    const auto project = node.create_project("renewal-project");
+    ASSERT_TRUE(project);
+    zetta::ir::ExecutionGraph graph;
+    ASSERT_TRUE(graph.add_node(zetta::ir::StepKind::Connect, "source"));
+    ASSERT_TRUE(project->create_graph("production", std::move(graph)));
+
+    zetta::solutions::ExperimentValue experiment_value;
+    experiment_value.name = "renewal-experiment";
+    experiment_value.seed = 1108;
+    experiment_value.allocations = {
+        {"holdout", zetta::solutions::ExperimentTier::Holdout, 0.5},
+        {"treatment", zetta::solutions::ExperimentTier::Treatment, 0.5},
+    };
+    const auto experiment = node.experiment_manager().create(
+        std::move(experiment_value));
+    ASSERT_TRUE(experiment);
+
+    zetta::solutions::RoiReadoutSpec spec;
+    spec.solution = "renewal-risk";
+    spec.project = project->id();
+    spec.graph = "production";
+    spec.experiment = experiment->id;
+    spec.roi_model = {"renewed", 100.0, 500.0, "USD"};
+    zetta::solutions::RoiReadoutStore store{replication};
+    std::string error;
+    ASSERT_TRUE(store.configure(std::move(spec), "owner", &error)) << error;
+
+    Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    ApiContext context{node};
+    const ApiResult result = registry.call(
+        "get_roi_readout",
+        nlohmann::json{{"solution", "renewal-risk"}},
+        context);
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("solution"), "renewal-risk");
+    EXPECT_FALSE(result.value.at("incrementality").at("claimable").get<bool>());
+    EXPECT_NE(
+        result.value.at("incrementality").at("reason").get<std::string>().find(
+            "no holdout outcomes"),
+        std::string::npos);
+    node.stop();
 }
 
 TEST_F(RegistryFixture, ExperimentJourneyProtectsHoldoutAndReportsExemptions) {

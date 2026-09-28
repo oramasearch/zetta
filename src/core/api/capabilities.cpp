@@ -67,6 +67,7 @@
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/solutions/experiment.hpp"
+#include "zetta/solutions/roi_readout.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/testkit/async_case_run.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -1986,6 +1987,34 @@ ApiResult handle_get_monitor(const nlohmann::json& input,
     nlohmann::json output = monitor->metadata();
     output["id"] = monitor->id();
     return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_roi_readout_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "solution",
+        "the solution name or ROI readout definition uuid");
+    return schema;
+}
+
+ApiResult handle_get_roi_readout(
+    const nlohmann::json& input,
+    ApiContext& context) {
+    if (context.node.replication() == nullptr) {
+        return ApiResult::failure(
+            "engine_error",
+            "ROI readouts require a replicated node");
+    }
+    const std::string solution = input.at("solution").get<std::string>();
+    std::string error;
+    const auto readout = zetta::solutions::generate_roi_readout(
+        context.node,
+        *context.node.replication(),
+        solution,
+        &error);
+    if (!readout) {
+        return ApiResult::failure("not_found", error);
+    }
+    return ApiResult::success(zetta::solutions::to_json(*readout));
 }
 
 // --- model_health (Monitor, #983) -------------------------------------------------------------
@@ -8476,6 +8505,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_monitor});
+
+    registry.add(Capability{
+        "get_roi_readout",
+        "Get a solution ROI readout",
+        "Read one solution's versioned correctness certificate, aggregate "
+        "incrementality with confidence intervals, customer-supplied ROI, "
+        "guardrails, agent operations, and audit extract. No side effects.",
+        get_roi_readout_schema(),
+        zetta::solutions::roi_readout_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_roi_readout});
 
     registry.add(Capability{
         "get_workspace_profile",
