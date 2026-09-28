@@ -240,6 +240,18 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// Bandit-policy check (#1054, M-15): every bandit model step declares a
+// positive exploration floor and feasible default/per-arm caps. This rejects
+// a graph that could starve an arm or exceed a guardrail allocation before it
+// can run.
+class BanditPolicyCheck final : public Check {
+public:
+    std::string name() const override {
+        return "bandit_policy";
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
 // schemas/graph_step_annotations.schema.json is generated from it and
 // drift-checked by tests/test_schemas.cpp (#646).

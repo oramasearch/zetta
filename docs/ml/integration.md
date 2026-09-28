@@ -2,8 +2,8 @@
 
 The deploy branch combines the registry with M-3, M-7, M-4, M-2, M-5,
 M-6, M-8 and M-9, followed by M-12, M-13, M-11 and M-10 in round two.
-Round three adds M-14 speech. All thirteen source histories remain represented
-by merge commits. M-1 through M-14 are runnable; later methodologies retain
+Round three adds M-14 speech and M-15 bandits. All fourteen source histories remain
+represented by merge commits. M-1 through M-15 are runnable; later methodologies retain
 their unsupported status and issue links.
 
 ## Conflict decisions
@@ -21,8 +21,11 @@ their unsupported status and issue links.
   the catalogue calls anomaly detection M-5 and survival M-6. Its
   [S-8 framing](https://github.com/oramasearch/solutions-designs/blob/main/docs/plan/04-solutions-catalog.md#111-framing-methodology-correctness)
   explicitly lists anomaly detection first.
-- All twenty-one default gate checks are retained in methodology order after
-  the shared checks. Discovery requires all fourteen implemented methodologies
+- M-15 does not take over S-11 from M-8: it remains reachable by its ID and
+  bandit model kinds. Both lookup implementations prefer runnable entries
+  before planned ones; the existing equivalent lookup is retained.
+- All twenty-two default gate checks are retained in methodology order after
+  the shared checks. Discovery requires all fifteen implemented methodologies
   runnable. Unsupported examples use M-21 (`online_learning`, tracked by #1060),
   including the graph-check refusal test; forecasting is now runnable and is
   no longer a valid unsupported-method fixture.
@@ -58,7 +61,7 @@ is changed beyond resolving the integration conflicts.
 The integration was rebuilt from the registry base without running any
 formatter. Conflict edits preserve the surrounding layout. Before publication,
 each file's added/deleted lines are compared with the sum of its changes across
-the thirteen source branches; only small integration documentation and regression
+the fourteen source branches; only small integration documentation and regression
 coverage may exceed that sum. The issue comment records the complete audit,
 the requested shared-file statistics, and normal versus whitespace-ignored totals.
 

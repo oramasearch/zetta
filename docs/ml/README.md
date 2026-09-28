@@ -36,6 +36,7 @@ for model work.
 - [document_extraction.md](document_extraction.md) — M-11 native PDF text recovery and TrOCR line recognition, declared-field extraction, evidence retention, review routing, and field-level metrics (#1050).
 - [language.md](language.md) — M-10 native WordPiece/BERT embeddings, retrieval, grounded answers, classifier tuning, metrics, and governance rules (#1049).
 - [speech.md](speech.md) — M-14 native WAV transcription, Whisper tiny/base checkpoints, consent and privacy rules, transcript tables, and word error rate (#1053).
+- [bandit.md](bandit.md) — M-15 native Thompson sampling, LinUCB, and linear Thompson sampling with allreduced per-arm state, constrained propensities, persisted policy tables, and registry execution (#1054).
 
 ## Methodology portfolio
 
@@ -60,7 +61,7 @@ carry `*`. Regenerate it with
 | M-12 | Graph ML | Identity & structure | graph, graph_ml | — | entity*, group*, feature*, time*, label* | node feature table, graph summary, node scores, graph embeddings | held-out node accuracy, component count, degree distribution, PageRank top nodes | runnable | [#1051](https://github.com/oramasearch/zetta/issues/1051) |
 | M-13 | Computer vision | Language, documents & perception | computer_vision, vision | — | image*, label*, group* | vision model, prediction table, confusion matrix | accuracy, macro-F1 | runnable | — |
 | M-14 | Speech & audio analytics | Language, documents & perception | speech, audio | — | audio*, group*, label | transcript table, speech model | word error rate | runnable | [#1053](https://github.com/oramasearch/zetta/issues/1053) |
-| M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label* | action policy, propensities | cumulative reward, regret, policy value | not runnable | [#1054](https://github.com/oramasearch/zetta/issues/1054) |
+| M-15 | Bandits & sequential decisioning | Action & decision | bandit, bandits, sequential_decisioning | — | entity*, treatment*, label*, feature | allocation policy, decision propensities | cumulative reward, regret, exploration share | runnable | — |
 | M-16 | Optimization / operations research | Action & decision | optimization, operations_research | — | feature*, group* | plan, allocation, constraint trace | objective value, constraint violations | not runnable | [#1055](https://github.com/oramasearch/zetta/issues/1055) |
 | M-17 | Bayesian / probabilistic modeling & uncertainty quantification | The tabular decision core | bayesian, probabilistic, uncertainty | — | feature*, group | posterior, prediction intervals | coverage, CRPS, calibration | not runnable | [#1056](https://github.com/oramasearch/zetta/issues/1056) |
 | M-18 | Ensembling & stacking | The tabular decision core | ensemble, ensembling, stacking | — | feature*, label* | ensemble model, blended predictions | delta over best model, stability | not runnable | [#1057](https://github.com/oramasearch/zetta/issues/1057) |

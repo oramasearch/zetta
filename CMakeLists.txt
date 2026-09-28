@@ -571,6 +571,7 @@ add_library(zetta-core STATIC
   src/core/ml/speech_train_job.cpp
   src/core/ml/speech_runner.cpp
   src/core/ml/speech_methodology.cpp
+  src/core/ml/bandit_methodology.cpp
   src/core/ml/model.cpp
   src/core/ml/survival.cpp
   src/core/ml/survival_methodology.cpp
@@ -688,6 +689,9 @@ add_library(zetta-core STATIC
   src/core/ml/language_train_job.cpp
   src/core/ml/language_runner.cpp
   src/core/ml/language_methodology.cpp
+  src/core/ml/bandit.cpp
+  src/core/ml/bandit_train_job.cpp
+  src/core/ml/bandit_runner.cpp
   src/core/ml/backtest.cpp
   src/core/ml/forecast.cpp
   src/core/ml/anomaly.cpp

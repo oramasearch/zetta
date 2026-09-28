@@ -23,6 +23,7 @@ Methodology make_m11_methodology();
 Methodology make_graph_methodology();
 Methodology make_m13_methodology();
 Methodology make_m14_methodology();
+Methodology make_m15_methodology();
 
 namespace {
 
@@ -89,14 +90,7 @@ const std::vector<Methodology>& methodologies() {
         make_graph_methodology(),
         make_m13_methodology(),
         make_m14_methodology(),
-        planned("M-15", "Bandits & sequential decisioning", "Action & decision",
-                {"bandit", "bandits", "sequential_decisioning"}, {},
-                {"bandit", "explore", "sequential decision"},
-                {input("entity", true, "decision context"),
-                 input("treatment", true, "available actions"),
-                 input("label", true, "observed reward")},
-                {"action policy", "propensities"},
-                {"cumulative reward", "regret", "policy value"}, 1054),
+        make_m15_methodology(),
         planned("M-16", "Optimization / operations research",
                 "Action & decision", {"optimization", "operations_research"},
                 {}, {"optimize", "schedule", "allocate", "constraints"},

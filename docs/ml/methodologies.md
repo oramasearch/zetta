@@ -6,7 +6,7 @@ the [methodology epic #984](https://github.com/oramasearch/zetta/issues/984).
 The methodology registry is the engine's single source of the modeling
 approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
-callbacks for runnable implementations. M-1 through M-14 are runnable. M-10 builds
+callbacks for runnable implementations. M-1 through M-15 are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
 writes its native model, metrics, tables, and lineage. The other entries link to
 their implementation issues.
@@ -205,6 +205,20 @@ table before calling the speech runner; it never substitutes a built-in dataset
 or structural execution. Consent, transcript privacy filtering, and node-local
 audio are gate requirements and runner invariants. See
 [speech.md](speech.md).
+
+## M-15 bandit implementation
+
+`src/core/ml/bandit_methodology.cpp` provides M-15 independently:
+
+- `build_shape` builds connect → context preparation → bandit model → policy
+  output → propensity-log output;
+- `owns` recognizes the M-15 model kinds; and
+- `run` resolves the connect step's table when no explicit dataset is supplied,
+  runs the native policy, persists the policy and decision tables, and records
+  their lineage and metrics on the Run and Model records.
+
+S-11 resolves to M-8, its primary catalogue method. M-15 supports sequential
+allocation but is selected by methodology ID or its bandit model kinds, not S-11.
 
 ## Adding a methodology
 

@@ -14,7 +14,7 @@ that does the running.
 
 The gate ships the trivial `NonEmptyGraphCheck` so the path works end to end,
 plus the concrete schema/type, data-leakage, M-10 grounding, and M-10 training
-access checks (see [gate-checks.md](gate-checks.md)) and the
+access checks, plus M-15's `BanditPolicyCheck` (see [gate-checks.md](gate-checks.md)) and the
 [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md) (`#312` / TC-4). They all
 implement the same `Check` interface;
 `default_gate()` registers each.
@@ -83,9 +83,9 @@ signed-off override (allow a failure through) is a future policy that sets
 supports it.
 
 `default_gate()` returns a gate pre-loaded with the baseline checks callers get
-for free: twenty-one checks on the methodology integration branch (#1082).
+for free: twenty-two checks on the methodology integration branch (#1082).
 `NonEmptyGraphCheck`, `SchemaTypeCheck`, `DataLeakageCheck` and
-`TemporalValidationCheck` precede the M-2 through M-14 checks in methodology order,
+`TemporalValidationCheck` precede the M-2 through M-15 checks in methodology order,
 followed by [`EntityResolutionCheck`](../use-cases/entity-resolution-check.md)
 (`#312` / TC-4). See [gate-checks.md](gate-checks.md). Method-specific checks
 engage on their own model kinds; shared annotation checks retain their opt-in
@@ -164,8 +164,9 @@ rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
 schema/type, data-leakage, and M-10 correctness checks
 ([gate-checks.md](gate-checks.md)) and the
-[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) already plug into
-this interface; the gate's wiring into deploy lands on top of it as separate work.
+[entity-resolution check](../use-cases/entity-resolution-check.md) (`#312`) and M-15
+allocation check already plug into this interface; the gate's wiring into
+deploy lands on top of it as separate work.
 
 See also [gate-checks.md](gate-checks.md) (the concrete checks),
 [validation.md](validation.md) (the result type), the

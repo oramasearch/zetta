@@ -27,10 +27,10 @@ The reusable annotation and methodology-specific checks are:
 | `DocumentReviewCheck` | `document_review` | document extraction without confidence, source evidence, a valid review threshold, and a downstream review queue |
 | `GraphEdgeTimeCheck` | `graph_edge_time` | an M-12 graph step without a finite prediction cutoff and matching enabled edge-time filter |
 | `VisionSourceSplitCheck` | `vision_source_split` | a vision model without a named source-disjoint holdout |
-
 | `SpeechConsentCheck` | `speech_consent` | a speech model that does not require an explicit boolean consent field |
 | `SpeechPiiRedactionCheck` | `speech_pii_redaction` | a speech model that could store unfiltered transcript text |
 | `SpeechLocalAudioCheck` | `speech_local_audio` | a speech model that permits audio to leave its owner node |
+| `BanditPolicyCheck` | `bandit_policy` | an M-15 graph without a positive exploration floor, with a cap below that floor, or with declared arms whose floors/caps cannot sum to one |
 
 All are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
 so every gate run applies them. They are **opt-in per step**: a step that carries
@@ -226,6 +226,16 @@ typed fields it needs and features all dated before the cutoff:
 The applicable checks pass and the gate allows deploy. Change `revenue` to `"string"` in the
 source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
+
+### `bandit_policy` — safe allocation constraints
+
+The bandit check engages on model steps whose `model_kind` is `bandit`,
+`bandits`, or `sequential_decisioning`. Such a step must declare numeric
+`exploration_floor` and `default_arm_cap` values. Every arm-specific cap must
+be between the floor and one. When `arms` are declared on the graph, their
+floors must fit within total probability one and their effective caps must be
+able to carry total probability one. The runtime repeats these checks after
+run-time arms are resolved from parameters or the input table.
 
 ```cpp
 #include "zetta/pipeline/gate.hpp"
