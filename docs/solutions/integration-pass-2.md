@@ -68,10 +68,24 @@ completed successfully. Schema regeneration and registry/gate proof:
 
 ```text
 ZETTA_WRITE_SCHEMAS=1 ./build/tests/zetta-tests --gtest_filter='Schemas.*:OpenApi.*:SolutionRegistry.*:CorrectnessGate.*:GraphChecksThroughGate.*'
-[==========] 51 tests from 5 test suites ran. (71 ms total)
-[  PASSED  ] 51 tests.
+[==========] 54 tests from 5 test suites ran. (52 ms total)
+[  PASSED  ] 54 tests.
 ```
 
-This includes all 30 solution-registry tests and both complete ordered gate
-lists. The full static-suite counts and any accepted waiver evidence are
-recorded separately below when that run finishes.
+This includes all 33 solution-registry tests and both complete ordered gate
+lists. The full static suite passed without using either permitted waiver:
+
+```text
+./build/tests/zetta-tests --gtest_brief=1
+[==========] 2582 tests from 522 test suites ran. (460994 ms total)
+[  PASSED  ] 2566 tests.
+[  SKIPPED ] 16 tests.
+```
+
+The isolated S-5 forecast, backtest, registry, and journey proof also passed:
+
+```text
+./build/tests/zetta-tests --gtest_brief=1 --gtest_filter='SolutionJourney.DemandForecast*:SolutionRegistry.DemandForecast*:SolutionRegistry.S5*:Forecast.*:Backtest.*:ForecastRunner.*:ForecastMethodology.*:ForecastGraphCheck.*:ForecastLaunch.*'
+[==========] 28 tests from 8 test suites ran. (11025 ms total)
+[  PASSED  ] 28 tests.
+```
