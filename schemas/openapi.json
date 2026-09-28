@@ -6529,6 +6529,14 @@
                           "description": "id, name, and the metrics. `held_out_*` is present only when the run asked for a holdout; when it is absent the only figures available are in-sample and they flatter (#953)",
                           "type": "object"
                         },
+                        "outputs": {
+                          "description": "M-20 synthetic table, DP model, and report refs",
+                          "type": "array"
+                        },
+                        "privacy": {
+                          "description": "M-20 fidelity, DCR, membership, TSTR, and epsilon/delta spend",
+                          "type": "object"
+                        },
                         "run": {
                           "description": "run id, graph, status, and when it finished",
                           "type": "object"
@@ -10370,6 +10378,14 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "clip_max": {
+                    "description": "M-20 public upper feature bound",
+                    "type": "number"
+                  },
+                  "clip_min": {
+                    "description": "M-20 public lower feature bound",
+                    "type": "number"
+                  },
                   "coordinate": {
                     "description": "fan the run out to the live membership (default true; false is only correct on a single-member cluster)",
                     "type": "boolean"
@@ -10409,6 +10425,16 @@
                     "description": "the data to train on, in either form: a `database.table` landed by a connection or a query (what add_dataset / create_dataset_from_query produce), or a churn dataset directory on the node's filesystem. Default: the built-in demo dataset",
                     "type": "string"
                   },
+                  "delta": {
+                    "description": "M-20 total differential-privacy delta",
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  "epsilon": {
+                    "description": "M-20 total differential-privacy epsilon",
+                    "exclusiveMinimum": 0,
+                    "type": "number"
+                  },
                   "graph": {
                     "description": "the stored graph's name, or its uuid",
                     "minLength": 1,
@@ -10424,15 +10450,43 @@
                     "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
                     "type": "string"
                   },
+                  "max_depth": {
+                    "description": "M-20 DP GBDT maximum depth",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "model_name": {
                     "description": "the registered model's name (default churn_model)",
                     "minLength": 1,
                     "type": "string"
                   },
+                  "noise": {
+                    "description": "M-20 DP histogram mechanism",
+                    "enum": [
+                      "gaussian",
+                      "laplace"
+                    ],
+                    "type": "string"
+                  },
+                  "num_trees": {
+                    "description": "M-20 DP GBDT tree count",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "project": {
                     "description": "the owning project's name, or its uuid",
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "seed": {
+                    "description": "M-20 deterministic sampling and noise seed",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "synthetic_rows": {
+                    "description": "M-20 synthetic row count (default: source rows)",
+                    "minimum": 1,
+                    "type": "integer"
                   },
                   "top_k": {
                     "description": "at-risk list / playbook cap (0 = all)",

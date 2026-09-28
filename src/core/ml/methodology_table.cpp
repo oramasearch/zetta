@@ -10,6 +10,7 @@
 namespace zetta::ml {
 
 Methodology make_m1_methodology();
+Methodology make_m20_methodology();
 
 namespace {
 
@@ -203,14 +204,7 @@ const std::vector<Methodology>& methodologies() {
                  input("label", false, "gold labels")},
                 {"labels", "review queue", "label provenance"},
                 {"agreement", "cost per label", "downstream lift"}, 1058),
-        planned("M-20", "Privacy-preserving learning & synthetic data",
-                "The data supply chain",
-                {"privacy_preserving", "federated", "synthetic_data"}, {},
-                {"federated", "differential privacy", "synthetic data"},
-                {input("group", true, "data boundary or participant"),
-                 input("feature", true, "protected training data")},
-                {"private model", "synthetic dataset", "guarantee report"},
-                {"privacy budget", "TSTR", "attack success"}, 1059),
+        make_m20_methodology(),
         planned("M-21", "Online / streaming learning", "Time & vigilance",
                 {"online_learning", "streaming"}, {},
                 {"online learning", "streaming", "real time learning"},

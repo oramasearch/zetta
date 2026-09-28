@@ -557,6 +557,7 @@ add_library(zetta-core STATIC
   src/core/ml/methodology.cpp
   src/core/ml/methodology_table.cpp
   src/core/ml/synthetic_private.cpp
+  src/core/ml/synthetic_private_methodology.cpp
   src/core/ml/synthetic_private_job.cpp
   src/core/ml/model.cpp
   src/core/workspace/workspace_profile.cpp

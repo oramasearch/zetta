@@ -72,6 +72,16 @@ public:
     static const std::vector<std::string>& implemented();
 };
 
+// M-20 privacy-budget check (#1059): a synthetic_private model step must state
+// epsilon/delta and enforced maxima, must stay within those maxima, must state
+// public clipping bounds for the DP histogram sensitivity, and must require the
+// privacy evaluation that controls whether a synthetic table may be published.
+class PrivacyBudgetCheck final : public Check {
+public:
+    std::string name() const override { return "privacy_budget"; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 class SchemaTypeCheck final : public Check {
 public:
     std::string name() const override { return "schema_type"; }

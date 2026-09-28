@@ -77,9 +77,11 @@ What's inside, by domain (each links to that domain's docs):
   (weights as verified large-object bodies), all proven by a **native
   correctness oracle** (no Python/XGBoost anywhere).
   The [methodology registry](docs/ml/methodologies.md) lists all 21 portfolio
-  approaches: M-1 runs today, M-10 has partial retrieval support, and the others
-  name their implementation issues. Intent compilation and run dispatch use
-  this registry and refuse unsupported model work.
+  approaches: M-1 and M-20 run today, M-10 has partial retrieval support, and
+  the others name their implementation issues. M-20 provides evaluated
+  Gaussian-copula tables and differentially private GBDT models. Intent
+  compilation and run dispatch use this registry and refuse unsupported model
+  work.
 - **[Indexing](docs/indexing/README.md)** — the pluggable `IndexBackend` seam;
   the first real backend is **oramacore-cpp full-text (BM25F)**, with
   per-partition **distributed full-text** answered by scatter-gather.

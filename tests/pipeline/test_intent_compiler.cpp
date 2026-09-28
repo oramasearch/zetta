@@ -95,6 +95,16 @@ TEST(IntentCompilerTest, PrimarySolutionBuildsItsMethodologyShape) {
     EXPECT_TRUE(compiled->graph.has_node("train_churn_model"));
 }
 
+TEST(IntentCompilerTest, SharedSolutionSelectsItsPrivacyMethodologyByIntent) {
+    zetta::pipeline::IntentCompileOptions options;
+    options.solution = "S-10";
+    const auto compiled = compile_intent(
+        "Create privacy-preserving synthetic training data", options);
+    ASSERT_TRUE(compiled);
+    EXPECT_EQ(compiled->methodology, "M-20");
+    EXPECT_TRUE(compiled->graph.has_node("train_synthetic_private"));
+}
+
 TEST(IntentCompilerTest, SegmentationKeywordIsRefusedWithItsIssue) {
     std::string error;
     EXPECT_FALSE(compile_intent("Cluster customers into personas", &error));

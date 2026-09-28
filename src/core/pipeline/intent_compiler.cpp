@@ -27,6 +27,28 @@ bool contains_keyword(const std::string& lowered_intent,
                        });
 }
 
+const ml::Methodology* methodology_for_solution(
+    const std::string& solution, const std::string& lowered_intent) {
+    const std::string wanted = to_lower(solution);
+    std::vector<const ml::Methodology*> candidates;
+    for (const ml::Methodology& methodology : ml::methodologies()) {
+        const bool lists_solution = std::any_of(
+            methodology.solutions.begin(), methodology.solutions.end(),
+            [&](const std::string& listed) {
+                return to_lower(listed) == wanted;
+            });
+        if (lists_solution) {
+            candidates.push_back(&methodology);
+        }
+    }
+    for (const ml::Methodology* candidate : candidates) {
+        if (contains_keyword(lowered_intent, candidate->keywords)) {
+            return candidate;
+        }
+    }
+    return candidates.empty() ? nullptr : candidates.front();
+}
+
 bool looks_like_supervised_prediction(const std::string& lowered_intent) {
     static const std::vector<std::string> signals = {
         "predict whether", "classification", "classify", "score",
@@ -49,7 +71,7 @@ const ml::Methodology* resolve_methodology(const std::string& lowered_intent,
     }
     if (!options.solution.empty()) {
         const ml::Methodology* methodology =
-            ml::find_methodology(options.solution);
+            methodology_for_solution(options.solution, lowered_intent);
         if (methodology == nullptr && error != nullptr) {
             *error =
                 "unknown solution '" + options.solution +

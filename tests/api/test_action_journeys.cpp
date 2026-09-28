@@ -10,6 +10,8 @@
 //   ./build/bin/zetta-tests --gtest_filter='Uc1Journey.*'
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -245,6 +247,72 @@ TEST_F(ActionJourneys, JourneyMethodologyDiscoveryCompileAndRunRefusals) {
     EXPECT_FALSE(run.ok);
     EXPECT_EQ(run.error.code, "not_supported");
     EXPECT_NE(run.error.message.find("1042"), std::string::npos);
+}
+
+TEST_F(Uc1Journey, JourneySyntheticPrivateCompilesRunsAndReports) {
+    const fs::path file = fs::path(dir.path()) / "private_training.jsonl";
+    {
+        std::ofstream output(file);
+        for (int index = 0; index < 160; ++index) {
+            const double first = static_cast<double>(index) / 159.0;
+            const double second =
+                std::clamp(0.75 * first + 0.1 * std::sin(index), 0.0, 1.0);
+            output << nlohmann::json{{"entity", index},
+                                     {"first", first},
+                                     {"second", second},
+                                     {"label", first + second > 1.0 ? 1 : 0}}
+                              .dump()
+                   << '\n';
+        }
+    }
+
+    const ApiResult landed =
+        call("add_dataset", {{"path", file.string()},
+                             {"database", "privacy_source"},
+                             {"table_name", "records"},
+                             {"partition_count", 4}});
+    ASSERT_TRUE(landed.ok) << landed.error.message;
+    ASSERT_TRUE(call("create_project", {{"name", "privacy"}}).ok);
+    const ApiResult captured = call(
+        "capture_intent",
+        {{"project", "privacy"},
+         {"text", "Create privacy-preserving synthetic training data"}});
+    ASSERT_TRUE(captured.ok) << captured.error.message;
+    const ApiResult compiled = call(
+        "compile_intent",
+        {{"project", "privacy"},
+         {"input_id", captured.value.at("input_id")},
+         {"methodology", "M-20"},
+         {"name", "private synthesis"},
+         {"hints", {{"source", "privacy_source"},
+                    {"table", "records"},
+                    {"epsilon", 4.0},
+                    {"delta", 1e-6}}}});
+    ASSERT_TRUE(compiled.ok) << compiled.error.message;
+    EXPECT_EQ(compiled.value.at("methodology"), "M-20");
+    EXPECT_TRUE(compiled.value.at("runnable"));
+
+    const ApiResult run = call(
+        "run", {{"project", "privacy"}, {"graph", "private synthesis"},
+                {"seed", 1059}, {"num_trees", 8}, {"max_depth", 2}});
+    ASSERT_TRUE(run.ok) << run.error.message;
+    EXPECT_EQ(run.value.at("engine"), "synthetic_private");
+    const std::string run_id = run.value.at("run_id");
+
+    const ApiResult record = call("get_run", {{"run_id", run_id}});
+    ASSERT_TRUE(record.ok) << record.error.message;
+    EXPECT_EQ(record.value.at("status"), "succeeded");
+    EXPECT_EQ(record.value.at("outputs").size(), 3u);
+
+    const ApiResult report = call("get_run_report", {{"run_id", run_id}});
+    ASSERT_TRUE(report.ok) << report.error.message;
+    EXPECT_EQ(report.value.at("run").at("status"), "succeeded");
+    EXPECT_TRUE(report.value.at("privacy").contains("membership_auc"));
+    EXPECT_TRUE(report.value.at("privacy").contains("epsilon_spent"));
+    EXPECT_EQ(report.value.at("dataset").at("source"),
+              "privacy_source.records");
+    ASSERT_EQ(report.value.at("outputs").size(), 3u);
+    EXPECT_EQ(report.value.at("outputs").front().at("kind"), "dataset");
 }
 
 // =====================================================================

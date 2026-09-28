@@ -1,21 +1,22 @@
-# Graph correctness checks (schema/type · data-leakage · point-in-time)
+# Graph correctness checks (schema/type · leakage · privacy budget)
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
 the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
-`src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
-a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
-graph through.
+`src/core/pipeline/graph_checks.cpp`) and turn a mistyped, leaky, or
+privacy-unsafe execution graph into a clear-reason gate **failure** that blocks
+deploy (RULE-1), while letting a clean graph through.
 
-Two checks ship here:
+Three checks are documented here:
 
 | Check | Name | What it catches |
 | ----- | ---- | --------------- |
 | `SchemaTypeCheck`  | `schema_type`  | a step that requires a field no upstream source provides, or provides under a different type |
 | `DataLeakageCheck` | `data_leakage` | an ML step whose feature uses data dated **after** its as-of cutoff (point-in-time violation), or that **is / derives from the label** (target leakage) |
+| `PrivacyBudgetCheck` | `privacy_budget` | an M-20 model with a missing or invalid epsilon/delta maximum, unknown noise mechanism, invalid public clipping bounds, or disabled privacy evaluation |
 
-Both are registered in [`default_gate()`](gate.md) (after `NonEmptyGraphCheck`),
-so every gate run applies them. They are **opt-in per step**: a step that carries
+All are registered in [`default_gate()`](gate.md), so every gate run applies
+them. They are **opt-in per step**: a step that carries
 none of the relevant annotations is skipped and passes, so adding them never
 penalises a graph that doesn't use them.
 
@@ -82,6 +83,22 @@ A feature **fails** the check when:
 Date-only and date-time instants compare correctly (a date is treated as
 midnight UTC), so a same-day afternoon feature leaks against a date-only cutoff.
 
+### `privacy_budget` — an enforceable M-20 release
+
+This check engages only on a model step with
+`model_kind: "synthetic_private"`. It requires numeric `epsilon`, `delta`,
+`maximum_epsilon`, and `maximum_delta`; requested values must be within the
+stated maxima. Delta values must lie below 1, epsilon values must be positive,
+and the Gaussian mechanism requires a positive delta.
+
+The step must also name `noise` as `gaussian` or `laplace`, state numeric public
+`clip_min` and `clip_max` bounds with `clip_min < clip_max`, and set
+`privacy_evaluation: true`. This graph check makes the declared plan safe to
+submit. The M-20 runner repeats budget and bound validation against the actual
+run parameters and refuses publication if DCR or membership evaluation fails.
+The full mechanism and report are in
+[synthetic_private.md](../ml/synthetic_private.md).
+
 ## Example
 
 A clean churn graph — the source declares its profile, the model declares the
@@ -122,7 +139,7 @@ source profile and `schema_type` fails; add a feature with `"data_as_of":
 using namespace zetta;
 
 ir::ExecutionGraph graph = *ir::from_json(document);   // the compiled graph
-ValidationReport report = default_gate().run(graph);   // ships both #309 checks
+ValidationReport report = default_gate().run(graph);   // runs registered checks
 if (report.block_deploy) {
     // RULE-1: refuse to deploy; report.checks carries the per-check reasons.
 }
@@ -145,11 +162,11 @@ the annotations themselves.
 
 ## Where it fits
 
-These checks sit on the `Check` seam the [gate](gate.md) defines, alongside the
-trivial `NonEmptyGraphCheck`. The gate aggregates their `CheckResult`s into a
+These checks implement the `Check` interface the [gate](gate.md) defines,
+alongside `NonEmptyGraphCheck` and `EntityResolutionCheck`. The gate aggregates
+their `CheckResult`s into a
 [`ValidationReport`](validation.md) and sets `block_deploy` — there is **no new
-result format** here. Entity-resolution checks (`#312`) are the next concrete
-checks to land on the same seam.
+result format** here.
 
 See also [gate.md](gate.md) (the runner), [execution-graph.md](execution-graph.md)
 (the graph + the `attributes` bag), and [validation.md](validation.md) (the report

@@ -123,7 +123,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
-    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+    graph_checks.hpp        zetta::pipeline concrete gate checks, including schema/type, leakage, reproducibility, resource-bounds, and M-20 privacy-budget enforcement (#309/#1059)
     run.hpp                 zetta::pipeline::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
     deployment_target.hpp   zetta::pipeline::DeploymentTarget — a placement (ENT-6; R1 local)
     deployment.hpp          zetta::pipeline::Deployment — a graph placed onto a target
@@ -425,6 +425,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
     synthetic_private.cpp   M-20 empirical Gaussian-copula synthesis, DCR/membership/TSTR evaluation, and formally accounted DP histogram GBDT (#1059)
     synthetic_private_job.cpp  M-20 owned-partition ComputeJob and coordinated-launch runner; combines partition statistics and DP training rounds across members (#1059)
+    synthetic_private_methodology.cpp  M-20 registry graph shape, ownership predicate, runner, output-table lineage, model registration, and run metrics (#1059)
   workspace/workspace_profile.cpp  zetta::workspace::WorkspaceProfile — value, set_content/apply_value, JSON-Schema boundary validation (parse_workspace_profile_value); the profile:<uuid> replicated entity (#886)
   billing/plan.cpp          zetta::billing::Plan — value, set_content/apply_value, JSON-Schema boundary validation (parse_plan_value); the plan:<uuid> replicated entity (Conflict D). Metered usage is the computed system.usage view in executor.cpp
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)

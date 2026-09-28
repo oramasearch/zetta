@@ -276,11 +276,54 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 4u);
+    ASSERT_EQ(gate.check_count(), 5u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
-    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[3]->name(), "privacy_budget");
+    EXPECT_EQ(gate.checks()[4]->name(), "entity_resolution");
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesAMissingBudget) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+                   {{"model_kind", "synthetic_private"}}, "model");
+    const CheckResult result =
+        zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.reason.find("epsilon"), std::string::npos);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesABudgetAboveItsMaximum) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 9.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", true}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
+}
+
+TEST(PrivacyBudgetGraphCheck, RefusesPublishingWithoutPrivacyEvaluation) {
+    ExecutionGraph graph;
+    graph.add_node(StepKind::Model, "model",
+        {{"model_kind", "synthetic_private"},
+         {"epsilon", 4.0},
+         {"delta", 1e-6},
+         {"maximum_epsilon", 8.0},
+         {"maximum_delta", 1e-5},
+         {"noise", "gaussian"},
+         {"clip_min", 0.0},
+         {"clip_max", 1.0},
+         {"privacy_evaluation", false}}, "model");
+    EXPECT_EQ(zetta::pipeline::PrivacyBudgetCheck{}.evaluate(graph).status,
+              CheckStatus::Fail);
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {

@@ -20,7 +20,7 @@ governance of who may run what is [../governance/](../governance/access-control.
 - [datasets-shim.md](datasets-shim.md) — the sim-Python `load_dataset` shim: decode Parquet with the native reader into a (partitioned) table, IO behind the `DatasetResolver` seam (#521).
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type: per-check results, verdict, block-deploy.
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::pipeline::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
-- [gate-checks.md](gate-checks.md) — the concrete graph checks: schema/type vs source profiles + data-leakage / point-in-time for ML steps (#309).
+- [gate-checks.md](gate-checks.md) — concrete schema/type, data-leakage, privacy-budget, and entity-resolution graph checks (#309, #1059).
 - [deployments.md](deployments.md) — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
 - [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4 / TC-3).
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::pipeline::SolutionCatalog`) + the headed Deploy panel: pick a blueprint, gate, deploy (FEAT-4 / SCR-5).
