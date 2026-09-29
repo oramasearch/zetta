@@ -599,6 +599,66 @@ zetta::ir::ExecutionGraph bound_s9_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b3_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("B-3");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"database", "service"},
+         {"table", "tickets"},
+         {"M-19",
+          {{"labelling_functions",
+            {{{"name", "urgent-ticket"},
+              {"column", "urgency"},
+              {"operator", "greater_equal"},
+              {"value", 0.5},
+              {"label", 1},
+              {"otherwise_label", 0}}}}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b3_correctness"] = {
+        {"policy", solution->templates.policy},
+        {"abstention",
+         {{"minimum_confidence", 0.6},
+          {"below_threshold_action", "abstain"}}},
+        {"taxonomy",
+         {{"owned_by_customer", true},
+          {"owner", "customer-service-operations"},
+          {"version", "v1"},
+          {"queue_column", "queue"},
+          {"unmapped_action", "abstain"}}},
+        {"closure",
+         {{"action", "close_ticket"},
+          {"approval_required", true}}},
+        {"new_ticket_type_drift",
+         {{"monitoring_enabled", true},
+          {"field", "new_ticket_type"},
+          {"action", "abstain"},
+          {"maximum_fraction", 0.1}}}};
+    for (const auto& model :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Model)) {
+        if (model->attributes.value("model_kind", std::string{}) ==
+            "language") {
+            model->attributes["ticket_confidence_threshold"] = 0.6;
+        }
+    }
+    return composed.graph;
+}
+
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -738,6 +798,15 @@ void expect_s10_failure(const zetta::ir::ExecutionGraph& graph,
 }
 
 void expect_b2_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_b3_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -992,7 +1061,7 @@ TEST(SolutionRegistry, B2EveryLevelBuildsThroughRegisteredMethodologies) {
     }
 }
 
-TEST(SolutionRegistry, ListsFourteenCatalogueModulesAndSixSketches) {
+TEST(SolutionRegistry, ListsFifteenCatalogueModulesAndFiveSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -1026,8 +1095,8 @@ TEST(SolutionRegistry, ListsFourteenCatalogueModulesAndSixSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 14u);
-    EXPECT_EQ(sketches, 6u);
+    EXPECT_EQ(catalogue, 15u);
+    EXPECT_EQ(sketches, 5u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -1046,6 +1115,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
         {"B-1", {"M-4", "M-6", "M-16"}},
         {"B-2", {"M-1", "M-7"}},
+        {"B-3", {"M-10", "M-19"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =
@@ -1057,6 +1127,99 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
             actual.push_back(methodology.id);
         }
         EXPECT_EQ(actual, methodology_ids) << solution_id;
+    }
+}
+
+TEST(SolutionRegistry, TicketTriageEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* ticket_triage =
+        zetta::ml::find_solution("B-3");
+    ASSERT_NE(ticket_triage, nullptr);
+    EXPECT_TRUE(ticket_triage->runnable);
+    EXPECT_EQ(ticket_triage->status, "catalogue");
+    EXPECT_EQ(ticket_triage->issue,
+              "https://github.com/oramasearch/zetta/issues/1177");
+    EXPECT_FALSE(ticket_triage->promotion_condition.empty());
+    EXPECT_FALSE(ticket_triage->templates.minimal);
+    EXPECT_EQ(ticket_triage->templates.measurement.design, "holdout");
+    EXPECT_EQ(ticket_triage->templates.measurement.outcome,
+              "resolution_quality");
+    EXPECT_EQ(ticket_triage->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"service_routed"}));
+    ASSERT_EQ(ticket_triage->templates.guardrails.size(), 6u);
+    EXPECT_EQ(ticket_triage->templates.guardrails.front().metric,
+              "misroute_rate");
+    EXPECT_EQ(ticket_triage->templates.guardrails.at(1).direction,
+              "minimum");
+
+    const nlohmann::json policy = ticket_triage->templates.policy;
+    EXPECT_EQ(policy.at("threshold"), 0.6);
+    EXPECT_EQ(policy.at("actions").at("abstain").at("autonomy"),
+              "A0");
+    EXPECT_EQ(policy.at("actions").at("close_ticket").at("autonomy"),
+              "A1");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("B-3", 1)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "route_ticket");
+    EXPECT_EQ(zetta::solutions::solution_policy_template("B-3", 4)
+                  .at("tiers")
+                  .at(0)
+                  .at("action"),
+              "route_and_draft");
+}
+
+TEST(SolutionRegistry, B3ChecksRefuseEveryTicketTriageWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b3_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto abstention = bound_b3_graph();
+    abstention.find_node("solution_manifest")
+        ->attributes["b3_correctness"]["abstention"]
+                   ["minimum_confidence"] = 0.0;
+    expect_b3_failure(abstention, "b3_abstention_threshold");
+
+    auto taxonomy = bound_b3_graph();
+    taxonomy.find_node("solution_manifest")
+        ->attributes["b3_correctness"]["taxonomy"]
+                   ["owned_by_customer"] = false;
+    expect_b3_failure(taxonomy, "b3_customer_taxonomy");
+
+    auto closure = bound_b3_graph();
+    closure.find_node("solution_manifest")
+        ->attributes["b3_correctness"]["policy"]["actions"]
+                   ["close_ticket"]["autonomy"] = "A2";
+    expect_b3_failure(closure, "b3_closure_approval");
+
+    auto drift = bound_b3_graph();
+    drift.find_node("solution_manifest")
+        ->attributes["b3_correctness"]["new_ticket_type_drift"]
+                   ["monitoring_enabled"] = false;
+    expect_b3_failure(drift, "b3_new_ticket_type_drift");
+
+    auto composition = bound_b3_graph();
+    auto& methodologies = composition.find_node("solution_manifest")
+                               ->attributes["methodologies"];
+    methodologies.erase(
+        std::find(methodologies.begin(), methodologies.end(), "M-19"));
+    expect_b3_failure(composition, "b3_level_composition");
+}
+
+TEST(SolutionRegistry, B3EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_b3_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), 2u);
+        for (int stage = 1; stage <= 2; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, stage).empty())
+                << level << ':' << stage;
+        }
     }
 }
 

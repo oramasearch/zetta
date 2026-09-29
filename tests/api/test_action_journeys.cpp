@@ -3138,6 +3138,232 @@ journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+void land_ticket_triage_data(Node& node) {
+    const auto database = node.create_database("service");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("tickets");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 160; ++index) {
+        const bool billing = index % 2 == 0;
+        const bool new_type = index < 8;
+        const double urgency = index % 5 == 0 ? 0.9 : 0.2;
+        table->add_row(
+            {{"entity_id", index + 1},
+             {"record_id", index + 1},
+             {"source", "ticket-fixture"},
+             {"name", "Ticket " + std::to_string(index + 1)},
+             {"text", billing ? "billing refund failed."
+                               : "account login failed."},
+             {"label", index % 4 == 0 ? 0 : 1},
+             {"urgency", urgency},
+             {"billing_signal", billing ? 1.0 : 0.0},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"service_eligible", true},
+             {"taxonomy_owned_by_customer", true},
+             {"taxonomy_version_current", true},
+             {"new_ticket_type", new_type},
+             {"suppressed", false},
+             {"queue", billing ? "billing" : "identity"},
+             {"taxonomy_version", "customer-v42"},
+             {"owner", "service-operations"},
+             {"draft_reply", billing ? "We are reviewing your refund."
+                                      : "We are reviewing your login."},
+             {"resolution_quality", 0.9},
+             {"misrouted", false}});
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json ticket_triage_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "service"},
+          {"source_table", "tickets"},
+          {"target_table", "tickets_snapshot"},
+          {"entity_column", "entity_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"feature_columns", {"urgency", "billing_signal"}}}},
+        {"delivery",
+         {{"endpoint", "https://service.example.test/tasks"},
+          {"owner", "service-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 50.0},
+          {"investment", 100.0},
+          {"currency", "USD"}}}};
+}
+
+std::string ticket_triage_checkpoint(const fs::path& root) {
+    std::string error;
+    const std::optional<zetta::ml::WordPieceTokenizer> tokenizer =
+        zetta::ml::WordPieceTokenizer::from_vocabulary(
+            {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "billing", "refund",
+             "account", "login", "failed", "."},
+            true, &error);
+    EXPECT_TRUE(tokenizer.has_value()) << error;
+    if (!tokenizer.has_value()) {
+        return {};
+    }
+    zetta::ml::BertConfig config;
+    config.vocab_size = 10;
+    zetta::ml::BertTextEmbedder embedder(config, *tokenizer, 1177);
+    const std::string checkpoint = (root / "b3-minilm").string();
+    EXPECT_TRUE(embedder.save_checkpoint(checkpoint, &error)) << error;
+    return checkpoint;
+}
+
+journey::Journey ticket_triage_journey(
+    const nlohmann::json& foundation,
+    const std::string& checkpoint) {
+    journey::Journey flow{"ticket-triage-solution", {}};
+    const nlohmann::json sources = {
+        {"source", "service"},
+        {"database", "service"},
+        {"table", "tickets"},
+        {"correctness",
+         {{"minimum_confidence", 0.5},
+          {"taxonomy_owned_by_customer", true},
+          {"taxonomy_owner", "service-operations"},
+          {"taxonomy_version", "customer-v42"},
+          {"closure_approval_required", true},
+          {"new_ticket_type_monitoring", true},
+          {"maximum_new_ticket_type_fraction", 0.1}}},
+        {"M-10",
+         {{"embedder_directory", checkpoint},
+          {"text_column", "text"},
+          {"top_k", 1},
+          {"minimum_relevance", -1.0}}},
+        {"M-19",
+         {{"labelling_functions",
+           {{{"name", "urgent-ticket"},
+             {"column", "urgency"},
+             {"operator", "greater_equal"},
+             {"value", 0.5},
+             {"label", 1},
+             {"otherwise_label", 0}}}}}}};
+    flow.steps = {
+        {"read executable ticket triage defaults", "get_solution",
+         {{"solution", "B-3"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/close_ticket/autonomy",
+                  "A1"),
+              journey::equals("/solution/measurement/outcome/name",
+                              "resolution_quality"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the ticket triage project", "create_project",
+         {{"name", "ticket triage"}}},
+        {"create the composed ticket triage solution", "create_solution",
+         {{"project", "ticket triage"},
+          {"solution", "B-3"},
+          {"level", 4},
+          {"sources", sources},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 2),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"ticket_graph", "/graph"},
+          {"ticket_policy", "/policy_id"},
+          {"ticket_experiment", "/experiment_id"}}},
+        {"read the ticket triage policy", "get_policy",
+         {{"policy_id", "$ticket_policy"}},
+         {.checks = {
+              journey::equals("/versions/0/config/threshold", 0.5),
+              journey::equals(
+                  "/versions/0/config/actions/close_ticket/autonomy", "A1"),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "route_and_draft")}}},
+        {"run ticket triage", "run_solution",
+         {{"project", "ticket triage"},
+          {"graph", "$ticket_graph"},
+          {"delivery_token", "ticket-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"ticket_run", "/run_id"}}},
+        {"read the completed ticket triage Run", "get_run",
+         {{"run_id", "$ticket_run"}},
+         {.checks = {journey::equals("/status", "succeeded")}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read ticket assignments", "get_experiment",
+         {{"experiment", "$ticket_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read ticket action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_ticket_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"ticket-triage-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double quality =
+            0.65 + 0.04 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.16);
+        outcomes.steps.push_back(
+            {"record ticket resolution quality", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "resolution_quality"},
+              {"value", quality},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured ticket triage effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted ticket effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.16) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.16 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.16;
+                  })}}});
+    return outcomes;
+}
+
 journey::Journey planted_service_level_outcomes(
     const nlohmann::json& entries,
     const nlohmann::json& binding) {
@@ -3565,6 +3791,97 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       TicketTriageAbstainsProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_ticket_triage_data(node);
+    const std::string checkpoint = ticket_triage_checkpoint(dir.path());
+    ASSERT_FALSE(checkpoint.empty());
+    const auto flow = ticket_triage_journey(
+        ticket_triage_configuration(), checkpoint);
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("ticket triage");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-3 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-10");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "embeddings");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "chunk_id");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "classifier_confidence");
+    EXPECT_EQ(graph->record().dump().find("ticket-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t abstentions = 0;
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id !=
+            binding.at("policy_id").get<std::string>()) {
+            continue;
+        }
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.action == "abstain") {
+            ++abstentions;
+            EXPECT_FALSE(decision.actionable);
+        }
+        EXPECT_NE(decision.action, "close_ticket");
+    }
+    EXPECT_GT(abstentions, 0u);
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("action"), "route_and_draft");
+        EXPECT_TRUE(
+            request.at("payload").at("requires_human_close_approval"));
+        EXPECT_FALSE(request.at("payload").at("queue").get<std::string>()
+                         .empty());
+        EXPECT_EQ(request.at("payload").at("taxonomy_version"),
+                  "customer-v42");
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("ticket-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_ticket_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

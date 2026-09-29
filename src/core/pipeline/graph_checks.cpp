@@ -1065,6 +1065,22 @@ bool has_boolean_policy_predicate(const json& policy,
     });
 }
 
+bool has_policy_predicate(const json& policy,
+                          const char* rule_name,
+                          std::string_view field,
+                          std::string_view expected_operation) {
+    const auto rules = policy.find(rule_name);
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        return rule.is_object() &&
+               rule.value("field", std::string{}) == field &&
+               rule.value("operator", std::string{}) ==
+                   expected_operation;
+    });
+}
+
 const json* s3_correctness_profile(const ir::ExecutionGraph& graph,
                                    bool& applies, int& level,
                                    std::string& error) {
@@ -2248,6 +2264,49 @@ CheckResult s12_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b3_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-3") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-3 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b3_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-3 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b3_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-3 Pipeline to validate"};
+}
+
+CheckResult b3_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b3_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 bool adverse_action(std::string_view action) {
     const std::string normalized = normalize_type(std::string(action));
     return normalized.find("denial") != std::string::npos ||
@@ -2459,6 +2518,186 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+CheckResult B3AbstentionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* abstention = object_field(*profile, "abstention");
+    const json* policy = object_field(*profile, "policy");
+    if (abstention == nullptr || policy == nullptr ||
+        abstention->value("below_threshold_action", std::string{}) !=
+            "abstain") {
+        return b3_failure(
+            name(), "B-3 must name abstain as the below-threshold decision");
+    }
+    const auto minimum = abstention->find("minimum_confidence");
+    const auto threshold = policy->find("threshold");
+    if (minimum == abstention->end() || !minimum->is_number() ||
+        threshold == policy->end() || !threshold->is_number()) {
+        return b3_failure(
+            name(), "B-3 requires a numeric confidence threshold");
+    }
+    const double value = minimum->get<double>();
+    if (!std::isfinite(value) || value <= 0.0 || value > 1.0 ||
+        std::abs(threshold->get<double>() - value) > 1e-12) {
+        return b3_failure(
+            name(), "B-3 confidence threshold must be in (0, 1] and match policy");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object() ||
+        !actions->contains("abstain") ||
+        actions->at("abstain").value("autonomy", std::string{}) != "A0") {
+        return b3_failure(
+            name(), "B-3 abstention must remain a non-actionable A0 decision");
+    }
+    const ir::Node* language = model_kind(graph, "language");
+    if (language == nullptr ||
+        std::abs(language->attributes.value(
+                     "ticket_confidence_threshold", -1.0) - value) > 1e-12) {
+        return b3_failure(
+            name(), "B-3 M-10 confidence output must use the governed threshold");
+    }
+    return b3_success(
+        name(), "low-confidence tickets produce explicit abstention");
+}
+
+CheckResult B3CustomerTaxonomyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* taxonomy = object_field(*profile, "taxonomy");
+    const json* policy = object_field(*profile, "policy");
+    if (taxonomy == nullptr || policy == nullptr ||
+        !taxonomy->value("owned_by_customer", false) ||
+        taxonomy->value("owner", std::string{}).empty() ||
+        taxonomy->value("version", std::string{}).empty() ||
+        taxonomy->value("queue_column", std::string{}).empty() ||
+        taxonomy->value("unmapped_action", std::string{}) != "abstain" ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "taxonomy_owned_by_customer", true) ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "taxonomy_version_current", true) ||
+        !has_policy_predicate(
+            *policy, "eligibility_rules", "queue", "exists")) {
+        return b3_failure(
+            name(), "B-3 routing requires a versioned customer-owned taxonomy");
+    }
+    return b3_success(
+        name(), "ticket routing is bound to the customer's taxonomy");
+}
+
+CheckResult B3ClosureApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* closure = object_field(*profile, "closure");
+    const json* policy = object_field(*profile, "policy");
+    if (closure == nullptr || policy == nullptr ||
+        !closure->value("approval_required", false) ||
+        closure->value("action", std::string{}) != "close_ticket") {
+        return b3_failure(
+            name(), "B-3 must declare approval for ticket closure");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object() ||
+        !actions->contains("close_ticket") ||
+        actions->at("close_ticket").value("autonomy", std::string{}) !=
+            "A1") {
+        return b3_failure(
+            name(), "B-3 ticket closure must remain A1 pending approval");
+    }
+    return b3_success(
+        name(), "ticket closure cannot execute without approval");
+}
+
+CheckResult B3NewTicketTypeDriftCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* drift = object_field(*profile, "new_ticket_type_drift");
+    const json* policy = object_field(*profile, "policy");
+    if (drift == nullptr || policy == nullptr ||
+        !drift->value("monitoring_enabled", false) ||
+        drift->value("field", std::string{}) != "new_ticket_type" ||
+        drift->value("action", std::string{}) != "abstain") {
+        return b3_failure(
+            name(), "B-3 must monitor and abstain on new ticket types");
+    }
+    const auto maximum = drift->find("maximum_fraction");
+    if (maximum == drift->end() || !maximum->is_number() ||
+        !std::isfinite(maximum->get<double>()) ||
+        maximum->get<double>() < 0.0 || maximum->get<double>() > 1.0 ||
+        !has_policy_predicate(
+            *policy, "eligibility_rules", "new_ticket_type", "exists") ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "new_ticket_type", true)) {
+        return b3_failure(
+            name(), "B-3 new-type drift needs a bounded monitor and hard exclusion");
+    }
+    return b3_success(
+        name(), "new ticket types are monitored and routed to abstention");
+}
+
+CheckResult B3LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    if (level < 1 || level > 4 || !has_methodology(graph, "M-10") ||
+        !has_methodology(graph, "M-19") ||
+        model_kind(graph, "language") == nullptr ||
+        model_kind(graph, "label_efficiency") == nullptr) {
+        return b3_failure(
+            name(), "B-3 levels require runnable M-10 and M-19 stages");
+    }
+    return b3_success(
+        name(), "B-3 selected level contains both methodology callbacks");
 }
 
 CheckResult S11LoggedPropensityCheck::evaluate(

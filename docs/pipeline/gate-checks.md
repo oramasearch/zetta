@@ -52,6 +52,7 @@ The reusable annotation and methodology-specific checks are:
 | `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
 | `S10*Check` family | `s10_label_delay`, `s10_declined_selection_bias`, `s10_request_time_feature_parity`, `s10_level_composition` | an S-10 graph with immature labels, declined-request selection bias, unlogged exploration, request-time feature drift, stale graph evidence, or missing level stages |
 | `S11*Check` family | `s11_logged_propensity`, `s11_contact_consent`, `s11_propensity_interpretation` | an S-11 graph without durable selection probabilities, consent and cross-channel cap enforcement, or a strict separation between predictive ranking and causal uplift evidence |
+| `B3*Check` family | `b3_abstention_threshold`, `b3_customer_taxonomy`, `b3_closure_approval`, `b3_new_ticket_type_drift`, `b3_level_composition` | a B-3 graph without bounded explicit abstention, a versioned customer-owned taxonomy, A1 closure approval, new-ticket-type monitoring/exclusion, or both M-10 and M-19 |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -276,6 +277,18 @@ propensity, and requires M-6 uplift evidence.
 `sources.correctness` overrides. `run_solution` checks the stored profile
 again. See [S-11](../solutions/S-11.md) for the complete data, action,
 measurement, and refusal contract.
+
+### B-3 composed solution checks
+
+The five B-3 checks engage only for a bound B-3 manifest. They require the
+policy and M-10 model to share a confidence threshold in `(0, 1]`, require A0
+abstention below it, bind routing to a named and versioned customer-owned
+taxonomy, keep `close_ticket` at A1, and require monitored hard exclusion of
+new ticket types. Every level must contain runnable M-10 and M-19 stages.
+
+The closure rule is checked again against the current policy immediately
+before `run_solution` decides. See [B-3](../solutions/B-3.md) for the complete
+data, action, measurement, and refusal contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

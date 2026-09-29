@@ -124,8 +124,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists 14 catalogue modules
-  and six Band-B sketches. Selected levels now execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 15 runnable catalogue
+  modules and five Band-B sketches. Selected levels now execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,
@@ -166,8 +166,12 @@ What's inside, by domain (each links to that domain's docs):
   delivery, uplift cells, and a net-value ROI readout. B-2 is runnable at all
   four levels with aggregate cohort scoring, minimum group size, fairness and
   legal-approval gates, people-leader-only reports, protected holdouts, and an
-  aggregate attrition readout. Snapshot
-  cutoffs, delivery destinations and ROI economics remain caller-supplied.
+  aggregate attrition readout.
+  B-3 is runnable at all four levels with M-10 ticket confidence, M-19 label
+  efficiency, customer-owned taxonomy routing, explicit abstention,
+  approval-only closure, new-ticket-type drift, and resolution-quality
+  measurement. Snapshot cutoffs, delivery destinations and ROI economics
+  remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
   policy/decision and ROI stores read directly from replicated state.

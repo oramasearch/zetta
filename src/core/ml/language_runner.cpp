@@ -288,10 +288,16 @@ LanguageRunResult run_language_dataset(Node& node, const cluster::Cluster* clust
     }
 
     for (const LanguageChunk& chunk : chunks) {
+        const double classifier_score = classifier.score(chunk.embedding);
+        const double bounded_score = std::clamp(classifier_score, -60.0, 60.0);
+        const double classifier_confidence =
+            1.0 / (1.0 + std::exp(-bounded_score));
         embeddings_table->add_row({{"chunk_id", chunk.id},
                                    {"source", chunk.source},
                                    {"text", chunk.text},
                                    {"embedding", chunk.embedding},
+                                   {"classifier_score", classifier_score},
+                                   {"classifier_confidence", classifier_confidence},
                                    {"embedder_version", embedder->version()}});
     }
     for (const QueryResult& query_result : query_results) {

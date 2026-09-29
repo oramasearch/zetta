@@ -81,6 +81,10 @@ then records a synthetic 0.2 treatment effect and recovers it inside the readout
 margin and authority enforcement, and recovers planted net margin. The CRM and
 pricing HTTP boundaries alone are substituted; the core
 engines and replicated records are real. Run `SolutionJourney.*`.
+The B-3 journey composes M-10 and M-19, verifies explicit confidence/new-type
+abstention, customer-taxonomy queue and draft payloads, approval-only closure,
+six observed guardrails, protected holdout, and recovery of a planted 0.16
+resolution-quality effect (#1177).
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset
 override, polls the Run and reads separation metrics, input/exclusion facts and

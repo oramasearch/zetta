@@ -107,6 +107,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   completed fairness review, recorded legal or works-council approval,
   people-leader-only output, a protected holdout, and measured aggregate
   attrition outcomes. See [solutions/B-2.md](solutions/B-2.md).
+- **B-3 Ticket Triage & Service Automation (#1177)** — runnable at levels 1–4
+  with M-10/M-19, customer-owned taxonomy routing, confidence abstention,
+  approval-only closure, new-ticket-type drift monitoring, action delivery,
+  protected holdout measurement, and a resolution-quality readout. The
+  customer-offering promotion condition remains recorded. See
+  [solutions/B-3.md](solutions/B-3.md).
 
 - **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
   with M-4 lead-time forecasting, M-16 constrained planning, optional M-5

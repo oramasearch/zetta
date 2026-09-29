@@ -277,7 +277,14 @@ TEST(LanguageRunner, WritesVersionedTablesModelMetricsAndLineage) {
     EXPECT_EQ(run->status(), zetta::pipeline::RunStatus::Succeeded);
     EXPECT_EQ(run->lineage().sources, (std::vector<std::string>{"dataset:knowledge.chunks"}));
     ASSERT_TRUE(node.find_database("language_results"));
-    EXPECT_TRUE(node.find_database("language_results")->find_table("embeddings_language"));
+    const auto embeddings =
+        node.find_database("language_results")->find_table("embeddings_language");
+    ASSERT_TRUE(embeddings);
+    const auto first_embedding = embeddings->store().at(0);
+    ASSERT_TRUE(first_embedding);
+    EXPECT_TRUE(first_embedding->at("classifier_score").is_number());
+    EXPECT_GE(first_embedding->at("classifier_confidence").get<double>(), 0.0);
+    EXPECT_LE(first_embedding->at("classifier_confidence").get<double>(), 1.0);
     const auto model = node.find_model(result.model_id);
     ASSERT_TRUE(model);
     EXPECT_EQ(model->kind(), "language");

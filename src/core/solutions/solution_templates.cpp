@@ -48,6 +48,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
     DefaultAction{"B-1", "price_recommendation", "A0", "holdout", "net_margin", "currency", "margin_floor_violations"},
     DefaultAction{"B-2", "people_leader_review", "A2", "holdout", "attrition_reduction", "fraction", "small_group_outputs"},
+    DefaultAction{"B-3", "route_ticket", "A2", "holdout", "resolution_quality", "resolution", "misroute_rate"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -617,27 +618,30 @@ void employee_attrition_defaults(SolutionTemplates& result) {
          {"action", "no_action"}}};
     result.policy["actions"] = {
         {"people_leader_review",
-         {{"autonomy", "A2"}, {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 30)}}},
-        {"aggregate_risk_report",
-         {{"autonomy", "A2"}, {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 30)}}},
-        {"organizational_intervention_review",
-         {{"autonomy", "A1"}, {"approval_above", 0.0},
+         {{"autonomy", "A2"},
           {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 30)}}},
+          {"frequency_cap", frequency(1, 2592000)}}},
+        {"aggregate_risk_report",
+         {{"autonomy", "A2"},
+          {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 2592000)}}},
+        {"organizational_intervention_review",
+         {{"autonomy", "A1"},
+          {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 7776000)}}},
         {"no_action", {{"autonomy", "A0"}}}};
-    result.policy["contact_cap"] = 4;
-    result.policy["frequency_cap"] = frequency(1, 30);
     result.policy["eligibility_rules"] = {
-        numeric_predicate("group_size", "gte", 5.0),
+        predicate("minimum_group_size_met", true),
         predicate("people_leader_authorized", true),
-        predicate("fairness_review_passed", true),
+        predicate("fairness_review_completed", true),
         predicate("legal_approval_recorded", true),
-        predicate("individual_level_output", false)};
-    result.policy["exclusion_rules"] = {
-        predicate("restricted_cohort", true),
-        predicate("individual_level_output", true)};
+        predicate("individual_output", false)};
+    result.policy["exclusions"] = {
+        predicate("small_group", true),
+        predicate("approval_missing", true),
+        predicate("individual_output", true)};
+    result.policy["contact_cap"] = 4;
+    result.policy["frequency_cap"] = frequency(1, 2592000);
     result.policy["budget"] = {{"limit", 0.0}};
     result.experiment.holdouts = {
         {"elevated", 0.1}, {"watch", 0.1}, {"baseline", 0.1}};
@@ -650,6 +654,53 @@ void employee_attrition_defaults(SolutionTemplates& result) {
         {"action_execution_rate", 0.95, "minimum"}};
     result.measurement = {
         "holdout", "attrition_reduction", "fraction", 90};
+}
+
+void ticket_triage_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["threshold"] = 0.6;
+    result.policy["tiers"] = {
+        {{"name", "confident"}, {"minimum_score", 0.6},
+         {"action", "route_ticket"},
+         {"allowed_actions", {"route_ticket", "route_and_draft",
+                              "close_ticket", "abstain"}}},
+        {{"name", "abstain"}, {"minimum_score", -1000000000.0},
+         {"action", "abstain"}}};
+    result.policy["actions"] = {
+        {"route_ticket",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 604800)}}},
+        {"route_and_draft",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 604800)}}},
+        {"close_ticket",
+         {{"autonomy", "A1"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 604800)}}},
+        {"abstain", {{"autonomy", "A0"}}}};
+    result.policy["eligibility_rules"] = {
+        predicate("taxonomy_owned", true),
+        predicate("taxonomy_current", true),
+        predicate("queue_owner_assigned", true),
+        predicate("closure_approval_required", true)};
+    result.policy["exclusions"] = {
+        predicate("new_ticket_type", true),
+        predicate("taxonomy_unknown", true),
+        predicate("queue_unavailable", true)};
+    result.policy["contact_cap"] = 52;
+    result.policy["frequency_cap"] = frequency(1, 604800);
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"confident", 0.1}, {"abstain", 0.1}};
+    result.experiment.treatment_cells = {"service_routed"};
+    result.guardrails = {
+        {"misroute_rate", 0.1, "maximum"},
+        {"resolution_quality", 0.8, "minimum"},
+        {"abstention_rate", 0.5, "maximum"},
+        {"new_ticket_type_rate", 0.1, "maximum"},
+        {"unapproved_auto_close", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "resolution_quality", "resolution", 30};
 }
 
 } // namespace
@@ -686,6 +737,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 dynamic_pricing_defaults(result);
             } else if (solution_id == "B-2") {
                 employee_attrition_defaults(result);
+            } else if (solution_id == "B-3") {
+                ticket_triage_defaults(result);
             }
             return result;
         }
@@ -695,6 +748,14 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
+    if (solution_id == "B-3" && level >= 2) {
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") == "confident") {
+                tier["action"] = "route_and_draft";
+            }
+        }
+        return policy;
+    }
     if (solution_id != "S-6" && solution_id != "B-1") {
         return policy;
     }

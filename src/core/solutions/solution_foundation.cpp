@@ -80,12 +80,12 @@ std::shared_ptr<data::Table> table_at(Node& node, const std::string& path) {
 
 Json create_bindings(Node& node, const pipeline::Project& project,
                      const ml::Solution& solution, const std::string& name,
-                     int level, const Json& settings, const std::string& actor,
+                     const Json& policy_config, const Json& settings,
+                     const std::string& actor,
                      std::string& error) {
     const std::string scope = project.id() + "/" + name;
     DecisionPolicyStore policies(*node.replication(), &node, &node.experiment_manager());
-    const auto policy = policies.create(
-        scope, solution_policy_template(solution.id, level), actor, &error);
+    const auto policy = policies.create(scope, policy_config, actor, &error);
     if (!policy) {
         return {};
     }
@@ -641,6 +641,64 @@ void bind_s10_correctness(ir::ExecutionGraph& graph,
     manifest->attributes["s10_correctness"] = std::move(profile);
 }
 
+void bind_b3_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-3") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const int level = manifest->attributes.value("level", 1);
+    Json policy = solution_policy_template(solution.id, level);
+    const double minimum_confidence =
+        common.value("minimum_confidence", policy.at("threshold").get<double>());
+    policy["threshold"] = minimum_confidence;
+    for (Json& tier : policy.at("tiers")) {
+        if (tier.value("name", std::string{}) == "confident") {
+            tier["minimum_score"] = minimum_confidence;
+        }
+    }
+    manifest->attributes["b3_correctness"] = {
+        {"policy", policy},
+        {"abstention",
+         {{"minimum_confidence", minimum_confidence},
+          {"below_threshold_action", "abstain"}}},
+        {"taxonomy",
+         {{"owned_by_customer",
+           common.value("taxonomy_owned_by_customer", true)},
+          {"owner",
+           common.value("taxonomy_owner", "customer-service-operations")},
+          {"version", common.value("taxonomy_version", "v1")},
+          {"queue_column", common.value("queue_column", "queue")},
+          {"unmapped_action", "abstain"}}},
+        {"closure",
+         {{"action", "close_ticket"},
+          {"approval_required",
+           common.value("closure_approval_required", true)}}},
+        {"new_ticket_type_drift",
+         {{"monitoring_enabled",
+           common.value("new_ticket_type_monitoring", true)},
+          {"field", "new_ticket_type"},
+          {"action", "abstain"},
+          {"maximum_fraction",
+           common.value("maximum_new_ticket_type_fraction", 0.1)}}}};
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (model &&
+            model->attributes.value("model_kind", std::string{}) ==
+                "language") {
+            model->attributes["ticket_confidence_threshold"] =
+                minimum_confidence;
+        }
+    }
+}
+
 void bind_s5_correctness(ir::ExecutionGraph& graph,
                          const Json& sources) {
     const std::shared_ptr<ir::Node> manifest =
@@ -1036,6 +1094,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s10_correctness"] = {{"type", "object"}};
     schema["properties"]["b1_correctness"] = {{"type", "object"}};
     schema["properties"]["b2_correctness"] = {{"type", "object"}};
+    schema["properties"]["b3_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -1093,6 +1152,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                          input.at("sources"));
     bind_b2_correctness(composed.graph, *solution, settings,
                         input.at("sources"));
+    bind_b3_correctness(composed.graph, *solution, input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -1112,6 +1172,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     if (primary != solution->composition.end() && primary->id != "M-1" &&
         solution->id != "S-5" && solution->id != "S-11" &&
         solution->id != "B-1" &&
+        solution->id != "B-3" &&
         !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
@@ -1122,8 +1183,14 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("invalid_input", "decision_source must name a selected methodology");
     }
     const std::string actor = context.acting_key.empty() ? "local" : context.acting_key;
+    const Json policy_config =
+        solution->id == "B-3"
+            ? composed.graph.find_node("solution_manifest")
+                  ->attributes.at("b3_correctness")
+                  .at("policy")
+            : solution_policy_template(solution->id, level);
     Json binding = create_bindings(context.node, *project, *solution, name,
-                                   level, settings, actor, error);
+                                   policy_config, settings, actor, error);
     if (!error.empty()) {
         return ApiResult::failure("engine_error", error);
     }
@@ -1184,6 +1251,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "transaction"},
                 {"score_column", "fraud_score"},
                 {"output_name", "Write fraud authorization scores"}};
+        } else if (solution->id == "B-3") {
+            binding["decision_source"] = {
+                {"methodology", "M-10"},
+                {"entity_column", "chunk_id"},
+                {"score_column", "classifier_confidence"},
+                {"output_name", "embeddings"}};
         }
     }
     if (solution->id == "S-1") {
@@ -1237,6 +1310,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         binding["b2_correctness"] =
             composed.graph.find_node("solution_manifest")
                 ->attributes.at("b2_correctness");
+    } else if (solution->id == "B-3") {
+        binding["b3_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b3_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -1847,6 +1924,15 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             binding.at("b2_correctness")
                 .at("approval")
                 .at("record_id");
+    } else if (binding.value("solution", std::string{}) == "B-3") {
+        spec.payload["ticket_id"] = decision.entity_id;
+        spec.payload["queue"] = entity.value("queue", std::string{});
+        spec.payload["draft_reply"] =
+            entity.value("draft_reply", std::string{});
+        spec.payload["taxonomy_version"] =
+            entity.value("taxonomy_version", std::string{});
+        spec.payload["classification_confidence"] = decision.score;
+        spec.payload["requires_human_close_approval"] = true;
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -1884,6 +1970,37 @@ bool s12_adverse_action(std::string action) {
     return action.find("denial") != std::string::npos ||
            action.find("deny") != std::string::npos ||
            action.find("reject") != std::string::npos;
+}
+
+bool b3_close_action(std::string action) {
+    std::transform(action.begin(), action.end(), action.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return action.find("close") != std::string::npos;
+}
+
+std::string validate_b3_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-3") {
+        return {};
+    }
+    bool has_approved_close = false;
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!b3_close_action(action)) {
+            continue;
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A1") {
+            return "B-3 refuses ticket closure without A1 approval";
+        }
+        has_approved_close = true;
+    }
+    if (!has_approved_close) {
+        return "B-3 policy must retain an approval-gated close action";
+    }
+    return {};
 }
 
 bool s12_required_rule(const Json& config, const std::string& field) {
@@ -2286,6 +2403,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         !policy_error.empty()) {
         return ApiResult::failure("invalid_input", policy_error);
     }
+    if (const std::string policy_error =
+            validate_b3_runtime_policy(binding, policy->current()->config);
+        !policy_error.empty()) {
+        return ApiResult::failure("invalid_input", policy_error);
+    }
     double complaints = 0.0;
     double unsubscribes = 0.0;
     double outbound_consent_violations = 0.0;
@@ -2329,6 +2451,12 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t b1_margin_floor_violations = 0;
     std::size_t b1_authority_band_violations = 0;
     std::size_t b1_unapproved_price_changes = 0;
+    std::size_t b3_abstentions = 0;
+    std::size_t b3_new_ticket_types = 0;
+    std::size_t b3_misroutes = 0;
+    std::size_t b3_unapproved_closures = 0;
+    double b3_resolution_quality = 0.0;
+    std::size_t b3_resolution_count = 0;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -2399,6 +2527,16 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 candidate_allowed && entity.value("recommendation_chosen", false)
                     ? "decision_api_response"
                     : "no_action";
+        }
+        if (binding.value("solution", std::string{}) == "B-3") {
+            const double minimum_confidence =
+                binding.at("b3_correctness")
+                    .at("abstention")
+                    .at("minimum_confidence");
+            if (entity.value("score", 0.0) < minimum_confidence ||
+                entity.value("new_ticket_type", false)) {
+                entity["action"] = "abstain";
+            }
         }
         const auto decision = policies.decide(policy->id, entity, actor, &error);
         if (!decision) {
@@ -2505,6 +2643,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                      .at("aggregation")
                      .at("group_dimension")},
                 {"driver", driver}};
+        } else if (binding.value("solution", std::string{}) == "B-3") {
+            entity["decision_cell"] = {
+                {"confidence_tier", decision->tier},
+                {"queue", entity.value("queue", std::string{})},
+                {"taxonomy_version",
+                 entity.value("taxonomy_version", std::string{})},
+                {"new_ticket_type",
+                 entity.value("new_ticket_type", false)}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2632,6 +2778,22 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             ++anomaly_alerts;
             if (!entity.value("sensitive_driver_access", false)) {
                 ++sensitive_access_violations;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-3") {
+            b3_abstentions += decision->action == "abstain" ? 1u : 0u;
+            b3_new_ticket_types +=
+                entity.value("new_ticket_type", false) ? 1u : 0u;
+            b3_misroutes += entity.value("misrouted", false) ? 1u : 0u;
+            if (entity.contains("resolution_quality") &&
+                entity.at("resolution_quality").is_number()) {
+                b3_resolution_quality +=
+                    entity.at("resolution_quality").get<double>();
+                ++b3_resolution_count;
+            }
+            if (b3_close_action(decision->action) &&
+                decision->autonomy != "A1") {
+                ++b3_unapproved_closures;
             }
         }
         ++driver_counts[driver];
@@ -2987,6 +3149,29 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             monitor->observe_guardrail("individual_score_outputs", 0.0);
             monitor->observe_guardrail("fairness_review_failures", 0.0);
             monitor->observe_guardrail("approval_gate_failures", 0.0);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-3") {
+            const double denominator =
+                static_cast<double>(std::max<std::size_t>(entities.size(), 1));
+            monitor->observe_guardrail(
+                "misroute_rate",
+                static_cast<double>(b3_misroutes) / denominator);
+            monitor->observe_guardrail(
+                "resolution_quality",
+                b3_resolution_count == 0
+                    ? 0.0
+                    : b3_resolution_quality /
+                          static_cast<double>(b3_resolution_count));
+            monitor->observe_guardrail(
+                "abstention_rate",
+                static_cast<double>(b3_abstentions) / denominator);
+            monitor->observe_guardrail(
+                "new_ticket_type_rate",
+                static_cast<double>(b3_new_ticket_types) / denominator);
+            monitor->observe_guardrail(
+                "unapproved_auto_close",
+                static_cast<double>(b3_unapproved_closures));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else {
