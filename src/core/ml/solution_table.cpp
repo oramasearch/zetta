@@ -109,6 +109,32 @@ Solution sketch(std::string id, std::string name, std::string promise,
     return solution;
 }
 
+Solution band_b(
+    std::string id, std::string name, std::string promise,
+    std::string use_case, std::vector<SolutionMethodology> composition,
+    std::vector<std::string> pipeline_order,
+    std::vector<std::string> action_patterns,
+    std::vector<std::string> latency_classes,
+    std::vector<SolutionAutonomyDefault> autonomy_defaults,
+    std::vector<SolutionDataRole> required_data_roles,
+    std::string decision_policy_template, std::string measurement_design,
+    std::vector<std::string> guardrails,
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    int issue_number, std::string promotion_condition) {
+    Solution solution = band_a(
+        std::move(id), std::move(name), std::move(promise),
+        std::move(use_case), std::move(composition),
+        std::move(pipeline_order), std::move(action_patterns),
+        std::move(latency_classes), std::move(autonomy_defaults),
+        std::move(required_data_roles),
+        std::move(decision_policy_template),
+        std::move(measurement_design), std::move(guardrails),
+        std::move(capability_levels));
+    solution.issue = issue(issue_number);
+    solution.promotion_condition = std::move(promotion_condition);
+    return solution;
+}
+
 std::string lower(std::string_view value) {
     std::string result(value);
     std::transform(result.begin(), result.end(), result.begin(),
@@ -685,14 +711,35 @@ const std::vector<Solution>& solutions() {
                     "add approval-bounded mitigation tasks",
                     "add bounded procurement action routing"),
              "Promote with concentrated manufacturing demand and reusable external-data support across several modules."),
-        sketch("B-6", "Healthcare Operations (no-show & denials)",
-               "Prioritize assistive scheduling and revenue-cycle work with equity controls.",
-               "Recover operational capacity without turning predictions into access penalties.",
-               {{"M-1", "primary", 1}},
-               {{"entity", true, "patient, appointment, or claim"},
-                {"label", true, "attendance or denial outcome"},
-                {"time", true, "scheduling and claim chronology"}},
-               "Promote with a provider design customer that owns revenue-cycle operations and has an agreed privacy posture."),
+        band_b(
+            "B-6", "Healthcare Operations (no-show & denials)",
+            "Prioritize assistive scheduling and revenue-cycle work with equity controls.",
+            "Recover operational capacity without turning predictions into access penalties.",
+            {{"M-1", "primary", 1}}, {"M-1"},
+            {"assistive scheduling tasks", "revenue-cycle review tasks"},
+            {"L1 owned work queues", "L2 batch operational read-back"},
+            {{"scheduling assistance and reminders", "A2"},
+             {"revenue-cycle review tasks", "A2"},
+             {"expanded assistance or policy exceptions", "A1"},
+             {"care access and clinical decisions", "A0"}},
+            {{"entity", true, "patient, appointment, claim, or operational case"},
+             {"label", true, "attendance or claim-denial outcome"},
+             {"time", true, "scheduling and claim chronology"},
+             {"feature", true, "minimum-necessary operational predictors"},
+             {"workflow", true, "scheduling or revenue-cycle work type"},
+             {"protected_group", true, "evaluation-only equity cohorts"},
+             {"privacy", true, "approved privacy posture and minimum-necessary review"},
+             {"owner", true, "care coordination or revenue-cycle owner"}},
+            "Operational-risk tiers with assistive-only actions, eligibility, weekly and lifetime caps, privacy and equity evidence, approval for exceptions, and a kill switch.",
+            "Permanent holdout in every risk tier with operational resolution measured across protected groups; care access is never an outcome or action.",
+            {"care-denial actions", "equity rate gap", "PHI scope violations",
+             "privacy posture failures", "action-execution rate"},
+            levels("risk scoring, protected holdout, and owned assistive tasks",
+                   "add scheduling and revenue-cycle work queues",
+                   "add protected-group operating review",
+                   "add bounded cross-workflow orchestration"),
+            1180,
+            "Promote with a provider design customer that owns revenue-cycle operations and has an agreed privacy posture."),
         sketch("B-7", "Credit Underwriting & Limit Management",
                "Support credit policy with examiner-readable evidence and adverse-action discipline.",
                "Balance loss, approval, and fairness under regulated model-risk controls.",

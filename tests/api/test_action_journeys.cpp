@@ -1616,6 +1616,71 @@ void land_lead_scoring_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_healthcare_operations_data(Node& node) {
+    const auto database = node.create_database("healthcare");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("operations");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool scheduling = index % 2 == 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "synthetic_operations"},
+             {"label", index % 9 != 0 ? 1 : 0},
+             {"operational_signal", index % 17 + 0.25},
+             {"prior_missed_visits", index % 4},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"workflow_type", scheduling ? "scheduling" : "revenue_cycle"},
+             {"action", scheduling ? "scheduling_assistance"
+                                    : "revenue_cycle_review"},
+             {"protected_group", "group-" + std::to_string(index % 4)},
+             {"operations_eligible", true},
+             {"privacy_posture_approved", true},
+             {"minimum_necessary_fields", true},
+             {"equity_review_passed", true},
+             {"care_access_unaffected", true},
+             {"patient_opt_out", false},
+             {"clinical_decision", false},
+             {"care_denial_requested", false},
+             {"phi_scope_exceeded", false},
+             {"contacts", 0},
+             {"recent_actions", 0},
+             {"owner", scheduling ? "care-coordination"
+                                  : "revenue-cycle"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "synthetic_operations"},
+         {"label", 1},
+         {"operational_signal", 999.0},
+         {"prior_missed_visits", 4},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"workflow_type", "scheduling"},
+         {"action", "scheduling_assistance"},
+         {"protected_group", "group-0"},
+         {"operations_eligible", true},
+         {"privacy_posture_approved", true},
+         {"minimum_necessary_fields", true},
+         {"equity_review_passed", true},
+         {"care_access_unaffected", true},
+         {"patient_opt_out", false},
+         {"clinical_decision", false},
+         {"care_denial_requested", false},
+         {"phi_scope_exceeded", false},
+         {"contacts", 0},
+         {"recent_actions", 0},
+         {"owner", "care-coordination"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 void land_next_best_action_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
@@ -2529,6 +2594,32 @@ nlohmann::json lead_scoring_configuration() {
           {"currency", "USD"}}}};
 }
 
+nlohmann::json healthcare_operations_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "healthcare"},
+          {"source_table", "operations"},
+          {"target_table", "operations_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"operational_signal", "prior_missed_visits"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://healthcare.example.test/operations"},
+          {"owner", "healthcare-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 150.0},
+          {"investment", 250.0},
+          {"currency", "USD"}}}};
+}
+
 nlohmann::json replenishment_configuration() {
     return {
         {"snapshot",
@@ -2866,6 +2957,67 @@ journey::Journey planted_conversion_outcomes(
                              estimate.at("confidence_interval")
                                      .at("upper")
                                      .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+journey::Journey planted_healthcare_operations_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"healthcare-operations-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double resolution =
+            0.3 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record operational resolution",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "operational_resolution"},
+              {"value", resolution},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured healthcare operations effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted operations effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
                   })}}});
     return outcomes;
 }
@@ -4944,6 +5096,190 @@ TEST_F(SolutionJourney,
     const auto outcomes =
         planted_conversion_outcomes(ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       HealthcareOperationsProtectsAccessAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_healthcare_operations_data(node);
+    journey::Journey flow{"healthcare-operations-solution", {}};
+    flow.steps = {
+        {"read B-6 defaults",
+         "get_solution",
+         {{"solution", "B-6"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name",
+                  "operational_resolution")}}},
+        {"create healthcare operations project",
+         "create_project",
+         {{"name", "healthcare operations"}}},
+        {"create B-6 Pipeline",
+         "create_solution",
+         {{"project", "healthcare operations"},
+          {"solution", "B-6"},
+          {"level", 1},
+          {"sources",
+           {{"source", "healthcare"},
+            {"table", "operations"},
+            {"M-1", {{"label_column", "label"}}},
+            {"correctness",
+             {{"equity_review_owner", "health-equity-review"},
+              {"protected_group_columns", {"protected_group"}},
+              {"privacy_posture_recorded", true},
+              {"privacy_posture_approved", true},
+              {"privacy_review_owner", "privacy-office"},
+              {"privacy_review_id", "privacy-review-1180"},
+              {"minimum_necessary", true},
+              {"minimum_necessary_feature_names",
+               {"operational_signal", "prior_missed_visits"}}}}}},
+          {"foundation", healthcare_operations_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 1),
+              journey::size_equals("/missing_components", 0)}},
+         {{"healthcare_graph", "/graph"},
+          {"healthcare_policy", "/policy_id"},
+          {"healthcare_experiment", "/experiment_id"},
+          {"healthcare_readout", "/readout_id"}}},
+        {"read assistive-only policy",
+         "get_policy",
+         {{"policy_id", "$healthcare_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/care_coordination_task/autonomy",
+                  "A2"),
+              journey::equals(
+                  "/versions/0/config/actions/revenue_cycle_review/autonomy",
+                  "A2"),
+              journey::equals(
+                  "/versions/0/config/actions/assistance_exception_review/autonomy",
+                  "A1")}}},
+        {"run B-6 Pipeline",
+         "run_solution",
+         {{"project", "healthcare operations"},
+          {"graph", "$healthcare_graph"},
+          {"delivery_token", "healthcare-fixture-token"}},
+         {.checks = {
+              journey::equals("/engine", "solution"),
+              journey::equals("/preview", false)}},
+         {{"healthcare_run", "/run_id"}}},
+        {"read completed B-6 Run",
+         "get_run",
+         {{"run_id", "$healthcare_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 7)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected healthcare assignments",
+         "get_experiment",
+         {{"experiment", "$healthcare_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read healthcare action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("healthcare operations");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-6 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish healthcare operations risk scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "entity");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "operational_risk");
+    EXPECT_EQ(graph->record().dump().find("healthcare-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_NE(decision.action, "deny_care");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_TRUE(payload.at("assistive_only").get<bool>());
+        EXPECT_TRUE(payload.at("care_access_unchanged").get<bool>());
+        EXPECT_TRUE(payload.at("minimum_necessary_fields").get<bool>());
+        EXPECT_FALSE(payload.contains("protected_group"));
+        EXPECT_FALSE(payload.contains("patient_name"));
+        const std::string action = payload.at("action");
+        EXPECT_TRUE(action == "care_coordination_task" ||
+                    action == "scheduling_assistance" ||
+                    action == "revenue_cycle_review")
+            << action;
+    }
+
+    const auto results = node.find_database("healthcare_results");
+    ASSERT_TRUE(results);
+    ASSERT_EQ(results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM healthcare_results." +
+              results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("entity"));
+    EXPECT_TRUE(
+        scores.value.at("rows").front().contains("operational_risk"));
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "care_denial_actions" ||
+            guardrail.bound.name == "phi_scope_violations" ||
+            guardrail.bound.name == "privacy_posture_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("healthcare-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_healthcare_operations_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(
             "get_roi_readout", {{"solution", binding.at("scope")}});

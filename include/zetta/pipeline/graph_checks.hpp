@@ -506,6 +506,37 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-6 healthcare-operations adaptations (#1180). The module requires an
+// owned protected-group review, permits assistive work only, records an
+// approved privacy posture, and limits model features to the reviewed
+// minimum-necessary set.
+class B6EquityReviewCheck final : public Check {
+public:
+    std::string name() const override { return "b6_equity_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6AssistiveOnlyCheck final : public Check {
+public:
+    std::string name() const override { return "b6_assistive_only"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6PrivacyPostureCheck final : public Check {
+public:
+    std::string name() const override { return "b6_privacy_posture"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6PhiMinimizationCheck final : public Check {
+public:
+    std::string name() const override { return "b6_phi_minimization"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
 // S-11 validates logged probabilities, contact constraints, and interpretation.
 class S11LoggedPropensityCheck final : public Check {
 public:

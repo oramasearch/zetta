@@ -618,6 +618,59 @@ void bind_s12_correctness(ir::ExecutionGraph& graph,
            common.value("fast_track_requires_clear", true)}}}};
 }
 
+void bind_b6_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-6") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_direct_identifiers = {
+        "patient_name", "full_name", "medical_record_number", "mrn",
+        "social_security_number", "ssn", "street_address", "phone",
+        "email"};
+    manifest->attributes["b6_correctness"] = {
+        {"policy", solution.templates.policy},
+        {"equity_review",
+         {{"required", common.value("equity_review_required", true)},
+          {"owner", common.value("equity_review_owner", std::string{})},
+          {"protected_group_columns",
+           common.value("protected_group_columns", Json::array())},
+          {"outcome_rate_reviewed",
+           common.value("protected_outcome_rate_reviewed", true)},
+          {"maximum_rate_gap",
+           common.value("maximum_equity_rate_gap", 0.2)}}},
+        {"assistive_only",
+         {{"enforced", common.value("assistive_only", true)},
+          {"care_access_unchanged",
+           common.value("care_access_unchanged", true)},
+          {"clinical_decisions_excluded",
+           common.value("clinical_decisions_excluded", true)}}},
+        {"privacy_posture",
+         {{"recorded", common.value("privacy_posture_recorded", false)},
+          {"approved", common.value("privacy_posture_approved", false)},
+          {"owner", common.value("privacy_review_owner", std::string{})},
+          {"review_id", common.value("privacy_review_id", std::string{})}}},
+        {"phi_minimization",
+         {{"minimum_necessary",
+           common.value("minimum_necessary", false)},
+          {"approved_feature_names",
+           common.value("minimum_necessary_feature_names", Json::array())},
+          {"direct_identifier_blocklist",
+           common.value("direct_identifier_blocklist",
+                        default_direct_identifiers)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}}};
+}
+
 void bind_s11_correctness(ir::ExecutionGraph& graph,
                           const Json& sources) {
     const std::shared_ptr<ir::Node> manifest =
@@ -1259,6 +1312,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["b3_correctness"] = {{"type", "object"}};
     schema["properties"]["b4_correctness"] = {{"type", "object"}};
     schema["properties"]["b5_correctness"] = {{"type", "object"}};
+    schema["properties"]["b6_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -1307,6 +1361,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s11_correctness(composed.graph, input.at("sources"));
     bind_s12_correctness(composed.graph, *solution, settings,
                          input.at("sources"));
+    bind_b6_correctness(composed.graph, *solution, settings,
+                        input.at("sources"));
     bind_s5_correctness(composed.graph, input.at("sources"));
     bind_s7_correctness(composed.graph, input.at("sources"));
     bind_s8_correctness(composed.graph, *snapshot, settings,
@@ -1438,6 +1494,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "supplier"},
                 {"score_column", "supplier_risk_score"},
                 {"output_name", "Publish supplier risk flags"}};
+        } else if (solution->id == "B-6") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "entity"},
+                {"score_column", "operational_risk"},
+                {"output_name", "Publish healthcare operations risk scores"}};
         }
     }
     if (solution->id == "S-1") {
@@ -1503,6 +1565,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         binding["b5_correctness"] =
             composed.graph.find_node("solution_manifest")
                 ->attributes.at("b5_correctness");
+    } else if (solution->id == "B-6") {
+        binding["b6_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b6_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -2162,6 +2228,13 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             entity.value("document_confidence_clear", false);
         spec.payload["fairness_review_passed"] =
             entity.value("fairness_review_passed", false);
+    } else if (binding.value("solution", std::string{}) == "B-6") {
+        spec.payload["workflow_type"] =
+            entity.value("workflow_type", std::string{});
+        spec.payload["assistive_only"] = true;
+        spec.payload["care_access_unchanged"] = true;
+        spec.payload["minimum_necessary_fields"] =
+            entity.value("minimum_necessary_fields", false);
     } else if (binding.value("solution", std::string{}) == "S-6") {
         Json proposal = Json::object();
         for (const std::string field :
@@ -2534,6 +2607,49 @@ std::string validate_b2_runtime_policy(const Json& binding,
     return {};
 }
 
+bool b6_care_access_penalty(std::string action) {
+    std::transform(action.begin(), action.end(), action.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return action.find("deny_care") != std::string::npos ||
+           action.find("care_denial") != std::string::npos ||
+           action.find("cancel_appointment") != std::string::npos ||
+           action.find("restrict_access") != std::string::npos ||
+           action.find("deprioritize_care") != std::string::npos ||
+           action.find("reject_patient") != std::string::npos;
+}
+
+std::string validate_b6_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-6") {
+        return {};
+    }
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (!tier.is_object() ||
+            b6_care_access_penalty(
+                tier.value("action", std::string{}))) {
+            return "B-6 refuses a policy that changes or denies care access";
+        }
+    }
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (b6_care_access_penalty(action) || !settings.is_object() ||
+            settings.value("autonomy", std::string{}).empty()) {
+            return "B-6 actions must remain assistive with explicit authority";
+        }
+    }
+    for (const std::string field : {
+             "privacy_posture_approved", "minimum_necessary_fields",
+             "equity_review_passed", "care_access_unaffected"}) {
+        if (!s12_required_rule(config, field)) {
+            return "B-6 runtime policy is missing healthcare safety evidence: " +
+                   field;
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 ApiResult finish_solution_run(Node& node, const Json& binding,
@@ -2807,7 +2923,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     }
     for (const std::string policy_error : {
              validate_b1_runtime_policy(binding, policy->current()->config),
-             validate_s12_runtime_policy(binding, policy->current()->config)}) {
+             validate_s12_runtime_policy(binding, policy->current()->config),
+             validate_b6_runtime_policy(binding, policy->current()->config)}) {
         if (!policy_error.empty()) {
             return ApiResult::failure("invalid_input", policy_error);
         }
@@ -2875,6 +2992,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t b4_review_queue_misses = 0;
     std::size_t b4_total_fields = 0;
     std::size_t b4_validated_fields = 0;
+    std::size_t b6_care_denial_actions = 0;
+    std::size_t b6_phi_scope_violations = 0;
+    std::size_t b6_privacy_posture_failures = 0;
+    std::map<std::string, std::size_t> b6_group_decisions;
+    std::map<std::string, std::size_t> b6_group_actions;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -3126,6 +3248,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 {"forecast_exception_score",
                  entity.at("forecast_evidence")
                      .at("exception_score")}};
+        } else if (binding.value("solution", std::string{}) == "B-6") {
+            entity["decision_cell"] = {
+                {"operational_risk", decision->tier},
+                {"workflow_type",
+                 entity.value("workflow_type", std::string{})},
+                {"assistive_action",
+                 decision->action.empty() ? "no_action" : decision->action}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -3213,6 +3342,16 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ++s11_margin_floor_violations;
                 }
             }
+            if (binding.value("solution", std::string{}) == "B-6") {
+                b6_care_denial_actions +=
+                    b6_care_access_penalty(decision->action) ? 1u : 0u;
+                b6_phi_scope_violations +=
+                    entity.value("phi_scope_exceeded", false) ? 1u : 0u;
+                b6_privacy_posture_failures +=
+                    entity.value("privacy_posture_approved", false)
+                        ? 0u
+                        : 1u;
+            }
         }
         if (!deliver_decision(node, *decision, entity,
                               policy->current()->config,
@@ -3279,6 +3418,25 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 ++b4_total_fields;
                 if (field.value("validated", false)) {
                     ++b4_validated_fields;
+                }
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-6" &&
+            !decision->holdout) {
+            const Json& protected_columns =
+                binding.at("b6_correctness")
+                    .at("equity_review")
+                    .at("protected_group_columns");
+            for (const Json& column : protected_columns) {
+                const std::string field = column.get<std::string>();
+                if (!entity.contains(field)) {
+                    continue;
+                }
+                const std::string group = field + "=" +
+                    entity_key(entity.at(field));
+                ++b6_group_decisions[group];
+                if (decision->actionable) {
+                    ++b6_group_actions[group];
                 }
             }
         }
@@ -3529,6 +3687,34 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                         metrics.at("field_precision").get<double>());
                 }
             }
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-6") {
+            double minimum_rate = 1.0;
+            double maximum_rate = 0.0;
+            for (const auto& [group, decisions_in_group] :
+                 b6_group_decisions) {
+                const double rate = decisions_in_group == 0
+                    ? 0.0
+                    : static_cast<double>(b6_group_actions[group]) /
+                          static_cast<double>(decisions_in_group);
+                minimum_rate = std::min(minimum_rate, rate);
+                maximum_rate = std::max(maximum_rate, rate);
+            }
+            const double equity_rate_gap = b6_group_decisions.empty()
+                ? 0.0
+                : maximum_rate - minimum_rate;
+            monitor->observe_guardrail(
+                "care_denial_actions",
+                static_cast<double>(b6_care_denial_actions));
+            monitor->observe_guardrail("equity_rate_gap",
+                                       equity_rate_gap);
+            monitor->observe_guardrail(
+                "phi_scope_violations",
+                static_cast<double>(b6_phi_scope_violations));
+            monitor->observe_guardrail(
+                "privacy_posture_failures",
+                static_cast<double>(b6_privacy_posture_failures));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else if (binding.value("solution", std::string{}) == "S-5") {

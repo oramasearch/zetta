@@ -3135,6 +3135,247 @@ CheckResult B4ValidatedWorkflowCheck::evaluate(
         name(), "B-4 blocks business workflows until every field validates");
 }
 
+namespace {
+
+const json* b6_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies,
+                                   std::string& error) {
+    applies = false;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-6") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto profile = manifest->attributes.find("b6_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-6 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b6_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-6 Pipeline to validate"};
+}
+
+CheckResult b6_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b6_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool care_access_penalty(std::string_view action) {
+    const std::string normalized = normalize_type(std::string(action));
+    return normalized.find("deny_care") != std::string::npos ||
+           normalized.find("care_denial") != std::string::npos ||
+           normalized.find("cancel_appointment") != std::string::npos ||
+           normalized.find("restrict_access") != std::string::npos ||
+           normalized.find("deprioritize_care") != std::string::npos ||
+           normalized.find("reject_patient") != std::string::npos;
+}
+
+bool named_string_array(const json& value) {
+    return value.is_array() && !value.empty() &&
+           std::ranges::all_of(value, [](const json& entry) {
+               return entry.is_string() &&
+                      !entry.get_ref<const std::string&>().empty();
+           });
+}
+
+} // namespace
+
+CheckResult B6EquityReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "equity_review");
+    if (review == nullptr || !review->value("required", false) ||
+        review->value("owner", std::string{}).empty() ||
+        !review->value("outcome_rate_reviewed", false)) {
+        return b6_failure(
+            name(),
+            "B-6 requires an owned outcome-rate equity review");
+    }
+    const auto groups = review->find("protected_group_columns");
+    const double maximum_gap =
+        review->value("maximum_rate_gap", -1.0);
+    if (groups == review->end() || !named_string_array(*groups) ||
+        maximum_gap < 0.0 || maximum_gap > 1.0) {
+        return b6_failure(
+            name(),
+            "B-6 equity review must name protected-group columns and a valid rate-gap bound");
+    }
+    const json* minimization = object_field(*profile, "phi_minimization");
+    if (minimization == nullptr) {
+        return b6_failure(
+            name(), "B-6 equity review requires evaluation-only group fields");
+    }
+    const auto features = minimization->find("feature_names");
+    if (features == minimization->end() || !named_string_array(*features)) {
+        return b6_failure(
+            name(), "B-6 equity review requires named model features");
+    }
+    std::unordered_set<std::string> feature_names;
+    for (const json& feature : *features) {
+        feature_names.insert(
+            normalize_type(feature.get_ref<const std::string&>()));
+    }
+    for (const json& group : *groups) {
+        if (feature_names.contains(
+                normalize_type(group.get_ref<const std::string&>()))) {
+            return b6_failure(
+                name(),
+                "B-6 protected-group fields are evaluation-only and may not be model features");
+        }
+    }
+    return b6_success(
+        name(),
+        "B-6 records an owned review across protected groups");
+}
+
+CheckResult B6AssistiveOnlyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* assistive = object_field(*profile, "assistive_only");
+    const json* policy = object_field(*profile, "policy");
+    if (assistive == nullptr || policy == nullptr ||
+        !assistive->value("enforced", false) ||
+        !assistive->value("care_access_unchanged", false) ||
+        !assistive->value("clinical_decisions_excluded", false) ||
+        !policy_requires(*policy, "care_access_unaffected", true)) {
+        return b6_failure(
+            name(),
+            "B-6 must remain assistive and may not change care access or clinical decisions");
+    }
+    for (const json& tier : policy->value("tiers", json::array())) {
+        if (!tier.is_object() ||
+            care_access_penalty(tier.value("action", std::string{}))) {
+            return b6_failure(
+                name(),
+                "B-6 policy tiers may not select a care-access penalty");
+        }
+    }
+    for (const auto& [action, settings] :
+         policy->value("actions", json::object()).items()) {
+        if (care_access_penalty(action)) {
+            return b6_failure(
+                name(),
+                "B-6 may not register a model-driven care-access penalty");
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}).empty()) {
+            return b6_failure(
+                name(), "B-6 actions must declare their authority class");
+        }
+    }
+    return b6_success(
+        name(),
+        "B-6 actions assist operations without denying or delaying care");
+}
+
+CheckResult B6PrivacyPostureCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* posture = object_field(*profile, "privacy_posture");
+    const json* policy = object_field(*profile, "policy");
+    if (posture == nullptr || policy == nullptr ||
+        !posture->value("recorded", false) ||
+        !posture->value("approved", false) ||
+        posture->value("owner", std::string{}).empty() ||
+        posture->value("review_id", std::string{}).empty() ||
+        !policy_requires(*policy, "privacy_posture_approved", true)) {
+        return b6_failure(
+            name(),
+            "B-6 requires a recorded, approved, owned privacy posture before creation");
+    }
+    return b6_success(
+        name(), "B-6 records an approved privacy posture as a creation gate");
+}
+
+CheckResult B6PhiMinimizationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* minimization = object_field(*profile, "phi_minimization");
+    const json* policy = object_field(*profile, "policy");
+    if (minimization == nullptr || policy == nullptr ||
+        !minimization->value("minimum_necessary", false) ||
+        !policy_requires(*policy, "minimum_necessary_fields", true)) {
+        return b6_failure(
+            name(), "B-6 requires a minimum-necessary PHI review");
+    }
+    const auto approved = minimization->find("approved_feature_names");
+    const auto blocked = minimization->find("direct_identifier_blocklist");
+    const auto features = minimization->find("feature_names");
+    if (approved == minimization->end() ||
+        !named_string_array(*approved) || blocked == minimization->end() ||
+        !named_string_array(*blocked) || features == minimization->end() ||
+        !named_string_array(*features)) {
+        return b6_failure(
+            name(),
+            "B-6 PHI review must name selected, approved, and blocked fields");
+    }
+    std::unordered_set<std::string> approved_names;
+    std::unordered_set<std::string> blocked_names;
+    for (const json& field : *approved) {
+        approved_names.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& field : *blocked) {
+        blocked_names.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        const std::string normalized =
+            normalize_type(feature.get_ref<const std::string&>());
+        if (!approved_names.contains(normalized) ||
+            blocked_names.contains(normalized)) {
+            return b6_failure(
+                name(),
+                "B-6 model features exceed the approved minimum-necessary set");
+        }
+    }
+    return b6_success(
+        name(), "B-6 model inputs are limited to reviewed operational fields");
+}
 CheckResult S11LoggedPropensityCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;

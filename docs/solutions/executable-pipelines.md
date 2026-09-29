@@ -116,6 +116,11 @@ does not substitute a decision score. Put checkpoint, text-column, retrieval,
 and labelling-function settings in `sources.M-10` and `sources.M-19` at create
 time. The solution runner forwards each methodology's object into that stage's
 registered callback.
+B-6 binds M-1's `Publish healthcare operations risk scores` output in
+`healthcare_results`, using `entity` and `operational_risk`. The score feeds
+only assistive scheduling and revenue-cycle policy actions. Protected-group
+columns remain evaluation-only and direct identifiers never enter the approved
+feature set or connector payload.
 
 ## Run and read back
 
@@ -329,3 +334,10 @@ deliveries and channel selection, reads positive M-15 propensity logs, proves
 holdout/consent/contact-cap suppression, records centered net-value outcomes
 with a 0.18 effect, and checks that the estimate and 95% confidence interval
 recover the planted effect.
+
+`SolutionJourney.HealthcareOperationsProtectsAccessAndRecoversPlantedEffect`
+builds and runs B-6 over a partitioned synthetic appointment and claim-work
+table. It excludes a future case, proves permanent holdout suppression,
+inspects minimum-necessary assistive payloads, observes all five guardrails,
+records centered operational-resolution outcomes with a 0.18 planted effect,
+and verifies the effect lies inside the readout confidence interval.

@@ -113,6 +113,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   protected holdout measurement, and a resolution-quality readout. The
   customer-offering promotion condition remains recorded. See
   [solutions/B-3.md](solutions/B-3.md).
+- **B-6 Healthcare Operations (#1180)** — runnable at levels 1–4 with native
+  M-1 operational-risk scoring for assistive scheduling and revenue-cycle work.
+  The gate refuses missing equity review, care-access restrictions, unapproved
+  privacy posture, and PHI beyond an approved minimum. Protected holdouts,
+  governed work queues, and operational-resolution outcomes feed the ROI
+  readout. Its customer-promotion condition remains recorded independently of
+  engineering readiness. See [solutions/B-6.md](solutions/B-6.md).
 
 - **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
   with M-4 lead-time forecasting, M-16 constrained planning, optional M-5

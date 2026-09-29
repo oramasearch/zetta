@@ -192,6 +192,10 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<B3ClosureApprovalCheck>());
     gate.add_check(std::make_shared<B3NewTicketTypeDriftCheck>());
     gate.add_check(std::make_shared<B3LevelCompositionCheck>());
+    gate.add_check(std::make_shared<B6EquityReviewCheck>());
+    gate.add_check(std::make_shared<B6AssistiveOnlyCheck>());
+    gate.add_check(std::make_shared<B6PrivacyPostureCheck>());
+    gate.add_check(std::make_shared<B6PhiMinimizationCheck>());
     gate.add_check(std::make_shared<S5RollingOriginCheck>());
     gate.add_check(std::make_shared<S5FutureCovariateCheck>());
     gate.add_check(std::make_shared<S5HierarchyConsistencyCheck>());

@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-5. This is the scope of
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-6. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -68,6 +68,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [B-5.md](B-5.md) — runnable supplier risk and procurement module:
   point-in-time external evidence, post-event leakage refusal, forecast-backed
   flags, bounded procurement actions, and planted-effect proof (#1179).
+- [B-6.md](B-6.md) — runnable healthcare-operations module: assistive-only
+  scheduling and revenue-cycle work, equity and privacy refusals, PHI
+  minimization, protected holdout, and planted-effect proof (#1180).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -95,28 +98,28 @@ one-tick checks for all added catalog families and existing table-backed state.
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the
 catalogue-level registry in `zetta::ml`. It is separate from the older headed
 deployment-card catalogue: this registry describes the S-1 through S-12 and
-B-1 through B-5 product modules, the three remaining Band-B sketches, and the
+B-1 through B-6 product modules, the two remaining Band-B sketches, and the
 methodology callbacks used to build each module's Pipeline.
 
 ## Registry contract
 
 `include/zetta/ml/solution.hpp` defines `Solution` and its supporting value
-types. `solutions()` returns 20 stable entries in catalogue order: 17 runnable
-catalogue modules and three sketches.
+types. `solutions()` returns 20 stable entries in catalogue order: 18 runnable
+catalogue modules and two sketches.
 
-- S-1 through S-12 and B-1 through B-5 have product copy, use case, methodology composition,
+- S-1 through S-12 and B-1 through B-6 have product copy, use case, methodology composition,
   execution order, action and latency classes, autonomy defaults, required data
   roles, policy and measurement templates, guardrails, and four selectable
   capability levels.
-- B-6 through B-8 have `status: "sketch"`, `runnable: false`, and a promotion
+- B-7 and B-8 have `status: "sketch"`, `runnable: false`, and a promotion
   condition. Their data roles describe what promotion would require. They
   cannot be built; the refusal repeats that promotion condition. B-1 through
-  B-5 retain their promotion conditions as go-to-market conditions while
+  B-6 retain their promotion conditions as go-to-market conditions while
   reporting `status: "catalogue"` and `runnable: true`.
 - All seven production foundation components are integrated (#1128).
   `runnable` describes the default level's methodology availability;
   `missing_components` lists unavailable methodology callbacks only. It is
-  empty for the currently runnable modules. B-6 through B-8 remain sketches.
+  empty for the currently runnable modules. B-7 and B-8 remain sketches.
 
 The product copy contains no pricing or numerical return claims. It says what
 problem the module solves and what data roles it needs.
@@ -395,7 +398,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-4 journeys.
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-6 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -422,6 +425,10 @@ outputs, incomplete fairness review, missing legal or works-council approval,
 and any destination other than the named people leader. The runtime also
 refuses undersized cohort rows, individual identifiers or scores, and later
 policy versions that remove the required gates.
+For B-6, it refuses a missing protected-group equity review, any policy that
+can penalize care access, an unrecorded or unapproved privacy posture, and
+model features outside the approved minimum-necessary PHI set. All four levels
+run M-1 and bind its healthcare-specific operations score table.
 
 For S-6, it refuses missing service or budget constraints, an M-4 horizon
 shorter than lead time, unsafe automatic/hard quantity bounds, and a level that
