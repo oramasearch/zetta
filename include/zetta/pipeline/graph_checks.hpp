@@ -385,6 +385,34 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-5 supplier-risk adaptations (#1179). External observations must be frozen
+// at the decision cutoff, supplier records after a disruption cannot become
+// predictors, and every emitted risk flag must carry source and model evidence.
+class B5PointInTimeExternalDataCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b5_point_in_time_external_data";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B5PostEventSupplierLeakageCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b5_post_event_supplier_leakage";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B5FlagEvidenceCheck final : public Check {
+public:
+    std::string name() const override { return "b5_flag_evidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-12 claim-routing adaptations (#1121). These checks keep claim denial out
 // of automatic paths, require a documented cohort fairness review, enforce the
 // M-11 field-confidence boundary, and verify every selected capability level.

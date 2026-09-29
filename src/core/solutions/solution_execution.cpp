@@ -233,6 +233,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                         }
                     }
                 }
+                if (state->binding.value("solution", std::string{}) == "B-5" &&
+                    stage.methodology->id == "M-4") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "forecast") {
+                            supporting_outputs.push_back(output);
+                        }
+                    }
+                }
                 outputs.insert(outputs.end(), snapshot.outputs.begin(),
                                snapshot.outputs.end());
                 break;

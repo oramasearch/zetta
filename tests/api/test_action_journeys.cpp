@@ -316,6 +316,98 @@ void land_demand_forecast_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_supplier_risk_data(Node& node) {
+    const auto database = node.create_database("supplier_data");
+    ASSERT_TRUE(database);
+    const auto suppliers = database->create_table("suppliers");
+    ASSERT_TRUE(suppliers);
+    suppliers->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 120; ++index) {
+        const int supplier = index + 1;
+        const bool elevated = index % 3 == 0;
+        const double delivery_signal =
+            static_cast<double>(index % 10) * 0.05 +
+            (elevated ? 0.25 : 0.0);
+        const double concentration_signal =
+            static_cast<double>((index * 7) % 11) * 0.04 +
+            (elevated ? 0.2 : 0.0);
+        suppliers->add_row(
+            {{"entity", supplier},
+             {"record_id", supplier},
+             {"source", "fixture"},
+             {"name", "Supplier " + std::to_string(supplier)},
+             {"label", elevated ? 1 : 0},
+             {"disruption", elevated ? 1 : 0},
+             {"late_delivery_rate", delivery_signal},
+             {"concentration", concentration_signal},
+             {"start_time", static_cast<double>(index)},
+             {"external_observed_at", "2026-08-15T00:00:00.000Z"},
+             {"external_source", "supplier-monitor"},
+             {"procurement_eligible", true},
+             {"external_data_current", true},
+             {"evidence_complete", true},
+             {"supplier_closed", false},
+             {"sanctions_hold", false},
+             {"part_id", "part-" + std::to_string(index % 12)},
+             {"site_id", "site-west"},
+             {"contract_id", "contract-" + std::to_string(supplier)},
+             {"mitigation_cost", elevated ? 5000.0 : 1000.0},
+             {"single_source_dependency", index % 3 == 0},
+             {"owner", "procurement-west"}});
+    }
+    suppliers->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future supplier"},
+         {"label", 1},
+         {"disruption", 1},
+         {"late_delivery_rate", 1.0},
+         {"concentration", 1.0},
+         {"start_time", 120.0},
+         {"external_observed_at", "2026-10-01T00:00:00.000Z"},
+         {"external_source", "supplier-monitor"},
+         {"procurement_eligible", true},
+         {"external_data_current", true},
+         {"evidence_complete", true},
+         {"supplier_closed", false},
+         {"sanctions_hold", false},
+         {"part_id", "future-part"},
+         {"site_id", "future-site"},
+         {"contract_id", "future-contract"},
+         {"mitigation_cost", 5000.0},
+         {"single_source_dependency", true},
+         {"owner", "procurement-west"}});
+    const auto suppliers_written =
+        zetta::data::write_partitioned(node, *database, *suppliers);
+    ASSERT_TRUE(suppliers_written.ok()) << suppliers_written.error;
+
+    const auto history = database->create_table("supplier_history");
+    ASSERT_TRUE(history);
+    history->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int supplier = 1; supplier <= 120; ++supplier) {
+        for (int day = 0; day < 35; ++day) {
+            const int observation = supplier * 1000 + day;
+            const double baseline = supplier % 3 == 1 ? 0.5 : 0.15;
+            const double weekly =
+                0.04 * std::sin(day * 2.0 * std::numbers::pi / 7.0);
+            history->add_row(
+                {{"observation_id", observation},
+                 {"record_id", observation},
+                 {"source", "fixture"},
+                 {"name", "history-" + std::to_string(observation)},
+                 {"supplier_id", supplier},
+                 {"day", day},
+                 {"late_delivery_rate", baseline + weekly}});
+        }
+    }
+    const auto history_written =
+        zetta::data::write_partitioned(node, *database, *history);
+    ASSERT_TRUE(history_written.ok()) << history_written.error;
+}
+
 TEST_F(SolutionJourney,
        DemandForecastBuildsActsAndReportsFvaLimitsHonestly) {
     SolutionDeliveryBoundary delivery;
@@ -2241,6 +2333,31 @@ nlohmann::json retention_configuration() {
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
 }
 
+nlohmann::json supplier_risk_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "supplier_data"},
+          {"source_table", "suppliers"},
+          {"target_table", "supplier_risk_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "external_observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "disruption"},
+          {"time_column", "start_time"},
+          {"as_of", 119.0},
+          {"feature_columns", {"late_delivery_rate", "concentration"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://procurement.example.test/tasks"},
+          {"owner", "procurement-west"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1000.0},
+          {"investment", 500.0},
+          {"currency", "USD"}}}};
+}
+
 nlohmann::json lead_scoring_configuration() {
     return {
         {"snapshot",
@@ -2389,6 +2506,67 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
                                    estimate.at("confidence_interval").at("lower").template get<double>() <= 0.2 &&
                                    estimate.at("confidence_interval").at("upper").template get<double>() >= 0.2;
                         })}}});
+    return outcomes;
+}
+
+journey::Journey planted_supplier_risk_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"supplier-risk-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double avoided =
+            0.3 + 0.08 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record observed supplier outcome",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "disruption_avoided"},
+              {"value", avoided},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured supplier-risk effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted supplier-risk effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
     return outcomes;
 }
 
@@ -3034,6 +3212,176 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2)
                           << readout.value.at("correctness_certificate").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       SupplierRiskProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_supplier_risk_data(node);
+
+    const ApiResult catalogue = call("get_solution", {{"solution", "B-5"}});
+    ASSERT_TRUE(catalogue.ok) << catalogue.error.message;
+    EXPECT_TRUE(catalogue.value.at("solution").at("runnable"));
+    EXPECT_FALSE(catalogue.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+    ASSERT_TRUE(call("create_project", {{"name", "supplier risk"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "supplier risk"},
+         {"solution", "B-5"},
+         {"level", 4},
+         {"sources",
+          {{"source", "supplier_data"},
+           {"table", "suppliers"},
+           {"M-1",
+            {{"entity_column", "entity_id"},
+             {"label_column", "disruption"},
+             {"time_column", "start_time"},
+             {"as_of", 119.0},
+             {"feature_columns",
+              {"late_delivery_rate", "concentration"}},
+             {"num_trees", 8},
+             {"max_depth", 2}}},
+           {"M-4",
+            {{"source", "supplier_data"},
+             {"table", "supplier_history"},
+             {"time_column", "day"},
+             {"target_column", "late_delivery_rate"},
+             {"series_column", "supplier_id"},
+             {"horizon", 7},
+             {"seasonal_period", 7},
+             {"lags", {1, 7}},
+             {"rolling_window", 7},
+             {"backtest_folds", 3},
+             {"num_trees", 8},
+             {"max_depth", 2},
+             {"seed", 1179}}},
+           {"correctness",
+            {{"external_history_frozen", true},
+             {"external_data_point_in_time", true},
+             {"future_external_publications_excluded", true},
+             {"truncate_supplier_records_at_event", true},
+             {"post_event_supplier_records", "exclude"},
+             {"flag_evidence_required", true},
+             {"reason_codes_required", true},
+             {"forecast_evidence_required", true}}}}},
+         {"foundation", supplier_risk_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_FALSE(created.value.at("preview"));
+    EXPECT_EQ(created.value.at("methodologies").size(), 2u);
+    EXPECT_TRUE(created.value.at("missing_components").empty());
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "supplier risk"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 5000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    const auto project = node.find_project("supplier risk");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish supplier risk flags");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "supplier");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "supplier_risk_score");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_FALSE(decision.tier.empty());
+        EXPECT_FALSE(decision.cell.empty());
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        ASSERT_TRUE(payload.contains("risk_evidence"));
+        const auto& evidence = payload.at("risk_evidence");
+        EXPECT_FALSE(evidence.at("external_source").get<std::string>().empty());
+        EXPECT_FALSE(evidence.at("reason_codes").empty());
+        EXPECT_TRUE(evidence.contains("forecast"));
+        EXPECT_TRUE(payload.contains("decision_cell"));
+    }
+
+    const auto risk_results = node.find_database("supplier_risk_results");
+    ASSERT_TRUE(risk_results);
+    ASSERT_EQ(risk_results->tables().size(), 1u);
+    const ApiResult flags = call(
+        "sql",
+        {{"statement", "SELECT * FROM supplier_risk_results." +
+                           risk_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(flags.ok) << flags.error.message;
+    EXPECT_EQ(flags.value.at("rows").size(), 120u);
+    EXPECT_EQ(node.find_database("supplier_data")
+                  ->find_table("supplier_risk_snapshot")
+                  ->store()
+                  .size(),
+              120u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto measured = journey::run_journey(
+        planted_supplier_risk_outcomes(ledger.value.at("entries"), binding),
+        caller(),
+        pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
         }
     }
     EXPECT_TRUE(measured.ok) << measured.summary();

@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-5", "supplier_watch_task", "A2", "holdout", "disruption_avoided", "supplier", "missing_flag_evidence_rate"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,54 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void supplier_risk_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.65},
+         {"action", "procurement_review_task"},
+         {"allowed_actions", {"supplier_watch_task",
+                              "procurement_review_task",
+                              "supplier_mitigation_task", "no_action"}}},
+        {{"name", "watch"}, {"minimum_score", 0.0},
+         {"action", "supplier_watch_task"},
+         {"allowed_actions", {"supplier_watch_task", "no_action"}}},
+        {{"name", "monitor"}, {"minimum_score", -1.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"supplier_watch_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"procurement_review_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"supplier_mitigation_task",
+         {{"autonomy", "A2"}, {"approval_field", "mitigation_cost"},
+          {"approval_above", 10000.0}, {"sla_seconds", 14400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 12;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("procurement_eligible", true),
+        predicate("external_data_current", true),
+        predicate("evidence_complete", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("supplier_closed", true),
+        predicate("sanctions_hold", true),
+        predicate("evidence_complete", false)};
+    result.policy["budget"] = {{"limit", 50000.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"watch", 0.1}, {"monitor", 0.1}};
+    result.experiment.treatment_cells = {"procurement_action"};
+    result.guardrails = {
+        {"missing_flag_evidence_rate", 0.0, "maximum"},
+        {"stale_external_data_rate", 0.0, "maximum"},
+        {"single_source_exposure_rate", 0.5, "maximum"},
+        {"mitigation_budget", 50000.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "disruption_avoided", "supplier", 60};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +627,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-5") {
+                supplier_risk_defaults(result);
             }
             return result;
         }
@@ -587,6 +638,18 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
+    if (solution_id == "B-5") {
+        const std::string action =
+            level <= 1 ? "supplier_watch_task"
+            : level == 2 ? "procurement_review_task"
+                         : "supplier_mitigation_task";
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") == "critical") {
+                tier["action"] = action;
+            }
+        }
+        return policy;
+    }
     if (solution_id != "S-6") {
         return policy;
     }

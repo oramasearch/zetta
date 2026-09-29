@@ -113,6 +113,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   consent/contact enforcement, action delivery, and a net-value ROI readout.
   See [solutions/S-11.md](solutions/S-11.md).
 
+- **B-5 Supplier Risk & Procurement Intelligence (#1179)** — runnable at
+  levels 1–4 with M-4 forecast context and supplier-specific M-1 risk flags.
+  Three bound checks enforce point-in-time external data, exclude post-event
+  supplier records, and require evidence on every flag. Governed procurement
+  tasks preserve tier holdouts and feed the disruption-avoidance ROI readout.
+  The customer-offering condition remains recorded independently. See
+  [solutions/B-5.md](solutions/B-5.md).
+
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal
   handler protection. Solution monitors, experiments/assignments and ledger

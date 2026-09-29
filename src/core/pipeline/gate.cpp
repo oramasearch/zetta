@@ -241,6 +241,9 @@ CorrectnessGate default_gate() {
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.
     gate.add_check(std::make_shared<zetta::usecases::churn::EntityResolutionCheck>());
+    gate.add_check(std::make_shared<B5PointInTimeExternalDataCheck>());
+    gate.add_check(std::make_shared<B5PostEventSupplierLeakageCheck>());
+    gate.add_check(std::make_shared<B5FlagEvidenceCheck>());
     return gate;
 }
 

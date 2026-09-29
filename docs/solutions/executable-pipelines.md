@@ -83,6 +83,11 @@ S-10's M-1 stage writes `fraud_results.authorization_scores_*` with
 `transaction` and `fraud_score` columns. The module binds that real output,
 not the retention table, and crosses its authorization band with graph and
 case-owner evidence.
+B-5 binds M-1's `Publish supplier risk flags` output in
+`supplier_risk_results`, using `supplier` and `supplier_risk_score`. Its M-4
+stage reads a separately frozen delivery-history table. The foundation joins
+the strongest forecast exception for that supplier and refuses a flag without
+external provenance, model reasons, or forecast context.
 
 S-11 is the other bound primary-output case. It automatically selects the M-8
 recommendation table's `entity` and `policy_score`. Its snapshot may retain
@@ -106,8 +111,8 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. Stage Connect nodes read this snapshot except S-6 M-4, which
-   reads its configured bounded history table. Wrapper stage
+   each child Run. Stage Connect nodes read this snapshot except S-6 and B-5
+   M-4, which read their configured bounded history tables. Wrapper stage
    annotations are removed while reconstructing the child graph, so they are
    never interpreted as methodology parameters. An ISO cutoff is carried into
    feature planning from the snapshot annotation, not inferred.

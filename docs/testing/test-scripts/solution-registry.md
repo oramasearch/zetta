@@ -16,7 +16,7 @@ snapshot cutoff, and supplied ROI economics. The complete input contract is in
 ## Steps
 
 1. Ask the node to list its solutions.
-   → It shows twelve catalogue modules and eight entries marked as sketches.
+   → It shows 13 runnable catalogue modules and seven entries marked as sketches.
 2. Open Churn & Retention.
    → It returns typed policy, experiment, measurement and guardrail defaults,
    `runnable: true`, and an empty `missing_components` list. S-2 through S-12

@@ -998,6 +998,49 @@ CheckResult s4_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b5_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-5") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-5 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b5_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-5 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b5_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-5 Pipeline to validate"};
+}
+
+CheckResult b5_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b5_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 bool has_boolean_policy_predicate(const json& policy,
                                   const char* rule_name,
                                   std::string_view field,
@@ -1960,6 +2003,193 @@ CheckResult S4PromiseToPayPointInTimeCheck::evaluate(
     return s4_success(
         name(),
         "S-4 promise-to-pay labels are frozen at the prediction cutoff");
+}
+
+CheckResult B5PointInTimeExternalDataCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* external = object_field(*profile, "external_data");
+    const auto prediction = profile->find("prediction_time");
+    if (external == nullptr || prediction == profile->end() ||
+        !external->value("point_in_time", false) ||
+        !external->value("future_publications_excluded", false) ||
+        external->value("source_column", std::string{}).empty() ||
+        external->value("observed_at_column", std::string{}).empty() ||
+        external->value("observed_at_column", std::string{}) !=
+            external->value("snapshot_time_column", std::string{})) {
+        return b5_failure(
+            name(),
+            "B-5 external data must name its source and use publication time "
+            "as the point-in-time snapshot boundary");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    if (!prediction_time) {
+        return b5_failure(name(), "B-5 prediction time is invalid");
+    }
+    std::size_t sources = 0;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        ++sources;
+        if (node->attributes.value("source_kind", std::string{}) !=
+            "snapshot") {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": live supplier or external data is refused");
+        }
+        auto cutoff = node->attributes.find("solution_snapshot_as_of");
+        if (cutoff == node->attributes.end()) {
+            cutoff = node->attributes.find("snapshot_as_of");
+        }
+        if (cutoff == node->attributes.end()) {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": point-in-time source has no inclusive cutoff");
+        }
+        const std::optional<solutions::TimePoint> source_time =
+            solutions::parse_time_point(*cutoff);
+        if (!source_time || source_time->kind != prediction_time->kind ||
+            source_time->value > prediction_time->value) {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": supplier source cutoff is after decision time");
+        }
+    }
+    if (sources == 0) {
+        return b5_failure(name(), "B-5 has no methodology snapshot sources");
+    }
+    return b5_success(
+        name(), std::to_string(sources) +
+                    " B-5 supplier sources are point-in-time safe");
+}
+
+CheckResult B5PostEventSupplierLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* records = object_field(*profile, "supplier_records");
+    const auto blocklist = profile->find("post_event_blocklist");
+    const auto features = profile->find("feature_names");
+    if (records == nullptr ||
+        records->value("event_time_column", std::string{}).empty() ||
+        !records->value("truncate_at_event", false) ||
+        records->value("post_event_records", std::string{}) != "exclude" ||
+        blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return b5_failure(
+            name(),
+            "B-5 must truncate supplier history at the disruption event and "
+            "declare a non-empty post-event blocklist");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string&>().empty()) {
+            return b5_failure(
+                name(), "B-5 post-event blocklist entries must be names");
+        }
+        blocked.insert(normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return b5_failure(name(), "B-5 feature names must be strings");
+        }
+        if (blocked.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b5_failure(
+                name(), "B-5 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is only available after the supplier event");
+        }
+    }
+    return b5_success(
+        name(), "B-5 predictors exclude post-event supplier records");
+}
+
+CheckResult B5FlagEvidenceCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* evidence = object_field(*profile, "flag_evidence");
+    if (evidence == nullptr || !evidence->value("required", false) ||
+        !evidence->value("reason_codes_required", false) ||
+        !evidence->value("forecast_evidence_required", false) ||
+        !evidence->contains("required_fields") ||
+        !evidence->at("required_fields").is_array() ||
+        evidence->at("required_fields").empty()) {
+        return b5_failure(
+            name(),
+            "B-5 flags must carry external provenance, model reasons, and "
+            "forecast evidence");
+    }
+    for (const json& field : evidence->at("required_fields")) {
+        if (!field.is_string() ||
+            field.get_ref<const std::string&>().empty()) {
+            return b5_failure(
+                name(), "B-5 flag evidence fields must be named");
+        }
+    }
+    bool supplier_output = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node ||
+            node->attributes.value("entity_output_column", std::string{}) !=
+                "supplier" ||
+            node->attributes.value("score_output_column", std::string{}) !=
+                "supplier_risk_score") {
+            continue;
+        }
+        const auto output_fields =
+            node->attributes.find("evidence_output_fields");
+        supplier_output =
+            output_fields != node->attributes.end() &&
+            output_fields->is_array() &&
+            std::ranges::find(*output_fields, "reason_codes") !=
+                output_fields->end() &&
+            std::ranges::find(*output_fields, "dominant_driver") !=
+                output_fields->end();
+    }
+    if (!supplier_output || !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-4")) {
+        return b5_failure(
+            name(),
+            "B-5 requires supplier-specific M-1 flags and M-4 forecast "
+            "context at every level");
+    }
+    return b5_success(
+        name(), "B-5 flags carry source, reason, and forecast evidence");
 }
 
 namespace {
