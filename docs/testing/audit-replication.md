@@ -74,6 +74,8 @@ relief alone did not solve the failure on this host.
 Paused, allocation-logged million-event snapshots from macOS 14.6.1 attributed
 the retained memory as follows. Byte counts are allocator-reported allocation
 sizes; MiB values are `vmmap` resident-region measurements, not budget deductions.
+These allocation snapshots precede the #1163 rebase; the final clean-build RSS
+proof below also includes its memory-accounting integration.
 
 | Allocation or region | Initial implementation | Final implementation |
 |---|---:|---:|
@@ -109,3 +111,46 @@ The same native suite's append-only million-event test used 95,649,792 additiona
 resident bytes and 72,671,349 disk bytes, including the new seek sidecar. Against
 the 85 MB append-only result reported for #1160, the replicated test no longer
 introduces hundreds of megabytes of resident replication storage.
+
+## Clean proof after rebasing onto #1163
+
+Rebased onto `origin/dev` at `1574b656`, updated submodules, removed the generated
+build directory, and configured a fresh native Release build with Ninja. Build
+parallelism was capped at six jobs; tests ran serially. The audit ownership
+calculation now includes both compact indexes, the segment cache, recent events,
+and pending persistence, with no catalog event values.
+
+```text
+#1154 one million audit records: RSS delta 95879168 bytes, disk 72671349 bytes
+#1164 migration: 100000 events, 0 audit keys/tombstones, catalog 20656577 -> 413 bytes
+#1164 load node=0 events=1000000 steady_rss_extra=92667904 relieved_rss_extra=92667904 startup_peak_extra=1409024 audit_memory=54644341 audit_items=1000000 catalog_bytes=34
+#1164 load node=1 events=1000000 steady_rss_extra=92405760 relieved_rss_extra=92405760 startup_peak_extra=1425408 audit_memory=54644341 audit_items=1000000 catalog_bytes=34
+#1164 restart node=0 events=1000000 steady_rss_extra=0 relieved_rss_extra=65536 startup_peak_extra=87425024 audit_memory=54644341 audit_items=1000000 catalog_bytes=34
+#1164 restart node=1 events=1000000 steady_rss_extra=0 relieved_rss_extra=49152 startup_peak_extra=87425024 audit_memory=54644341 audit_items=1000000 catalog_bytes=34
+```
+
+Steady-state extra RSS is 88.375 / 88.125 MiB; restart peak extra RSS is
+83.375 MiB on each node. Additional pressure relief does not reduce these
+steady-state readings. REST/MCP parity includes segment-backed audit reads,
+protocol/watermarks, and the `system.memory` audit row.
+
+Full native static suite command and summary:
+
+```sh
+TMPDIR="$PWD/build/tmp" ctest --test-dir build --output-on-failure -j 1
+```
+
+```text
+100% tests passed, 0 tests failed out of 2619
+Total Test time (real) = 639.08 sec
+```
+
+CTest registered 2,620 tests: 17 conditional skips and one disabled dispatcher
+benchmark remain as configured. No flake waiver or isolated retry was needed
+after the clean rebuild. The pre-rebase incremental-reconcile fixture that still
+wrote `audit:` keys was corrected; its migrated-event replacement passes here.
+
+Linux proof deferred: the external `linux-proof.sh` helper is absent on this
+host. The issue does not require the shared-library build (#1096). No containers
+or local images were used. The live-bus total-RSS and manual deployment check
+remain unrun pending approved all-node deployment/restart and cloud inspection.
