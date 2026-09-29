@@ -657,6 +657,54 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-8 IT and security operations adaptations (#1182). Alert volume is
+// bounded, authority advances only through the declared A0/A1/A2 levels, the
+// kill switch blocks delivery, and automatic containment stays inside the
+// approved playbook scope.
+class B8AlertBudgetCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_alert_budget";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8GraduatedAuthorityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_graduated_authority";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8KillSwitchCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_kill_switch";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8ContainmentBoundsCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_containment_bounds";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-10 validates label maturity, selection bias, and request-time parity.
 class S10LabelDelayCheck final : public Check {
 public:

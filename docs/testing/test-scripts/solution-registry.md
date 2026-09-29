@@ -1,6 +1,6 @@
 # Compose a catalogue solution · `solution-registry`
 
-**Issues:** https://github.com/oramasearch/zetta/issues/1102, https://github.com/oramasearch/zetta/issues/1111, https://github.com/oramasearch/zetta/issues/1114, https://github.com/oramasearch/zetta/issues/1115, https://github.com/oramasearch/zetta/issues/1116, https://github.com/oramasearch/zetta/issues/1117, https://github.com/oramasearch/zetta/issues/1118, https://github.com/oramasearch/zetta/issues/1119, https://github.com/oramasearch/zetta/issues/1120, https://github.com/oramasearch/zetta/issues/1128, https://github.com/oramasearch/zetta/issues/1175, https://github.com/oramasearch/zetta/issues/1176, https://github.com/oramasearch/zetta/issues/1177, and https://github.com/oramasearch/zetta/issues/1178
+**Issues:** https://github.com/oramasearch/zetta/issues/1102, https://github.com/oramasearch/zetta/issues/1111, https://github.com/oramasearch/zetta/issues/1114, https://github.com/oramasearch/zetta/issues/1115, https://github.com/oramasearch/zetta/issues/1116, https://github.com/oramasearch/zetta/issues/1117, https://github.com/oramasearch/zetta/issues/1118, https://github.com/oramasearch/zetta/issues/1119, https://github.com/oramasearch/zetta/issues/1120, https://github.com/oramasearch/zetta/issues/1128, https://github.com/oramasearch/zetta/issues/1175, https://github.com/oramasearch/zetta/issues/1176, https://github.com/oramasearch/zetta/issues/1177, https://github.com/oramasearch/zetta/issues/1178, https://github.com/oramasearch/zetta/issues/1179, https://github.com/oramasearch/zetta/issues/1180, https://github.com/oramasearch/zetta/issues/1181, and https://github.com/oramasearch/zetta/issues/1182
 **Persona:** An operations analyst evaluating a retention solution on landed customer data.
 **Goal:** Discover executable defaults, run a governed retention Pipeline, and read its decision and outcome evidence.
 **Status:** automated native journey passes; human walkthrough not yet run
@@ -16,11 +16,11 @@ snapshot cutoff, and supplied ROI economics. The complete input contract is in
 ## Steps
 
 1. Ask the node to list its solutions.
-   → It shows 19 runnable catalogue modules and one entry marked as a sketch.
+   → It shows 20 runnable catalogue modules.
 2. Open Churn & Retention.
    → It returns typed policy, experiment, measurement and guardrail defaults,
    `runnable: true`, and an empty `missing_components` list. S-2 through S-12
-   and B-1 through B-7 also return complete policies and measurement designs.
+   and B-1 through B-8 also return complete policies and measurement designs.
 3. Create a project and choose level 1 of Churn & Retention against the customer table, supplying the foundation inputs above.
    → A Pipeline is created with three selected methodologies and real policy, experiment, monitor, and readout IDs; `preview` is false.
 4. Read the project back.

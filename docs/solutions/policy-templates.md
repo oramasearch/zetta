@@ -180,6 +180,16 @@ and reason-code readiness must pass. Fraud, bankruptcy, and manual-only holds
 block delivery. Each tier keeps a deterministic 10% holdout measured on the
 90-day `performing_account` outcome.
 
+B-8 supplies a complete IT and security response policy. Critical, elevated,
+and advisory tiers share an exact ten-alert budget. Levels select A0
+investigation, A1 containment approval, or single-asset A2 containment inside
+an approved playbook; advisory and unflagged rows remain no-action. Owner,
+playbook, containment permission, dependency scope, and `affected_assets <= 1`
+rules are mandatory. Manual-only, protected-asset, and active-incident flags
+block delivery. Every tier has a deterministic 10% holdout, and a boolean kill
+switch stops the action path. Five guardrails cover alert volume, containment
+scope, unapproved containment, switch bypass, and execution.
+
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly
 contacts. Existing exclusion, kill-switch, budget, versioning, replication and

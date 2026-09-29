@@ -252,12 +252,12 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
 void register_solution_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_solutions", "List solutions",
-        "Read all 19 runnable catalogue solutions and one Band-B sketch, including composition, data roles, governance, capability levels, and runnable status. No side effects.",
+        "Read all 20 runnable catalogue solutions, including composition, data roles, governance, capability levels, and runnable status. No side effects.",
         empty_schema(), list_output_schema(), CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"}, false, false, handle_list});
     registry.add(Capability{
         "get_solution", "Get solution",
-        "Read one catalogue solution or sketch by id, including every production dependency and tracking issue. No side effects.",
+        "Read one runnable catalogue solution by id, including every production dependency and tracking issue. No side effects.",
         get_schema(), get_output_schema(), CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"}, false, false, handle_get});
     registry.add(Capability{

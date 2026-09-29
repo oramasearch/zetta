@@ -124,8 +124,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists 19 runnable catalogue
-  modules and one remaining Band-B sketch. Selected levels execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 20 runnable catalogue
+  modules. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,
@@ -180,7 +180,10 @@ What's inside, by domain (each links to that domain's docs):
   levels with assistive scheduling and
   revenue-cycle work queues, equity review, privacy approval, minimum-necessary
   PHI checks, protected holdouts, and operational-resolution ROI. Snapshot
-  cutoffs, delivery destinations and ROI economics remain caller-supplied.
+  B-8 adds runnable IT and security operations with M-12 dependency context,
+  exact-budget M-7 alerts, graduated A0/A1/A2 authority, a hard kill switch,
+  single-asset containment, permanent holdouts, and incident-avoidance ROI.
+  Snapshot cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
   policy/decision and ROI stores read directly from replicated state.

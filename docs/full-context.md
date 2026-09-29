@@ -146,6 +146,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   The customer-offering condition remains recorded independently. See
   [solutions/B-5.md](solutions/B-5.md).
 
+- **B-8 IT & Security Operations (#1182)** — runnable at levels 1–4 with
+  M-12 dependency context and exact-budget M-7 anomaly scoring. Four named
+  refusals enforce the alert cap, graduated A0/A1/bounded-A2 authority, a hard
+  kill switch, and approved single-asset containment. Complete policy,
+  holdout, action, guardrail, and planted incident-avoidance measurement paths
+  are covered by [solutions/B-8.md](solutions/B-8.md).
+
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal
   handler protection. Solution monitors, experiments/assignments and ledger

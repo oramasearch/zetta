@@ -119,7 +119,8 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
             request.input.erase("dataset");
         }
         if ((state->binding.value("solution", std::string{}) == "S-7" ||
-             state->binding.value("solution", std::string{}) == "B-2") &&
+             state->binding.value("solution", std::string{}) == "B-2" ||
+             state->binding.value("solution", std::string{}) == "B-8") &&
             stage.methodology->id == "M-7" &&
             request.input.contains("dataset")) {
             request.input["dataset"].erase("as_of");

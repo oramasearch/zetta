@@ -14177,7 +14177,7 @@
     },
     "/v1/get_solution": {
       "get": {
-        "description": "Read one catalogue solution or sketch by id, including every production dependency and tracking issue. No side effects. Requires api:query.",
+        "description": "Read one runnable catalogue solution by id, including every production dependency and tracking issue. No side effects. Requires api:query.",
         "operationId": "get_solution",
         "parameters": [
           {
@@ -18910,7 +18910,7 @@
     },
     "/v1/list_solutions": {
       "get": {
-        "description": "Read all 19 runnable catalogue solutions and one Band-B sketch, including composition, data roles, governance, capability levels, and runnable status. No side effects. Requires api:query.",
+        "description": "Read all 20 runnable catalogue solutions, including composition, data roles, governance, capability levels, and runnable status. No side effects. Requires api:query.",
         "operationId": "list_solutions",
         "parameters": [
           {

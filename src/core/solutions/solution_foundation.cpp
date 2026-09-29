@@ -984,6 +984,73 @@ void bind_s7_correctness(ir::ExecutionGraph& graph,
           {"strictly_prior", common.value("strictly_prior", true)}}}};
 }
 
+void bind_b8_correctness(ir::ExecutionGraph& graph,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-8") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    int model_alert_budget = 0;
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) !=
+                "anomaly") {
+            continue;
+        }
+        model_alert_budget = model->attributes.value("alert_budget", 0);
+        break;
+    }
+    const int level = manifest->attributes.value("level", 0);
+    const std::string selected_action =
+        level == 1
+            ? "investigation_recommendation"
+            : level == 2 ? "containment_approval" : "bounded_containment";
+    const std::string selected_autonomy =
+        level == 1 ? "A0" : level == 2 ? "A1" : "A2";
+    manifest->attributes["b8_correctness"] = {
+        {"alerting",
+         {{"alert_budget", common.value("alert_budget", model_alert_budget)},
+          {"window_days", common.value("alert_window_days", 1)},
+          {"owner_column", common.value("owner_column", "owner")}}},
+        {"authority",
+         {{"recommendation_action", "investigation_recommendation"},
+          {"recommendation_autonomy", "A0"},
+          {"approval_action", "containment_approval"},
+          {"approval_autonomy", "A1"},
+          {"automatic_action", "bounded_containment"},
+          {"automatic_autonomy", common.value("automatic_autonomy", "A2")},
+          {"selected_action", selected_action},
+          {"selected_autonomy", selected_autonomy}}},
+        {"kill_switch",
+         {{"configured", common.value("kill_switch_configured", true)},
+          {"enabled", common.value("kill_switch_enabled", false)},
+          {"blocks_delivery",
+           common.value("kill_switch_blocks_delivery", true)}}},
+        {"containment",
+         {{"automatic_action", "bounded_containment"},
+          {"allowed_automatic_actions",
+           common.value("allowed_automatic_actions",
+                        Json::array({"bounded_containment"}))},
+          {"maximum_affected_assets",
+           common.value("maximum_affected_assets", 1.0)},
+          {"approval_required_above",
+           common.value("approval_required_above", 1.0)},
+          {"approved_bounds_enforced",
+           common.value("approved_bounds_enforced", true)},
+          {"playbook_required", common.value("playbook_required", true)},
+          {"dependency_scope_required",
+           common.value("dependency_scope_required", true)}}}};
+}
+
 void bind_s8_correctness(ir::ExecutionGraph& graph,
                          const SnapshotSpec& snapshot,
                          const Json& settings,
@@ -1377,6 +1444,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["b5_correctness"] = {{"type", "object"}};
     schema["properties"]["b6_correctness"] = {{"type", "object"}};
     schema["properties"]["b7_correctness"] = {{"type", "object"}};
+    schema["properties"]["b8_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -1431,6 +1499,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                         input.at("sources"));
     bind_s5_correctness(composed.graph, input.at("sources"));
     bind_s7_correctness(composed.graph, input.at("sources"));
+    bind_b8_correctness(composed.graph, input.at("sources"));
     bind_s8_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s9_correctness(composed.graph, settings, input.at("sources"));
@@ -1464,6 +1533,7 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         solution->id != "B-1" &&
         solution->id != "B-3" &&
         solution->id != "B-4" &&
+        solution->id != "B-8" &&
         !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
@@ -1498,6 +1568,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
             {"entity_column", "entity"},
             {"score_column", "policy_score"},
             {"output_name", "recommendation table"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-8") {
+        binding["decision_source"] = {
+            {"methodology", "M-7"},
+            {"entity_column", "row"},
+            {"score_column", "score"},
+            {"output_name", "anomaly table"}};
     } else if (!binding.contains("decision_source") && solution->id == "B-1") {
         binding["decision_source"] = {
             {"methodology", "M-4"},
@@ -1644,6 +1720,9 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "B-7") {
         binding["b7_correctness"] = composed.graph.find_node("solution_manifest")
                                         ->attributes.at("b7_correctness");
+    } else if (solution->id == "B-8") {
+        binding["b8_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("b8_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -2351,6 +2430,22 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
                 .at("driver_attribution")
                 .at("caveat");
         spec.payload["decision_log_required"] = true;
+    } else if (binding.value("solution", std::string{}) == "B-8") {
+        spec.payload["asset_id"] = decision.entity_id;
+        spec.payload["anomaly_score"] = decision.score;
+        spec.payload["anomaly_threshold"] =
+            entity.value("threshold", 0.0);
+        spec.payload["dependency_id"] =
+            entity.value("dependency_id", Json{});
+        spec.payload["affected_assets"] =
+            entity.value("affected_assets", 0.0);
+        spec.payload["approved_playbook"] =
+            entity.value("approved_playbook", false);
+        spec.payload["dependency_scope_known"] =
+            entity.value("dependency_scope_known", false);
+        spec.payload["authority_boundary"] =
+            binding.at("b8_correctness").at("authority");
+        spec.payload["kill_switch_checked"] = true;
     } else if (binding.value("solution", std::string{}) == "S-8") {
         spec.payload["asset_id"] = decision.entity_id;
         spec.payload["asset_class"] =
@@ -2779,6 +2874,105 @@ std::string validate_b7_runtime_policy(const Json& binding,
     return {};
 }
 
+bool b8_required_boolean_rule(const Json& config,
+                              const std::string& field) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == "eq" &&
+            rule.value("value", Json(false)) == Json(true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool b8_required_numeric_bound(const Json& config,
+                               const std::string& field,
+                               double maximum) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (!rule.is_object() ||
+            rule.value("field", std::string{}) != field ||
+            rule.value("operator", std::string{}) != "lte" ||
+            !rule.contains("value") || !rule.at("value").is_number()) {
+            continue;
+        }
+        return rule.at("value").get<double>() <= maximum;
+    }
+    return false;
+}
+
+std::string validate_b8_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-8") {
+        return {};
+    }
+    if (!config.contains("kill_switch") ||
+        !config.at("kill_switch").is_boolean()) {
+        return "B-8 policy requires a boolean kill switch";
+    }
+    const Json& profile = binding.at("b8_correctness");
+    const double maximum =
+        profile.at("containment").at("maximum_affected_assets");
+    const Json actions = config.value("actions", Json::object());
+    const Json autonomy = {
+        {"investigation_recommendation", "A0"},
+        {"containment_approval", "A1"},
+        {"bounded_containment", "A2"}};
+    for (const auto& [action, expected] : autonomy.items()) {
+        if (!actions.contains(action) || !actions.at(action).is_object() ||
+            actions.at(action).value("autonomy", std::string{}) !=
+                expected.get<std::string>()) {
+            return "B-8 policy does not preserve graduated A0, A1, and A2 authority";
+        }
+    }
+    for (const auto& [action, settings] : actions.items()) {
+        if (settings.is_object() &&
+            settings.value("autonomy", std::string{}) == "A2" &&
+            action != "bounded_containment") {
+            return "B-8 refuses automated action outside bounded containment";
+        }
+    }
+    const Json& containment = actions.at("bounded_containment");
+    if (containment.value("approval_field", std::string{}) !=
+            "affected_assets" ||
+        !containment.contains("approval_above") ||
+        !containment.at("approval_above").is_number() ||
+        containment.at("approval_above").get<double>() > maximum) {
+        return "B-8 containment approval boundary exceeds the approved asset scope";
+    }
+    const std::string expected_action =
+        profile.at("authority").at("selected_action");
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (!tier.is_object()) {
+            return "B-8 policy tiers must be objects";
+        }
+        const std::string tier_name = tier.value("name", std::string{});
+        const std::string action = tier.value("action", std::string{});
+        if ((tier_name == "advisory" && action != "no_action") ||
+            (tier_name != "advisory" && action != expected_action)) {
+            return "B-8 policy tier exceeds the selected authority level";
+        }
+        for (const Json& allowed :
+             tier.value("allowed_actions", Json::array())) {
+            if (!allowed.is_string() ||
+                (allowed.get<std::string>() != expected_action &&
+                 allowed.get<std::string>() != "no_action")) {
+                return "B-8 policy permits an action above the selected authority level";
+            }
+        }
+    }
+    if (!b8_required_boolean_rule(config, "approved_playbook") ||
+        !b8_required_boolean_rule(config, "containment_allowed") ||
+        !b8_required_boolean_rule(config, "dependency_scope_known") ||
+        !b8_required_numeric_bound(config, "affected_assets", maximum)) {
+        return "B-8 policy must require playbook, containment, dependency, and asset-bound evidence";
+    }
+    return {};
+}
+
 } // namespace
 
 ApiResult finish_solution_run(Node& node, const Json& binding,
@@ -2950,6 +3144,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 !entity.value("flagged", false)) {
                 entity["action"] = "no_contact";
             }
+            if (binding.value("solution", std::string{}) == "B-8" &&
+                !entity.value("flagged", false)) {
+                entity["action"] = "no_action";
+            }
             if (binding.value("solution", std::string{}) == "S-8") {
                 for (const std::string field :
                      {"horizon", "hazard", "survival", "expected_time",
@@ -3054,7 +3252,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
              validate_b1_runtime_policy(binding, policy->current()->config),
              validate_s12_runtime_policy(binding, policy->current()->config),
              validate_b6_runtime_policy(binding, policy->current()->config),
-             validate_b7_runtime_policy(binding, policy->current()->config)}) {
+             validate_b7_runtime_policy(binding, policy->current()->config),
+             validate_b8_runtime_policy(binding, policy->current()->config)}) {
         if (!policy_error.empty()) {
             return ApiResult::failure("invalid_input", policy_error);
         }
@@ -3112,6 +3311,9 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t s11_contact_cap_violations = 0;
     std::size_t s11_missing_propensities = 0;
     std::size_t s11_margin_floor_violations = 0;
+    std::size_t b8_unapproved_containment = 0;
+    std::size_t b8_kill_switch_bypass = 0;
+    double b8_maximum_containment_scope = 0.0;
     std::size_t b1_margin_floor_violations = 0;
     std::size_t b1_authority_band_violations = 0;
     std::size_t b1_unapproved_price_changes = 0;
@@ -3321,6 +3523,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 {"severity", decision->tier},
                 {"period", entity.value("period", 0.0)},
                 {"driver", driver},
+                {"flagged", entity.value("flagged", false)}};
+        } else if (binding.value("solution", std::string{}) == "B-8") {
+            entity["decision_cell"] = {
+                {"severity", decision->tier},
+                {"dependency_id", entity.value("dependency_id", Json{})},
+                {"playbook", entity.value("playbook", std::string{})},
+                {"authority", decision->autonomy},
                 {"flagged", entity.value("flagged", false)}};
         } else if (binding.value("solution", std::string{}) == "S-8") {
             entity["decision_cell"] = {
@@ -3615,6 +3824,30 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             ++anomaly_alerts;
             if (!entity.value("sensitive_driver_access", false)) {
                 ++sensitive_access_violations;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-8" &&
+            entity.value("flagged", false)) {
+            ++anomaly_alerts;
+            if (decision->actionable) {
+                const double affected_assets =
+                    entity.value("affected_assets", 0.0);
+                b8_maximum_containment_scope = std::max(
+                    b8_maximum_containment_scope, affected_assets);
+                if (decision->action != "bounded_containment" ||
+                    !entity.value("approved_playbook", false) ||
+                    !entity.value("containment_allowed", false) ||
+                    !entity.value("dependency_scope_known", false) ||
+                    affected_assets >
+                        binding.at("b8_correctness")
+                            .at("containment")
+                            .at("maximum_affected_assets")
+                            .get<double>()) {
+                    ++b8_unapproved_containment;
+                }
+                if (policy->current()->config.value("kill_switch", false)) {
+                    ++b8_kill_switch_bypass;
+                }
             }
         }
         if (binding.value("solution", std::string{}) == "B-3") {
@@ -3945,6 +4178,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             monitor->observe_guardrail("causal_claim_violations", 0.0);
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-8") {
+            monitor->observe_guardrail(
+                "alert_volume", static_cast<double>(anomaly_alerts));
+            monitor->observe_guardrail(
+                "containment_scope", b8_maximum_containment_scope);
+            monitor->observe_guardrail(
+                "unapproved_containment",
+                static_cast<double>(b8_unapproved_containment));
+            monitor->observe_guardrail(
+                "kill_switch_bypass",
+                static_cast<double>(b8_kill_switch_bypass));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else if (binding.value("solution", std::string{}) == "S-8") {
             monitor->observe_guardrail(
                 "unsafe_work_order_rate",
@@ -4082,6 +4328,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ? 0.0
                     : static_cast<double>(b4_validated_fields) /
                           static_cast<double>(b4_total_fields));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else if (binding.value("solution", std::string{}) == "B-5") {
             const double denominator =
                 static_cast<double>(std::max<std::size_t>(entities.size(), 1));

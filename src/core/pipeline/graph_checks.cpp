@@ -636,6 +636,49 @@ CheckResult s11_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b8_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-8") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-8 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b8_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-8 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b8_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-8 Pipeline to validate"};
+}
+
+CheckResult b8_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b8_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* s10_correctness_profile(const ir::ExecutionGraph& graph,
                                     bool& applies, int& level,
                                     std::string& error) {
@@ -4105,6 +4148,163 @@ CheckResult B2PeopleLeaderOutputCheck::evaluate(
     }
     return b2_success(
         name(), "B-2 routes aggregate evidence only to its people leader");
+}
+
+CheckResult B8AlertBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* alerting = object_field(*profile, "alerting");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (alerting == nullptr || anomaly == nullptr ||
+        !alerting->contains("alert_budget") ||
+        !alerting->at("alert_budget").is_number_integer() ||
+        alerting->at("alert_budget").get<int>() < 1 ||
+        alerting->value("window_days", 0) < 1 ||
+        alerting->value("owner_column", std::string{}).empty()) {
+        return b8_failure(
+            name(), "B-8 requires a positive alert budget, reporting window, "
+                    "and accountable owner role");
+    }
+    const auto configured = anomaly->attributes.find("alert_budget");
+    if (configured == anomaly->attributes.end() ||
+        !configured->is_number_integer() ||
+        configured->get<int>() != alerting->at("alert_budget").get<int>() ||
+        anomaly->attributes.contains("contamination")) {
+        return b8_failure(
+            name(), "B-8 anomaly scoring must enforce the declared exact "
+                    "alert budget");
+    }
+    if (!has_methodology(graph, "M-7") ||
+        !has_methodology(graph, "M-12")) {
+        return b8_failure(
+            name(), "B-8 requires M-7 anomaly scoring and M-12 dependency context");
+    }
+    return b8_success(
+        name(), "B-8 operational alerts stay within the declared budget");
+}
+
+CheckResult B8GraduatedAuthorityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* authority = object_field(*profile, "authority");
+    if (authority == nullptr ||
+        authority->value("recommendation_action", std::string{}) !=
+            "investigation_recommendation" ||
+        authority->value("recommendation_autonomy", std::string{}) != "A0" ||
+        authority->value("approval_action", std::string{}) !=
+            "containment_approval" ||
+        authority->value("approval_autonomy", std::string{}) != "A1" ||
+        authority->value("automatic_action", std::string{}) !=
+            "bounded_containment" ||
+        authority->value("automatic_autonomy", std::string{}) != "A2") {
+        return b8_failure(
+            name(), "B-8 authority must progress from A0 investigation to "
+                    "A1 approval and only then bounded A2 containment");
+    }
+    if (level < 1 || level > 4) {
+        return b8_failure(name(), "B-8 level must be between 1 and 4");
+    }
+    const std::string expected_action =
+        level == 1
+            ? "investigation_recommendation"
+            : level == 2 ? "containment_approval" : "bounded_containment";
+    const std::string expected_autonomy =
+        level == 1 ? "A0" : level == 2 ? "A1" : "A2";
+    if (authority->value("selected_action", std::string{}) != expected_action ||
+        authority->value("selected_autonomy", std::string{}) !=
+            expected_autonomy) {
+        return b8_failure(
+            name(), "B-8 selected level does not match its graduated authority boundary");
+    }
+    return b8_success(
+        name(), "B-8 selected level preserves A0 to A1 to bounded A2 authority");
+}
+
+CheckResult B8KillSwitchCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* kill_switch = object_field(*profile, "kill_switch");
+    if (kill_switch == nullptr ||
+        !kill_switch->value("configured", false) ||
+        !kill_switch->value("blocks_delivery", false) ||
+        !kill_switch->contains("enabled") ||
+        !kill_switch->at("enabled").is_boolean()) {
+        return b8_failure(
+            name(), "B-8 requires a configured kill switch that blocks action delivery");
+    }
+    return b8_success(
+        name(), "B-8 kill switch is configured as a hard delivery stop");
+}
+
+CheckResult B8ContainmentBoundsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* containment = object_field(*profile, "containment");
+    if (containment == nullptr ||
+        containment->value("automatic_action", std::string{}) !=
+            "bounded_containment" ||
+        !containment->value("approved_bounds_enforced", false) ||
+        !containment->value("playbook_required", false) ||
+        !containment->value("dependency_scope_required", false) ||
+        !containment->contains("maximum_affected_assets") ||
+        !containment->at("maximum_affected_assets").is_number() ||
+        containment->at("maximum_affected_assets").get<double>() <= 0.0 ||
+        containment->value("approval_required_above", 0.0) !=
+            containment->at("maximum_affected_assets").get<double>()) {
+        return b8_failure(
+            name(), "B-8 automatic containment requires an approved positive "
+                    "asset bound, playbook, and dependency scope");
+    }
+    const json allowed =
+        containment->value("allowed_automatic_actions", json::array());
+    if (!allowed.is_array() || allowed.size() != 1 ||
+        !allowed.at(0).is_string() ||
+        allowed.at(0).get<std::string>() != "bounded_containment") {
+        return b8_failure(
+            name(), "B-8 refuses automatic actions outside bounded containment");
+    }
+    return b8_success(
+        name(), "B-8 automated containment stays within approved bounds");
 }
 
 CheckResult S10LabelDelayCheck::evaluate(

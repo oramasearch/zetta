@@ -167,7 +167,15 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(b4->at("minimal_template"), false);
     EXPECT_TRUE(b4->at("missing_components").empty());
     EXPECT_FALSE(b4->at("promotion_condition").get<std::string>().empty());
-    EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
+    EXPECT_EQ(solutions.value.at("solutions").back().at("id"), "B-8");
+    EXPECT_EQ(solutions.value.at("solutions").back().at("status"),
+              "catalogue");
+    EXPECT_TRUE(solutions.value.at("solutions").back().at("runnable"));
+    EXPECT_FALSE(solutions.value.at("solutions")
+                     .back()
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
     const ApiResult healthcare =
         call("get_solution", {{"solution", "B-6"}});
     ASSERT_TRUE(healthcare.ok);

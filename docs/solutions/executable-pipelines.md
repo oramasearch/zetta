@@ -86,6 +86,10 @@ enforces margin, hard authority, and approval limits.
 S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
 anomaly score. Forum decisions copy the real flag, threshold, period, top
 candidate driver, deviation, and contributor list.
+B-8 also binds M-7's `anomaly table` as its decision source. M-12 runs first
+over the same cutoff-bounded snapshot to produce dependency context. Decisions
+join `row` and `score` back to asset evidence and carry the M-7 flag and
+threshold into the bounded containment payload.
 S-8 binds M-5's `survival table`, using `entity` and `hazard` at a configured
 emitted horizon. M-5 writes one row per asset and horizon, so the runtime selects
 that real row and carries `hazard`, `survival`, `expected_time`, and
@@ -285,6 +289,13 @@ decline recommendations, protects the permanent holdout, inspects validation
 and fairness evidence in action payloads, observes all six guardrails, and
 recovers a planted 0.14 performing-account effect inside the readout interval.
 The future application never reaches scoring or action.
+
+`SolutionJourney.ItSecurityOperationsContainsRiskAndRecoversPlantedEffect`
+builds level-3 B-8 over partitioned synthetic security events, runs M-12 and
+M-7, excludes a future event, enforces the exact alert cap and single-asset
+playbook bound, protects holdouts, inspects every containment payload, observes
+all five guardrails, and recovers a planted 0.16 incident-avoidance effect
+inside the readout confidence interval.
 
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,

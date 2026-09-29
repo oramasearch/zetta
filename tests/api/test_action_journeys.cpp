@@ -971,6 +971,300 @@ TEST_F(SolutionJourney,
     EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
+void land_it_security_operations_data(Node& node) {
+    const auto database = node.create_database("operations");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("security_events");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool planted_risk = index > 47 && index % 24 == 0;
+        const bool confirmed_incident = index % 31 == 0;
+        const double failed_auth =
+            static_cast<double>(index % 6) + (planted_risk ? 80.0 : 0.0);
+        const double latency =
+            20.0 + static_cast<double>(index % 9) +
+            (planted_risk ? 120.0 : 0.0);
+        table->add_row(
+            {{"asset_id", index},
+             {"dependency_id", index % 30 + 1001},
+             {"edge_weight", 1.0 + static_cast<double>(index % 5) / 10.0},
+             {"period", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"failed_auth", failed_auth},
+             {"latency", latency},
+             {"confirmed_incident", confirmed_incident ? 1 : 0},
+             {"eligible", true},
+             {"owner_assigned", true},
+             {"approved_playbook", true},
+             {"containment_allowed", true},
+             {"dependency_scope_known", true},
+             {"affected_assets", 1.0},
+             {"manual_only", false},
+             {"protected_asset", false},
+             {"active_incident", false},
+             {"playbook", "isolate-single-asset"},
+             {"owner", "security-operations"}});
+    }
+    table->add_row(
+        {{"asset_id", 9999},
+         {"dependency_id", 9999},
+         {"edge_weight", 9.0},
+         {"period", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"failed_auth", 9999.0},
+         {"latency", 9999.0},
+         {"confirmed_incident", 1},
+         {"eligible", true},
+         {"owner_assigned", true},
+         {"approved_playbook", true},
+         {"containment_allowed", true},
+         {"dependency_scope_known", true},
+         {"affected_assets", 1.0},
+         {"manual_only", false},
+         {"protected_asset", false},
+         {"active_incident", false},
+         {"playbook", "isolate-single-asset"},
+         {"owner", "security-operations"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json it_security_operations_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "operations"},
+          {"source_table", "security_events"},
+          {"target_table", "security_operations_snapshot"},
+          {"entity_column", "asset_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "confirmed_incident"},
+          {"time_column", "period"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"dependency_id", "edge_weight", "failed_auth", "latency"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://security.example.test/containment"},
+          {"owner", "security-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 0.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_incident_avoidance_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"b8-planted-incident-avoidance", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.16);
+        outcomes.steps.push_back(
+            {"record observed incident avoidance",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "incident_avoided"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured incident-avoidance effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted incident-avoidance effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.16) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.16 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.16;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       ItSecurityOperationsContainsRiskAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_it_security_operations_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "security operations"}}).ok);
+    const ApiResult catalogue =
+        call("get_solution", {{"solution", "B-8"}});
+    ASSERT_TRUE(catalogue.ok) << catalogue.error.message;
+    EXPECT_TRUE(catalogue.value.at("solution").at("runnable"));
+    EXPECT_FALSE(catalogue.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "security operations"},
+         {"solution", "B-8"},
+         {"level", 3},
+         {"sources",
+          {{"source", "operations"},
+           {"table", "security_events"},
+           {"M-7",
+            {{"mode", "kpi_time_series"},
+             {"entity_column", "entity_id"},
+             {"label_column", "confirmed_incident"},
+             {"time_column", "period"},
+             {"feature_columns",
+              {"dependency_id", "edge_weight", "failed_auth", "latency"}},
+             {"alert_budget", 10},
+             {"seasonal_period", 7},
+             {"trend_window", 28},
+             {"residual_window", 56},
+             {"seasonal_cycles", 8}}},
+           {"M-12",
+            {{"source_column", "entity_id"},
+             {"destination_column", "dependency_id"},
+             {"weight_column", "edge_weight"},
+             {"time_column", "period"},
+             {"label_column", "confirmed_incident"},
+             {"prediction_time", 239.0}}}}},
+         {"foundation", it_security_operations_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies"),
+              (nlohmann::json{"M-12", "M-7"}));
+
+    const auto project = node.find_project("security operations");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-7");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "anomaly table");
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "security operations"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+    EXPECT_EQ(status.value.at("lineage").at("steps").size(), 8u);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t actionable_containments = 0;
+    const std::string policy_id = binding.at("policy_id");
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id != policy_id) {
+            continue;
+        }
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+        }
+        if (decision.actionable) {
+            ++actionable_containments;
+            EXPECT_EQ(decision.action, "bounded_containment");
+            EXPECT_EQ(decision.autonomy, "A2");
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(actionable_containments, 0u);
+    EXPECT_LE(actionable_containments, 10u);
+    EXPECT_EQ(delivery.requests.size(), actionable_containments);
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("action"), "bounded_containment");
+        EXPECT_EQ(request.at("payload").at("affected_assets"), 1.0);
+        EXPECT_TRUE(request.at("payload").at("approved_playbook"));
+        EXPECT_TRUE(request.at("payload").at("dependency_scope_known"));
+        EXPECT_TRUE(request.at("payload").at("kill_switch_checked"));
+        EXPECT_EQ(request.at("payload")
+                      .at("authority_boundary")
+                      .at("automatic_autonomy"),
+                  "A2");
+    }
+
+    const auto snapshot = node.find_database("operations")
+                              ->find_table("security_operations_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_incident_avoidance_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
 void land_predictive_maintenance_data(Node& node) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);

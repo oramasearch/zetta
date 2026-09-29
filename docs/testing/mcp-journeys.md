@@ -72,7 +72,7 @@ verifies that all 21 methodologies are runnable, rejects an unmatched non-predic
 and refuses an incomplete segmentation graph at the correctness gate. Graph and
 project views expose `methodology` plus `runnable` (#1061).
 
-The solution journeys discover 19 runnable catalogue modules plus one sketch and
+The solution journeys discover 20 runnable catalogue modules and
 creates S-1 CL-1 with explicit snapshot/delivery/economics inputs and executable
 defaults (#1128). It reads the policy, experiment and ROI definition, runs
 M-2/M-1/M-3 over the real snapshot, verifies protected holdout and ledger rows,
@@ -93,6 +93,9 @@ The B-5 journey additionally runs native M-4/M-1 supplier analysis, proves the
 future external publication is absent, checks evidence-bearing procurement
 payloads and tier holdouts, then recovers its planted disruption-avoidance
 effect inside the readout interval.
+
+The B-8 journey additionally executes M-12 and M-7, verifies graduated bounded
+containment and all guardrails, and recovers a planted incident-avoidance effect.
 `Uc1Journey.SegmentationMethodologyRunsItsPipelinesCustomerTable` lands a customer's
 table, creates a project, captures and compiles M-3, runs without a dataset
 override, polls the Run and reads separation metrics, input/exclusion facts and
