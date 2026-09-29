@@ -61,6 +61,8 @@ struct RunLineage {
 struct RunValue {
     std::string project;                 // owning project uuid (optional)
     std::string graph;                   // executed graph id (optional, free)
+    std::string project_name;            // denormalized display name (#1184)
+    std::string pipeline_name;           // denormalized graph name (#1184)
     std::string deployment;              // owning deployment uuid (optional) —
                                          // set when a run is the execution of a
                                          // deployed graph (the reconcile loop ties
@@ -116,7 +118,8 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
 // (`<run-uuid>/run.json`) forms are a projection of the Automerge CRDT document.
 //
 // The id is the folder name and never changes; `project`/`graph`/`deployment`
-// are fixed at creation. The mutable fields (status / logs / outputs / lineage) change as a
+// are fixed at creation, while their display names follow renames. The mutable
+// fields (status / logs / outputs / lineage) change as a
 // run progresses: the user-facing mutators capture into the CRDT (when
 // replicated), bump `updated`, and rewrite run.json. Reconciliation uses
 // apply_value(), which updates the projection from the document with NO capture
@@ -130,6 +133,8 @@ public:
     const std::string& id() const { return id_; }
     const std::string& project() const { return value_.project; }
     const std::string& graph() const { return value_.graph; }
+    const std::string& project_name() const { return value_.project_name; }
+    const std::string& pipeline_name() const { return value_.pipeline_name; }
     const std::string& deployment() const { return value_.deployment; }
     RunStatus status() const { return value_.status; }
     const std::string& created() const { return value_.created; }
@@ -150,6 +155,11 @@ public:
     void set_trace_id(std::string trace_id);  // the run's trace (#640)
     bool set_features(nlohmann::json features, std::string* error = nullptr);
     void suppress_metrics_for_privacy();
+
+    // Refresh denormalized names after creation, startup backfill, or a rename.
+    // This metadata maintenance preserves the execution timestamps.
+    void set_display_names(std::string project_name,
+                           std::string pipeline_name);
 
     // The one internal write API used by trainers. A metric's step must be
     // strictly greater than its previous step. Values must be finite.

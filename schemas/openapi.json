@@ -11154,10 +11154,19 @@
                         "name": {
                           "type": "string"
                         },
+                        "pipeline_name": {
+                          "type": "string"
+                        },
                         "project": {
                           "type": "string"
                         },
+                        "project_name": {
+                          "type": "string"
+                        },
                         "run": {
+                          "type": "string"
+                        },
+                        "run_id": {
                           "type": "string"
                         },
                         "weights": {
@@ -13320,7 +13329,13 @@
                           },
                           "type": "array"
                         },
+                        "pipeline_name": {
+                          "type": "string"
+                        },
                         "project": {
+                          "type": "string"
+                        },
+                        "project_name": {
                           "type": "string"
                         },
                         "status": {
@@ -18472,7 +18487,7 @@
     },
     "/v1/list_models": {
       "get": {
-        "description": "Read a compact listing of every registered model — id, name, kind, lineage refs, weights presence. No side effects. Requires api:query.",
+        "description": "Read every model version with Project/Pipeline display names, producing Run, metrics, feature schema, serving state and weights presence. No side effects. Requires api:query.",
         "operationId": "list_models",
         "parameters": [
           {
@@ -18514,6 +18529,12 @@
                               "created": {
                                 "type": "string"
                               },
+                              "exposed": {
+                                "type": "boolean"
+                              },
+                              "feature_schema": {
+                                "type": "object"
+                              },
                               "has_weights": {
                                 "type": "boolean"
                               },
@@ -18523,13 +18544,28 @@
                               "kind": {
                                 "type": "string"
                               },
+                              "metrics": {
+                                "additionalProperties": {
+                                  "type": "number"
+                                },
+                                "type": "object"
+                              },
                               "name": {
+                                "type": "string"
+                              },
+                              "pipeline_name": {
                                 "type": "string"
                               },
                               "project": {
                                 "type": "string"
                               },
+                              "project_name": {
+                                "type": "string"
+                              },
                               "run": {
+                                "type": "string"
+                              },
+                              "run_id": {
                                 "type": "string"
                               }
                             },
@@ -18538,7 +18574,13 @@
                               "name",
                               "kind",
                               "project",
+                              "project_name",
+                              "pipeline_name",
                               "run",
+                              "run_id",
+                              "metrics",
+                              "feature_schema",
+                              "exposed",
                               "created",
                               "has_weights"
                             ],
@@ -18685,7 +18727,7 @@
     },
     "/v1/list_runs": {
       "get": {
-        "description": "Read a compact listing of every run — id, lineage refs, status, stamps, log/output counts. No side effects. Requires api:query.",
+        "description": "Read every run with Project/Pipeline display names, status, stored metric summary, stamps and log/output counts. No side effects. Requires api:query.",
         "operationId": "list_runs",
         "parameters": [
           {
@@ -18739,10 +18781,59 @@
                               "log_count": {
                                 "type": "integer"
                               },
+                              "metric_summary": {
+                                "additionalProperties": false,
+                                "patternProperties": {
+                                  "^[A-Za-z0-9_.-]{1,128}$": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "best": {
+                                        "type": "number"
+                                      },
+                                      "best_step": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      },
+                                      "direction": {
+                                        "enum": [
+                                          "min",
+                                          "max"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "final": {
+                                        "type": "number"
+                                      },
+                                      "final_step": {
+                                        "minimum": 0,
+                                        "type": "integer"
+                                      }
+                                    },
+                                    "required": [
+                                      "final",
+                                      "final_step",
+                                      "best",
+                                      "best_step",
+                                      "direction"
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "metrics_suppressed": {
+                                "type": "string"
+                              },
                               "output_count": {
                                 "type": "integer"
                               },
+                              "pipeline_name": {
+                                "type": "string"
+                              },
                               "project": {
+                                "type": "string"
+                              },
+                              "project_name": {
                                 "type": "string"
                               },
                               "status": {
@@ -18756,8 +18847,11 @@
                               "id",
                               "project",
                               "graph",
+                              "project_name",
+                              "pipeline_name",
                               "deployment",
                               "status",
+                              "metric_summary",
                               "created",
                               "updated",
                               "log_count",
@@ -19843,7 +19937,7 @@
     },
     "/v1/list_studies": {
       "get": {
-        "description": "Read every study and its current budget status. No side effects. Requires api:query.",
+        "description": "Read every study with display names, lifecycle stamps, budgets and objective summary. No side effects. Requires api:query.",
         "operationId": "list_studies",
         "parameters": [
           {
@@ -19887,6 +19981,43 @@
                                 "type": "string"
                               },
                               "id": {
+                                "type": "string"
+                              },
+                              "metric_summary": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "best": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ]
+                                  },
+                                  "completed_trials": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  },
+                                  "direction": {
+                                    "type": "string"
+                                  },
+                                  "metric": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "metric",
+                                  "direction",
+                                  "completed_trials",
+                                  "best"
+                                ],
+                                "type": "object"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "pipeline_name": {
+                                "type": "string"
+                              },
+                              "project_name": {
                                 "type": "string"
                               },
                               "promoted_model": {
@@ -20202,7 +20333,11 @@
                               "spent_cost",
                               "stop_reason",
                               "promoted_model",
-                              "id"
+                              "id",
+                              "name",
+                              "project_name",
+                              "pipeline_name",
+                              "metric_summary"
                             ],
                             "title": "zetta.Study",
                             "type": "object"

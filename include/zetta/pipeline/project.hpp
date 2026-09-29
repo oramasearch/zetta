@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,11 +39,16 @@ namespace zetta::pipeline {
 // the project's `inputs/` subfolder (see project_input.hpp / docs/pipeline/project-inputs.md).
 class Project {
 public:
+    using PipelineRenameObserver = std::function<void(
+        const std::string& project_id, const std::string& pipeline_id,
+        const std::string& old_name, const std::string& new_name)>;
+
     Project(std::string id, std::string name, std::string created,
             std::string updated, std::string owner, std::filesystem::path dir,
             zetta::cluster::ReplicationManager* replication = nullptr,
             zetta::governance::AuditSink* audit = nullptr,
-            std::string description = {});
+            std::string description = {},
+            PipelineRenameObserver pipeline_rename_observer = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -202,6 +208,7 @@ private:
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
     zetta::cluster::ReplicationManager* replication_;  // null = not replicated
     zetta::governance::AuditSink* audit_;  // null = not audited (no node behind this project)
+    PipelineRenameObserver pipeline_rename_observer_;
 };
 
 } // namespace zetta::pipeline

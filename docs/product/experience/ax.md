@@ -70,6 +70,11 @@ relay it to a person.
   trial is a Run with recorded parameters and seed; promotion is isolated behind
   `studies:promote`, so ordinary Pipeline management cannot replace the project
   model ([studies.md](../../ml/studies.md), #1138, #1158).
+- **One read for list pages**: `list_runs`, `list_models`, and `list_studies`
+  include the Project/Pipeline names, status or serving state, metric summaries,
+  and timestamps their pages display. The same values and schemas are available
+  over REST and MCP, so agents do not issue per-row Project, Model, or Run reads
+  to label a page (#1184).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a

@@ -16,4 +16,7 @@ compares their subsystem ordering and exact replication byte/item values
 (#1167). Both parity suites remain
 required, alongside the MCP malformed-request and receive/browse long-poll
 regressions.
+Page-list parity creates linked Project, Pipeline, Run, Model, and Study records,
+then compares `list_runs`, `list_models`, and `list_studies` values across REST
+and MCP (#1184).
 See [CRUD verification](../../docs/pubsub/crud.md#verification).

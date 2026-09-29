@@ -9,3 +9,5 @@ and restart peak memory (#1164). See [the proof runbook](../docs/testing/audit-r
 Study lifecycle tests cover running-study refusal, non-promoted Run and metric
 removal, promoted lineage retention, restart persistence, and REST/MCP parity
 (#1158).
+Project graph and API tests cover denormalized name creation, rename propagation,
+legacy startup backfill, page summaries, and REST/MCP list parity (#1184).

@@ -2735,15 +2735,25 @@ const nlohmann::json& list_runs_output_schema() {
             {"items",
              {{"type", "object"},
               {"required",
-               {"id", "project", "graph", "deployment", "status", "created",
-                "updated", "log_count", "output_count"}},
+               {"id", "project", "graph", "project_name", "pipeline_name",
+                "deployment", "status", "metric_summary", "created", "updated",
+                "log_count", "output_count"}},
               {"additionalProperties", false},
               {"properties",
                {{"id", {{"type", "string"}}},
                 {"project", {{"type", "string"}}},
                 {"graph", {{"type", "string"}}},
+                {"project_name", {{"type", "string"}}},
+                {"pipeline_name", {{"type", "string"}}},
                 {"deployment", {{"type", "string"}}},
                 {"status", {{"type", "string"}}},
+                {"metric_summary",
+                 zetta::pipeline::run_value_schema()
+                     .at("properties")
+                     .at("metrics")
+                     .at("properties")
+                     .at("summary")},
+                {"metrics_suppressed", {{"type", "string"}}},
                 {"created", {{"type", "string"}}},
                 {"updated", {{"type", "string"}}},
                 {"log_count", {{"type", "integer"}}},
@@ -2754,15 +2764,22 @@ const nlohmann::json& list_runs_output_schema() {
 ApiResult handle_list_runs(const nlohmann::json&, ApiContext& context) {
     nlohmann::json runs = nlohmann::json::array();
     for (const auto& run : context.node.runs()) {
-        runs.push_back({{"id", run->id()},
-                        {"project", run->project()},
-                        {"graph", run->graph()},
-                        {"deployment", run->deployment()},
-                        {"status", std::string(to_string(run->status()))},
-                        {"created", run->created()},
-                        {"updated", run->updated()},
-                        {"log_count", run->logs().size()},
-                        {"output_count", run->outputs().size()}});
+        nlohmann::json item = {{"id", run->id()},
+                               {"project", run->project()},
+                               {"graph", run->graph()},
+                               {"project_name", run->project_name()},
+                               {"pipeline_name", run->pipeline_name()},
+                               {"deployment", run->deployment()},
+                               {"status", std::string(to_string(run->status()))},
+                               {"metric_summary", run->value().metrics.at("summary")},
+                               {"created", run->created()},
+                               {"updated", run->updated()},
+                               {"log_count", run->logs().size()},
+                               {"output_count", run->outputs().size()}};
+        if (!run->value().metrics_suppressed.empty()) {
+            item["metrics_suppressed"] = run->value().metrics_suppressed;
+        }
+        runs.push_back(std::move(item));
     }
     nlohmann::json output;
     output["runs"] = std::move(runs);
@@ -2785,15 +2802,24 @@ const nlohmann::json& list_models_output_schema() {
             {"items",
              {{"type", "object"},
               {"required",
-               {"id", "name", "kind", "project", "run", "created",
-                "has_weights"}},
+               {"id", "name", "kind", "project", "project_name",
+                "pipeline_name", "run", "run_id", "metrics", "feature_schema",
+                "exposed", "created", "has_weights"}},
               {"additionalProperties", false},
               {"properties",
                {{"id", {{"type", "string"}}},
                 {"name", {{"type", "string"}}},
                 {"kind", {{"type", "string"}}},
                 {"project", {{"type", "string"}}},
+                {"project_name", {{"type", "string"}}},
+                {"pipeline_name", {{"type", "string"}}},
                 {"run", {{"type", "string"}}},
+                {"run_id", {{"type", "string"}}},
+                {"metrics",
+                 {{"type", "object"},
+                  {"additionalProperties", {{"type", "number"}}}}},
+                {"feature_schema", {{"type", "object"}}},
+                {"exposed", {{"type", "boolean"}}},
                 {"created", {{"type", "string"}}},
                 {"has_weights", {{"type", "boolean"}}}}}}}}}}}};
     return schema;
@@ -2806,7 +2832,13 @@ ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
                           {"name", model->name()},
                           {"kind", model->kind()},
                           {"project", model->project()},
+                          {"project_name", model->project_name()},
+                          {"pipeline_name", model->pipeline_name()},
                           {"run", model->run()},
+                          {"run_id", model->run_id()},
+                          {"metrics", model->metrics()},
+                          {"feature_schema", model->feature_schema()},
+                          {"exposed", model->exposed()},
                           {"created", model->created()},
                           {"has_weights", model->has_weights()}});
     }
@@ -8895,8 +8927,8 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_runs",
         "List runs",
-        "Read a compact listing of every run — id, lineage refs, status, "
-        "stamps, log/output counts. No side effects.",
+        "Read every run with Project/Pipeline display names, status, stored "
+        "metric summary, stamps and log/output counts. No side effects.",
         list_runs_schema(),
         list_runs_output_schema(),
         CapabilityKind::Read,
@@ -8908,8 +8940,8 @@ void register_core_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_models",
         "List models",
-        "Read a compact listing of every registered model — id, name, kind, "
-        "lineage refs, weights presence. No side effects.",
+        "Read every model version with Project/Pipeline display names, producing "
+        "Run, metrics, feature schema, serving state and weights presence. No side effects.",
         list_models_schema(),
         list_models_output_schema(),
         CapabilityKind::Read,

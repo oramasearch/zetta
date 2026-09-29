@@ -178,6 +178,8 @@ const nlohmann::json& schema_document() {
         "id":         { "type": "string" },
         "project":    { "type": "string" },
         "graph":      { "type": "string" },
+        "project_name":  { "type": "string" },
+        "pipeline_name": { "type": "string" },
         "deployment": { "type": "string" },
         "status":  { "type": "string",
                      "enum": ["pending", "running", "succeeded", "failed"] },
@@ -443,6 +445,8 @@ nlohmann::json to_json(const RunValue& value) {
     nlohmann::json output{
         {"project", value.project},
         {"graph", value.graph},
+        {"project_name", value.project_name},
+        {"pipeline_name", value.pipeline_name},
         {"deployment", value.deployment},
         {"status", to_string(value.status)},
         {"created", value.created},
@@ -488,6 +492,8 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     RunValue parsed;
     parsed.project = value.value("project", std::string{});
     parsed.graph = value.value("graph", std::string{});
+    parsed.project_name = value.value("project_name", std::string{});
+    parsed.pipeline_name = value.value("pipeline_name", std::string{});
     parsed.deployment = value.value("deployment", std::string{});
     parsed.status =
         run_status_from_string(value.value("status", std::string{"pending"}))
@@ -580,6 +586,20 @@ bool Run::set_features(nlohmann::json features, std::string* error) {
 void Run::suppress_metrics_for_privacy() {
     value_.metrics_suppressed = "differential_privacy";
     capture_and_persist();
+}
+
+void Run::set_display_names(std::string project_name,
+                            std::string pipeline_name) {
+    if (value_.project_name == project_name &&
+        value_.pipeline_name == pipeline_name) {
+        return;
+    }
+    value_.project_name = std::move(project_name);
+    value_.pipeline_name = std::move(pipeline_name);
+    if (replication_ != nullptr) {
+        replication_->set(catalog::run_key(id_), metadata());
+    }
+    persist_meta();
 }
 
 bool Run::log_metrics(std::uint64_t step,

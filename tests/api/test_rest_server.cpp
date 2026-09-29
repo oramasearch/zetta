@@ -50,6 +50,8 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/ml/study.hpp"
 #include "zetta/node.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/version.hpp"
@@ -1164,6 +1166,82 @@ TEST_F(RestServerFixture, LongPollTimeoutMakesOneFinalGovernedRead) {
     EXPECT_GE(elapsed, std::chrono::milliseconds(20));
     EXPECT_LT(elapsed, std::chrono::seconds(2));
     EXPECT_EQ(node.audit_event_count(), audit_before + 1);
+}
+
+TEST_F(RestServerFixture, PageListsHaveRestAndMcpParity) {
+    const auto project = node.create_project("page-project");
+    ASSERT_TRUE(project);
+    const auto pipeline = project->create_graph(
+        "page-pipeline", zetta::ir::ExecutionGraph{});
+    ASSERT_TRUE(pipeline);
+    const auto run = node.create_run(project->id(), pipeline->id());
+    ASSERT_TRUE(run);
+    std::string error;
+    ASSERT_TRUE(run->log_metrics(1, {{"validation.auc", 0.93}}, {}, &error))
+        << error;
+
+    zetta::ml::ModelValue model_value;
+    model_value.name = "page-model";
+    model_value.kind = "classifier";
+    model_value.project = project->id();
+    model_value.run = run->id();
+    model_value.metrics = {{"auc", 0.93}};
+    model_value.feature_schema = {{"features", {"age"}}};
+    const auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    model->set_exposed(true);
+
+    zetta::ml::StudySpec study_spec;
+    study_spec.name = "page-study";
+    study_spec.project = project->id();
+    study_spec.pipeline = pipeline->id();
+    study_spec.methodology = "M-1";
+    study_spec.objective.metric = "validation.auc";
+    study_spec.objective.validation_split = "validation";
+    zetta::ml::StudyParameter parameter;
+    parameter.name = "depth";
+    parameter.kind = zetta::ml::ParameterKind::Integer;
+    parameter.minimum = 1.0;
+    parameter.maximum = 4.0;
+    study_spec.search_space = {parameter};
+    study_spec.budgets.max_trials = 1;
+    study_spec.budgets.max_parallel_trials = 1;
+    const auto study = node.create_study(std::move(study_spec), &error);
+    ASSERT_TRUE(study) << error;
+    zetta::ml::StudyTrial trial;
+    trial.run = run->id();
+    ASSERT_TRUE(study->add_trial(std::move(trial), &error)) << error;
+    ASSERT_TRUE(study->finish_trial(run->id(), zetta::ml::TrialState::Complete,
+                                    0.93, 1.0, {}, {}, &error))
+        << error;
+
+    for (const std::string name : {"list_runs", "list_models", "list_studies"}) {
+        SCOPED_TRACE(name);
+        const auto rest = request("GET", "/v1/" + name);
+        ASSERT_EQ(rest.status, 200) << rest.body;
+        const nlohmann::json rpc = {
+            {"jsonrpc", "2.0"},
+            {"id", 1184},
+            {"method", "tools/call"},
+            {"params", {{"name", name}, {"arguments", nlohmann::json::object()}}}};
+        const auto mcp = request("POST", "/mcp", rpc.dump());
+        ASSERT_EQ(mcp.status, 200) << mcp.body;
+        const auto rest_envelope = json_of(rest);
+        const auto mcp_envelope =
+            json_of(mcp).at("result").at("structuredContent");
+        ASSERT_TRUE(rest_envelope.at("ok").get<bool>()) << rest.body;
+        ASSERT_TRUE(mcp_envelope.at("ok").get<bool>()) << mcp.body;
+        EXPECT_EQ(rest_envelope.at("value"), mcp_envelope.at("value"));
+    }
+
+    const auto studies = request("GET", "/v1/list_studies");
+    const auto summary = json_of(studies)
+                             .at("value")
+                             .at("studies")[0]
+                             .at("metric_summary");
+    EXPECT_EQ(summary.at("metric"), "validation.auc");
+    EXPECT_EQ(summary.at("completed_trials"), 1);
+    EXPECT_EQ(summary.at("best"), 0.93);
 }
 
 TEST_F(RestServerFixture, PubSubCrudRestMcpSchemaParityAndCalls) {
