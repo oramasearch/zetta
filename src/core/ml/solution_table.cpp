@@ -39,7 +39,8 @@ Solution band_a(
     std::vector<SolutionDataRole> required_data_roles,
     std::string decision_policy_template, std::string measurement_design,
     std::vector<std::string> guardrails,
-    std::vector<SolutionCapabilityLevel> capability_levels) {
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    std::string promotion_condition = {}) {
     Solution solution;
     solution.id = std::move(id);
     solution.name = std::move(name);
@@ -55,6 +56,7 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
+    solution.promotion_condition = std::move(promotion_condition);
     solution.templates = zetta::solutions::solution_templates(solution.id);
     solution.runnable = true;
     for (const SolutionMethodology& entry : solution.composition) {
@@ -80,6 +82,7 @@ Solution band_a(
                            : solution.id == "S-10" ? 1119
                            : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
+                           : solution.id == "B-8" ? 1182
                                                    : 1102);
     return solution;
 }
@@ -560,14 +563,36 @@ const std::vector<Solution>& solutions() {
                 {"label", true, "matured repayment outcome"},
                 {"time", true, "application cutoff and performance window"}},
                "Promote with a lender whose model-risk team co-signs and exercises the full validation pipeline."),
-        sketch("B-8", "IT & Security Operations",
-               "Prioritize operational and security risks with graduated, bounded authority.",
-               "Reduce alert load and exposure while constraining automated remediation.",
-               {{"M-7", "primary", 1}, {"M-12", "foundation", 1}},
-               {{"entity", true, "asset, identity, service, and dependency"},
-                {"time", true, "event and telemetry chronology"},
-                {"label", false, "confirmed incident or operational impact"}},
-               "Promote as an attach-on after multiple modules prove the shared governed-operations pattern."),
+        band_a(
+            "B-8", "IT & Security Operations",
+            "Prioritize operational and security risks with graduated, bounded authority.",
+            "Reduce alert load and exposure while constraining automated remediation.",
+            {{"M-7", "primary", 1}, {"M-12", "foundation", 1}},
+            {"M-12", "M-7"},
+            {"owned investigation recommendations",
+             "approval-gated containment tasks",
+             "bounded containment actions"},
+            {"L1 investigation queue", "L1 containment action"},
+            {{"investigation recommendations", "A0"},
+             {"containment approval", "A1"},
+             {"single-asset containment inside an approved playbook", "A2"},
+             {"policy and playbook changes", "A1"}},
+            {{"entity", true, "asset, identity, service, and dependency"},
+             {"time", true, "event, relationship, and telemetry chronology"},
+             {"feature", true, "numeric telemetry, edge weight, and risk evidence"},
+             {"group", true, "dependency or identity relationship destination"},
+             {"owner", true, "operations or security response owner"},
+             {"eligibility", true, "approved playbook and containment scope evidence"},
+             {"label", false, "confirmed incident or operational impact"}},
+            "Severity tiers with an exact alert budget, A0 investigation, A1 approval, single-asset A2 containment, explicit eligibility, and a kill switch.",
+            "Permanent holdout in every severity tier with incident avoidance measured after the response window.",
+            {"alert volume", "containment scope", "unapproved containment",
+             "kill-switch bypass", "action-execution rate"},
+            levels("prioritized alerts and A0 investigation recommendations",
+                   "add A1 containment approval tasks",
+                   "add single-asset A2 containment inside an approved playbook",
+                   "add dependency-aware bounded containment with the same authority ceiling"),
+            "Promote as an attach-on after multiple modules prove the shared governed-operations pattern."),
     };
     return table;
 }

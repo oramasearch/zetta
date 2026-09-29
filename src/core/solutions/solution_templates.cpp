@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-8", "investigation_recommendation", "A0", "holdout", "incident_avoided", "incident", "alert_volume"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,58 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void it_security_operations_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "critical"}, {"minimum_score", 0.8},
+         {"action", "bounded_containment"},
+         {"allowed_actions", {"investigation_recommendation",
+                              "containment_approval", "bounded_containment",
+                              "no_action"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.4},
+         {"action", "bounded_containment"},
+         {"allowed_actions", {"investigation_recommendation",
+                              "containment_approval", "bounded_containment",
+                              "no_action"}}},
+        {{"name", "advisory"}, {"minimum_score", 0.0},
+         {"action", "no_action"}}};
+    result.policy["actions"] = {
+        {"investigation_recommendation",
+         {{"autonomy", "A0"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"containment_approval",
+         {{"autonomy", "A1"}, {"sla_seconds", 900},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"bounded_containment",
+         {{"autonomy", "A2"}, {"approval_field", "affected_assets"},
+          {"approval_above", 1.0}, {"sla_seconds", 300},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 10;
+    result.policy["frequency_cap"] = frequency(1, 1);
+    result.policy["eligibility_rules"] = {
+        predicate("eligible", true), predicate("owner_assigned", true),
+        predicate("approved_playbook", true),
+        predicate("containment_allowed", true),
+        predicate("dependency_scope_known", true),
+        numeric_predicate("affected_assets", "lte", 1.0)};
+    result.policy["exclusion_rules"] = {
+        predicate("manual_only", true),
+        predicate("protected_asset", true),
+        predicate("active_incident", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"critical", 0.1}, {"elevated", 0.1}, {"advisory", 0.1}};
+    result.experiment.treatment_cells = {"operational_response"};
+    result.guardrails = {
+        {"alert_volume", 10.0, "maximum"},
+        {"containment_scope", 1.0, "maximum"},
+        {"unapproved_containment", 0.0, "maximum"},
+        {"kill_switch_bypass", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "incident_avoided", "incident", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +631,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-8") {
+                it_security_operations_defaults(result);
             }
             return result;
         }
@@ -587,7 +642,20 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
-    if (solution_id != "S-6") {
+    if (solution_id != "S-6" && solution_id != "B-8") {
+        return policy;
+    }
+    if (solution_id == "B-8") {
+        const std::string action =
+            level <= 1 ? "investigation_recommendation"
+            : level == 2 ? "containment_approval"
+                         : "bounded_containment";
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") != "advisory") {
+                tier["action"] = action;
+                tier["allowed_actions"] = {action, "no_action"};
+            }
+        }
         return policy;
     }
     const std::string action = level <= 1 ? "draft_order"
