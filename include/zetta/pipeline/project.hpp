@@ -126,7 +126,7 @@ public:
     // materialize_* variants are the reverse path used by reconciliation. A local
     // create/drop also emits a graph-change audit event through the AuditSink
     // (the audit trail, FEAT-9); the materialize_* paths do not (a peer's change
-    // arrives already-audited as its own replicated `audit:` event).
+    // arrives already-audited through the replicated segment log).
 
     // Store a new named graph. Returns an empty handle if the name is empty or
     // already taken. Assigns a fresh UUID and captures it into the CRDT.

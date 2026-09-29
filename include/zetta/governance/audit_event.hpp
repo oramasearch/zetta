@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -12,6 +13,26 @@
 #include <nlohmann/json.hpp>
 
 namespace zetta::governance {
+
+inline constexpr unsigned kAuditProtocolVersion = 1;
+
+// Bounded whitespace-free identifiers used in peer status/range envelopes.
+bool valid_audit_origin(std::string_view origin);
+
+struct AuditWatermark {
+    std::uint64_t high = 0;
+    std::uint64_t low = 0;
+};
+
+// A bounded page of checksummed segment frames. next acknowledges the entire
+// scanned range, including expired records; summaries below low remain readable.
+struct AuditLogBatch {
+    std::string origin;
+    std::uint64_t after = 0;
+    std::uint64_t next = 0;
+    AuditWatermark watermark;
+    std::string frames;
+};
 
 // The governed action an audit event records (ENT-23). The closed taxonomy of
 // auditable actions in this slice of the audit trail (FEAT-9): graph changes,
@@ -54,14 +75,14 @@ struct AuditReadSummary {
 
 // The canonical lowercase wire name of an action, and the inverse. These are the
 // exact spellings the `action` enum in the AuditEvent JSON Schema accepts, and
-// the strings stored in the CRDT value + on-disk projection.
+// the strings stored in segment frames and returned by audit reads.
 std::string_view to_string(AuditAction action);
 std::optional<AuditAction> audit_action_from(std::string_view name);
 
-// The immutable value of an audit event — everything the CRDT key `audit:<uuid>`
-// carries (the id is the key / on-disk file name, so it isn't repeated here).
+// The immutable value of an audit event (the segment envelope carries its id,
+// origin and sequence separately).
 // This is exactly the shape validated by the AuditEvent JSON Schema at every
-// boundary (disk + the document).
+// boundary (disk, legacy migration and peer ranges).
 struct AuditEventValue {
     AuditAction action = AuditAction::DataAccess;
     std::string actor;    // who acted: the login key id / principal (optional)
@@ -73,7 +94,7 @@ struct AuditEventValue {
 };
 
 // Serialize an audit-event value to its JSON shape (no id). The inverse of
-// parse_audit_event_value; used for the CRDT value, segment records, and tests.
+// parse_audit_event_value; used for segment records, legacy migration and tests.
 nlohmann::json to_json(const AuditEventValue& value);
 
 // The AuditEvent JSON Schema (draft-07) — the single source of truth for the
@@ -105,7 +126,7 @@ public:
     virtual ~AuditSink() = default;
 
     // Append one immutable audit event. The sink stamps id + time, persists it,
-    // and (when replicated) captures it into the document. An event is never
+    // and (when replicated) ships it through the segment log. An event is never
     // edited; node retention may expire an old record.
     virtual void record_audit_event(AuditEventValue value) = 0;
 };
@@ -114,15 +135,14 @@ public:
 // single governed action — a graph change, a deploy, or a data-access decision —
 // with who did it, what it touched, the outcome, and when.
 //
-// An AuditEvent is **replicated state** like the rest of zetta: the Automerge
-// CRDT document is the source of truth (flat key `audit:<uuid>`), and an
-// AuditEvent is its in-memory + on-disk projection. Unlike mutable entities, an
+// An AuditEvent is replicated through checksummed segment ranges, never stored
+// in the Automerge catalog. An AuditEvent is a read-time value. Unlike mutable entities, an
 // audit event cannot be edited. Retention can expire an entire old record while
 // preserving summary records. On disk events project into checksummed gzip
 // segments in the shared `audit/` folder.
 //
-// The id is the file name / CRDT key and never changes. `metadata()` is the
-// value shape that rides in the document and (with the id added) on disk.
+// The id never changes. `metadata()` is the value shape in segment frames,
+// without the id, origin or sequence envelope fields.
 class AuditEvent {
 public:
     // `dir` is the shared audit directory (`<data_dir>/audit`).
@@ -154,16 +174,18 @@ private:
     std::filesystem::path dir_;  // the shared audit/ directory
 };
 
-// The local projection of the replicated audit trail (#1154). Events are
+// The local segment log of the replicated audit trail (#1164). Events are
 // appended to checksummed gzip segments, while RAM holds only a compact id
 // index and a bounded recent window. Legacy audit/<uuid>.json files are
-// migrated when the store opens. Older records are inflated only for a read.
+// migrated when the store opens. Startup reads a durable index and bounded
+// tail/recent frames. Older records are inflated only for reads or retention.
 class AuditTrail {
 public:
     struct MemoryUsage {
         std::uint64_t bytes = 0;
         std::uint64_t items = 0;
         std::uint64_t index_bytes = 0;
+        std::uint64_t cache_bytes = 0;
         std::uint64_t recent_bytes = 0;
         std::uint64_t pending_persist_bytes = 0;
         std::uint64_t pending_persist_items = 0;
@@ -183,6 +205,16 @@ public:
     bool open(std::string* error = nullptr);
     bool append(std::string id, AuditEventValue value,
                 std::string* error = nullptr);
+    bool append_local(const std::string& origin, std::string id,
+                      AuditEventValue value, std::string* error = nullptr);
+    std::map<std::string, AuditWatermark> watermarks() const;
+    std::optional<AuditLogBatch> read_range(const std::string& origin,
+                                           std::uint64_t after,
+                                           std::string* error = nullptr);
+    bool receive(const AuditLogBatch& batch, std::string* error = nullptr);
+    std::size_t memory_bytes() const;
+    // Return freed allocator pages after migration or bulk catch-up, not per frame.
+    static void release_unused_memory();
     bool contains(std::string_view id) const;
     std::size_t size() const;
     MemoryUsage memory_usage() const;
@@ -196,7 +228,7 @@ public:
     // install them. removed is invoked once for each discarded id.
     bool retain_since(std::string_view cutoff, const RemovedVisitor& removed,
                       std::string* error = nullptr);
-    void flush();
+    bool flush();
 
 private:
     class Impl;

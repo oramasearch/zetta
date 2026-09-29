@@ -12,6 +12,12 @@
 
 #include <automerge-cpp/automerge.hpp>
 
+// The pinned backend has no selective history compactor. Keep its binary codec
+// confined to this adapter, preserving non-audit operations and actor clocks.
+#include "../../../modules/automerge-cpp/src/storage/change_chunk.hpp"
+#include "../../../modules/automerge-cpp/src/storage/chunk.hpp"
+#include "../../../modules/automerge-cpp/src/storage/deserializer.hpp"
+
 #include "zetta/util/uuid.hpp"
 
 // src/core/replication.cpp is the CRDT adapter: the one .cpp that uses
@@ -36,6 +42,7 @@ struct ReplicationManager::State {
     std::uint64_t audit_items = 0;
     std::uint64_t change_key_bytes = 0;
     ReplicationChangeToken current_token = 1;
+    bool audit_retired = false;
     mutable std::mutex mutex;
 };
 
@@ -110,6 +117,102 @@ void cache_live_value(StateType& state, const std::string& key,
         value.is_discarded() ? nlohmann::json(encoded) : std::move(value);
 }
 
+bool audit_operation(const am::Op& operation) {
+    const auto* key = std::get_if<std::string>(&operation.key);
+    return operation.obj.is_root() && key && key->starts_with("audit:");
+}
+
+// Retain the original operation ids, predecessor sets and actor sequences.
+// Omitted audit changes leave dangling DAG dependencies, which the backend's
+// full-document merge permits; surviving heads are derived deterministically
+// from surviving changes. No audit key, value or per-event marker survives.
+std::optional<std::vector<std::byte>> strip_audit_history(
+    std::span<const std::byte> bytes) {
+    const auto header = am::storage::parse_chunk_header(bytes);
+    if (!header || header->type != am::storage::ChunkType::document ||
+        !am::storage::validate_chunk_checksum(*header, bytes)) {
+        return std::nullopt;
+    }
+    const auto body = bytes.subspan(header->body_offset, header->body_length);
+    am::storage::Deserializer reader(body);
+    const auto actor_count = reader.read_uleb128();
+    if (!actor_count || *actor_count > body.size() / am::ActorId::size) {
+        return std::nullopt;
+    }
+    std::vector<am::ActorId> actors;
+    for (std::uint64_t index = 0; index < *actor_count; ++index) {
+        const auto length = reader.read_uleb128();
+        if (!length || *length != am::ActorId::size) {
+            return std::nullopt;
+        }
+        const auto actor = reader.read_actor_id();
+        if (!actor) {
+            return std::nullopt;
+        }
+        actors.push_back(*actor);
+    }
+    const auto actors_end = reader.pos();
+    const auto head_count = reader.read_uleb128();
+    if (!head_count || *head_count > reader.remaining() / am::ChangeHash::size ||
+        !reader.read_bytes(*head_count * am::ChangeHash::size)) {
+        return std::nullopt;
+    }
+    const auto change_count = reader.read_uleb128();
+    if (!change_count || *change_count > reader.remaining()) {
+        return std::nullopt;
+    }
+    am::Document retained{1u};
+    std::vector<std::byte> changes;
+    std::uint64_t retained_count = 0;
+    for (std::uint64_t index = 0; index < *change_count; ++index) {
+        const auto length = reader.read_uleb128();
+        if (!length || *length > reader.remaining()) {
+            return std::nullopt;
+        }
+        const auto encoded = reader.read_bytes(*length);
+        auto change = am::storage::parse_change_chunk(*encoded, actors);
+        if (!change) {
+            return std::nullopt;
+        }
+        // Current catalog writes contain one operation. Contiguous surviving
+        // runs also preserve ids in older batched changes (the codec numbers
+        // operations from start_op); every run retains the original actor seq.
+        auto iterator = change->operations.begin();
+        while (iterator != change->operations.end()) {
+            iterator = std::find_if_not(iterator, change->operations.end(),
+                                        audit_operation);
+            if (iterator == change->operations.end()) {
+                break;
+            }
+            const auto end = std::find_if(iterator, change->operations.end(),
+                                           audit_operation);
+            am::Change part = *change;
+            part.operations.assign(iterator, end);
+            part.start_op = part.operations.front().id.counter;
+            retained.apply_changes({part});
+            const auto serialized = am::storage::serialize_change_body(part, actors);
+            am::encoding::encode_uleb128(serialized.size(), changes);
+            changes.insert(changes.end(), serialized.begin(), serialized.end());
+            ++retained_count;
+            iterator = end;
+        }
+    }
+    std::vector<std::byte> compact(body.begin(), body.begin() + actors_end);
+    const auto heads = retained.get_heads();
+    am::encoding::encode_uleb128(heads.size(), compact);
+    for (const auto& head : heads) {
+        compact.insert(compact.end(), head.bytes.begin(), head.bytes.end());
+    }
+    am::encoding::encode_uleb128(retained_count, compact);
+    compact.insert(compact.end(), changes.begin(), changes.end());
+    // Local actor, next operation counter, local sequence and per-actor clocks
+    // are O(actors), and must survive even if an actor wrote only audit events.
+    compact.insert(compact.end(), body.begin() + reader.pos(), body.end());
+    std::vector<std::byte> result;
+    am::storage::write_chunk(am::storage::ChunkType::document, compact, result);
+    return result;
+}
+
 }  // namespace
 
 void ReplicationManager::set(const std::string& key,
@@ -118,6 +221,9 @@ void ReplicationManager::set(const std::string& key,
     // keeps the public API JSON-only. The CRDT still merges per key.
     const std::string encoded = value.dump();
     const std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->audit_retired && key.starts_with("audit:")) {
+        return;
+    }
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
@@ -152,6 +258,9 @@ void ReplicationManager::remove(const std::string& key) {
     const std::string encoded =
         nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
     const std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->audit_retired && key.starts_with("audit:")) {
+        return;
+    }
     state_->document.transact([&](am::Transaction& transaction) {
         transaction.put(am::root, key, encoded);
     });
@@ -271,9 +380,15 @@ std::vector<std::byte> ReplicationManager::save() const {
 }
 
 void ReplicationManager::merge(std::span<const std::byte> blob) {
-    std::optional<am::Document> other = am::Document::load(blob);
-    if (!other) return;
     const std::lock_guard<std::mutex> lock(state_->mutex);
+    const auto filtered = state_->audit_retired
+        ? strip_audit_history(blob) : std::optional<std::vector<std::byte>>{};
+    if (state_->audit_retired && !filtered) {
+        return;
+    }
+    std::optional<am::Document> other = am::Document::load(
+        filtered ? std::span<const std::byte>(*filtered) : blob);
+    if (!other) return;
     state_->document.merge(*other);
 
     std::unordered_set<std::string> document_keys;
@@ -323,6 +438,71 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
         }
         record_change(*state_, key);
     }
+}
+
+bool ReplicationManager::restore(std::span<const std::byte> blob) {
+    auto document = am::Document::load(blob);
+    if (!document) {
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->document = std::move(*document);
+    state_->document.set_actor_id(am::ActorId{zetta::util::uuid_to_bytes(node_id_)});
+    state_->snapshot = std::make_shared<nlohmann::json>(nlohmann::json::object());
+    state_->encoded_values.clear();
+    state_->changes.clear();
+    for (const auto& key : state_->document.keys(am::root)) {
+        const auto encoded = state_->document.get<std::string>(am::root, key);
+        if (!encoded) {
+            continue;
+        }
+        if (removed_locked(key)) {
+            state_->encoded_values[key] = R"({"_removed":true})";
+        } else {
+            cache_live_value(*state_, key, *encoded);
+        }
+    }
+    ++state_->current_token;
+    return true;
+}
+
+bool ReplicationManager::retire_audit(
+    const std::function<bool(const std::string&, const nlohmann::json&)>& migrate,
+    const std::function<bool()>& flush) {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    for (const auto& [key, value] : state_->snapshot->items()) {
+        if (key.starts_with("audit:") && !migrate(key.substr(6), value)) {
+            return false;
+        }
+    }
+    if (!flush()) {
+        return false;
+    }
+    const auto compact = strip_audit_history(state_->document.save());
+    if (!compact) {
+        return false;
+    }
+    auto document = am::Document::load(*compact);
+    if (!document) {
+        return false;
+    }
+    state_->document = std::move(*document);
+    make_snapshot_mutable(*state_);
+    std::erase_if(state_->encoded_values, [](const auto& entry) {
+        return entry.first.starts_with("audit:");
+    });
+    state_->encoded_values.rehash(0);
+    for (auto iterator = state_->snapshot->begin(); iterator != state_->snapshot->end();) {
+        if (iterator.key().starts_with("audit:")) {
+            iterator = state_->snapshot->erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+    state_->changes.clear();
+    ++state_->current_token;
+    state_->audit_retired = true;
+    return true;
 }
 
 }  // namespace zetta::cluster

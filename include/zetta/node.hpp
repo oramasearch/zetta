@@ -741,12 +741,14 @@ public:
     // can be listed in chronological order. Events are never edited; retention
     // may expire old detail while preserving summaries.
     // record_audit_event is the public append API (also the AuditSink override):
-    // it stamps a fresh id + time, persists the event, captures it into the CRDT
-    // when replicated, and appends it to the trail.
+    // it stamps a fresh id + time and appends to the local segment log, whose
+    // per-origin ranges replicate without entering the CRDT (#1164).
     void record_audit_event(zetta::governance::AuditEventValue value) override;
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const;
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> recent_audit_events() const;
     std::size_t audit_event_count() const;
+    nlohmann::json audit_watermarks() const;
+    std::size_t audit_memory_bytes() const;
 
     // Registry policy for authorised polling reads (#1154). The first call for
     // an actor/capability/scope records a session start; calls and delivered
@@ -1098,7 +1100,7 @@ private:
     void flush_stores();
 
     // Open the segmented audit projection and migrate legacy event files.
-    void load_audit_events();
+    bool load_audit_events();
     std::filesystem::path audit_dir() const;
     void flush_due_audit_summaries();
     void apply_audit_retention();
@@ -1112,6 +1114,7 @@ private:
     zetta::memory::ProbeSample runtime_memory_usage() const;
     zetta::memory::ProbeSample model_memory_usage() const;
     zetta::memory::ProbeSample run_job_memory_usage() const;
+    void sync_audit_log();
 
     // Rebuild the immutable solutions ledger from data_dir/ledger.
     void load_ledger_entries();
@@ -1132,7 +1135,7 @@ private:
 
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
-    void load_replication();           // read the persisted CRDT document
+    bool load_replication();           // read the persisted CRDT document
     void persist_replication();        // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
     // apply the CRDT document (the given snapshot) to the projection
@@ -1192,9 +1195,6 @@ private:
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_access_keys(
-        const nlohmann::json& snapshot,
-        const std::vector<std::string>* changed_keys = nullptr);
-    void reconcile_audit_events(
         const nlohmann::json& snapshot,
         const std::vector<std::string>* changed_keys = nullptr);
     void reconcile_ledger_entries(
@@ -1275,10 +1275,6 @@ private:
     std::shared_ptr<zetta::governance::Policy> materialize_policy(
         std::string id, zetta::governance::PolicyValue value);
     bool materialize_drop_policy(const std::string& id);
-    // Apply a replicated audit event (a peer's, or one rebuilt from the document)
-    // by id, without capturing. Append-only — there is no drop counterpart.
-    std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
-                                                        zetta::governance::AuditEventValue value);
     void flush_audit_summary(const std::string& key);
     std::shared_ptr<zetta::solutions::LedgerEntry> materialize_ledger_entry(
         std::string id, zetta::solutions::LedgerEntryValue value);
@@ -1344,6 +1340,7 @@ private:
     std::function<void()> owner_wakeup_;  // guarded by owner_work_mutex_
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::unique_ptr<zetta::governance::AuditTrail> audit_trail_;
+    std::size_t audit_received_since_relief_ = 0;
     struct AuditSummaryWindow {
         std::string actor;
         std::string capability;
@@ -1355,6 +1352,7 @@ private:
     };
     std::map<std::string, AuditSummaryWindow> audit_summary_windows_;
     Clock::time_point last_audit_retention_{};
+    std::map<std::string, Clock::time_point> audit_requests_;
     std::vector<std::shared_ptr<zetta::solutions::LedgerEntry>>
         ledger_entries_;  // sorted (recorded_at, id)
     std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)

@@ -36,7 +36,7 @@ a real zero.
 
 | Row | What it owns | Growth and bound |
 | --- | --- | --- |
-| `audit` | compact segment index, bounded recent window, unsynced records, and replicated audit values | Index memory grows with retained event count. The recent window is bounded by `audit_recent_events`; retention bounds ordinary event age. |
+| `audit` | flat fingerprint and per-origin seek indexes, reusable segment cache, bounded recent window, pending persistence estimate, and read-summary windows | Index memory grows with retained event count. The recent window is bounded by `audit_recent_events`; retention bounds ordinary event age. No per-event catalog values or tombstones remain (#1164). |
 | `pubsub` | topic and inbox event stores | Governed by the detected/configured pub/sub memory budget. Inspect `system.pubsub_topics` for the topic-level breakdown. |
 | `replication` | Automerge document estimate, encoded-value cache, parsed snapshot, and bounded change journal, excluding audit values | Current replicated metadata grows with live and tombstoned keys. The pending journal is capped at 65,536 changes. |
 | `datasets_tables` | database/table objects, resident JSONL rows, Parquet id indexes, and decoded page caches | JSONL rows are fully resident. Parquet decoded pages follow the configured cache budget; positional ids avoid a per-row id table. |
@@ -48,6 +48,10 @@ a real zero.
 Probe byte values are inexpensive ownership estimates, not object-layout proofs.
 Allocator and RSS fields remain the authority for total memory. The difference is
 kept visible instead of being assigned to an arbitrary owner.
+The audit row counts retained segment ids without decoding historical events.
+`system.node_metrics.audit_memory_bytes` uses the same ownership calculation;
+the [replicated million-event proof](../testing/audit-replication.md) also checks
+that this row counts one million events on each node after convergence/restart.
 
 ## Logs and status
 

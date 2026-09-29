@@ -6,6 +6,8 @@ payload copies. See [audit trail](../../../docs/governance/audit-trail.md).
 
 `AuditTrail` stores validated events in checksummed gzip segments, keeps a
 bounded recent window, migrates legacy JSON records, and retains read summaries
-when ordinary detail expires (#1154). Its constant-time `memory_usage()` counters
-separate the index, recent window, and pending persistence for `system.memory`
+when ordinary detail expires (#1154). Its bounded `memory_usage()` counters
+separate the indexes, segment cache, recent window, and pending persistence for `system.memory`
 (#1163).
+Its origin/watermark/range interface ships
+audit independently of the catalog; reserved `legacy` records never ship (#1164).

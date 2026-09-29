@@ -220,7 +220,7 @@ TEST(IncrementalReconcile, AppliesPeerLocalAndRemovalChangesInOneTick) {
     zetta::test::TempDir temporary_directory;
     ReplicationManager replication{zetta::util::new_uuid()};
     for (int index = 0; index < 16; ++index) {
-        replication.set("audit:seed-" + std::to_string(index),
+        replication.set("fixture:seed-" + std::to_string(index),
                         audit_value("seed"));
     }
     replication.set("db:removed", nlohmann::json{{"name", "removed"}});
@@ -244,7 +244,7 @@ TEST(IncrementalReconcile, AppliesPeerLocalAndRemovalChangesInOneTick) {
     node.stop();
 }
 
-TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandAuditKeys) {
+TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandMigratedAuditEvents) {
     zetta::test::TempDir temporary_directory;
     ReplicationManager replication{zetta::util::new_uuid()};
     constexpr int kExistingEvents = 100000;
@@ -258,18 +258,23 @@ TEST(IncrementalReconcile, OneChangeStaysFastWithOneHundredThousandAuditKeys) {
     ASSERT_TRUE(node.start());
     ASSERT_EQ(node.audit_event_count(),
               static_cast<std::size_t>(kExistingEvents));
+    for (const auto& [key, value] : replication.snapshot().items()) {
+        EXPECT_FALSE(key.starts_with("audit:"));
+    }
 
     const auto started = std::chrono::steady_clock::now();
     for (int index = 0; index < kTicks; ++index) {
-        replication.set("audit:tick-" + std::to_string(index),
-                        audit_value("tick"));
+        replication.set("fixture:tick", index);
+        zetta::governance::AuditEventValue event;
+        event.target = "tick";
+        node.record_audit_event(event);
         node.tick();
     }
     const auto elapsed = std::chrono::steady_clock::now() - started;
     const auto elapsed_milliseconds =
         std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
     std::printf(
-        "zetta-test: %d one-change ticks with %d existing audit keys: %lld ms\n",
+        "zetta-test: %d one-change ticks with %d existing audit events: %lld ms\n",
         kTicks, kExistingEvents,
         static_cast<long long>(elapsed_milliseconds.count()));
     EXPECT_LT(elapsed, std::chrono::seconds(4));

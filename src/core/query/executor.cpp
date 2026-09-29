@@ -453,8 +453,10 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
                                               const Node& node) {
     // Direct-peer replication status, keyed by node_id (the live peer table).
     std::map<std::string, zetta::cluster::NodeReplication> replication_by_id;
+    std::map<std::string, unsigned> audit_protocol_by_id;
     for (const zetta::cluster::NodeStatus& n : cluster.nodes()) {
         replication_by_id[n.node_id] = n.replication;
+        audit_protocol_by_id[n.node_id] = n.audit_protocol_version;
     }
     // Live telemetry, cluster-wide + TTL'd — the ephemeral liveness signal
     // (node_id -> seconds since its last sample).
@@ -468,6 +470,11 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
         nlohmann::json row;
         // --- durable (CRDT node:<id>) ---
         row["node_id"] = member.node_id;
+        const auto audit_protocol = audit_protocol_by_id.find(member.node_id);
+        row["audit_protocol_version"] = audit_protocol == audit_protocol_by_id.end()
+            ? nlohmann::json() : nlohmann::json(audit_protocol->second);
+        row["audit_compatible"] = audit_protocol != audit_protocol_by_id.end() &&
+            audit_protocol->second == zetta::governance::kAuditProtocolVersion;
         row["address"] = member.address;
         row["reachability"] =
             member.dial_out_only ? "dial-out-only" : "wan-accessible";
@@ -1752,6 +1759,9 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     row["net_percent"] =
         number_or_null(metrics.net_utilization_available, metrics.net_percent);
     row["sampled_at"] = metrics.sampled_at;
+    row["audit_protocol_version"] = zetta::governance::kAuditProtocolVersion;
+    row["audit_watermarks"] = node.audit_watermarks().dump();
+    row["audit_memory_bytes"] = node.audit_memory_bytes();
     if (const auto* pubsub = node.pubsub()) {
         row["pubsub_dispatch_mode"] =
             std::string(zetta::pubsub::to_string(pubsub->dispatch_mode()));

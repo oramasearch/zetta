@@ -1306,6 +1306,59 @@ TEST_F(RestServerFixture, ReceiveAuditPolicyMatchesRestAndMcp) {
     EXPECT_EQ((*summary)->value().summary->scope, "audit-parity");
 }
 
+TEST_F(RestServerFixture, SegmentedAuditReadsHaveRestAndMcpParity) {
+    zetta::governance::AuditEventValue event;
+    event.target = "audit-parity-fixture";
+    event.detail = "segment-backed read parity";
+    node.record_audit_event(event);
+    const std::vector<std::string> statements = {
+        "SELECT * FROM system.audit WHERE target = 'audit-parity-fixture';",
+        "SELECT audit_protocol_version FROM system.node_metrics;",
+        "SELECT audit_watermarks FROM system.node_metrics;",
+        "SELECT subsystem, bytes, items FROM system.memory WHERE subsystem = 'audit';"};
+    for (const auto& statement : statements) {
+        std::string target = "/v1/sql?statement=";
+        for (const char character : statement) {
+            target += character == ' ' ? "%20" : std::string(1, character);
+        }
+        const auto rest = request("GET", target);
+        ASSERT_EQ(rest.status, 200) << rest.body;
+        const nlohmann::json call = {
+            {"jsonrpc", "2.0"}, {"id", 1164}, {"method", "tools/call"},
+            {"params", {{"name", "sql"}, {"arguments", {{"statement", statement}}}}}};
+        const auto mcp = request("POST", "/mcp", call.dump());
+        ASSERT_EQ(mcp.status, 200) << mcp.body;
+        const auto rest_envelope = json_of(rest);
+        const auto mcp_envelope = json_of(mcp).at("result").at("structuredContent");
+        ASSERT_TRUE(rest_envelope.at("ok").get<bool>()) << rest.body;
+        ASSERT_TRUE(mcp_envelope.at("ok").get<bool>()) << mcp.body;
+        if (statement.find("system.memory") != std::string::npos) {
+            for (const auto& envelope : {rest_envelope, mcp_envelope}) {
+                const auto& audit = envelope.at("value").at("rows").at(0);
+                EXPECT_EQ(audit.at("subsystem"), "audit");
+                EXPECT_GT(audit.at("bytes").get<std::uint64_t>(), 0u);
+                EXPECT_GE(audit.at("items").get<std::uint64_t>(), 1u);
+            }
+        } else if (statement.find("audit_watermarks") == std::string::npos) {
+            EXPECT_EQ(rest_envelope.at("value"), mcp_envelope.at("value"));
+        } else {
+            // The SQL reads themselves audit, so high-water marks can advance
+            // between transports. Check the same per-origin contract on both.
+            for (const auto& envelope : {rest_envelope, mcp_envelope}) {
+                const auto watermarks = nlohmann::json::parse(
+                    envelope.at("value").at("rows").at(0).at("audit_watermarks").get<std::string>());
+                const auto& local = watermarks.at(node.node_id());
+                EXPECT_GE(local.at("high").get<std::uint64_t>(), 1u);
+                EXPECT_LE(local.at("low").get<std::uint64_t>(), local.at("high").get<std::uint64_t>());
+            }
+        }
+        EXPECT_EQ(rest_envelope.at("value").at("rows").size(), 1u);
+    }
+    EXPECT_TRUE(std::ranges::any_of(node.recent_audit_events(), [](const auto& stored) {
+        return stored->target() == "audit-parity-fixture";
+    }));
+}
+
 TEST_F(RestServerFixture, BrowseLongPollWorksOnRestAndMcpWithoutConsuming) {
     for (const bool mcp : {false, true}) {
         const std::string topic = mcp ? "wait-mcp" : "wait-rest";

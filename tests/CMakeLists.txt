@@ -327,9 +327,14 @@ endif()
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
   ZETTA_TEST_BINARY="$<TARGET_FILE:zetta>"
+  ZETTA_AUDIT_PROOF_BINARY="$<TARGET_FILE:zetta-audit-proof>"
   ZETTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 add_dependencies(zetta-tests zetta)
+add_executable(zetta-audit-proof governance/audit_proof.cpp)
+target_link_libraries(zetta-audit-proof PRIVATE zetta-core)
+target_compile_features(zetta-audit-proof PRIVATE cxx_std_26)
+add_dependencies(zetta-tests zetta-audit-proof)
 target_link_libraries(zetta-tests
   PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
   # The boundary validator, so schema-as-code tests can assert every

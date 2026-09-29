@@ -17,6 +17,13 @@ CRDT, no Rust). Nodes exchange document blobs and merge them **conflict-free**:
 concurrent changes on different nodes all survive, with no coordination or
 central leader.
 
+Audit history is the approved durable-log exception (#1164): per-origin
+checksummed segment ranges replace `audit:` catalog entries. The peer hello
+advertises an audit protocol version; incompatible peers still exchange ordinary
+catalog state but refuse audit, and incoming legacy audit operations are removed
+before merge. Migration compacts audit history without changing non-audit
+operation identities or actor clocks. See [audit replication and upgrades](../governance/audit-trail.md).
+
 ## Consistency model: multi-leader by default, leadership only where needed
 
 Because the base is a CRDT, **zetta is multi-leader (multi-writer) by default**:

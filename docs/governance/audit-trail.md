@@ -1,7 +1,7 @@
 # Audit trail
 
 Zetta records governed actions as immutable `AuditEvent` values. The trail is
-replicated through the Automerge catalog, persisted in checksummed compressed
+replicated through per-origin logs, persisted in checksummed compressed
 segments, queryable through `system.audit`, and shown in the governance and
 activity views. It is the audit part of FEAT-9 and the record used by CTL-5.
 
@@ -85,26 +85,46 @@ second event for a peer's action. Important emitters include:
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
-store. `Node` assigns the id and time, captures the replicated value, and
-appends its local projection.
+store. `Node` assigns the id and time and appends the event to its origin log
+for bounded range replication.
 
-## Replication and reconciliation
+## Replication and upgrade policy
 
-The catalog value is:
+Audit events are **not catalog entries** (#1164). Each newly recorded event has
+an immutable origin (the recording node id) and monotonically increasing local
+sequence. Peers advertise per-origin high/low watermarks and pull missing
+checksummed frames in bounded ranges. A relay preserves the original origin,
+sequence and id. Duplicate ids use the existing 96-bit fingerprint index.
+There is no dual writing, catalog reconciliation, or per-event CRDT tombstone.
 
-```text
-audit:<uuid> -> { action, actor, target, allowed, detail, time, summary? }
-```
+The peer hello advertises audit protocol version `1`; a missing field means the
+old version `0`. Mismatched peers log an explicit refusal and exchange no audit
+status, requests or responses. The rest of the catalog continues to replicate.
+The upgraded catalog adapter strips `audit:` operations from incoming documents,
+including removed values, before merging, and rejects local writes with that
+prefix. `system.nodes.audit_protocol_version` and `audit_compatible` expose the
+handshake result. Unknown/unconnected peer versions are null.
 
-Summary events use the same catalog prefix and reconciliation path as every
-other audit event. Changed-key journals route only new `audit:` keys during a
-tick. Startup still performs a full reconciliation. The local id index rejects
-known records before parsing them.
+**Upgrade all nodes together.** Mixed versions deliberately do not converge
+audit history. Stop old writers, upgrade every node, and restart the cluster;
+do not roll one node at a time expecting audit delivery during the transition.
+The AKS cluster is development, not a production compatibility commitment.
 
-Retention removes expired catalog keys through the replication manager. This
-leaves CRDT removal metadata so an old peer cannot reintroduce an expired row.
-The local segment rewrite and replicated removals converge through the normal
-audit reconciliation path.
+On first open, every live `audit:<uuid>` key held locally is validated and
+appended to that node's segments under reserved origin `legacy`, deduplicating
+records already present. Legacy sequences are local and **never shipped**: old
+peers already held the replicated catalog. After the segments are synced, the
+catalog adapter removes all audit operations from its serialized history and
+rebuilds the document. It preserves other operation identities, predecessor
+sets, removal markers and actor clocks. No per-audit-key tombstone remains.
+Migration is restartable; a failure leaves the old persisted catalog available.
+An unreadable store/catalog or failed migration prevents startup.
+
+Network coroutines only queue bounded audit messages. The owner-thread tick
+reads/appends segments and sends replies; no thread or public capability is
+created per request. Status is periodic, requests retry after a lost reply, and
+range validation rejects corrupt frames, wrong origins, out-of-order sequences
+and gaps not covered by the origin's retention low-water mark.
 
 ## Segment storage and bounded memory
 
@@ -114,40 +134,73 @@ The local projection lives under `<data_dir>/audit/`:
 audit/
   segment-00000000.audit.gz
   segment-00000001.audit.gz
+  index.bin
+  watermarks.bin
 ```
 
 Each segment is capped at 4 MiB of uncompressed records. A record frame has a
-length, CRC-32, and compact JSON body containing the id and validated event
-value. Gzip compression reduces disk use. A partial or corrupt trailing frame
+length, CRC-32, and compact JSON body containing the id, origin, sequence and
+validated event value. Gzip compression reduces disk use. A partial trailing frame
 stops recovery at the last valid frame instead of trusting damaged bytes.
 
-Steady-state RAM holds a compact 96-bit id fingerprint-to-segment-position index
-and a bounded recent-event window (2,048 by default), not every full event.
-Membership checks use that index without inflating a segment, including startup
-reconciliation against a large replicated catalog. Full historical objects are
+Steady-state RAM holds a flat open-addressed 96-bit id fingerprint index
+and chunked per-origin sequence/offset indexes, one reusable segment cache, and a bounded
+recent-event window (2,048 by default), not every full event. The checksummed
+sidecar rebuilds these indexes without inflating historical events at startup;
+only the active tail and bounded recent window are decoded. A missing or damaged
+sidecar is rebuilt by streaming segments. Full historical objects are
 inflated only for an explicit `audit_events()` or SQL read and are released with
 that result. `recent_audit_events()` serves bounded UI views.
+
+Index records referencing a missing segment, or durable watermarks ahead of
+available unexpired frames, cause startup to fail rather than crediting lost data.
+
+The fingerprint index stores no duplicate frame locations and allocates no
+per-event map nodes. Each seek entry is 16 bytes: sequence, segment, and offset;
+frame length is read from the existing checksummed frame envelope. The seek
+index grows in chunks without reallocating a whole origin's history. Normal
+range pages are 64 KiB (a single larger validated frame is allowed). Segment
+inflation reuses its buffer in place and only invalidates the cached segment
+when that segment changes; bounded wire/range buffers reserve their capacity.
+After migration and a completed bulk catch-up, the node requests allocator
+pressure relief (`malloc_zone_pressure_relief` on macOS, `malloc_trim` on glibc).
+This is not a substitute for bounded live allocations; proof records RSS both
+before and after an additional relief request. Allocator-retained pages are
+measured, not subtracted from the RSS budget.
 
 On first open after an upgrade, valid legacy `audit/<uuid>.json` files are
 appended to the segment store, synced in 64-record durability batches, and then
 removed. Invalid legacy files remain in place and are reported, preserving
-evidence for repair. Once migrated, subsequent starts read the segments
-directly.
+evidence for repair. Existing frames without origin metadata are indexed under
+`legacy` as well. Subsequent starts use the sidecar, not a full reconciliation.
 
 The storage regression appends one million records and requires less than
-100 MiB additional resident memory and less than 50 MiB on disk.
+100 MiB additional resident memory and less than 120 MiB on disk, including the
+new seek index. The replicated proof uses two independent native processes,
+500,000 writes on each, convergence to one million records per node, and fresh
+processes for restart. Each node must stay below 100 MiB added steady-state RSS
+and 150 MiB added startup peak RSS. See [the proof runbook](../testing/audit-replication.md).
 
 ## Retention
 
 Ordinary audit rows have a 30-day default retention window. The node applies it
-at startup and periodically while running. `--audit-retention-days N` or
+periodically while running, with the first pass after startup rather than a
+historical scan during open. `--audit-retention-days N` or
 `ZETTA_AUDIT_RETENTION_DAYS=N` changes the window; zero disables expiration for
 an archival node.
 
 Retention rewrites kept frames into a synced replacement directory, installs it
-with directory renames, then records replicated removals. Every
+with directory renames, then advertises a monotone low-water mark per origin.
+Only an expired prefix advances the mark; a clock-skewed older event after a
+newer retained event waits for a later pass. High-water marks never decrease,
+even when every ordinary event is removed, so sequences are not reused. Peers
+accept expired gaps and trim their own segments when a newer low mark arrives.
+Replayed old ranges cannot resurrect expired ordinary rows. Every
 `data_access_summary` is retained regardless of age. This preserves compact
 accountability totals while bounding the detailed per-call projection.
+
+Summaries below the low-water mark are still included when a new peer pulls a
+range from zero. No catalog removal is written for retention.
 
 ## Querying
 
@@ -163,6 +216,15 @@ WHERE action = 'data_access_summary';
 
 `GROUP BY` is not supported on system tables; aggregate returned rows in the
 client when additional grouping is needed.
+
+The existing `sql` capability serves these same rows over REST and MCP; no
+capability or event-value schema changes. `audit_events()` and
+`recent_audit_events()` retain their existing contracts. `system.node_metrics`
+adds `audit_protocol_version`, `audit_watermarks` (JSON text keyed by origin,
+with `high` and `low`) and estimated `audit_memory_bytes`.
+The `system.memory` audit row (#1163) uses that same segment-index/cache/window
+estimate and counts retained ids without loading historical events. It no longer
+includes per-event catalog values. See [memory accounting](../ops/memory.md).
 
 ## Pointers
 

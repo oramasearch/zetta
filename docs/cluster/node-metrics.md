@@ -69,10 +69,15 @@ answer depended on whether the steady clock advanced between two adjacent statem
 | `pubsub_dispatch_keys` | active topic and inbox keys known to the dispatcher |
 | `pubsub_topics_per_dispatch_thread` | configured active-key target per worker |
 | `pubsub_dispatch_min_threads` / `pubsub_dispatch_max_threads` | configured pool bounds |
+| `audit_protocol_version` | this node's segment-log protocol version (#1164) |
+| `audit_watermarks` | JSON text keyed by origin, with durable high and retention low sequences |
+| `audit_memory_bytes` | estimated flat fingerprint index, chunked seek index, cached segment and recent-window memory |
 
 The pub/sub columns are live engine state rather than OS counters. They are
 `null` when pub/sub is disabled. A resize updates `pubsub_dispatch_threads` on
 the next query; see [pub/sub dispatch](../pubsub/dispatch.md).
+Audit columns are local store observations. The peer handshake version and
+compatibility are exposed separately in `system.nodes`; see [audit replication](../governance/audit-trail.md).
 
 The process-memory columns come from the same registry as
 [`system.memory`](../ops/memory.md). They diagnose the Zetta process; the older

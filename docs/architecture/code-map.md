@@ -7,6 +7,11 @@ contracts to [pub/sub CRUD](../pubsub/crud.md), the new API/example page.
 The existing pub/sub stores own sparse payload mutation; the topic layer owns
 revisions/redelivery; registry declarations generate both transports and schemas.
 
+Issue #1164 adds navigation READMEs in `include/zetta/`,
+`include/zetta/{cluster,compute,pipeline}/`, `src/core/{cluster,query}/`, `tests/`, `tests/cluster/`,
+and `.claude/skills/zetta-dev/`. They link to the segment-log replication
+contract and [native audit proof](../testing/audit-replication.md).
+
 The annotated, file-by-file map of the zetta codebase — what every header and
 translation unit is for, which issue introduced it, and which library it builds
 into. This is the highest-fidelity map of the repo that exists: **keep it in
@@ -340,7 +345,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
     policy.hpp              zetta::governance::Policy/PolicyValue/policy_value_from_json/policy_schema — a row-level security policy (Postgres-style RLS): a USING read filter + WITH CHECK write filter per table, evaluated by the SQL WHERE engine (#748); policy:<uuid>
     token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/constant_time_equal — the token crypto (OpenSSL)
-    audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable audit values + summary metadata + checksummed bounded-memory segment projection + JSON Schema (ENT-23, #1154)
+    audit_event.hpp         zetta::governance::AuditEvent/AuditSink/AuditTrail — immutable values, per-origin segment ranges, high/low watermarks, bounded recent reads + JSON Schema (ENT-23, #1154, #1164)
     consent.hpp             zetta::governance::ConsentAction/ConsentChallenge/ConsentLedger — remote consent for cloud-touching capabilities (#621): one-time challenges naming exactly what would be read/run, consumable exactly once by a distinctly-privileged approval; ephemeral + owner-thread-only, never replicated (docs/api/consent.md)
   solutions/                runtime evidence shared by deployed solutions (docs/solutions/)
     audit_ledger.hpp        zetta::solutions::ActionLedgerValue/OutcomeLedgerValue/LedgerEntry — immutable action and outcome records, enum codecs, JSON Schema boundary, and disk projection (#1107)
@@ -684,7 +689,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
     policy.cpp              zetta::governance::Policy — persist policy.json + PolicyValue JSON boundary validation + policy schema (RLS, #748)
     token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)
-    audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value, JSON-Schema boundary, compressed segment frames, legacy migration, and retention
+    audit_event.cpp         zetta::governance::AuditEvent/AuditTrail — value/schema boundary, compressed segment frames, durable seek index/watermarks, legacy migration, range validation and retention
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)
   solutions/
     audit_ledger.cpp        zetta::solutions ledger JSON codecs/schema validation plus immutable `<data_dir>/ledger/<uuid>.json` persistence (#1107)
@@ -782,6 +787,8 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   api/ util/ cluster/ data/ ddf/ ml/ solutions/ compute/ index/ pipeline/ cloud/ governance/ observability/ pubsub/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
   solutions/test_audit_ledger.cpp  action/outcome chain reconstruction, append-only behavior, persistence, CRDT replication, SQL queryability, and schema rejection (#1107)
+  governance/audit_proof.cpp native process-isolated million-event replication and restart RSS worker, with opt-in allocation-profile pause (#1164)
+  governance/test_audit.cpp  segment reads/retention, malformed ranges, legacy catalog compaction, incompatible-peer refusal and two-process convergence/RSS assertions (#1164)
   ml/test_forecast.cpp / ml/test_forecast_runner.cpp
                             temporal correctness, FVA, intervals, multiple series, horizon bounds, output lineage, and single-member == multi-member forecasting (#1043)
   ml/test_forecast_methodology.cpp
@@ -868,6 +875,8 @@ data_dir/
   audit/                     ← the immutable-record audit projection
     segment-<number>.audit.gz ← checksummed compressed event frames; legacy
                                  <audit-uuid>.json files migrate on startup
+    index.bin                ← checksummed fingerprint + origin/sequence seek records
+    watermarks.bin           ← durable per-origin high and retention low sequences
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name, replication? }  (replication = the
                                 ReplicationStrategy, ENT-35; omitted when default)

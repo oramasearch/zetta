@@ -6,9 +6,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
 
 #include "zetta/cluster/security.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/governance/audit_event.hpp"
 
 namespace zetta::data { class BlobStore; }
 
@@ -44,6 +46,7 @@ struct ClusterPeer {
     // pod CIDR). It is a pure initiator; its one outbound link carries CRDT sync
     // both ways. False = wan-accessible (a routable rendezvous others dial out to).
     bool dial_out_only = false;
+    unsigned audit_protocol_version = 0;
 };
 
 // A node's replication state, as last learned over the gossip exchange. For the
@@ -66,6 +69,7 @@ struct NodeStatus {
     bool is_self = false;
     bool connected = false;  // membership (always true for self)
     NodeReplication replication;
+    unsigned audit_protocol_version = 0;
 };
 
 // One row of the FULL cluster membership from the replicated node-list (#800):
@@ -85,6 +89,8 @@ struct ClusterMember {
 };
 
 struct ClusterConfig {
+    // Zero models a legacy peer in protocol tests. The binary always uses 1.
+    unsigned audit_protocol_version = zetta::governance::kAuditProtocolVersion;
     // Bind all interfaces by default (the wildcard 0.0.0.0) so a plain node is
     // reachable from other machines out of the box; listen_addresses() expands
     // it to the host's real LAN IPs. Set a specific host (e.g. "127.0.0.1") to
@@ -156,6 +162,16 @@ struct ClusterConfig {
     // "plaintext" default is reached only by embedding a bare Cluster in a
     // test/host. See docs/cluster/security.md.
     ClusterSecurity security;
+};
+
+// Bounded cross-thread handoff. The network adapter queues wire messages; the
+// Node owner loop reads/writes segment files and validates their event frames.
+struct AuditMessage {
+    enum class Kind { Status, Request, Response };
+    Kind kind = Kind::Status;
+    std::string peer;
+    std::map<std::string, zetta::governance::AuditWatermark> watermarks;
+    zetta::governance::AuditLogBatch batch;
 };
 
 // Cluster membership over TCP — mutual TLS 1.3 when ClusterConfig::security
@@ -245,6 +261,11 @@ public:
     // seed whose address never matches the peer's advertised one, or a mutual dial).
     // Kept at parity by the per-node-id link registry — see #739.
     std::size_t connection_count() const;
+
+    void publish_audit_watermarks(
+        const std::map<std::string, zetta::governance::AuditWatermark>& watermarks);
+    std::vector<AuditMessage> take_audit_messages();
+    bool send_audit(const AuditMessage& message);
 
     // Every node and its replication status, for the "list of all nodes" view:
     // this node first (is_self), then each member with the replication state it

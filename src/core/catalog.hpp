@@ -76,7 +76,7 @@
 //                          the V1 key-scoped access model (RULE-3) and its
 //                          capabilities are the deny-by-default rights model
 //                          (ENT-22); see access_key.hpp / capability.hpp)
-//   audit:<uuid>       -> { action, actor, target, allowed, detail, time }
+//   audit:<uuid>       -> legacy only; migrated locally and retired on open (#1164)
 //                          (an immutable, append-only audit event — a graph
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see

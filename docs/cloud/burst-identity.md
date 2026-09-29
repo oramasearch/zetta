@@ -149,7 +149,7 @@ Both lifecycle edges are audited via the Node's [`AuditSink`](../governance/audi
 
 The events are emitted only for the **local** mint/revoke action — the reverse
 `materialize_*` reconciliation paths never emit, so a peer's burst identity arrives
-already-audited as its own replicated `audit:` event. The two new actions are part
+already-audited through the replicated segment log. The two new actions are part
 of the AuditEvent JSON Schema (the inline source of truth in
 `src/core/governance/audit_event.cpp`, mirrored by
 [`schemas/audit_event.schema.json`](../../schemas/audit_event.schema.json)), so a

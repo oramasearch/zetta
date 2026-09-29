@@ -133,7 +133,7 @@ actions extend the audit taxonomy:
   `false` for `Failed`); `detail` carries the note.
 
 The reconcile paths (`materialize_job` / `apply_value`) **never** emit — a peer's
-create/finish arrives already-audited as its own replicated `audit:` event, the
+create/finish arrives already-audited through the replicated segment log, the
 same rule the rest of the tree follows. A `ComputeJob` holds a non-owning
 `AuditSink*` (its `Node`) alongside its `ReplicationManager*`, exactly like a
 `Project`.

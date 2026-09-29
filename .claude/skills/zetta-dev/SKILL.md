@@ -49,7 +49,10 @@ the working checklist. For the annotated file-by-file codebase map see
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; new *kind* of agreement = a new `ReplicationPolicy` — never a bespoke
-  sync path. (See `docs/cluster/replication.md`.)
+  sync path. Audit history is the approved durable-log exception (#1164):
+  per-origin segment ranges, never per-event catalog entries. Its migration
+  removes legacy `audit:` history and preserves ordinary catalog actor clocks.
+  (See `docs/cluster/replication.md` and `docs/governance/audit-trail.md`.)
 - **Capture / gossip / apply (the replication flow):** local mutations are
   **captured** into the CRDT at the *data-model layer* (`Node`/`Database`/`Table`/
   `LargeObjectStore` hold a `ReplicationManager*`), so *every* write path (query

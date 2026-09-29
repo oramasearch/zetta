@@ -78,12 +78,9 @@ protected:
 
     void SetUp() override {
         ASSERT_TRUE(source.start());
-        zetta::governance::AuditEventValue audit;
-        audit.target = "seed";
-        audit.time = "2026-09-28T00:00:00Z";
         for (int index = 0; index < 128; ++index) {
-            source_replication.set("audit:seed-" + std::to_string(index),
-                                   zetta::governance::to_json(audit));
+            source_replication.set("fixture:seed-" + std::to_string(index),
+                                   {{"value", index}});
         }
         replication.merge(source_replication.save());
         ASSERT_TRUE(node.start());
@@ -225,7 +222,7 @@ TEST_F(SolutionReplication, LateExperimentRevisitsChildrenAndParentRemovalCascad
     reloaded.stop();
 }
 
-TEST_F(SolutionReplication, LedgerAndAuditAdditionsRemainAppendOnlyAndIdempotent) {
+TEST_F(SolutionReplication, LedgerRemainsIdempotentAndAuditDoesNotEnterCatalog) {
     const auto action = source.record_action(action_value());
     ASSERT_TRUE(action);
     zetta::solutions::OutcomeLedgerValue outcome;
@@ -243,7 +240,8 @@ TEST_F(SolutionReplication, LedgerAndAuditAdditionsRemainAppendOnlyAndIdempotent
     ASSERT_TRUE(node.find_ledger_entry(recorded->id()));
     EXPECT_EQ(node.find_ledger_entry(recorded->id())->action_id(), action->id());
     EXPECT_EQ(node.ledger_entry_count(), 2u);
-    EXPECT_EQ(node.audit_event_count(), 129u);
+    EXPECT_EQ(node.audit_event_count(), 0u);
+    EXPECT_EQ(source.audit_event_count(), 1u);
 
     const Json original = node.find_ledger_entry(action->id())->metadata();
     Json replacement = original;
@@ -258,7 +256,7 @@ TEST_F(SolutionReplication, LedgerAndAuditAdditionsRemainAppendOnlyAndIdempotent
     EXPECT_TRUE(node.find_ledger_entry(recorded->id()));
     node.tick();
     EXPECT_EQ(node.ledger_entry_count(), 2u);
-    EXPECT_EQ(node.audit_event_count(), 129u);
+    EXPECT_EQ(node.audit_event_count(), 0u);
 }
 
 TEST_F(SolutionReplication, PolicyAndDecisionStoresReadIncrementalChangesDirectly) {

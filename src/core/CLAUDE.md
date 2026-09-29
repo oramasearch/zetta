@@ -18,7 +18,9 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   and large batches. Persistence is debounced to at most once per second and
   forced by `stop()`.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
-  peer's action arrives already-audited as its own replicated `audit:` key.
+  peer's action arrives already-audited through per-origin segment ranges.
+  Audit is the durable-log exception to catalog replication (#1164): startup
+  retires all legacy `audit:` history; the adapter refuses future audit keys.
 - **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`
   writes `{"_removed": true}`; `snapshot()` omits tombstoned keys (so reconcile
   still reads a removal as plain absence) and removal **wins** over a concurrent
@@ -32,7 +34,7 @@ touched domain's `docs/<domain>/README.md` before changing its code.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
   `graph:` `deployment:` `run:` `model:` `profile:` `plan:` `experiment:`
-  `experiment_assignment:` `job:` `index:` `principal:` `key:` `audit:`
+  `experiment_assignment:` `job:` `index:` `principal:` `key:`
   `part:`. New shared state = a new key/shape, replicated by the
   existing gossip — never a parallel hand-synced copy. Bodies (large objects,
   model weights, input payloads) stay **off** the CRDT: on disk, transferred

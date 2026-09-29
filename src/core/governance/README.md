@@ -5,7 +5,9 @@ subscription rights remain separate. Legacy pub/sub write atoms retain their
 existing operation mappings. Mutation audit actions are schema-validated.
 The audit projection uses checksummed compressed segments, a compact
 constant-time id fingerprint index, batched legacy-file migration, and retention
-that preserves summary events (#1154).
-The projection also reports index, recent-window, and pending-persist ownership
+that preserves summary events (#1154). Checksummed sidecars support index-only
+startup; origin/sequence ranges and durable retention watermarks replace CRDT
+audit entries (#1164). See [audit replication](../../../docs/governance/audit-trail.md)
+and [pub/sub CRUD](../../../docs/pubsub/crud.md).
+The projection also reports flat/seek index, segment-cache, recent-window, and pending-persist ownership
 to the node memory registry (#1163).
-See [pub/sub CRUD](../../../docs/pubsub/crud.md).
