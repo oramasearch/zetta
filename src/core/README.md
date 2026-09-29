@@ -12,6 +12,8 @@ Pub/sub payloads and topic/message CRUD remain node-local.
 The default shared dispatcher grows at one worker per 250 active keys.
 The node memory registry combines cheap ownership probes with platform allocator
 and RSS readings, then feeds SQL, telemetry, API, logs, and status output.
+Study deletion is an owner-thread Node operation that tombstones the Study and
+non-promoted trial Runs while retaining promoted Model lineage (#1158).
 See [architecture](../../docs/architecture/README.md) and
 [pub/sub dispatch](../../docs/pubsub/dispatch.md), plus the
 [memory operations guide](../../docs/ops/memory.md).

@@ -105,6 +105,8 @@ const std::vector<PermissionEntry>& vocabulary() {
           {CapabilityDomain::Orchestration, "execute_closed_loop"}}},
         {"studies:promote",
          {{CapabilityDomain::Orchestration, "promote_trial"}}},
+        {"studies:delete",
+         {{CapabilityDomain::Orchestration, "delete_study"}}},
         {"serving:manage",
          {{CapabilityDomain::Orchestration, "expose_model"},
           {CapabilityDomain::Orchestration, "unexpose_model"},

@@ -9,8 +9,8 @@ and `system.node_metrics` over REST and MCP.
 Segment-backed `system.audit` rows, the audit protocol metric, admin-only
 `purge_audit` REST/MCP parity, empty-window suppression, and the
 `system.memory` audit row have REST/MCP SQL parity coverage (#1164, #1169).
-The core registry contains 128 capabilities, including the `node_memory` read
-and `purge_audit` action.
+The core registry contains 129 capabilities, including the `node_memory` read,
+`purge_audit`, and the separately permissioned `delete_study` action.
 Its parity test validates both REST and MCP values against one output schema and
 compares their subsystem ordering and exact replication byte/item values
 (#1167). Both parity suites remain

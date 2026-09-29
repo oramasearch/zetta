@@ -62,11 +62,14 @@ relay it to a person.
   suppresses model-driven action for protected tiers, and `get_experiment`
   exposes balance, exemption erosion, and the assignment rows used by uplift
   training ([experiments.md](../../solutions/experiments.md), #1105).
-- **Studies before promotion**: an agent can create, inspect, stop, analyze, and
-  follow a native AutoML study through the same REST/MCP capabilities. Every
+- **Studies before promotion**: an agent can create, inspect, stop, delete,
+  analyze, and follow a native AutoML study through the same REST/MCP
+  capabilities. Deletion has its own permission, refuses running studies,
+  removes non-promoted trial Runs and their metrics, and retains promoted
+  Model lineage. Every
   trial is a Run with recorded parameters and seed; promotion is isolated behind
   `studies:promote`, so ordinary Pipeline management cannot replace the project
-  model ([studies.md](../../ml/studies.md), #1138).
+  model ([studies.md](../../ml/studies.md), #1138, #1158).
 - **Data evidence before methodology choice**: `analyze_dataset` reports semantic
   types, grain, keys, joins, and leakage findings; `plan_features` turns that evidence
   into explicit features and exclusions. When the prediction unit is wrong or a

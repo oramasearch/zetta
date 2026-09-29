@@ -111,6 +111,14 @@ struct StudyValue {
     std::string promoted_model;
 };
 
+struct StudyDeleteResult {
+    std::string id;
+    std::string name;
+    std::vector<std::string> removed_runs;
+    std::string kept_model;
+    std::string kept_run;
+};
+
 nlohmann::json to_json(const StudyValue& value);
 const nlohmann::json& study_value_schema();
 bool validate_study_value(const nlohmann::json& value,

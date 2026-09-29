@@ -7642,6 +7642,148 @@
         ]
       }
     },
+    "/v1/delete_study": {
+      "post": {
+        "description": "Delete a stopped or complete study and its non-promoted trial Runs with their metrics while retaining promoted Model lineage; this is not undoable. Requires orchestration:delete_study.",
+        "operationId": "delete_study",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "study": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "study"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "kept": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "model": {
+                              "description": "the promoted Model retained after deletion",
+                              "type": "string"
+                            },
+                            "run": {
+                              "description": "the retained Run that produced the promoted Model",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "model",
+                            "run"
+                          ],
+                          "type": "object"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "runs": {
+                              "description": "non-promoted trial Runs removed with their embedded metrics",
+                              "items": {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": [
+                            "runs"
+                          ],
+                          "type": "object"
+                        },
+                        "study": {
+                          "minLength": 1,
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "study",
+                        "name",
+                        "removed",
+                        "kept"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete study",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/deliver_action_task": {
       "post": {
         "description": "Deliver one outbox task with retries, an idempotency key, acknowledgements, and dead-letter handling. Requires orchestration:deliver_action_task.",

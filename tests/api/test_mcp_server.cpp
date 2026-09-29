@@ -292,7 +292,8 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     zetta::api::register_core_capabilities(registry);
     for (const char* name : {"create_study", "get_study", "list_studies",
                              "list_trials", "stop_study", "stop_trial",
-                             "promote_trial", "get_study_analysis"}) {
+                             "promote_trial", "delete_study",
+                             "get_study_analysis"}) {
         const auto capability = registry.find(name);
         ASSERT_TRUE(capability) << name;
         const auto tool = std::ranges::find_if(
@@ -321,6 +322,11 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     const auto created = caller("create_study", input);
     ASSERT_TRUE(created.ok) << created.error.message;
     const std::string study_id = created.value.at("id");
+    const auto running_delete =
+        caller("delete_study", {{"study", study_id}});
+    EXPECT_FALSE(running_delete.ok);
+    EXPECT_NE(running_delete.error.message.find("running"), std::string::npos);
+    EXPECT_TRUE(node.find_study(study_id));
     EXPECT_TRUE(caller("get_study", {{"study", study_id}}).ok);
     EXPECT_TRUE(caller("list_studies", nlohmann::json::object()).ok);
     EXPECT_TRUE(caller("get_study_analysis", {{"study", study_id}}).ok);
@@ -369,6 +375,16 @@ TEST_F(McpServerFixture, StudyToolsListAndCallsMatchTheRegistry) {
     EXPECT_EQ(study->value().trials.back().state,
               zetta::ml::TrialState::Failed);
     EXPECT_EQ(active_run->status(), zetta::pipeline::RunStatus::Failed);
+    const auto deleted = caller("delete_study", {{"study", study_id}});
+    ASSERT_TRUE(deleted.ok) << deleted.error.message;
+    EXPECT_EQ(deleted.value.at("removed").at("runs").size(), 2u);
+    EXPECT_EQ(deleted.value.at("kept").at("model"), model->id());
+    EXPECT_EQ(deleted.value.at("kept").at("run"), promoted_run->id());
+    EXPECT_FALSE(node.find_study(study_id));
+    EXPECT_FALSE(node.find_run(stopped_run->id()));
+    EXPECT_FALSE(node.find_run(active_run->id()));
+    EXPECT_TRUE(node.find_run(promoted_run->id()));
+    EXPECT_TRUE(node.find_model(model->id()));
 }
 
 TEST_F(McpServerFixture, ToolsCallRunsOnTheOwningLoopAndCarriesTrace) {

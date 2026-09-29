@@ -554,6 +554,17 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
     ASSERT_EQ(created.status, 200) << created.body;
     const std::string study_id =
         json_of(created).at("value").at("id").get<std::string>();
+    const auto running_delete = request(
+        "POST", "/v1/delete_study",
+        nlohmann::json{{"study", study_id}}.dump());
+    EXPECT_EQ(running_delete.status, 422) << running_delete.body;
+    EXPECT_NE(json_of(running_delete)
+                  .at("error")
+                  .at("message")
+                  .get<std::string>()
+                  .find("running"),
+              std::string::npos);
+    EXPECT_TRUE(node.find_study(study_id));
     EXPECT_EQ(request("GET", "/v1/get_study?study=" + study_id).status,
               200);
     EXPECT_EQ(request("GET", "/v1/list_studies").status, 200);
@@ -613,6 +624,19 @@ TEST_F(RestServerFixture, StudyCapabilitiesWorkOverRest) {
     EXPECT_EQ(study->value().trials.back().state,
               zetta::ml::TrialState::Failed);
     EXPECT_EQ(active_run->status(), zetta::pipeline::RunStatus::Failed);
+    const auto deleted = request(
+        "POST", "/v1/delete_study",
+        nlohmann::json{{"study", study_id}}.dump());
+    ASSERT_EQ(deleted.status, 200) << deleted.body;
+    const nlohmann::json deleted_value = json_of(deleted).at("value");
+    EXPECT_EQ(deleted_value.at("removed").at("runs").size(), 2u);
+    EXPECT_EQ(deleted_value.at("kept").at("model"), model->id());
+    EXPECT_EQ(deleted_value.at("kept").at("run"), promoted_run->id());
+    EXPECT_FALSE(node.find_study(study_id));
+    EXPECT_FALSE(node.find_run(stopped_run->id()));
+    EXPECT_FALSE(node.find_run(active_run->id()));
+    EXPECT_TRUE(node.find_run(promoted_run->id()));
+    EXPECT_TRUE(node.find_model(model->id()));
 }
 
 // The error mapping over the wire: schema-invalid input -> 400 with the
