@@ -12,5 +12,7 @@ The native `zetta-audit-proof` worker measures RSS independently on two nodes,
 each writing 500,000 events and converging to a million, then reopening in fresh
 processes. Tests also cover 100,000-key catalog compaction, mixed-version audit
 refusal, retained-summary range gaps, replay and malformed frames (#1164).
-The worker checks the memory registry's audit item count after both phases.
+The catalog-compaction regression compares the replication probe with a fresh
+measurement and rejects wrapped byte or item totals (#1167). The worker checks
+the memory registry's audit item count after both phases.
 See [the proof runbook](../../docs/testing/audit-replication.md).

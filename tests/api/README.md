@@ -11,7 +11,8 @@ Segment-backed `system.audit` rows, the audit protocol metric, and the
 SQL parity coverage; no audit capability is added (#1164).
 The core registry contains 127 capabilities, including the `node_memory` read.
 Its parity test validates both REST and MCP values against one output schema and
-compares their subsystem ordering. Both parity suites remain
+compares their subsystem ordering and exact replication byte/item values
+(#1167). Both parity suites remain
 required, alongside the MCP malformed-request and receive/browse long-poll
 regressions.
 See [CRUD verification](../../docs/pubsub/crud.md#verification).

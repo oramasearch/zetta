@@ -107,6 +107,25 @@ void account_encoded_value(StateType& state, const std::string& key,
 }
 
 template <typename StateType>
+void rebaseline_memory_counters(StateType& state) {
+    state.encoded_bytes = 0;
+    state.audit_encoded_bytes = 0;
+    state.audit_items = 0;
+    for (const auto& [key, encoded] : state.encoded_values) {
+        const auto bytes = key.size() + encoded.size();
+        state.encoded_bytes += bytes;
+        if (is_audit_key(key)) {
+            state.audit_encoded_bytes += bytes;
+            ++state.audit_items;
+        }
+    }
+    state.change_key_bytes = 0;
+    for (const auto& change : state.changes) {
+        state.change_key_bytes += change.key.size();
+    }
+}
+
+template <typename StateType>
 void cache_live_value(StateType& state, const std::string& key,
                       const std::string& encoded) {
     account_encoded_value(state, key, &encoded);
@@ -343,8 +362,12 @@ ReplicationMemoryUsage ReplicationManager::memory_usage() const {
                                  state_->encoded_values.size() * kEntryOverhead;
     usage.audit_bytes = state_->audit_encoded_bytes * kCopiesPerLiveValue +
                         state_->audit_items * kEntryOverhead;
-    usage.bytes = all_value_bytes - usage.audit_bytes;
-    usage.items = state_->encoded_values.size() - state_->audit_items;
+    usage.bytes = all_value_bytes >= usage.audit_bytes
+                      ? all_value_bytes - usage.audit_bytes
+                      : 0;
+    usage.items = state_->encoded_values.size() >= state_->audit_items
+                      ? state_->encoded_values.size() - state_->audit_items
+                      : 0;
     usage.pending_change_bytes = state_->change_key_bytes +
                                  state_->changes.size() * sizeof(State::ChangeRecord);
     usage.pending_changes = state_->changes.size();
@@ -462,6 +485,7 @@ bool ReplicationManager::restore(std::span<const std::byte> blob) {
             cache_live_value(*state_, key, *encoded);
         }
     }
+    rebaseline_memory_counters(*state_);
     ++state_->current_token;
     return true;
 }
@@ -500,6 +524,7 @@ bool ReplicationManager::retire_audit(
         }
     }
     state_->changes.clear();
+    rebaseline_memory_counters(*state_);
     ++state_->current_token;
     state_->audit_retired = true;
     return true;
