@@ -191,6 +191,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `enqueue_action_task` | action | orchestration:enqueue_action_task | write an owner- and SLA-bound task to the replicated outbox after holdout and policy checks |
 | `deliver_action_task` | action | orchestration:deliver_action_task | deliver an outbox task through webhook, Salesforce, or HubSpot with bounded retries and dead-letter handling |
 | `execute_closed_loop` | action | orchestration:execute_closed_loop | enqueue and deliver one task while rechecking holdout and the current policy kill-switch before HTTP |
+| `purge_audit` | action | orchestration:purge_audit | admin-only segment rewrite before a UTC cutoff; advances replicated low-water marks and records `audit_purged` (#1169) |
 | `delete_project` | action | orchestration:delete_project | delete a project with its inputs + graphs on every node; its runs + models are kept and counted (#1009, [projects.md](../pipeline/projects.md)) |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
 | `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |

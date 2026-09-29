@@ -48,7 +48,8 @@
         "decision_approved",
         "pubsub_topic_updated",
         "pubsub_event_updated",
-        "pubsub_event_deleted"
+        "pubsub_event_deleted",
+        "audit_purged"
       ],
       "type": "string"
     },

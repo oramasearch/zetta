@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,7 +15,7 @@
 
 namespace zetta::governance {
 
-inline constexpr unsigned kAuditProtocolVersion = 1;
+inline constexpr unsigned kAuditProtocolVersion = 2;
 
 // Bounded whitespace-free identifiers used in peer status/range envelopes.
 bool valid_audit_origin(std::string_view origin);
@@ -22,6 +23,7 @@ bool valid_audit_origin(std::string_view origin);
 struct AuditWatermark {
     std::uint64_t high = 0;
     std::uint64_t low = 0;
+    std::uint64_t summary_low = 0;
 };
 
 // A bounded page of checksummed segment frames. next acknowledges the entire
@@ -60,6 +62,7 @@ enum class AuditAction {
     PubSubTopicUpdated,
     PubSubEventUpdated,
     PubSubEventDeleted,
+    AuditPurged,
 };
 
 // Completeness metadata for an authorised high-frequency read window (#1154).
@@ -223,15 +226,24 @@ public:
     std::vector<std::shared_ptr<AuditEvent>> recent_events() const;
     void for_each(const EventVisitor& visitor) const;
 
-    // Remove ordinary records older than cutoff while retaining every summary.
-    // Replacement segments are written and synced before directory renames
-    // install them. removed is invoked once for each discarded id.
-    bool retain_since(std::string_view cutoff, const RemovedVisitor& removed,
+    // Remove ordinary records older than cutoff and summaries older than
+    // summary_cutoff. An empty cutoff preserves that class except for records
+    // already covered by its replicated low-water mark. Replacement segments
+    // are written and synced before directory renames install them. removed is
+    // invoked once for each discarded id.
+    bool retain_since(std::string_view cutoff,
+                      std::string_view summary_cutoff,
+                      const RemovedVisitor& removed,
                       std::string* error = nullptr);
     bool flush();
 
 private:
     class Impl;
+    // Segment rewrites may run on a blocking-worker while the owner loop
+    // appends or exchanges ranges. Keep the store transition atomic to all
+    // callers; recursive entry covers events()->size()/for_each() and
+    // receive()->flush()/retain_since().
+    mutable std::recursive_mutex mutex_;
     std::unique_ptr<Impl> impl_;
 };
 

@@ -30,6 +30,11 @@ bool Registry::add(Capability capability) {
     if (capability.offloadable && (capability.requires_consent || capability.mutates)) {
         return false;
     }
+    if (capability.blocks &&
+        (capability.offloadable || capability.awaitable_read ||
+         capability.requires_consent)) {
+        return false;
+    }
     if (capability.awaitable_read &&
         (capability.kind != CapabilityKind::Read || capability.offloadable ||
          capability.requires_consent || capability.mutates ||
@@ -40,6 +45,10 @@ bool Registry::add(Capability capability) {
     if (capability.audit_policy == AuditPolicy::SummarizeAuthorizedReads &&
         (capability.kind != CapabilityKind::Read || capability.mutates ||
          capability.requires_consent)) {
+        return false;
+    }
+    if (capability.audit_policy == AuditPolicy::HandlerRecordsSuccess &&
+        (capability.kind != CapabilityKind::Action || !capability.mutates)) {
         return false;
     }
     entries_.push_back(std::make_shared<const Capability>(std::move(capability)));
@@ -100,6 +109,21 @@ void audit_call(Node& node, const Capability& capability,
     event.allowed = allowed;
     event.detail = detail;
     node.record_audit_event(std::move(event));
+}
+
+bool audit_result_has_data(const Capability& capability,
+                           const ApiResult& result) {
+    if (!result.value.is_object() || capability.audit_result_field.empty()) {
+        return false;
+    }
+    const auto found = result.value.find(capability.audit_result_field);
+    if (found == result.value.end() || found->is_null()) {
+        return false;
+    }
+    if (found->is_array() || found->is_object() || found->is_string()) {
+        return !found->empty();
+    }
+    return true;
 }
 
 // The consent trail (#621): the challenge under the requester, the decision
@@ -354,7 +378,8 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                 }
                 context.node.record_authorized_read(
                     context.acting_key, capability->name, std::move(scope),
-                    events_delivered);
+                    events_delivered,
+                    audit_result_has_data(*capability, result));
             } else {
                 audit_call(context.node, *capability, context.acting_key,
                            result.error.code != "unauthorized",
@@ -363,10 +388,26 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         });
     }
 
+    if (capability->audit_policy == AuditPolicy::HandlerRecordsSuccess &&
+        !result.ok) {
+        context.node.run_on_owner([&] {
+            audit_call(context.node, *capability, context.acting_key,
+                       result.error.code != "unauthorized",
+                       result.error.code + ": " + result.error.message);
+        });
+    }
+
     if (result.ok && capability->mutates && activity_) {
-        activity_(ActivityEvent{capability->name,
-                                context.acting_key.empty() ? "local"
-                                                           : context.acting_key});
+        const ActivityEvent event{
+            capability->name,
+            context.acting_key.empty() ? "local" : context.acting_key};
+        if (capability->blocks) {
+            context.node.run_on_owner([&] {
+                activity_(event);
+            });
+        } else {
+            activity_(event);
+        }
     }
     return finish(std::move(result));
 }

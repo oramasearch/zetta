@@ -141,6 +141,8 @@ backend.
 ./build/bin/zetta --pubsub-topics-per-thread 250    # active keys per dispatch worker
 ./build/bin/zetta --pubsub-dispatch-threads 1       # minimum dispatch workers
 ./build/bin/zetta --pubsub-dispatch-max-threads 16  # maximum; detected CPU count by default
+./build/bin/zetta --audit-retention-days 30          # ordinary rows; zero keeps forever
+./build/bin/zetta --audit-summary-retention-days 365 # summaries; zero keeps forever
 ./build/bin/zetta --help
 ```
 
@@ -149,6 +151,12 @@ The matching environment variables are `ZETTA_PUBSUB_DISPATCH_MODE`,
 `ZETTA_PUBSUB_DISPATCH_MAX_THREADS`. An explicit CLI value wins over its
 environment variable. See [pub/sub dispatch](pubsub/dispatch.md) for sizing,
 ordering and fairness.
+
+The audit retention flags map to `ZETTA_AUDIT_RETENTION_DAYS` and
+`ZETTA_AUDIT_SUMMARY_RETENTION_DAYS`. Ordinary rows default to 30 days and
+summaries to 365 days. Both expiration paths rewrite the segment log and
+advance the replicated class cursor; zero keeps that class forever. See
+[audit trail](governance/audit-trail.md#retention).
 
 On startup a node runs a **preflight integrity check** by default (disable with
 `--no-preflight`): it re-hashes each local large-object body against its recorded

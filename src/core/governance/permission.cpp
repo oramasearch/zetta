@@ -28,6 +28,7 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
         {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
         {"cluster:admin", {{CapabilityDomain::Api, "cluster_admin"}}},
+        {"audit:purge", {{CapabilityDomain::Orchestration, "purge_audit"}}},
         // Pub/sub (#1029): publish and subscribe are data rights, creating and
         // managing topics orchestration; sending to a wildcard is its own right.
         {"pubsub:publish", {{CapabilityDomain::Data, "pubsub_publish"}}},

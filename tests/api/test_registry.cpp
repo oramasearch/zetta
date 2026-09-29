@@ -67,7 +67,7 @@ struct RegistryFixture : ::testing::Test {
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_EQ(
         registry.size(),
-        127u); // +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
+        128u); // +purge_audit (#1169), +node_memory (#1163), +8 study controls (#1138), +5 run-metrics controls (#1137), +5 topic/message CRUD (#1136), +4 solution registry capabilities (#1102), +snapshot (#1103), +5 decision-policy capabilities (#1104), +3 experiment controls (#1105), +get_monitor (#1106), +3 audit-ledger capabilities (#1107), +get_roi_readout (#1108), +4 action capabilities (#1109), +2 featurization reads (#1062), +5 pub/sub (#1033), +approve_plan (#885), +3 workspace_profile
               // (#886), +3 plan (Conflict D), +agent_training_status
               // +set_training_schedule (#941), +score (#948), +get_run_report
               // (#958), +explain (#960 item 5), +list_source_tables (#994),
@@ -88,6 +88,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("list_source_tables"));
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("node_memory"));
+    EXPECT_TRUE(registry.find("purge_audit"));
     EXPECT_TRUE(registry.find("create_experiment"));
     EXPECT_TRUE(registry.find("assign"));
     EXPECT_TRUE(registry.find("get_experiment"));
@@ -526,6 +527,29 @@ TEST_F(RegistryFixture, KeyWithoutCapabilityIsDeniedAndAudited) {
     EXPECT_EQ(result.error.code, "unauthorized");
     const auto events = node.audit_events();
     EXPECT_FALSE(events.back()->value().allowed);
+}
+
+TEST_F(RegistryFixture, DeniedAuditPurgesAreRecordedOneByOne) {
+    auto principal = node.create_principal(
+        "audit reader", zetta::governance::PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    auto key = principal->create_key(zetta::governance::unrestricted_scope());
+    ASSERT_TRUE(key);
+    ApiContext context{node, nullptr, key->id()};
+    const auto before = node.audit_event_count();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto result = registry.call(
+            "purge_audit",
+            {{"before", "2026-01-01T00:00:00Z"}}, context);
+        EXPECT_FALSE(result.ok);
+        EXPECT_EQ(result.error.code, "unauthorized");
+    }
+    ASSERT_EQ(node.audit_event_count(), before + 2);
+    const auto events = node.audit_events();
+    EXPECT_FALSE(events[events.size() - 2]->allowed());
+    EXPECT_FALSE(events.back()->allowed());
+    EXPECT_EQ(events[events.size() - 2]->target(), "api:purge_audit");
+    EXPECT_EQ(events.back()->target(), "api:purge_audit");
 }
 
 TEST_F(RegistryFixture, SqlReadsTheSystemViews) {

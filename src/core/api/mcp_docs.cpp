@@ -87,6 +87,7 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `--log-cluster` | log cluster gossip to stderr (debugging) |\n";
     out += "| `--governance` | enforce consent gating on cloud-touching calls (off by default) |\n";
     out += "| `--audit-retention-days N` | keep ordinary audit rows for N days; zero disables expiration |\n";
+    out += "| `--audit-summary-retention-days N` | keep audit summaries for N days (default 365); zero disables expiration |\n";
     out += "| `-h`, `--help` | this reference, on the terminal |\n\n";
     out += "**Consent gating is off by default.** A consent-gated capability\n";
     out += "(`create_dataset_from_query`, `cloud_inspect`, `detect_provisioners`,\n";
@@ -134,7 +135,8 @@ std::string render_cli_md(std::string_view origin) {
     out += "| `ZETTA_PUBSUB_TOPICS_PER_THREAD` | `--pubsub-topics-per-thread` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_THREADS` | `--pubsub-dispatch-threads` |\n";
     out += "| `ZETTA_PUBSUB_DISPATCH_MAX_THREADS` | `--pubsub-dispatch-max-threads` |\n";
-    out += "| `ZETTA_AUDIT_RETENTION_DAYS` | `--audit-retention-days` |\n\n";
+    out += "| `ZETTA_AUDIT_RETENTION_DAYS` | `--audit-retention-days` |\n";
+    out += "| `ZETTA_AUDIT_SUMMARY_RETENTION_DAYS` | `--audit-summary-retention-days` |\n\n";
 
     out += "## See also\n\n";
     out += "- [`/mcp.md`](/mcp.md) — connect an MCP client to this node\n";

@@ -3951,6 +3951,56 @@ void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     }
 }
 
+std::optional<std::size_t> Node::purge_audit_before(
+    const std::string& before, std::string actor, std::string* error) {
+    const auto cutoff = zetta::util::parse_iso8601_seconds(before);
+    const auto now = zetta::util::parse_iso8601_seconds(
+        zetta::util::now_iso8601());
+    if (!cutoff) {
+        if (error) {
+            *error = "before must be a valid UTC ISO-8601 timestamp";
+        }
+        return std::nullopt;
+    }
+    if (!now || *cutoff > *now) {
+        if (error) {
+            *error = "before must not be in the future";
+        }
+        return std::nullopt;
+    }
+    if (!audit_trail_) {
+        if (error) {
+            *error = "audit trail is unavailable";
+        }
+        return std::nullopt;
+    }
+
+    std::size_t removed = 0;
+    if (!audit_trail_->retain_since(
+            before, before,
+            [&removed](const std::string&) {
+                ++removed;
+            },
+            error)) {
+        return std::nullopt;
+    }
+
+    zetta::governance::AuditEventValue event;
+    event.action = zetta::governance::AuditAction::AuditPurged;
+    event.actor = actor.empty() ? "local" : std::move(actor);
+    event.target = "audit";
+    event.allowed = true;
+    event.detail = "purged audit records before " + before + "; " +
+                   std::to_string(removed) + " rows removed";
+    event.time = zetta::util::now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    if (!audit_trail_->append_local(
+            node_id_, id, std::move(event), error)) {
+        return std::nullopt;
+    }
+    return removed;
+}
+
 std::vector<std::shared_ptr<zetta::governance::AuditEvent>>
 Node::audit_events() const {
     return audit_trail_ ? audit_trail_->events()
@@ -3971,7 +4021,9 @@ nlohmann::json Node::audit_watermarks() const {
     nlohmann::json result = nlohmann::json::object();
     if (audit_trail_) {
         for (const auto& [origin, watermark] : audit_trail_->watermarks()) {
-            result[origin] = {{"high", watermark.high}, {"low", watermark.low}};
+            result[origin] = {{"high", watermark.high},
+                              {"low", watermark.low},
+                              {"summary_low", watermark.summary_low}};
         }
     }
     return result;
@@ -4010,7 +4062,10 @@ void Node::sync_audit_log() {
             for (const auto& [origin, watermark] : message.watermarks) {
                 const auto found = local.find(origin);
                 const auto high = found == local.end() ? 0 : found->second.high;
-                if (high < watermark.high || (found != local.end() && found->second.low < watermark.low)) {
+                if (high < watermark.high ||
+                    (found != local.end() &&
+                     (found->second.low < watermark.low ||
+                      found->second.summary_low < watermark.summary_low))) {
                     request_range(message.peer, origin, high);
                 }
             }
@@ -4048,7 +4103,8 @@ void Node::sync_audit_log() {
 
 void Node::record_authorized_read(std::string actor, std::string capability,
                                   std::string scope,
-                                  std::uint64_t events_delivered) {
+                                  std::uint64_t events_delivered,
+                                  bool returned_data) {
     if (actor.empty()) {
         actor = "local";
     }
@@ -4080,6 +4136,7 @@ void Node::record_authorized_read(std::string actor, std::string capability,
     }
     ++found->second.calls;
     found->second.events_delivered += events_delivered;
+    found->second.returned_data = found->second.returned_data || returned_data;
 }
 
 void Node::flush_audit_summary(const std::string& key) {
@@ -4089,21 +4146,24 @@ void Node::flush_audit_summary(const std::string& key) {
     }
     AuditSummaryWindow& window = found->second;
     const std::string ended = zetta::util::now_iso8601();
-    zetta::governance::AuditEventValue summary;
-    summary.action = zetta::governance::AuditAction::DataAccessSummary;
-    summary.actor = window.actor;
-    summary.target = "api:" + window.capability;
-    summary.allowed = true;
-    summary.detail = std::to_string(window.calls) +
-                     " authorised reads; " +
-                     std::to_string(window.events_delivered) +
-                     " events delivered";
-    summary.summary = zetta::governance::AuditReadSummary{
-        window.calls, window.events_delivered, window.scope,
-        window.started, ended};
-    record_audit_event(std::move(summary));
+    if (window.events_delivered > 0 || window.returned_data) {
+        zetta::governance::AuditEventValue summary;
+        summary.action = zetta::governance::AuditAction::DataAccessSummary;
+        summary.actor = window.actor;
+        summary.target = "api:" + window.capability;
+        summary.allowed = true;
+        summary.detail = std::to_string(window.calls) +
+                         " authorised reads; " +
+                         std::to_string(window.events_delivered) +
+                         " events delivered";
+        summary.summary = zetta::governance::AuditReadSummary{
+            window.calls, window.events_delivered, window.scope,
+            window.started, ended};
+        record_audit_event(std::move(summary));
+    }
     window.calls = 0;
     window.events_delivered = 0;
+    window.returned_data = false;
     window.started = ended;
     window.opened_at = Clock::now();
 }
@@ -4139,16 +4199,25 @@ void Node::flush_audit_summaries() {
 
 void Node::apply_audit_retention() {
     last_audit_retention_ = Clock::now();
-    if (!audit_trail_ || config_.audit_retention.count() <= 0) {
+    if (!audit_trail_ ||
+        (config_.audit_retention.count() <= 0 &&
+         config_.audit_summary_retention.count() <= 0)) {
         return;
     }
-    const long long seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(
-            config_.audit_retention).count();
-    const std::string cutoff = zetta::util::iso8601_seconds_ago(seconds);
+    const auto cutoff_for = [](std::chrono::hours retention) {
+        if (retention.count() <= 0) {
+            return std::string{};
+        }
+        const long long seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(retention).count();
+        return zetta::util::iso8601_seconds_ago(seconds);
+    };
+    const std::string cutoff = cutoff_for(config_.audit_retention);
+    const std::string summary_cutoff =
+        cutoff_for(config_.audit_summary_retention);
     std::string error;
     const bool retained = audit_trail_->retain_since(
-        cutoff,
+        cutoff, summary_cutoff,
         [](const std::string&) {},
         &error);
     if (!retained) {

@@ -16,7 +16,7 @@ for successful, authorised, high-frequency pub/sub reads:
 | Denied call | One event per call, including every repeated denial. |
 | Handler failure | One event per call. |
 | Ordinary authorised read | One event per call. |
-| Successful `receive_events`, `browse_topic`, `get_topic`, or `list_topics` | One session-start event, then a five-minute summary per actor, capability, and topic scope. |
+| Successful `receive_events`, `browse_topic`, `get_topic`, or `list_topics` | One session-start event, then a five-minute summary per actor, capability, and topic scope only when the window returned data. |
 
 The capability declaration selects `SummarizeAuthorizedReads`; handlers do not
 implement audit policy themselves. The registry validates that this policy is
@@ -36,13 +36,18 @@ The summary is emitted every five minutes when the node ticks, when the next
 call crosses the window boundary, and when the node stops. Both reads made by an
 asynchronous long poll are counted: the initial empty read and its final read
 after wake or timeout. A return with events contributes both one call and the
-number delivered.
+number delivered. A window in which every authorised read delivered zero events
+and returned no other data produces no summary row. `get_topic` metadata and
+non-empty topic lists still count as returned data even though they contain no
+event envelopes.
 
-This remains complete for accountability. Actor, capability, scope, interval,
-call count, and delivered-event count survive; an investigator can distinguish
-idle polling from delivered traffic. Calls needing individual scrutiny—writes,
-denials, and failures—remain separate immutable rows. The summaries remove
-transport-loop noise without hiding an access decision or state change.
+This remains complete for accountability. The session-start row records which
+principal began polling which capability and scope. A summary then preserves
+actor, capability, scope, interval, call count, and delivered-event count for
+every window that exposed data. Calls needing individual scrutiny—writes,
+denials, and failures—remain separate immutable rows. Suppressing later empty
+windows removes idle transport-loop noise without hiding an access decision,
+delivered result, or state change.
 
 ## Event value
 
@@ -83,6 +88,7 @@ second event for a peer's action. Important emitters include:
 | Access-key and cloud governance | Key, provisioning, consent, inspection, and dataset actions. |
 | Decision policy store | Policy creation/update and decision approval. |
 | Pub/sub administration | Topic setting changes and event edits/deletions. |
+| Audit administration | `audit_purged`, recorded after an explicit purge. |
 
 `AuditSink::record_audit_event` decouples these emitters from the node-owned
 store. `Node` assigns the id and time and appends the event to its origin log
@@ -97,7 +103,7 @@ checksummed frames in bounded ranges. A relay preserves the original origin,
 sequence and id. Duplicate ids use the existing 96-bit fingerprint index.
 There is no dual writing, catalog reconciliation, or per-event CRDT tombstone.
 
-The peer hello advertises audit protocol version `1`; a missing field means the
+The peer hello advertises audit protocol version `2`; a missing field means the
 old version `0`. Mismatched peers log an explicit refusal and exchange no audit
 status, requests or responses. The rest of the catalog continues to replicate.
 The upgraded catalog adapter strips `audit:` operations from incoming documents,
@@ -124,7 +130,8 @@ Network coroutines only queue bounded audit messages. The owner-thread tick
 reads/appends segments and sends replies; no thread or public capability is
 created per request. Status is periodic, requests retry after a lost reply, and
 range validation rejects corrupt frames, wrong origins, out-of-order sequences
-and gaps not covered by the origin's retention low-water mark.
+and gaps not covered by either of the origin's class-specific retention
+low-water marks.
 
 ## Segment storage and bounded memory
 
@@ -190,17 +197,43 @@ historical scan during open. `--audit-retention-days N` or
 an archival node.
 
 Retention rewrites kept frames into a synced replacement directory, installs it
-with directory renames, then advertises a monotone low-water mark per origin.
-Only an expired prefix advances the mark; a clock-skewed older event after a
-newer retained event waits for a later pass. High-water marks never decrease,
-even when every ordinary event is removed, so sequences are not reused. Peers
-accept expired gaps and trim their own segments when a newer low mark arrives.
-Replayed old ranges cannot resurrect expired ordinary rows. Every
-`data_access_summary` is retained regardless of age. This preserves compact
-accountability totals while bounding the detailed per-call projection.
+with directory renames, then advertises monotone ordinary and summary low-water
+marks per origin. Only an expired prefix advances its class mark; a clock-skewed
+older event after a newer retained event waits for a later pass. High-water
+marks never decrease, even when every event is removed, so sequences are not
+reused. Peers accept expired gaps and trim their own segments when a newer mark
+arrives. Replayed old ranges cannot resurrect expired rows.
 
-Summaries below the low-water mark are still included when a new peer pulls a
-range from zero. No catalog removal is written for retention.
+Summaries have an independent 365-day default. Set
+`--audit-summary-retention-days N` or
+`ZETTA_AUDIT_SUMMARY_RETENTION_DAYS=N`; zero keeps summaries forever for an
+archival node. The two cursors advance independently, so a short ordinary
+window does not force a retained summary out and an expired summary cannot
+return from a peer.
+
+Records from either class that remain above their own low-water mark are still
+included when a new peer pulls a range from zero. No catalog removal is written
+for retention.
+
+## Explicit purge
+
+`purge_audit {"before":"<UTC ISO-8601 time>"}` is an admin-only registry
+action exposed with REST and MCP parity. It requires the dedicated
+`audit:purge` permission (`orchestration:purge_audit`); the built-in `admin`
+role has it, while `writer` and `reader` do not.
+
+The action runs the same segment rewrite and replicated low-water-mark path as
+scheduled retention, using `before` for both ordinary rows and summaries.
+Records strictly before the cutoff are removed on the caller and peers trim
+when they receive the new cursors. A future cutoff is refused. On success the
+node appends one `audit_purged` row after the rewrite, naming the actor, cutoff,
+and number of removed rows. Appending after the rewrite guarantees the row for
+the current purge is never one of the records it removes.
+
+REST callers use `POST /v1/purge_audit`; MCP callers invoke the `purge_audit`
+tool. The result is `{"before":"...","removed":N}`. Segment rewriting is
+offloaded through the runtime's blocking-work path while authorization and
+activity notification remain on the node owner thread.
 
 ## Querying
 
@@ -221,7 +254,7 @@ The existing `sql` capability serves these same rows over REST and MCP; no
 capability or event-value schema changes. `audit_events()` and
 `recent_audit_events()` retain their existing contracts. `system.node_metrics`
 adds `audit_protocol_version`, `audit_watermarks` (JSON text keyed by origin,
-with `high` and `low`) and estimated `audit_memory_bytes`.
+with `high`, `low`, and `summary_low`) and estimated `audit_memory_bytes`.
 The `system.memory` audit row (#1163) uses that same segment-index/cache/window
 estimate and counts retained ids without loading historical events. It no longer
 includes per-event catalog values. See [memory accounting](../ops/memory.md).

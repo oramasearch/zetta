@@ -78,6 +78,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
               (std::vector<Operation>{{CapabilityDomain::Api, "manage_tokens"}}));
     EXPECT_EQ(permission_operations("cluster:admin"),
               (std::vector<Operation>{{CapabilityDomain::Api, "cluster_admin"}}));
+    EXPECT_EQ(permission_operations("audit:purge"),
+              (std::vector<Operation>{{CapabilityDomain::Orchestration,
+                                       "purge_audit"}}));
 
     // Orchestration atoms (#799): the pipeline authoring/deploy/run + serving +
     // cloud control surface, so the admin/owner can drive it under always-on auth.
@@ -145,7 +148,7 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     // The canonical list carries the #746 atoms, blob:read (#747), the three
     // Orchestration atoms (#799), eight pub/sub atoms (#1029/#1136), and the
     // study promotion atom (#1138).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 22u);
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 23u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {

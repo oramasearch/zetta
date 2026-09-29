@@ -8422,9 +8422,59 @@ ApiResult handle_get_experiment(const nlohmann::json& input,
     return ApiResult::success(zetta::solutions::to_json(*report));
 }
 
+nlohmann::json purge_audit_schema() {
+    return nlohmann::json{
+        {"type", "object"},
+        {"required", {"before"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"before",
+           {{"type", "string"},
+            {"description", "UTC cutoff; records strictly before it are removed."}}}}}};
+}
+
+nlohmann::json purge_audit_output_schema() {
+    return nlohmann::json{
+        {"type", "object"},
+        {"required", {"before", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"before", {{"type", "string"}}},
+          {"removed", {{"type", "integer"}, {"minimum", 0}}}}}};
+}
+
+ApiResult handle_purge_audit(const nlohmann::json& input,
+                             ApiContext& context) {
+    const std::string before = input.at("before").get<std::string>();
+    std::string error;
+    const auto removed = context.node.purge_audit_before(
+        before, context.acting_key, &error);
+    if (!removed) {
+        return ApiResult::failure("invalid_input", error, "/before");
+    }
+    return ApiResult::success(
+        {{"before", before}, {"removed", *removed}});
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
+    Capability purge_audit{
+        "purge_audit",
+        "Purge audit records",
+        "Remove audit records strictly before a UTC cutoff, advance replicated "
+        "low-water marks, and append an audit_purged record describing the action.",
+        purge_audit_schema(),
+        purge_audit_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "purge_audit"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_purge_audit};
+    purge_audit.audit_policy = AuditPolicy::HandlerRecordsSuccess;
+    purge_audit.blocks = true;
+    registry.add(std::move(purge_audit));
+
     registry.add(Capability{
         "versions",
         "Show version",

@@ -1111,7 +1111,7 @@ struct ApiServer::Impl {
                 });
                 poll_waiter_count.store(poll_events.size(),
                                         std::memory_order_relaxed);
-            } else if (capability->offloadable) {
+            } else if (capability->offloadable || capability->blocks) {
                 // Offloadable handlers (chat) touch only thread-safe state and
                 // run on the pool so generation never pins the owner loop.
                 auto call = [&]() -> ApiResult {
@@ -1120,7 +1120,11 @@ struct ApiServer::Impl {
                     context.acting_is_user = identity.is_user;
                     return capability_registry.call(capability->name, input, context);
                 };
-                call_result = co_await zetta::runtime::offload(call);
+                if (capability->blocks) {
+                    call_result = co_await zetta::runtime::offload_blocking(call);
+                } else {
+                    call_result = co_await zetta::runtime::offload(call);
+                }
                 // offload resumes us on a pool worker; hop back onto the owning
                 // loop before touching the connection. route.send below is a
                 // Corosio op bound to that loop's executor — resuming it on a pool
@@ -3919,13 +3923,34 @@ bool ApiServer::start() {
                 auto wait_event =
                     std::make_shared<zetta::runtime::async_event>();
                 ApiResult observed;
-                // Marshal the whole dispatch onto the loop that owns the
-                // Node; this coroutine suspends until drain() has run it.
-                co_await impl.bridge.run_on_owner([&] {
-                    response_body = impl.dispatch(
-                        request, identity.acting_key, identity.is_user,
-                        traceparent, wait_event, &observed);
-                });
+                bool blocks = false;
+                if (request.is_object() &&
+                    request.value("method", std::string{}) == "tools/call" &&
+                    request.contains("params") && request.at("params").is_object() &&
+                    request.at("params").contains("name") &&
+                    request.at("params").at("name").is_string()) {
+                    const auto capability = impl.capability_registry.find(
+                        request.at("params").at("name").get<std::string>());
+                    blocks = capability && capability->blocks;
+                }
+                if (blocks) {
+                    auto dispatch = [&] {
+                        return impl.dispatch(
+                            request, identity.acting_key, identity.is_user,
+                            traceparent, wait_event, &observed);
+                    };
+                    response_body =
+                        co_await zetta::runtime::offload_blocking(dispatch);
+                    co_await impl.bridge.run_on_owner([] {});
+                } else {
+                    // Marshal the whole dispatch onto the loop that owns the
+                    // Node; this coroutine suspends until drain() has run it.
+                    co_await impl.bridge.run_on_owner([&] {
+                        response_body = impl.dispatch(
+                            request, identity.acting_key, identity.is_user,
+                            traceparent, wait_event, &observed);
+                    });
+                }
                 if (observed.ok && request.is_object() &&
                     request.value("method", std::string{}) == "tools/call") {
                     const auto& params = request.at("params");

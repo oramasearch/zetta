@@ -219,7 +219,7 @@ TEST_F(PubSubCapabilities, ReadScopeFiltersEachConcreteTopicAndBoundsGovernPubli
     EXPECT_FALSE(call("publish_event", {{"topic", "allowed.orders"}, {"payload", "two"}, {"priority", 10}}).ok);
 }
 
-TEST_F(PubSubCapabilities, TenMinutesWorthOfIdlePollsUseFewRowsAndDenialsStayPerCall) {
+TEST_F(PubSubCapabilities, IdlePollsAddNoSummariesAndDenialsStayPerCall) {
     ASSERT_TRUE(call("create_topic", {{"topic", "idle"}, {"exposed", true}}).ok);
     const auto before = node.audit_event_count();
     // Six hundred one-hertz returns represent ten minutes of an idle agent.
@@ -231,20 +231,12 @@ TEST_F(PubSubCapabilities, TenMinutesWorthOfIdlePollsUseFewRowsAndDenialsStayPer
     EXPECT_EQ(node.audit_event_count(), before + 1);
 
     node.flush_audit_summaries();
-    EXPECT_EQ(node.audit_event_count(), before + 2);
-    bool found_summary = false;
+    EXPECT_EQ(node.audit_event_count(), before + 1);
     for (const auto& event : node.audit_events()) {
-        if (event->action() != zetta::governance::AuditAction::DataAccessSummary ||
-            event->target() != "api:receive_events") {
-            continue;
-        }
-        ASSERT_TRUE(event->value().summary);
-        EXPECT_EQ(event->value().summary->calls, 600u);
-        EXPECT_EQ(event->value().summary->events_delivered, 0u);
-        EXPECT_EQ(event->value().summary->scope, "idle");
-        found_summary = true;
+        EXPECT_FALSE(
+            event->action() == zetta::governance::AuditAction::DataAccessSummary &&
+            event->target() == "api:receive_events");
     }
-    EXPECT_TRUE(found_summary);
 
     ASSERT_TRUE(node.create_role("poll-denied"));
     ASSERT_TRUE(node.grant_permissions("poll-denied", {"mcp:call"}));

@@ -57,7 +57,8 @@ const nlohmann::json& schema_document() {
                               "consent_requested", "consent_decided",
                               "consent_bypassed", "decision_policy_created",
                               "decision_policy_updated", "decision_approved",
-                              "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted"] },
+                              "pubsub_topic_updated", "pubsub_event_updated", "pubsub_event_deleted",
+                              "audit_purged"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -141,6 +142,7 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::PubSubTopicUpdated: return "pubsub_topic_updated";
         case AuditAction::PubSubEventUpdated: return "pubsub_event_updated";
         case AuditAction::PubSubEventDeleted: return "pubsub_event_deleted";
+        case AuditAction::AuditPurged: return "audit_purged";
     }
     return "data_access";
 }
@@ -168,6 +170,7 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "pubsub_topic_updated") return AuditAction::PubSubTopicUpdated;
     if (name == "pubsub_event_updated") return AuditAction::PubSubEventUpdated;
     if (name == "pubsub_event_deleted") return AuditAction::PubSubEventDeleted;
+    if (name == "audit_purged") return AuditAction::AuditPurged;
     return std::nullopt;
 }
 
@@ -775,6 +778,7 @@ public:
             bytes += origin;
             append_u64(bytes, watermark.high);
             append_u64(bytes, watermark.low);
+            append_u64(bytes, watermark.summary_low);
         }
         append_u32(bytes, audit_crc32(bytes));
         const fs::path temporary = directory_ / "watermarks.tmp";
@@ -803,28 +807,59 @@ public:
             read_u32(bytes, bytes.size() - 4)) {
             return false;
         }
-        std::size_t offset = 0;
-        while (offset + 4 < bytes.size()) {
-            const auto length = read_u32(bytes, offset);
-            offset += 4;
-            if (length == 0 || length > 128 || offset + length + 16 > bytes.size() - 4) {
-                return false;
+        const auto parse = [&](bool has_summary_low)
+            -> std::optional<std::map<std::string, AuditWatermark>> {
+            std::map<std::string, AuditWatermark> parsed;
+            std::size_t offset = 0;
+            const std::size_t watermark_bytes = has_summary_low ? 24 : 16;
+            while (offset + 4 < bytes.size()) {
+                const auto length = read_u32(bytes, offset);
+                offset += 4;
+                if (length == 0 || length > 128 ||
+                    offset + length + watermark_bytes > bytes.size() - 4) {
+                    return std::nullopt;
+                }
+                const auto origin = bytes.substr(offset, length);
+                offset += length;
+                AuditWatermark watermark;
+                watermark.high = read_u64(bytes, offset);
+                watermark.low = read_u64(bytes, offset + 8);
+                if (has_summary_low) {
+                    watermark.summary_low = read_u64(bytes, offset + 16);
+                }
+                offset += watermark_bytes;
+                if (!valid_audit_origin(origin) ||
+                    watermark.low > watermark.high ||
+                    watermark.summary_low > watermark.high ||
+                    !parsed.emplace(origin, watermark).second) {
+                    return std::nullopt;
+                }
             }
-            const auto origin = bytes.substr(offset, length);
-            offset += length;
-            const AuditWatermark watermark{read_u64(bytes, offset), read_u64(bytes, offset + 8)};
-            offset += 16;
-            if (!valid_audit_origin(origin) || watermark.low > watermark.high) {
-                return false;
+            if (offset != bytes.size() - 4) {
+                return std::nullopt;
             }
+            return parsed;
+        };
+        auto parsed = parse(true);
+        if (!parsed) {
+            parsed = parse(false);
+        }
+        if (!parsed) {
+            return false;
+        }
+        for (const auto& [origin, watermark] : *parsed) {
             auto& local = watermarks_[origin];
-            if (watermark.high > local.high && watermark.high > watermark.low) {
+            if (watermark.high > local.high &&
+                watermark.high > std::max(watermark.low,
+                                          watermark.summary_low)) {
                 return false;
             }
             local.high = std::max(local.high, watermark.high);
             local.low = std::max(local.low, watermark.low);
+            local.summary_low =
+                std::max(local.summary_low, watermark.summary_low);
         }
-        return offset == bytes.size() - 4;
+        return true;
     }
 
     bool load_segment(std::uint32_t number, std::string* error) {
@@ -1185,16 +1220,19 @@ bool valid_audit_origin(std::string_view origin) {
 }
 
 bool AuditTrail::open(std::string* error) {
+    const std::lock_guard lock(mutex_);
     return impl_->open(error);
 }
 
 bool AuditTrail::append(std::string id, AuditEventValue value,
                         std::string* error) {
+    const std::lock_guard lock(mutex_);
     return impl_->append(std::move(id), std::move(value), error);
 }
 
 bool AuditTrail::append_local(const std::string& origin, std::string id,
                               AuditEventValue value, std::string* error) {
+    const std::lock_guard lock(mutex_);
     if (origin == "legacy") {
         if (error) {
             *error = "legacy is reserved for migration";
@@ -1205,10 +1243,12 @@ bool AuditTrail::append_local(const std::string& origin, std::string id,
 }
 
 std::map<std::string, AuditWatermark> AuditTrail::watermarks() const {
+    const std::lock_guard lock(mutex_);
     return impl_->watermarks_;
 }
 
 std::size_t AuditTrail::memory_bytes() const {
+    const std::lock_guard lock(mutex_);
     return memory_usage().bytes;
 }
 
@@ -1222,6 +1262,7 @@ void AuditTrail::release_unused_memory() {
 
 std::optional<AuditLogBatch> AuditTrail::read_range(
     const std::string& origin, std::uint64_t after, std::string* error) {
+    const std::lock_guard lock(mutex_);
     const auto watermark = impl_->watermarks_.find(origin);
     if (origin == "legacy" || watermark == impl_->watermarks_.end() ||
         after > watermark->second.high || !flush()) {
@@ -1266,9 +1307,12 @@ std::optional<AuditLogBatch> AuditTrail::read_range(
 }
 
 bool AuditTrail::receive(const AuditLogBatch& batch, std::string* error) {
+    const std::lock_guard lock(mutex_);
     if (!valid_audit_origin(batch.origin) || batch.origin == "legacy" ||
         batch.next < batch.after ||
-        batch.next > batch.watermark.high || batch.watermark.low > batch.watermark.high ||
+        batch.next > batch.watermark.high ||
+        batch.watermark.low > batch.watermark.high ||
+        batch.watermark.summary_low > batch.watermark.high ||
         batch.frames.size() > kMaximumFrameBytes) {
         if (error) {
             *error = "invalid audit range or missing predecessor range";
@@ -1286,17 +1330,20 @@ bool AuditTrail::receive(const AuditLogBatch& batch, std::string* error) {
     // prevents a bad trailing frame from acknowledging a partially valid page.
     std::size_t offset = 0;
     std::uint64_t sequence = batch.after;
+    const std::uint64_t expired_through =
+        std::max(batch.watermark.low, batch.watermark.summary_low);
     while (offset < batch.frames.size()) {
         const auto decoded = decode_audit_frame(std::string_view(batch.frames).substr(offset), error);
         if (!decoded || decoded->origin != batch.origin || decoded->sequence <= sequence ||
             decoded->sequence > batch.next ||
-            (decoded->sequence - sequence > 1 && decoded->sequence - 1 > batch.watermark.low)) {
+            (decoded->sequence - sequence > 1 &&
+             decoded->sequence - 1 > expired_through)) {
             return false;
         }
         sequence = decoded->sequence;
         offset += decoded->consumed;
     }
-    if (sequence < batch.next && batch.next > batch.watermark.low) {
+    if (sequence < batch.next && batch.next > expired_through) {
         if (error) {
             *error = "audit range omits unexpired records";
         }
@@ -1305,8 +1352,11 @@ bool AuditTrail::receive(const AuditLogBatch& batch, std::string* error) {
     offset = 0;
     while (offset < batch.frames.size()) {
         const auto decoded = decode_audit_frame(std::string_view(batch.frames).substr(offset));
-        const bool retained = decoded->sequence > local.low ||
+        const bool summary =
             decoded->value.action == AuditAction::DataAccessSummary;
+        const bool retained = summary
+            ? decoded->sequence > local.summary_low
+            : decoded->sequence > local.low;
         if (decoded->sequence > local.high && retained &&
             !impl_->append(decoded->id, decoded->value, error, batch.origin, decoded->sequence)) {
             return false;
@@ -1315,27 +1365,36 @@ bool AuditTrail::receive(const AuditLogBatch& batch, std::string* error) {
     }
     local.high = std::max(local.high, batch.next);
     const auto previous_low = local.low;
+    const auto previous_summary_low = local.summary_low;
     local.low = std::max(local.low, std::min(batch.watermark.low, batch.next));
+    local.summary_low = std::max(
+        local.summary_low,
+        std::min(batch.watermark.summary_low, batch.next));
     if (!flush()) {
         return false;
     }
-    return previous_low == local.low || retain_since("", [](const std::string&) {
-    }, error);
+    return (previous_low == local.low &&
+            previous_summary_low == local.summary_low) ||
+        retain_since("", "", [](const std::string&) {}, error);
 }
 
 bool AuditTrail::contains(std::string_view id) const {
+    const std::lock_guard lock(mutex_);
     return impl_->contains(id);
 }
 
 std::size_t AuditTrail::size() const {
+    const std::lock_guard lock(mutex_);
     return impl_->index_.size();
 }
 
 AuditTrail::MemoryUsage AuditTrail::memory_usage() const {
+    const std::lock_guard lock(mutex_);
     return impl_->memory_usage();
 }
 
 std::vector<std::shared_ptr<AuditEvent>> AuditTrail::events() const {
+    const std::lock_guard lock(mutex_);
     std::vector<std::shared_ptr<AuditEvent>> result;
     result.reserve(size());
     for_each([&result](const std::shared_ptr<AuditEvent>& event) {
@@ -1349,6 +1408,7 @@ std::vector<std::shared_ptr<AuditEvent>> AuditTrail::events() const {
 }
 
 std::vector<std::shared_ptr<AuditEvent>> AuditTrail::recent_events() const {
+    const std::lock_guard lock(mutex_);
     std::vector<std::shared_ptr<AuditEvent>> result{
         impl_->recent_.begin(), impl_->recent_.end()};
     std::stable_sort(result.begin(), result.end(),
@@ -1359,12 +1419,15 @@ std::vector<std::shared_ptr<AuditEvent>> AuditTrail::recent_events() const {
 }
 
 void AuditTrail::for_each(const EventVisitor& visitor) const {
+    const std::lock_guard lock(mutex_);
     impl_->for_each(visitor);
 }
 
 bool AuditTrail::retain_since(std::string_view cutoff,
+                              std::string_view summary_cutoff,
                               const RemovedVisitor& removed,
                               std::string* error) {
+    const std::lock_guard lock(mutex_);
     const fs::path original = impl_->directory_;
     const fs::path temporary = original.parent_path() /
         (original.filename().string() + ".retained");
@@ -1378,19 +1441,35 @@ bool AuditTrail::retain_since(std::string_view cutoff,
     bool changed = false;
     for (const auto& [origin, positions] : impl_->positions_) {
         auto& watermark = retained_watermarks[origin];
+        bool ordinary_prefix_open = true;
+        bool summary_prefix_open = true;
         for (const auto& position : positions) {
             const auto frame = impl_->frame_at(position);
             const auto decoded = frame ? decode_audit_frame(*frame) : std::nullopt;
             if (!decoded) {
                 return false;
             }
-            if (decoded->value.action == AuditAction::DataAccessSummary) {
+            const bool summary =
+                decoded->value.action == AuditAction::DataAccessSummary;
+            std::uint64_t& low = summary
+                ? watermark.summary_low
+                : watermark.low;
+            bool& prefix_open = summary
+                ? summary_prefix_open
+                : ordinary_prefix_open;
+            const std::string_view class_cutoff = summary
+                ? summary_cutoff
+                : cutoff;
+            if (position.sequence <= low) {
+                changed = true;
                 continue;
             }
-            if (decoded->value.time >= cutoff && position.sequence > watermark.low) {
-                break;
+            if (!prefix_open || class_cutoff.empty() ||
+                decoded->value.time >= class_cutoff) {
+                prefix_open = false;
+                continue;
             }
-            watermark.low = std::max(watermark.low, position.sequence);
+            low = position.sequence;
             changed = true;
         }
     }
@@ -1411,8 +1490,12 @@ bool AuditTrail::retain_since(std::string_view cutoff,
             if (!decoded) {
                 return false;
             }
-            const bool keep = decoded->value.action == AuditAction::DataAccessSummary ||
-                position.sequence > retained_watermarks[origin].low;
+            const bool summary =
+                decoded->value.action == AuditAction::DataAccessSummary;
+            const std::uint64_t low = summary
+                ? retained_watermarks[origin].summary_low
+                : retained_watermarks[origin].low;
+            const bool keep = position.sequence > low;
             return !keep || replacement.impl_->append(decoded->id, decoded->value,
                                                        error, origin, position.sequence);
         });
@@ -1452,15 +1535,17 @@ bool AuditTrail::retain_since(std::string_view cutoff,
     // vector or replicated tombstone remains resident.
     Impl previous(backup, 0);
     const bool reported = impl_->visit_positions([&](const auto& origin, const auto& position) {
-        if (position.sequence > retained_watermarks[origin].low) {
-            return true;
-        }
         const auto frame = previous.frame_at(position);
         const auto decoded = frame ? decode_audit_frame(*frame) : std::nullopt;
         if (!decoded) {
             return false;
         }
-        if (decoded->value.action != AuditAction::DataAccessSummary) {
+        const bool summary =
+            decoded->value.action == AuditAction::DataAccessSummary;
+        const std::uint64_t low = summary
+            ? retained_watermarks[origin].summary_low
+            : retained_watermarks[origin].low;
+        if (position.sequence <= low) {
             removed(decoded->id);
         }
         return true;
@@ -1477,6 +1562,7 @@ bool AuditTrail::retain_since(std::string_view cutoff,
 }
 
 bool AuditTrail::flush() {
+    const std::lock_guard lock(mutex_);
     return impl_->sync_writer();
 }
 

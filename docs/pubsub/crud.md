@@ -214,7 +214,9 @@ they are not administrative delete calls.
 Successful `receive_events`, `browse_topic`, `get_topic`, and `list_topics`
 reads use the registry's windowed audit policy. The first read records an
 actor/capability/topic session; five-minute summaries record call count and
-events delivered. Denied calls and handler failures remain one row per call.
+events delivered only for windows that returned events or other data. An empty
+polling window adds no row beyond the session start. Denied calls and handler
+failures remain one row per call.
 See [audit trail policy](../governance/audit-trail.md#audit-policy).
 
 Durability follows [stores.md](stores.md) and [restart.md](restart.md), exactly
