@@ -102,6 +102,18 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
         request.project = project.get();
         request.graph = &stage_graph;
         request.input = state->input;
+        const auto sources = request.input.find("sources");
+        if (sources != request.input.end() && sources->is_object()) {
+            const auto stage_settings =
+                sources->find(stage.methodology->id);
+            if (stage_settings != sources->end() &&
+                stage_settings->is_object()) {
+                for (const auto& [key, value] :
+                     stage_settings->items()) {
+                    request.input[key] = value;
+                }
+            }
+        }
         if (stage.methodology->id == "M-4") {
             request.input.erase("dataset_path");
             request.input.erase("dataset");

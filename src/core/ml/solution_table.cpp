@@ -39,7 +39,8 @@ Solution band_a(
     std::vector<SolutionDataRole> required_data_roles,
     std::string decision_policy_template, std::string measurement_design,
     std::vector<std::string> guardrails,
-    std::vector<SolutionCapabilityLevel> capability_levels) {
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    std::string promotion_condition = {}) {
     Solution solution;
     solution.id = std::move(id);
     solution.name = std::move(name);
@@ -55,6 +56,7 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
+    solution.promotion_condition = std::move(promotion_condition);
     solution.templates = zetta::solutions::solution_templates(solution.id);
     solution.runnable = true;
     for (const SolutionMethodology& entry : solution.composition) {
@@ -80,6 +82,7 @@ Solution band_a(
                            : solution.id == "S-10" ? 1119
                            : solution.id == "S-11" ? 1120
                            : solution.id == "S-12" ? 1121
+                           : solution.id == "B-3" ? 1177
                                                    : 1102);
     return solution;
 }
@@ -520,14 +523,36 @@ const std::vector<Solution>& solutions() {
                 {"label", true, "aggregate attrition outcome"},
                 {"time", true, "workforce snapshot and outcome window"}},
                "Promote with a sufficiently large workforce, a named people leader, and legal or works-council approval."),
-        sketch("B-3", "Ticket Triage & Service Automation",
-               "Route service work with explicit abstention and measured resolution quality.",
-               "Reduce misroutes and handling effort without mistaking containment for resolution.",
-               {{"M-10", "primary", 1}, {"M-19", "foundation", 1}},
-               {{"document", true, "ticket text and interaction history"},
-                {"label", true, "routing and resolved outcome"},
-                {"entity", false, "customer, service, and product"}},
-               "Promote when ticket volume is high enough and the service organization owns or funds its taxonomy."),
+        band_a(
+            "B-3", "Ticket Triage & Service Automation",
+            "Route service work with explicit abstention and measured resolution quality.",
+            "Reduce misroutes and handling effort without mistaking containment for resolution.",
+            {{"M-10", "primary", 1}, {"M-19", "foundation", 1}},
+            {"M-10", "M-19"},
+            {"customer-taxonomy queue tasks", "grounded draft-reply tasks",
+             "approval-gated ticket closure"},
+            {"L1 service queue tasks", "L1 draft-review tasks"},
+            {{"route tickets inside the customer taxonomy", "A2"},
+             {"draft replies for review", "A2"},
+             {"close tickets", "A1"},
+             {"confidence tuning inside approved bounds", "A3"}},
+            {{"document", true, "ticket text and interaction history"},
+             {"label", true, "routing and resolved outcome"},
+             {"entity", true, "stable ticket identifier"},
+             {"taxonomy", true, "customer-owned queue taxonomy and version"},
+             {"owner", true, "service queue owner"},
+             {"resolution", true, "resolution-quality outcome"},
+             {"feature", true, "numeric signals for label-efficient review"}},
+            "Confidence tiers with explicit abstention, customer-owned queue eligibility, handling caps, reply review, approval-gated closure, and a kill switch.",
+            "Permanent holdout by confidence tier with resolution quality measured after routing and reply assistance.",
+            {"misroute rate", "resolution quality", "abstention rate",
+             "new ticket-type drift", "unapproved automatic closure",
+             "action-execution rate"},
+            levels("confidence routing with abstention and holdout",
+                   "add grounded draft replies",
+                   "add label-efficient taxonomy review",
+                   "add bounded service automation"),
+            "Promote when ticket volume is high enough and the service organization owns or funds its taxonomy."),
         sketch("B-4", "Document & Workflow Automation",
                "Extract and validate documents while routing uncertain fields to review.",
                "Automate high-volume document lanes with deterministic checks and audit samples.",

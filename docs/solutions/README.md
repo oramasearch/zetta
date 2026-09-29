@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12. This is the scope of
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-3. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -53,6 +53,9 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-11.md](S-11.md) — runnable next-best-action module: cross-channel
   arbitration, constrained exploration, logged propensities, consent/contact
   limits, and planted-effect proof (#1120).
+- [B-3.md](B-3.md) — runnable ticket triage and service automation: native
+  language confidence, customer-owned taxonomy routing, explicit abstention,
+  approval-only closure, new-type drift, and planted-effect proof (#1177).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -80,25 +83,27 @@ one-tick checks for all added catalog families and existing table-backed state.
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the
 catalogue-level registry in `zetta::ml`. It is separate from the older headed
 deployment-card catalogue: this registry describes the S-1 through S-12 product
-modules, the eight Band-B sketches, and the methodology callbacks used to build
+modules, the seven remaining Band-B sketches, and the methodology callbacks used to build
 each module's Pipeline.
 
 ## Registry contract
 
 `include/zetta/ml/solution.hpp` defines `Solution` and its supporting value
-types. `solutions()` returns 20 stable entries in catalogue order:
+types. `solutions()` returns 20 stable entries in catalogue order: 13 runnable
+catalogue modules and seven sketches.
 
-- S-1 through S-12 have product copy, use case, methodology composition,
+- S-1 through S-12 and B-3 have product copy, use case, methodology composition,
   execution order, action and latency classes, autonomy defaults, required data
   roles, policy and measurement templates, guardrails, and four selectable
   capability levels.
-- B-1 through B-8 have `status: "sketch"`, `runnable: false`, and a promotion
-  condition. Their data roles describe what promotion would require. They
+- B-1, B-2, and B-4 through B-8 have `status: "sketch"`, `runnable: false`, and
+  a promotion condition. Their data roles describe what promotion would require. They
   cannot be built; the refusal repeats that promotion condition.
 - All seven production foundation components are integrated (#1128).
   `runnable` describes the default level's methodology availability;
   `missing_components` lists unavailable methodology callbacks only. It is
-  empty for the currently runnable S modules. Band-B entries remain sketches.
+  empty for the currently runnable modules. B-3 retains its promotion condition
+  as a go-to-market gate; the other Band-B entries remain sketches.
 
 The product copy contains no pricing or numerical return claims. It says what
 problem the module solves and what data roles it needs.
@@ -224,6 +229,17 @@ FNOL completeness, coverage, identity, document confidence, and
 fairness-review evidence are mandatory. Catastrophe and manual-only flags block
 delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
 10% tier holdout measures `referral_confirmed` over 45 days.
+
+### B-3 executable defaults
+
+B-3 routes tickets at confidence 0.6 and explicitly abstains below that
+threshold or for a new ticket type. Level 1 emits an A2 queue task; levels 2–4
+add the draft reply. `close_ticket` remains A1 and is never a default tier
+action. Customer-owned taxonomy and current-version evidence are required. The
+permanent 10% holdout measures `resolution_quality`; six guardrails cover
+misroutes, resolution quality, abstention, new types, unapproved closure, and
+execution. Its customer-offering promotion condition remains recorded even
+though the module is runnable.
 
 S-5 is the complete demand-planning default. Its critical/review/routine tiers
 use relative interval uncertainty floors of 0.20/0.05/0.0. Critical and review

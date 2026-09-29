@@ -93,6 +93,13 @@ customer. The S-11 foundation groups M-8 candidates, applies the experiment's
 exploit or explore choice, resolves the chosen action's channel, and refuses an
 arm that is absent, ineligible, or capped.
 
+B-3 defaults to M-10's real `embeddings` output, using `chunk_id` and
+`classifier_confidence`. Its M-19 stage supplies label-efficiency artifacts but
+does not substitute a decision score. Put checkpoint, text-column, retrieval,
+and labelling-function settings in `sources.M-10` and `sources.M-19` at create
+time. The solution runner forwards each methodology's object into that stage's
+registered callback.
+
 ## Run and read back
 
 Call `run_solution` with project and graph. An optional write-only
@@ -144,6 +151,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-9 rows carry audience tier, segment, journey, channel, consent and
    suppression evidence, and contact counts. Its monitor observes unsubscribe,
    complaint, consent-violation, contact-frequency, and execution rates.
+
+   B-3 rows carry confidence tier, customer queue, taxonomy version, and the
+   new-ticket-type flag. Low-confidence and new-type rows request `abstain` and
+   remain non-actionable. Routed payloads include the draft reply and explicit
+   human-close-approval evidence. Its monitor observes all six ticket-quality
+   and execution bounds.
 
 S-10 uses the same execution order with M-2 → M-12 → M-1 at levels 1 and 2;
 levels 3 and 4 append M-5. Its action payload includes the request-time
@@ -218,6 +231,13 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.TicketTriageAbstainsProtectsHoldoutAndRecoversPlantedEffect`
+builds level-4 B-3 over a partitioned synthetic ticket table, runs M-10 and
+M-19, reads `classifier_confidence`, verifies explicit abstention and protected
+holdouts, inspects queue and draft payloads, observes all six guardrails,
+records a planted 0.16 resolution-quality effect, and requires the readout to
+recover it inside its confidence interval.
 
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,

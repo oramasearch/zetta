@@ -229,7 +229,7 @@ Methodology make_m10_methodology() {
     methodology.family = "Language, documents & perception";
     methodology.model_kinds = {"language", "nlp",         "embedding", "embeddings",
                                "rag",      "fine_tuning", "retrieval"};
-    methodology.solutions = {};
+    methodology.solutions = {"B-3"};
     methodology.keywords = {"text", "semantic search", "retrieve",
                             "rag",  "language",        "answer from documents"};
     methodology.inputs = {

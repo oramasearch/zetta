@@ -416,6 +416,44 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-3 service automation adaptations (#1177). The composed Pipeline must
+// abstain below a governed confidence floor, use a customer-owned taxonomy,
+// keep closure behind approval, and monitor previously unseen ticket types.
+class B3AbstentionCheck final : public Check {
+public:
+    std::string name() const override { return "b3_abstention_threshold"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3CustomerTaxonomyCheck final : public Check {
+public:
+    std::string name() const override { return "b3_customer_taxonomy"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3ClosureApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "b3_closure_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3NewTicketTypeDriftCheck final : public Check {
+public:
+    std::string name() const override { return "b3_new_ticket_type_drift"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "b3_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-11 validates logged probabilities, contact constraints, and interpretation.
 class S11LoggedPropensityCheck final : public Check {
 public:

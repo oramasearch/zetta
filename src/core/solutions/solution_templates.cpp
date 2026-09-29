@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-3", "route_ticket", "A2", "holdout", "resolution_quality", "resolution", "misroute_rate"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,58 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void ticket_triage_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["threshold"] = 0.6;
+    result.policy["tiers"] = {
+        {{"name", "confident"}, {"minimum_score", 0.6},
+         {"action", "route_ticket"},
+         {"allowed_actions", {"route_ticket", "route_and_draft",
+                              "close_ticket", "abstain"}}},
+        {{"name", "abstain"}, {"minimum_score", -1000000000.0},
+         {"action", "abstain"}}};
+    result.policy["actions"] = {
+        {"route_ticket",
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"route_and_draft",
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"close_ticket",
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"abstain", {{"autonomy", "A0"}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1, 1);
+    result.policy["eligibility_rules"] = {
+        predicate("service_eligible", true),
+        predicate("taxonomy_owned_by_customer", true),
+        predicate("taxonomy_version_current", true),
+        {{"name", "queue_present"}, {"role", "entity"},
+         {"field", "queue"}, {"operator", "exists"}},
+        {{"name", "ticket_type_status_present"}, {"role", "entity"},
+         {"field", "new_ticket_type"}, {"operator", "exists"}}};
+    result.policy["exclusion_rules"] = {
+        predicate("new_ticket_type", true),
+        predicate("suppressed", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.policy["tunable_bounds"] = {
+        {"threshold", {{"minimum", 0.5}, {"maximum", 0.95}}}};
+    result.experiment.holdouts = {
+        {"confident", 0.1}, {"abstain", 0.1}};
+    result.experiment.treatment_cells = {"service_routed"};
+    result.guardrails = {
+        {"misroute_rate", 0.1, "maximum"},
+        {"resolution_quality", 0.8, "minimum"},
+        {"abstention_rate", 0.5, "maximum"},
+        {"new_ticket_type_rate", 0.1, "maximum"},
+        {"unapproved_auto_close", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "resolution_quality", "resolution", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +631,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-3") {
+                ticket_triage_defaults(result);
             }
             return result;
         }
@@ -587,6 +642,14 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
 
 Json solution_policy_template(const std::string& solution_id, int level) {
     Json policy = solution_templates(solution_id).policy;
+    if (solution_id == "B-3" && level >= 2) {
+        for (Json& tier : policy["tiers"]) {
+            if (tier.at("name") == "confident") {
+                tier["action"] = "route_and_draft";
+            }
+        }
+        return policy;
+    }
     if (solution_id != "S-6") {
         return policy;
     }
