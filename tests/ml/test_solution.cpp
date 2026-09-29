@@ -230,6 +230,57 @@ zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b6_graph(int level = 1) {
+    const zetta::ml::Solution* solution =
+        zetta::ml::find_solution("B-6");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(
+            *solution, level,
+            {{"source", "healthcare"},
+             {"table", "operations"},
+             {"M-1", {{"label_column", "operational_outcome"}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00.000Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b6_correctness"] = {
+        {"policy", solution->templates.policy},
+        {"equity_review",
+         {{"required", true},
+          {"owner", "health-equity-review"},
+          {"protected_group_columns", {"race_group", "language_group"}},
+          {"outcome_rate_reviewed", true},
+          {"maximum_rate_gap", 0.2}}},
+        {"assistive_only",
+         {{"enforced", true},
+          {"care_access_unchanged", true},
+          {"clinical_decisions_excluded", true}}},
+        {"privacy_posture",
+         {{"recorded", true},
+          {"approved", true},
+          {"owner", "privacy-office"},
+          {"review_id", "privacy-review-1180"}}},
+        {"phi_minimization",
+         {{"minimum_necessary", true},
+          {"approved_feature_names", {"lead_days", "prior_no_shows"}},
+          {"direct_identifier_blocklist", {"patient_name", "mrn"}},
+          {"feature_names", {"lead_days", "prior_no_shows"}}}}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-5");
     if (solution == nullptr) {
@@ -510,6 +561,15 @@ void expect_s12_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_b6_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 void expect_s5_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
@@ -748,7 +808,7 @@ TEST(SolutionRegistry, NextBestActionEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
-TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
+TEST(SolutionRegistry, ListsThirteenCatalogueModulesAndSevenSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -782,8 +842,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 12u);
-    EXPECT_EQ(sketches, 8u);
+    EXPECT_EQ(catalogue, 13u);
+    EXPECT_EQ(sketches, 7u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -800,6 +860,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-10", {"M-1", "M-2", "M-12", "M-5"}},
         {"S-11", {"M-8", "M-1", "M-6", "M-2", "M-15"}},
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
+        {"B-6", {"M-1"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =
@@ -1311,6 +1372,108 @@ TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
         EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
                       methods.end(),
                   level >= 3);
+    }
+}
+
+TEST(SolutionRegistry, B6HealthcareOperationsCarriesExecutableControls) {
+    const zetta::ml::Solution* healthcare =
+        zetta::ml::find_solution("B-6");
+    ASSERT_NE(healthcare, nullptr);
+    EXPECT_TRUE(healthcare->runnable);
+    EXPECT_EQ(healthcare->status, "catalogue");
+    EXPECT_EQ(healthcare->issue,
+              "https://github.com/oramasearch/zetta/issues/1180");
+    EXPECT_FALSE(healthcare->promotion_condition.empty());
+    EXPECT_FALSE(healthcare->templates.minimal);
+    EXPECT_EQ(healthcare->templates.measurement.design, "holdout");
+    EXPECT_EQ(healthcare->templates.measurement.outcome,
+              "operational_resolution");
+    EXPECT_EQ(healthcare->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"assistive_work"}));
+    ASSERT_EQ(healthcare->templates.guardrails.size(), 5u);
+    EXPECT_EQ(healthcare->templates.guardrails.front().metric,
+              "care_denial_actions");
+    const nlohmann::json& policy = healthcare->templates.policy;
+    EXPECT_EQ(policy.at("contact_cap"), 6);
+    EXPECT_EQ(policy.at("frequency_cap").at("window_seconds"),
+              7 * 86400);
+    EXPECT_EQ(policy.at("actions")
+                  .at("care_coordination_task")
+                  .at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("actions")
+                  .at("revenue_cycle_review")
+                  .at("autonomy"),
+              "A2");
+    EXPECT_EQ(policy.at("actions")
+                  .at("assistance_exception_review")
+                  .at("autonomy"),
+              "A1");
+}
+
+TEST(SolutionRegistry, B6ChecksRefuseEveryHealthcareWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b6_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto equity = bound_b6_graph();
+    equity.find_node("solution_manifest")
+        ->attributes["b6_correctness"]["equity_review"]["owner"] = "";
+    expect_b6_failure(equity, "b6_equity_review");
+
+    auto equity_feature = bound_b6_graph();
+    auto& equity_profile = equity_feature.find_node("solution_manifest")
+                               ->attributes["b6_correctness"];
+    equity_profile["phi_minimization"]["approved_feature_names"]
+        .push_back("race_group");
+    equity_profile["phi_minimization"]["feature_names"]
+        .push_back("race_group");
+    expect_b6_failure(equity_feature, "b6_equity_review");
+
+    auto access = bound_b6_graph();
+    access.find_node("solution_manifest")
+        ->attributes["b6_correctness"]["policy"]["tiers"][0]["action"] =
+        "deny_care";
+    expect_b6_failure(access, "b6_assistive_only");
+
+    auto privacy = bound_b6_graph();
+    privacy.find_node("solution_manifest")
+        ->attributes["b6_correctness"]["privacy_posture"]["approved"] =
+        false;
+    expect_b6_failure(privacy, "b6_privacy_posture");
+
+    auto phi = bound_b6_graph();
+    phi.find_node("solution_manifest")
+        ->attributes["b6_correctness"]["phi_minimization"]["feature_names"]
+        .push_back("patient_name");
+    expect_b6_failure(phi, "b6_phi_minimization");
+}
+
+TEST(SolutionRegistry, B6EveryLevelBuildsWithHealthcareScoreBindings) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_b6_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n'
+            << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies"),
+                  nlohmann::json::array({"M-1"}));
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 1).empty());
+        bool found_output = false;
+        for (const auto& action :
+             graph.nodes_of_kind(zetta::ir::StepKind::Act)) {
+            if (action->attributes.value("entity_output_column",
+                                         std::string{}) == "entity" &&
+                action->attributes.value("score_output_column",
+                                         std::string{}) ==
+                    "operational_risk") {
+                found_output = true;
+            }
+        }
+        EXPECT_TRUE(found_output);
     }
 }
 

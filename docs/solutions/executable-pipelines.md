@@ -93,6 +93,12 @@ customer. The S-11 foundation groups M-8 candidates, applies the experiment's
 exploit or explore choice, resolves the chosen action's channel, and refuses an
 arm that is absent, ineligible, or capped.
 
+B-6 binds M-1's `Publish healthcare operations risk scores` output in
+`healthcare_results`, using `entity` and `operational_risk`. The score feeds
+only assistive scheduling and revenue-cycle policy actions. Protected-group
+columns remain evaluation-only and direct identifiers never enter the approved
+feature set or connector payload.
+
 ## Run and read back
 
 Call `run_solution` with project and graph. An optional write-only
@@ -270,3 +276,10 @@ deliveries and channel selection, reads positive M-15 propensity logs, proves
 holdout/consent/contact-cap suppression, records centered net-value outcomes
 with a 0.18 effect, and checks that the estimate and 95% confidence interval
 recover the planted effect.
+
+`SolutionJourney.HealthcareOperationsProtectsAccessAndRecoversPlantedEffect`
+builds and runs B-6 over a partitioned synthetic appointment and claim-work
+table. It excludes a future case, proves permanent holdout suppression,
+inspects minimum-necessary assistive payloads, observes all five guardrails,
+records centered operational-resolution outcomes with a 0.18 planted effect,
+and verifies the effect lies inside the readout confidence interval.

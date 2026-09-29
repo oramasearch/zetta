@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-6", "care_coordination_task", "A2", "holdout", "operational_resolution", "case", "care_denial_actions"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -548,6 +549,68 @@ void next_best_action_defaults(SolutionTemplates& result) {
                          {"action_execution_rate", 0.95, "minimum"}};
 }
 
+void healthcare_operations_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "high"}, {"minimum_score", 0.7},
+         {"action", "care_coordination_task"},
+         {"allowed_actions", {"care_coordination_task",
+                              "scheduling_assistance",
+                              "revenue_cycle_review",
+                              "assistance_exception_review",
+                              "no_action"}}},
+        {{"name", "elevated"}, {"minimum_score", 0.4},
+         {"action", "scheduling_assistance"},
+         {"allowed_actions", {"care_coordination_task",
+                              "scheduling_assistance",
+                              "revenue_cycle_review",
+                              "assistance_exception_review",
+                              "no_action"}}},
+        {{"name", "routine"}, {"minimum_score", 0.0},
+         {"action", "no_action"},
+         {"allowed_actions", {"revenue_cycle_review", "no_action"}}}};
+    result.policy["actions"] = {
+        {"care_coordination_task",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"scheduling_assistance",
+         {{"autonomy", "A2"}, {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"revenue_cycle_review",
+         {{"autonomy", "A2"}, {"sla_seconds", 172800},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"assistance_exception_review",
+         {{"autonomy", "A1"}, {"approval_above", 0.0},
+          {"sla_seconds", 86400},
+          {"frequency_cap", frequency(1, 7)}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 6;
+    result.policy["frequency_cap"] = frequency(1, 7);
+    result.policy["eligibility_rules"] = {
+        predicate("operations_eligible", true),
+        predicate("privacy_posture_approved", true),
+        predicate("minimum_necessary_fields", true),
+        predicate("equity_review_passed", true),
+        predicate("care_access_unaffected", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("patient_opt_out", true),
+        predicate("clinical_decision", true),
+        predicate("care_denial_requested", true),
+        predicate("phi_scope_exceeded", true)};
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.experiment.holdouts = {
+        {"high", 0.1}, {"elevated", 0.1}, {"routine", 0.1}};
+    result.experiment.treatment_cells = {"assistive_work"};
+    result.guardrails = {
+        {"care_denial_actions", 0.0, "maximum"},
+        {"equity_rate_gap", 0.2, "maximum"},
+        {"phi_scope_violations", 0.0, "maximum"},
+        {"privacy_posture_failures", 0.0, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {
+        "holdout", "operational_resolution", "case", 30};
+}
+
 } // namespace
 
 SolutionTemplates solution_templates(const std::string& solution_id) {
@@ -578,6 +641,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-6") {
+                healthcare_operations_defaults(result);
             }
             return result;
         }

@@ -157,6 +157,15 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
               1);
     EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
     EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
+    const ApiResult healthcare =
+        call("get_solution", {{"solution", "B-6"}});
+    ASSERT_TRUE(healthcare.ok);
+    EXPECT_TRUE(healthcare.value.at("solution").at("runnable"));
+    EXPECT_EQ(healthcare.value.at("solution").at("status"), "catalogue");
+    EXPECT_FALSE(healthcare.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an

@@ -63,6 +63,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool automated_outbound = request.solution == "S-9";
     const bool collections = request.solution == "S-4";
     const bool fraud_decisioning = request.solution == "S-10";
+    const bool healthcare_operations = request.solution == "B-6";
 
     if (request.solution == "S-3") {
         const int value_horizon_days =
@@ -149,6 +150,58 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         graph.add_edge("train_referral_model", "index_claim_scores");
         graph.add_edge("index_claim_scores", "serve_claim_scores");
         graph.add_edge("serve_claim_scores", "publish_claim_scores");
+        return graph;
+    }
+
+    if (healthcare_operations) {
+        graph.add_node(
+            ir::StepKind::Connect, "Load healthcare operations cases",
+            nlohmann::json{
+                {"source", request.hints.value("source", "healthcare")},
+                {"table", request.hints.value("table", "operations")},
+                {"note", "minimum-necessary appointment and claim operations rows"}},
+            "load_healthcare_operations");
+        graph.add_node(
+            ir::StepKind::Clean, "Build minimum-necessary operations features",
+            nlohmann::json{
+                {"note", "exclude direct identifiers, clinical decisions, and care-access outcomes"}},
+            "build_healthcare_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train healthcare operations risk model",
+            nlohmann::json{
+                {"model_kind", "gbdt"},
+                {"algo", "gradient_boosting"},
+                {"target", request.hints.value("label_column", "operational_outcome")},
+                {"note", "rank assistive scheduling and revenue-cycle work only"}},
+            "train_healthcare_operations_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index healthcare operations scores",
+            nlohmann::json{{"kind", "feature"}},
+            "index_healthcare_operations_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Serve operations scores and reasons",
+            nlohmann::json{
+                {"note", "expose operational risk without changing care access"}},
+            "serve_healthcare_operations_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Publish healthcare operations risk scores",
+            nlohmann::json{
+                {"result_database", "healthcare_results"},
+                {"result_table_prefix", "operation_risk_"},
+                {"entity_output_column", "entity"},
+                {"score_output_column", "operational_risk"},
+                {"note", "policy selects assistive work after scoring"}},
+            "publish_healthcare_operations_scores");
+        graph.add_edge("load_healthcare_operations",
+                       "build_healthcare_features");
+        graph.add_edge("build_healthcare_features",
+                       "train_healthcare_operations_model");
+        graph.add_edge("train_healthcare_operations_model",
+                       "index_healthcare_operations_scores");
+        graph.add_edge("index_healthcare_operations_scores",
+                       "serve_healthcare_operations_scores");
+        graph.add_edge("serve_healthcare_operations_scores",
+                       "publish_healthcare_operations_scores");
         return graph;
     }
 
@@ -428,6 +481,8 @@ api::ApiResult run_m1(RunRequest& request) {
     zetta::usecases::churn::ChurnSolutionOptions options;
     const bool automated_outbound =
         request.input.value("solution", std::string{}) == "S-9";
+    const bool healthcare_operations =
+        request.input.value("solution", std::string{}) == "B-6";
     options.project = request.project->id();
     options.graph = request.graph->id();
     options.model_name = request.input.value("model_name", options.model_name);
@@ -440,6 +495,13 @@ api::ApiResult run_m1(RunRequest& request) {
         options.result_table_prefix = "outbound_response_";
         options.result_entity_column = "entity";
         options.result_score_column = "response_propensity";
+    } else if (healthcare_operations) {
+        options.model_name = request.input.value(
+            "model_name", std::string("healthcare_operations_risk"));
+        options.result_database = "healthcare_results";
+        options.result_table_prefix = "operation_risk_";
+        options.result_entity_column = "entity";
+        options.result_score_column = "operational_risk";
     }
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
@@ -538,12 +600,14 @@ Methodology make_m1_methodology() {
                                "classifier", "classification",
                                "regression", "score",
                                "tabular"};
-    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10", "S-12"};
+    methodology.solutions = {
+        "S-1", "S-2", "S-3", "S-4", "S-10", "S-12", "B-6"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",
         "win-back", "predict whether", "classify",   "score",
-        "customer lifetime value", "lifetime value", "clv"};
+        "customer lifetime value", "lifetime value", "clv",
+        "no-show", "denial risk", "healthcare operations"};
     methodology.inputs = {
         {"entity", true, "entity identifier"},
         {"label", true, "outcome column"},
