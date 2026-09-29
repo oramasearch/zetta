@@ -434,7 +434,11 @@ S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
-with control edges. A missing selected shape or runner is refused explicitly.
+with control edges. It keeps the complete `sources` object on the manifest but
+projects only shared source locations and declared input roles into methodology
+shapes before applying the matching `M-*` object. Policy predicates, confirmed
+missing predicates, and other solution evidence cannot enter a closed step
+schema (#1197). A missing selected shape or runner is refused explicitly.
 For S-1, the composed gate also enforces its domain checks and the selected
 level's M-5, M-6, or M-8 requirements before the graph is persisted or run.
 For S-2, it refuses non-point-in-time conversion labels, post-qualification

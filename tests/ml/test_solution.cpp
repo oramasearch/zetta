@@ -3,6 +3,7 @@
 
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,47 @@
 #include <nlohmann/json-schema.hpp>
 
 namespace {
+
+bool contains_key(const nlohmann::json& value, std::string_view key) {
+    if (value.is_object()) {
+        if (value.contains(std::string(key))) {
+            return true;
+        }
+        for (const auto& child : value) {
+            if (contains_key(child, key)) {
+                return true;
+            }
+        }
+    }
+    if (value.is_array()) {
+        for (const auto& child : value) {
+            if (contains_key(child, key)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void expect_solution_evidence_only_on_manifest(
+    const zetta::ml::ComposedSolution& composed,
+    const nlohmann::json& sources) {
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    ASSERT_TRUE(manifest);
+    EXPECT_EQ(manifest->attributes.at("sources"), sources);
+    for (const auto& node : composed.graph.nodes()) {
+        if (node->id == "solution_manifest") {
+            continue;
+        }
+        EXPECT_FALSE(contains_key(node->attributes, "predicates"))
+            << node->id;
+        EXPECT_FALSE(contains_key(node->attributes, "policy_predicates"))
+            << node->id;
+        EXPECT_FALSE(
+            contains_key(node->attributes, "missing_policy_predicates"))
+            << node->id;
+    }
+}
 
 zetta::ir::ExecutionGraph bound_s1_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-1");
@@ -1666,6 +1708,81 @@ TEST(SolutionRegistry, ComposesEverySelectedMethodologyThroughItsCallback) {
             zetta::ml::solution_stage_graph(composed.graph, stage);
         EXPECT_FALSE(stage_graph.empty()) << stage;
     }
+}
+
+TEST(SolutionRegistry,
+     SolutionEvidenceDoesNotEnterMethodologyStepConfigurations) {
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "customers"},
+        {"predicates", {{"in_collections", "in_collections"}}},
+        {"policy_predicates", {{"vulnerable", "vulnerable"}}},
+        {"missing_policy_predicates", {"open_complaint"}},
+        {"M-3",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"feature_columns", {"feature"}}}}};
+    const zetta::ml::Solution* churn = zetta::ml::find_solution("S-1");
+    ASSERT_NE(churn, nullptr);
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ml::ComposedSolution composed =
+            zetta::ml::compose_solution(*churn, level, sources);
+        ASSERT_TRUE(composed.ok()) << level << ": " << composed.error;
+        expect_solution_evidence_only_on_manifest(composed, sources);
+        for (std::size_t stage = 1;
+             stage <= composed.methodologies.size(); ++stage) {
+            const auto report = zetta::pipeline::default_gate().run(
+                zetta::ml::solution_stage_graph(
+                    composed.graph, static_cast<int>(stage)));
+            EXPECT_TRUE(report.passed())
+                << "level " << level << ", stage " << stage << '\n'
+                << nlohmann::json(report).dump(2);
+        }
+    }
+}
+
+TEST(SolutionRegistry,
+     SolutionEvidenceProjectionCoversEveryMethodologyFamily) {
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "records"},
+        {"predicates", {{"eligible", "eligible"}}},
+        {"missing_policy_predicates", {"consent"}}};
+    const std::vector<std::pair<std::string, int>> representatives = {
+        {"S-1", 4},
+        {"S-5", 1},
+        {"B-3", 4},
+    };
+    std::set<std::string> families;
+    for (const auto& [solution_id, level] : representatives) {
+        const zetta::ml::Solution* solution =
+            zetta::ml::find_solution(solution_id);
+        ASSERT_NE(solution, nullptr) << solution_id;
+        const zetta::ml::ComposedSolution composed =
+            zetta::ml::compose_solution(*solution, level, sources);
+        ASSERT_TRUE(composed.ok()) << solution_id << ": " << composed.error;
+        expect_solution_evidence_only_on_manifest(composed, sources);
+        for (std::size_t stage = 1;
+             stage <= composed.methodologies.size(); ++stage) {
+            const zetta::ml::Methodology* methodology =
+                zetta::ml::find_methodology(
+                    composed.methodologies.at(stage - 1));
+            ASSERT_NE(methodology, nullptr);
+            families.insert(methodology->family);
+            const auto report = zetta::pipeline::default_gate().run(
+                zetta::ml::solution_stage_graph(
+                    composed.graph, static_cast<int>(stage)));
+            EXPECT_TRUE(report.passed())
+                << solution_id << ", " << methodology->id << '\n'
+                << nlohmann::json(report).dump(2);
+        }
+    }
+    std::set<std::string> declared_families;
+    for (const zetta::ml::Methodology& methodology :
+         zetta::ml::methodologies()) {
+        declared_families.insert(methodology.family);
+    }
+    EXPECT_EQ(families, declared_families);
 }
 
 TEST(SolutionRegistry, ChurnEntryCarriesTheCompleteReferenceContract) {

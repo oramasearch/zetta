@@ -35,6 +35,7 @@
 #include "zetta/api/server.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/governance/role.hpp"
 #include "zetta/schemas/registry.hpp"
 #include "zetta/data/database.hpp"
@@ -403,6 +404,57 @@ struct RestServerFixture : ::testing::Test {
     }
 };
 
+struct ReplicatedRestServerFixture : ::testing::Test {
+    zetta::test::TempDir dir;
+    zetta::cluster::ReplicationManager replication{"rest-solution-node"};
+    zetta::Node node{
+        zetta::NodeConfig{dir.path().string(), /*preflight=*/false},
+        &replication};
+    std::unique_ptr<zetta::api::ApiServer> server;
+    std::string owner_secret = "replicated-rest-owner-secret";
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
+        zetta::api::ServerOptions options;
+        options.port = 0;
+        server =
+            std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
+        ASSERT_TRUE(server->start()) << server->reason();
+        ASSERT_NE(server->port(), 0);
+    }
+
+    void TearDown() override {
+        server->stop();
+        node.stop();
+    }
+
+    HttpResponse request(const std::string& method,
+                         const std::string& target,
+                         const std::string& body = {}) {
+        HttpResponse response;
+        std::atomic<bool> finished{false};
+        std::thread client([&] {
+            response = http_request(server->port(), method, target, body,
+                                    owner_secret);
+            finished = true;
+        });
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!finished && std::chrono::steady_clock::now() < deadline) {
+            server->drain();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        client.join();
+        return response;
+    }
+
+    nlohmann::json json_of(const HttpResponse& response) {
+        return nlohmann::json::parse(response.body, nullptr,
+                                     /*allow_exceptions=*/false);
+    }
+};
+
 struct SmallConnectionCacheFixture : RestServerFixture {
     void SetUp() override {
         options.idle_connection_cache = 1;
@@ -487,6 +539,99 @@ TEST_F(RestServerFixture, PostActionThenReadBack) {
     auto duplicate_body = json_of(duplicate);
     EXPECT_FALSE(duplicate_body.at("ok").get<bool>());
     EXPECT_EQ(duplicate_body.at("error").at("code"), "engine_error");
+}
+
+TEST_F(ReplicatedRestServerFixture,
+       CreateSolutionKeepsManifestEvidenceOutOfStepsOverRestAndMcp) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    ASSERT_TRUE(database->create_table("customers"));
+    ASSERT_TRUE(node.create_project("solution-rest"));
+    ASSERT_TRUE(node.create_project("solution-mcp"));
+
+    const auto input = [](std::string project) {
+        return nlohmann::json{
+            {"project", std::move(project)},
+            {"solution", "S-1"},
+            {"level", 1},
+            {"sources",
+             {{"source", "datasets"},
+              {"table", "customers"},
+              {"policy_predicates",
+               {{"in_collections", "in_collections"},
+                {"open_complaint", "open_complaint"},
+                {"vulnerable", "vulnerable"}}},
+              {"missing_policy_predicates", nlohmann::json::array()},
+              {"M-3",
+               {{"entity_column", "entity_id"},
+                {"label_column", "label"},
+                {"feature_columns", {"feature"}}}}}},
+            {"foundation",
+             {{"snapshot",
+               {{"database", "datasets"},
+                {"source_table", "customers"},
+                {"target_table", "retention_snapshot"},
+                {"entity_column", "entity"},
+                {"time_column", "observed_at"},
+                {"as_of", "2026-09-01T00:00:00.000Z"}}},
+              {"dataset",
+               {{"entity_column", "entity_id"},
+                {"label_column", "label"},
+                {"feature_columns", {"feature"}}}},
+              {"delivery",
+               {{"kind", "webhook"},
+                {"endpoint", "https://crm.example.test/tasks"},
+                {"owner", "retention-team"}}},
+              {"roi_model",
+               {{"value_per_outcome", 100.0},
+                {"investment", 200.0},
+                {"currency", "USD"}}}}}};
+    };
+
+    const auto rest = request(
+        "POST", "/v1/create_solution", input("solution-rest").dump());
+    ASSERT_EQ(rest.status, 200) << rest.body;
+    const auto rest_envelope = json_of(rest);
+    ASSERT_TRUE(rest_envelope.at("ok").get<bool>()) << rest.body;
+
+    const nlohmann::json mcp_call = {
+        {"jsonrpc", "2.0"},
+        {"id", 1197},
+        {"method", "tools/call"},
+        {"params",
+         {{"name", "create_solution"},
+          {"arguments", input("solution-mcp")}}}};
+    const auto mcp = request("POST", "/mcp", mcp_call.dump());
+    ASSERT_EQ(mcp.status, 200) << mcp.body;
+    const auto mcp_envelope =
+        json_of(mcp).at("result").at("structuredContent");
+    ASSERT_TRUE(mcp_envelope.at("ok").get<bool>()) << mcp.body;
+
+    const auto& rest_value = rest_envelope.at("value");
+    const auto& mcp_value = mcp_envelope.at("value");
+    for (const char* field :
+         {"solution", "level", "graph", "preview", "methodologies"}) {
+        EXPECT_EQ(rest_value.at(field), mcp_value.at(field)) << field;
+    }
+    for (const char* project_name : {"solution-rest", "solution-mcp"}) {
+        const auto project = node.find_project(project_name);
+        ASSERT_TRUE(project) << project_name;
+        const auto graph = project->find_graph("S-1 CL-1");
+        ASSERT_TRUE(graph) << project_name;
+        const auto manifest =
+            graph->graph().find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_TRUE(manifest->attributes.at("sources")
+                        .contains("policy_predicates"));
+        EXPECT_TRUE(manifest->attributes.at("sources")
+                        .contains("missing_policy_predicates"));
+        const auto segmentation =
+            graph->graph().find_node("solution_stage_3_train_segments");
+        ASSERT_TRUE(segmentation);
+        const auto& config = segmentation->attributes.at("segmentation");
+        EXPECT_FALSE(config.contains("policy_predicates"));
+        EXPECT_FALSE(config.contains("missing_policy_predicates"));
+    }
 }
 
 TEST_F(RestServerFixture, RunMetricCapabilitiesWorkOverRest) {
