@@ -92,7 +92,7 @@ relay it to a person.
   `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
   Explicit caller names are unchanged.
 - **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
-  `list_solutions` and `get_solution` expose all twelve catalogue modules and eight
+  `list_solutions` and `get_solution` expose all 13 catalogue modules and seven
   sketches with plain product copy, portfolio-number composition, data roles,
   autonomy, policy, measurement, guardrails, levels, and missing components.
   `create_solution` uses typed defaults to create a callback-built Pipeline,
@@ -112,7 +112,9 @@ relay it to a person.
   and a measured net-value readout. S-4 adds regulatory contact limits,
   vulnerable-customer protection, digital/dialer delivery, and net-recovery
   measurement. S-12 adds claim routing, human-only denial, document confidence,
-  fairness review, and referral measurement. S-5 has full demand-planning
+  fairness review, and referral measurement. B-7 adds credit-risk evidence,
+  model-risk validation, fair-lending review, and A0 adverse authority. S-5 has
+  full demand-planning
   defaults, rolling-origin and hierarchy refusals, interval exception tasks,
   protected planner reports, and an honest FVA readout.
   S-6 has full replenishment defaults, service/budget/lead-time/bound refusals,

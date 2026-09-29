@@ -416,6 +416,64 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-7 credit-underwriting adaptations (#1181). These checks require complete
+// adverse-action reasons, model-risk validation, fair-lending review, A0 human
+// authority for adverse decisions, and the M-1/M-17 credit output contract.
+class B7AdverseActionReasonsCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_adverse_action_reasons";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7ValidationPipelineCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_validation_pipeline";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_fairness_review";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7HumanAuthorityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_human_authority";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_level_composition";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-11 validates logged probabilities, contact constraints, and interpretation.
 class S11LoggedPropensityCheck final : public Check {
 public:

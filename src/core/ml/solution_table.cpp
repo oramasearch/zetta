@@ -39,7 +39,8 @@ Solution band_a(
     std::vector<SolutionDataRole> required_data_roles,
     std::string decision_policy_template, std::string measurement_design,
     std::vector<std::string> guardrails,
-    std::vector<SolutionCapabilityLevel> capability_levels) {
+    std::vector<SolutionCapabilityLevel> capability_levels,
+    std::string promotion_condition = {}, int issue_number = 0) {
     Solution solution;
     solution.id = std::move(id);
     solution.name = std::move(name);
@@ -55,6 +56,7 @@ Solution band_a(
     solution.measurement_design = std::move(measurement_design);
     solution.guardrails = std::move(guardrails);
     solution.capability_levels = std::move(capability_levels);
+    solution.promotion_condition = std::move(promotion_condition);
     solution.templates = zetta::solutions::solution_templates(solution.id);
     solution.runnable = true;
     for (const SolutionMethodology& entry : solution.composition) {
@@ -68,7 +70,8 @@ Solution band_a(
         }
     }
     solution.status = "catalogue";
-    solution.issue = issue(solution.id == "S-1" ? 1110
+    solution.issue = issue(issue_number != 0 ? issue_number
+                           : solution.id == "S-1" ? 1110
                            : solution.id == "S-2" ? 1111
                            : solution.id == "S-3" ? 1112
                            : solution.id == "S-4" ? 1113
@@ -552,14 +555,37 @@ const std::vector<Solution>& solutions() {
                 {"label", true, "attendance or denial outcome"},
                 {"time", true, "scheduling and claim chronology"}},
                "Promote with a provider design customer that owns revenue-cycle operations and has an agreed privacy posture."),
-        sketch("B-7", "Credit Underwriting & Limit Management",
-               "Support credit policy with examiner-readable evidence and adverse-action discipline.",
-               "Balance loss, approval, and fairness under regulated model-risk controls.",
-               {{"M-1", "primary", 1}, {"M-17", "foundation", 1}},
-               {{"entity", true, "applicant, account, and facility"},
-                {"label", true, "matured repayment outcome"},
-                {"time", true, "application cutoff and performance window"}},
-               "Promote with a lender whose model-risk team co-signs and exercises the full validation pipeline."),
+        band_a(
+            "B-7", "Credit Underwriting & Limit Management",
+            "Support credit policy with examiner-readable evidence and adverse-action discipline.",
+            "Balance loss, approval, and fairness under regulated model-risk controls.",
+            {{"M-1", "primary", 1}, {"M-17", "foundation", 1}},
+            {"M-1", "M-17"},
+            {"underwriter review tasks", "credit and limit decisions with evidence"},
+            {"L1 underwriting tasks", "batch decision and validation read-back"},
+            {{"credit approval inside approved caps", "A2"},
+             {"underwriter review routing", "A2"},
+             {"limit increases", "A1"},
+             {"declines and adverse limit changes", "A0"}},
+            {{"entity", true, "applicant, account, and facility"},
+             {"label", true, "matured repayment outcome"},
+             {"time", true, "application cutoff and performance window"},
+             {"feature", true, "verified point-in-time application and bureau inputs"},
+             {"group", true, "portfolio group used for uncertainty validation"},
+             {"eligibility", true, "identity, income, product, and policy eligibility"},
+             {"protected_cohort", true, "evaluation-only fair-lending cohorts"},
+             {"reason", true, "ranked adverse-action reason codes"},
+             {"owner", true, "accountable underwriter or credit team"}},
+            "Risk and limit tiers with verified eligibility, amount caps, A1 approvals, A0 adverse decisions, and a kill switch.",
+            "Permanent holdout measured on performing-account outcomes, with disjoint M-17 coverage validation.",
+            {"automated adverse decisions", "missing adverse-action reasons",
+             "model-risk validation", "fairness review", "approval-rate gap",
+             "action-execution rate"},
+            levels("credit risk, reasons, uncertainty, holdout and review tasks",
+                   "add governed limit review", "add uncertainty-aware escalation",
+                   "add portfolio limit management"),
+            "Promote with a lender whose model-risk team co-signs and exercises the full validation pipeline.",
+            1181),
         sketch("B-8", "IT & Security Operations",
                "Prioritize operational and security risks with graduated, bounded authority.",
                "Reduce alert load and exposure while constraining automated remediation.",

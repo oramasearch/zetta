@@ -141,6 +141,16 @@ for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
 
+### B-7 composed solution checks
+
+The five B-7 checks require persisted adverse-action reason codes, a
+model-risk-owned and co-signed validation pipeline, a passed fair-lending
+review with evaluation-only protected cohorts, A0 human authority for every
+adverse outcome, and M-1 credit scores plus M-17 uncertainty coverage at every
+capability level. The policy authority and required evidence are checked again
+immediately before execution. See [B-7](../solutions/B-7.md) for the complete
+operator contract and refusal list.
+
 ### S-5 composed solution checks
 
 The S-5 checks engage only for a bound S-5 manifest and evaluate the composed

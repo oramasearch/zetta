@@ -2011,7 +2011,11 @@ bool adverse_action(std::string_view action) {
     const std::string normalized = normalize_type(std::string(action));
     return normalized.find("denial") != std::string::npos ||
            normalized.find("deny") != std::string::npos ||
-           normalized.find("reject") != std::string::npos;
+           normalized.find("decline") != std::string::npos ||
+           normalized.find("reject") != std::string::npos ||
+           normalized.find("lower_limit") != std::string::npos ||
+           normalized.find("reduce_limit") != std::string::npos ||
+           normalized.find("freeze_limit") != std::string::npos;
 }
 
 bool policy_requires(const json& policy, std::string_view field,
@@ -2218,6 +2222,289 @@ CheckResult S12LevelCompositionCheck::evaluate(
     }
     return s12_success(
         name(), "S-12 selected level has claim-specific runnable stages");
+}
+
+namespace {
+
+const json* b7_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-7") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-7 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b7_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-7 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b7_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-7 Pipeline to validate"};
+}
+
+CheckResult b7_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b7_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool contains_string(const json& values, std::string_view expected) {
+    return values.is_array() && std::ranges::any_of(
+        values, [&](const json& value) {
+            return value.is_string() && value.get<std::string>() == expected;
+        });
+}
+
+} // namespace
+
+CheckResult B7AdverseActionReasonsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* reasons = object_field(*profile, "adverse_action_reasons");
+    if (reasons == nullptr || !reasons->value("required", false) ||
+        reasons->value("minimum_reasons", 0) < 1 ||
+        reasons->value("source", std::string{}) != "tree_shap_reason_codes" ||
+        !reasons->value("persist_with_decision", false)) {
+        return b7_failure(
+            name(), "B-7 requires at least one persisted TreeSHAP reason code "
+                    "for every adverse action");
+    }
+    const json* policy = object_field(*profile, "policy");
+    if (policy == nullptr || !policy->contains("actions")) {
+        return b7_failure(name(), "B-7 must bind its credit policy actions");
+    }
+    const bool has_adverse_action = std::ranges::any_of(
+        policy->at("actions").items(), [](const auto& action) {
+            return adverse_action(action.key());
+        });
+    if (!has_adverse_action) {
+        return b7_failure(
+            name(), "B-7 policy must represent governed adverse actions");
+    }
+    return b7_success(
+        name(), "every B-7 adverse action requires persisted reason codes");
+}
+
+CheckResult B7ValidationPipelineCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation_pipeline");
+    if (validation == nullptr ||
+        validation->value("model_risk_owner", std::string{}).empty() ||
+        !validation->value("co_signed", false) ||
+        !validation->value("independent_out_of_time", false) ||
+        !validation->value("calibration_reviewed", false) ||
+        !validation->value("uncertainty_coverage_reviewed", false)) {
+        return b7_failure(
+            name(), "B-7 requires an independent validation pipeline co-signed "
+                    "by the model-risk owner");
+    }
+    const json stages = validation->value("stages", json::array());
+    for (const std::string_view stage :
+         {"development", "independent_validation", "approval", "monitoring"}) {
+        if (!contains_string(stages, stage)) {
+            return b7_failure(
+                name(), "B-7 validation pipeline is missing stage " +
+                            std::string(stage));
+        }
+    }
+    const ir::Node* uncertainty = model_kind(graph, "bayesian");
+    if (!has_methodology(graph, "M-17") || uncertainty == nullptr ||
+        !uncertainty->attributes.value("coverage_checked", false)) {
+        return b7_failure(
+            name(), "B-7 requires M-17 with measured holdout coverage");
+    }
+    const double nominal =
+        uncertainty->attributes.value("nominal_coverage", 0.0);
+    if (!(nominal > 0.0 && nominal < 1.0)) {
+        return b7_failure(
+            name(), "B-7 M-17 nominal coverage must be between zero and one");
+    }
+    return b7_success(
+        name(), "model-risk co-signs the complete M-17 validation pipeline");
+}
+
+CheckResult B7FairnessReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* fairness = object_field(*profile, "fairness_review");
+    if (fairness == nullptr || !fairness->value("required", false) ||
+        !fairness->value("review_passed", false) ||
+        fairness->value("owner", std::string{}).empty()) {
+        return b7_failure(
+            name(), "B-7 requires an owned, passed fair-lending review");
+    }
+    const json cohorts =
+        fairness->value("protected_cohort_columns", json::array());
+    const json metrics = fairness->value("metrics", json::array());
+    if (cohorts.empty() || !contains_string(metrics, "approval_rate") ||
+        !contains_string(metrics, "false_negative_rate")) {
+        return b7_failure(
+            name(), "B-7 fairness review requires protected cohorts, approval "
+                    "rates, and false-negative rates");
+    }
+    const json blocked = fairness->value("blocked_feature_names", json::array());
+    const json features = fairness->value("feature_names", json::array());
+    if (blocked.empty() || !features.is_array()) {
+        return b7_failure(
+            name(), "B-7 fairness review must separate evaluation cohorts from features");
+    }
+    std::unordered_set<std::string> protected_fields;
+    for (const json& field : blocked) {
+        if (!field.is_string() || field.get_ref<const std::string&>().empty()) {
+            return b7_failure(
+                name(), "B-7 protected-field exclusions must be names");
+        }
+        protected_fields.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& feature : features) {
+        if (!feature.is_string()) {
+            return b7_failure(name(), "B-7 feature names must be strings");
+        }
+        if (protected_fields.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b7_failure(
+                name(), "B-7 protected attributes are evaluation-only, not model features");
+        }
+    }
+    return b7_success(
+        name(), "B-7 passed its owned fair-lending cohort review");
+}
+
+CheckResult B7HumanAuthorityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* authority = object_field(*profile, "adverse_action_authority");
+    const json* policy = object_field(*profile, "policy");
+    if (authority == nullptr || policy == nullptr ||
+        authority->value("autonomy", std::string{}) != "A0" ||
+        !authority->value("human_review_required", false)) {
+        return b7_failure(
+            name(), "B-7 adverse decisions require explicit A0 human authority");
+    }
+    for (const json& tier : policy->value("tiers", json::array())) {
+        if (!tier.is_object() ||
+            adverse_action(tier.value("action", std::string{}))) {
+            return b7_failure(
+                name(), "B-7 model score tiers may not select an adverse decision");
+        }
+    }
+    bool has_adverse_action = false;
+    for (const auto& [action, settings] :
+         policy->value("actions", json::object()).items()) {
+        if (!adverse_action(action)) {
+            continue;
+        }
+        has_adverse_action = true;
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A0") {
+            return b7_failure(
+                name(), "every B-7 adverse action must remain A0 human-only");
+        }
+    }
+    if (!has_adverse_action) {
+        return b7_failure(
+            name(), "B-7 policy must retain an A0 adverse recommendation");
+    }
+    return b7_success(
+        name(), "B-7 adverse decisions remain A0 human-only");
+}
+
+CheckResult B7LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    if (level < 1 || level > 4 || !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-17")) {
+        return b7_failure(
+            name(), "B-7 levels 1 through 4 require M-1 and M-17");
+    }
+    const bool has_credit_scores = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("entity_output_column",
+                                          std::string{}) == "applicant" &&
+                   node->attributes.value("score_output_column",
+                                          std::string{}) == "credit_risk";
+        });
+    if (!has_credit_scores) {
+        return b7_failure(
+            name(), "B-7 M-1 must publish applicant and credit_risk outputs");
+    }
+    return b7_success(
+        name(), "B-7 selected level has credit scoring and uncertainty stages");
 }
 
 CheckResult S11LoggedPropensityCheck::evaluate(

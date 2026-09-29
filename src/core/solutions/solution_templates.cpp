@@ -46,6 +46,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"S-10", "fraud_review_task", "A1", "champion_challenger", "fraud_loss", "currency", "false_declines"},
     DefaultAction{"S-11", "eligible_action", "A1", "uplift_cells", "net_value", "currency", "consent_violations"},
     DefaultAction{"S-12", "referral_task", "A0", "phased", "referral_confirmed", "claim", "automated_denials"},
+    DefaultAction{"B-7", "underwriter_review_task", "A2", "holdout", "performing_account", "application", "automated_adverse_decisions"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -262,6 +263,69 @@ void claims_triage_defaults(SolutionTemplates& result) {
         {"field_extraction_accuracy", 0.8, "minimum"},
         {"action_execution_rate", 0.95, "minimum"}};
     result.measurement = {"holdout", "referral_confirmed", "claim", 45};
+}
+
+void credit_underwriting_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "elevated_risk"}, {"minimum_score", 0.7},
+         {"action", "underwriter_review_task"},
+         {"allowed_actions", {"underwriter_review_task",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}},
+        {{"name", "review"}, {"minimum_score", 0.4},
+         {"action", "limit_review_task"},
+         {"allowed_actions", {"limit_review_task", "increase_limit",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}},
+        {{"name", "eligible"}, {"minimum_score", 0.0},
+         {"action", "approve_credit"},
+         {"allowed_actions", {"approve_credit", "increase_limit",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}}};
+    result.policy["actions"] = {
+        {"approve_credit", {{"autonomy", "A2"},
+                            {"approval_field", "requested_limit"},
+                            {"approval_above", 5000.0},
+                            {"sla_seconds", 86400},
+                            {"frequency_cap", frequency(1)}}},
+        {"underwriter_review_task", {{"autonomy", "A2"},
+                                      {"sla_seconds", 86400},
+                                      {"frequency_cap", frequency(1)}}},
+        {"limit_review_task", {{"autonomy", "A2"},
+                                {"sla_seconds", 86400},
+                                {"frequency_cap", frequency(1)}}},
+        {"increase_limit", {{"autonomy", "A1"},
+                             {"sla_seconds", 86400},
+                             {"frequency_cap", frequency(1)}}},
+        {"decline_recommendation", {{"autonomy", "A0"},
+                                     {"sla_seconds", 86400}}},
+        {"lower_limit_recommendation", {{"autonomy", "A0"},
+                                         {"sla_seconds", 86400}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("eligibility_verified", true),
+        predicate("income_verified", true),
+        predicate("model_validation_approved", true),
+        predicate("fairness_review_passed", true),
+        predicate("adverse_action_reasons_ready", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("fraud_hold", true), predicate("bankruptcy_hold", true),
+        predicate("manual_only", true)};
+    result.experiment.holdouts = {
+        {"elevated_risk", 0.1}, {"review", 0.1}, {"eligible", 0.1}};
+    result.experiment.treatment_cells = {"policy_assisted_decision"};
+    result.guardrails = {
+        {"automated_adverse_decisions", 0.0, "maximum"},
+        {"missing_adverse_action_reasons", 0.0, "maximum"},
+        {"model_validation_approval_failures", 0.0, "maximum"},
+        {"fairness_review_failures", 0.0, "maximum"},
+        {"approval_rate_gap", 0.1, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "performing_account", "application", 90};
 }
 
 void demand_forecast_defaults(SolutionTemplates& result) {
@@ -578,6 +642,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 claims_triage_defaults(result);
             } else if (solution_id == "S-10") {
                 fraud_decisioning_defaults(result);
+            } else if (solution_id == "B-7") {
+                credit_underwriting_defaults(result);
             }
             return result;
         }
