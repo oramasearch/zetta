@@ -94,6 +94,26 @@ TEST(DataFrame, IntegerColumnAcceptsFloatFeatureValues) {
     EXPECT_EQ(values, (std::vector<float>{7.0f, 8.0f}));
 }
 
+TEST(DataFrame, TimestampColumnNormalizesIsoAndEpochValues) {
+    const zetta::storage::JsonStore store = make_store({
+        {{"observed_at", "1970-01-01T00:00:01Z"}},
+        {{"observed_at", 2.5}},
+    });
+    DataFrameSchema schema;
+    schema.columns = {
+        ColumnSchema{.name = "observed_at",
+                     .dtype = DataType::Float64,
+                     .timestamp = true},
+    };
+
+    CpuDevice device;
+    auto result = load_data_frame(store, schema, device);
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    std::vector<double> values;
+    ASSERT_TRUE(result.frame.to_host<double>("observed_at", values).ok());
+    EXPECT_EQ(values, (std::vector<double>{1.0, 2.5}));
+}
+
 // --- chunking ----------------------------------------------------------------
 
 TEST(DataFrame, ChunksRowsAcrossBuffers) {
@@ -323,7 +343,9 @@ TEST(DataFrame, ToHostRejectsUnknownColumn) {
 TEST(DataFrameSchemaJson, RoundTrips) {
     DataFrameSchema schema;
     schema.columns = {
-        ColumnSchema{.name = "score", .dtype = DataType::Float64},
+        ColumnSchema{.name = "score",
+                     .dtype = DataType::Float64,
+                     .timestamp = true},
         ColumnSchema{.name = "value", .field = "raw_value", .dtype = DataType::Int32},
     };
     const auto parsed = DataFrameSchema::from_json(schema.to_json());
@@ -331,6 +353,7 @@ TEST(DataFrameSchemaJson, RoundTrips) {
     ASSERT_EQ(parsed->column_count(), 2u);
     EXPECT_EQ(parsed->columns[0].name, "score");
     EXPECT_EQ(parsed->columns[0].dtype, DataType::Float64);
+    EXPECT_TRUE(parsed->columns[0].timestamp);
     EXPECT_TRUE(parsed->columns[0].field.empty());
     EXPECT_EQ(parsed->columns[1].name, "value");
     EXPECT_EQ(parsed->columns[1].field, "raw_value");
@@ -362,6 +385,18 @@ TEST(DataFrameSchemaJson, RejectsBadInput) {
                      J{{"columns",
                         {{{"name", "x"}, {"dtype", "int32"}},
                          {{"name", "x"}, {"dtype", "float64"}}}}})
+                     .has_value());
+    EXPECT_FALSE(DataFrameSchema::from_json(
+                     J{{"columns",
+                        {{{"name", "x"},
+                          {"dtype", "int64"},
+                          {"timestamp", true}}}}})
+                     .has_value());
+    EXPECT_FALSE(DataFrameSchema::from_json(
+                     J{{"columns",
+                        {{{"name", "x"},
+                          {"dtype", "float32"},
+                          {"timestamp", true}}}}})
                      .has_value());
 }
 

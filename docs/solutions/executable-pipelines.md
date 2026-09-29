@@ -51,6 +51,13 @@ remains available to policy and correctness checks without becoming step
 configuration. This matters for methodology steps whose schemas reject unknown
 properties.
 
+The snapshot owns the point-in-time roles. Composition automatically supplies
+`foundation.snapshot.time_column` and `foundation.snapshot.as_of` to every
+selected methodology that declares a time role; callers do not repeat
+them under `sources.M-*`. An explicit methodology-local value still wins. Both
+ISO-8601 timestamps and finite epoch seconds are supported and normalized by the
+methodology boundary.
+
 `create_solution` returns graph, policy, experiment, monitor, and readout IDs.
 Read the graph with `get_project`, policy/version history with `get_policy`,
 allocations with `get_experiment`, guardrails with `get_monitor`, and definition
@@ -245,6 +252,11 @@ The registry test validates every S policy template against the engine schema.
 builds and runs S-1 with M-5 and M-6 over planted heterogeneous effects. It
 proves positive-uplift recommendations can reach policy execution and every
 non-positive effect remains non-actionable, including protected holdouts.
+
+`SolutionJourney.S1AllLevelsRunWithAutomaticIsoOrEpochTimeRoles` creates and
+runs S-1 at CL-1 through CL-4 twice: once with ISO timestamps and once with
+epoch seconds. Each run omits repeated methodology time settings and verifies
+that the future source row is absent from the materialized snapshot.
 
 `SolutionJourney.LeadScoringRoutesCapacityAwareQueuesAndRecoversPlantedEffect`
 builds and runs S-2 over a partitioned synthetic CRM table. It excludes a

@@ -10,6 +10,7 @@
 
 #include "zetta/data/dataset_path.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::ml {
 namespace {
@@ -40,7 +41,13 @@ const nlohmann::json &segmentation_config_schema() {
         "entity_column": {"type": "string"},
         "label_column": {"type": "string"},
         "time_column": {"type": "string", "minLength": 1},
-        "as_of": {"type": "number"},
+        "as_of": {
+          "description": "inclusive cutoff as epoch seconds or an ISO-8601 UTC timestamp",
+          "oneOf": [
+            {"type": "number"},
+            {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"}
+          ]
+        },
         "feature_columns": {"type": "array", "uniqueItems": true,
           "items": {"type": "string", "minLength": 1}},
         "categorical_columns": {"type": "array", "uniqueItems": true,
@@ -100,6 +107,11 @@ bool validate_segmentation_config(const nlohmann::json &config,
     validator.validate(config, errors);
     error = errors.reason;
     if (!error.empty()) {
+        return false;
+    }
+    if (const auto cutoff = config.find("as_of");
+        cutoff != config.end() && !zetta::util::parse_time_seconds(*cutoff)) {
+        error = "as_of must be a finite epoch number or ISO-8601 timestamp";
         return false;
     }
     auto params = segmentation_params(config);

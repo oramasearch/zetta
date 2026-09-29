@@ -10,6 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/util/timestamp.hpp"
+
 namespace zetta::ddf {
 
 using compute::ComputeDevice;
@@ -38,20 +40,33 @@ std::optional<DataType> data_type_from_string(std::string_view text) {
 // against the column's dtype. A clear, path-qualified reason on failure.
 template <class Element>
 ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
-                      std::size_t row, Element& out) {
+                      std::size_t row, bool timestamp, Element& out) {
     const std::string where =
         "load_data_frame: row " + std::to_string(row) + " field '" + field + "'";
     if (!doc.is_object() || !doc.contains(field)) {
         return ComputeStatus::invalid_argument(where + " is missing");
     }
     const nlohmann::json& value = doc.at(field);
-    if (!value.is_number()) {
-        return ComputeStatus::invalid_argument(where + " is not a number");
-    }
     if constexpr (std::is_floating_point_v<Element>) {
+        if (timestamp) {
+            const std::optional<double> seconds =
+                zetta::util::parse_time_seconds(value);
+            if (!seconds) {
+                return ComputeStatus::invalid_argument(
+                    where + " is not a finite epoch number or ISO-8601 timestamp");
+            }
+            out = static_cast<Element>(*seconds);
+            return ComputeStatus::success();
+        }
+        if (!value.is_number()) {
+            return ComputeStatus::invalid_argument(where + " is not a number");
+        }
         out = static_cast<Element>(value.get<double>());
         return ComputeStatus::success();
     } else {
+        if (!value.is_number()) {
+            return ComputeStatus::invalid_argument(where + " is not a number");
+        }
         if (!value.is_number_integer()) {
             return ComputeStatus::invalid_argument(
                 where + " expects an integer but found a real number");
@@ -94,7 +109,7 @@ ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
 // boundary or device error.
 template <class Element>
 ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std::string& field,
-                          ComputeDevice& device, std::size_t chunk_rows,
+                          bool timestamp, ComputeDevice& device, std::size_t chunk_rows,
                           std::vector<DeviceBuffer>& out) {
     const std::size_t row_count = store.size();
     std::vector<Element> host;
@@ -110,7 +125,8 @@ ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std:
                     "load_data_frame: row " + std::to_string(row) +
                     " could not be read: " + handle.error());
             }
-            const ComputeStatus status = extract<Element>(*handle, field, row, value);
+            const ComputeStatus status =
+                extract<Element>(*handle, field, row, timestamp, value);
             if (!status.ok()) return status;
             host.push_back(value);
         }
@@ -132,30 +148,42 @@ ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std:
 ComputeStatus build_column(const zetta::storage::StorageEngine& store, const ColumnSchema& spec,
                            ComputeDevice& device, std::size_t chunk_rows,
                            Column& out) {
+    if (spec.timestamp && spec.dtype != DataType::Float64) {
+        return ComputeStatus::invalid_argument(
+            "load_data_frame: timestamp column '" + spec.name +
+            "' must use float64");
+    }
     const std::string& field = spec.source_field();
     std::vector<DeviceBuffer> chunks;
     ComputeStatus status;
     switch (spec.dtype) {
         case DataType::Float32:
-            status = fill_chunks<float>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<float>(store, field, spec.timestamp, device,
+                                        chunk_rows, chunks);
             break;
         case DataType::Float64:
-            status = fill_chunks<double>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<double>(store, field, spec.timestamp, device,
+                                         chunk_rows, chunks);
             break;
         case DataType::Int32:
-            status = fill_chunks<std::int32_t>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<std::int32_t>(store, field, spec.timestamp,
+                                               device, chunk_rows, chunks);
             break;
         case DataType::Int64:
-            status = fill_chunks<std::int64_t>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<std::int64_t>(store, field, spec.timestamp,
+                                               device, chunk_rows, chunks);
             break;
         case DataType::UInt32:
-            status = fill_chunks<std::uint32_t>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<std::uint32_t>(store, field, spec.timestamp,
+                                                device, chunk_rows, chunks);
             break;
         case DataType::UInt64:
-            status = fill_chunks<std::uint64_t>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<std::uint64_t>(store, field, spec.timestamp,
+                                                device, chunk_rows, chunks);
             break;
         case DataType::UInt8:
-            status = fill_chunks<std::uint8_t>(store, field, device, chunk_rows, chunks);
+            status = fill_chunks<std::uint8_t>(store, field, spec.timestamp,
+                                               device, chunk_rows, chunks);
             break;
     }
     if (!status.ok()) return status;
@@ -173,6 +201,7 @@ nlohmann::json DataFrameSchema::to_json() const {
         nlohmann::json entry{{"name", column.name},
                              {"dtype", compute::to_string(column.dtype)}};
         if (!column.field.empty()) entry["field"] = column.field;
+        if (column.timestamp) entry["timestamp"] = true;
         columns_json.push_back(std::move(entry));
     }
     return nlohmann::json{{"columns", std::move(columns_json)}};
@@ -187,7 +216,7 @@ const nlohmann::json& data_frame_schema_schema() {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/data_frame_schema.schema.json",
   "title": "DataFrameSchema",
-  "description": "The typed, columnar schema describing how a table's rows are loaded into a zetta DDF DataFrame (ENT-33). Each column maps a numeric JSON field in a row's doc to a typed device column.",
+  "description": "The typed, columnar schema describing how a table's rows are loaded into a zetta DDF DataFrame (ENT-33). Each column maps a numeric JSON field, or a declared ISO-8601 timestamp, to a typed device column.",
   "type": "object",
   "additionalProperties": false,
   "required": ["columns"],
@@ -214,8 +243,18 @@ const nlohmann::json& data_frame_schema_schema() {
             "type": "string",
             "enum": ["float32", "float64", "int32", "int64", "uint32", "uint64", "uint8"],
             "description": "The numeric element type the column holds (the zetta::compute::DataType set)."
+          },
+          "timestamp": {
+            "type": "boolean",
+            "description": "When true on a float column, accept ISO-8601 strings or finite epoch numbers and normalize them to epoch seconds."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "timestamp": { "const": true } }, "required": ["timestamp"] },
+            "then": { "properties": { "dtype": { "const": "float64" } } }
+          }
+        ]
       }
     }
   }
@@ -254,6 +293,13 @@ std::optional<DataFrameSchema> DataFrameSchema::from_json(
             if (!entry["field"].is_string()) return std::nullopt;
             column.field = entry["field"].get<std::string>();
             if (column.field.empty()) return std::nullopt;
+        }
+        if (entry.contains("timestamp")) {
+            if (!entry["timestamp"].is_boolean()) return std::nullopt;
+            column.timestamp = entry["timestamp"].get<bool>();
+            if (column.timestamp && column.dtype != DataType::Float64) {
+                return std::nullopt;
+            }
         }
         schema.columns.push_back(std::move(column));
     }

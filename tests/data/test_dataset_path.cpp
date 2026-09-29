@@ -265,6 +265,16 @@ TEST(DatasetContract, JsonRoundTrips) {
     EXPECT_EQ(*parsed, contract);
 }
 
+TEST(DatasetContract, IsoCutoffNormalizesToEpochSeconds) {
+    std::string error;
+    const auto parsed = zetta::data::dataset_contract_from_json(
+        nlohmann::json{{"time_column", "observed_at"},
+                       {"as_of", "1970-01-01T00:00:03.500Z"}},
+        &error);
+    ASSERT_TRUE(parsed) << error;
+    EXPECT_DOUBLE_EQ(parsed->as_of, 3.5);
+}
+
 // A cutoff column with no cutoff decides nothing, and inferring one would decide the
 // leakage boundary silently.
 TEST(DatasetContract, ATimeColumnWithoutAnAsOfIsRejected) {

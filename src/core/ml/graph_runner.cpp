@@ -49,6 +49,15 @@ std::optional<double> number(const nlohmann::json &row,
   return found->get<double>();
 }
 
+std::optional<double> time_value(const nlohmann::json &row,
+                                 const std::string &column) {
+  const auto found = row.find(column);
+  if (found == row.end()) {
+    return std::nullopt;
+  }
+  return zetta::util::parse_time_seconds(*found);
+}
+
 std::optional<std::int64_t> integer(const nlohmann::json &row,
                                     const std::string &column) {
   const auto found = row.find(column);
@@ -169,12 +178,12 @@ GraphRunResult run_graph(Node &node, const data::ResolvedDataset &dataset,
         integer(row, destination_column);
     const std::optional<double> weight = number(row, weight_column);
     const std::optional<double> time =
-        number(row, dataset.contract.time_column);
+        time_value(row, dataset.contract.time_column);
     if (!source || !destination || !weight || !time) {
       output.error = fail_run(
           run, "graph dataset row " + std::to_string(row_index) +
-                   ": source and destination must be integers; weight and time "
-                   "must be numeric");
+                   ": source and destination must be integers; weight must be "
+                   "numeric and time must be an epoch number or ISO-8601 timestamp");
       return output;
     }
     const auto label_value = row.find(dataset.contract.label_column);

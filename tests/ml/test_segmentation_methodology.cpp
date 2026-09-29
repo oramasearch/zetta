@@ -103,6 +103,19 @@ TEST(SegmentationGraphCheck, RefusesMalformedParametersAndImplicitTimeCutoff) {
     refuses({{"center_shift_tolerance", 0}}, "center_shift_tolerance");
 }
 
+TEST(SegmentationGraphCheck, AcceptsIsoOrEpochTimeCutoffs) {
+    for (const nlohmann::json& cutoff :
+         {nlohmann::json("2026-09-01T00:00:00Z"),
+          nlohmann::json(1788220800.0)}) {
+        const auto graph = shape({{"time_column", "observed_at"},
+                                  {"as_of", cutoff}});
+        const auto checked =
+            zetta::pipeline::SegmentationCheck{}.evaluate(graph);
+        EXPECT_EQ(checked.status, zetta::pipeline::CheckStatus::Pass)
+            << cutoff.dump() << ": " << checked.reason;
+    }
+}
+
 TEST(SegmentationGraphCheck,
      RefusesDisconnectedOrMissingOutputsAndEntityClustering) {
     auto graph = shape();

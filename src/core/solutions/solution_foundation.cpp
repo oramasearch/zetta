@@ -1465,15 +1465,16 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     if (project->find_graph(name)) {
         return ApiResult::failure("invalid_input", "a graph with this name already exists");
     }
-    auto composed = ml::compose_solution(*solution, level, input.at("sources"));
-    if (!composed.ok()) {
-        return ApiResult::failure("not_supported", composed.error);
-    }
     std::string error;
     const Json& settings = input.at("foundation");
     const auto snapshot = SnapshotSpec::from_json(settings.at("snapshot"), &error);
     if (!snapshot) {
         return ApiResult::failure("invalid_input", error);
+    }
+    auto composed = ml::compose_solution(*solution, level, input.at("sources"),
+                                         snapshot->to_json());
+    if (!composed.ok()) {
+        return ApiResult::failure("not_supported", composed.error);
     }
     const auto database = context.node.find_database(snapshot->database);
     if (!database || !database->find_table(snapshot->source_table)) {

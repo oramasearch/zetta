@@ -48,9 +48,14 @@ does not: parquet carries names and physical types, never which column is the la
 entity_column     the integer key of the thing being scored, one row per entity
 label_column      the {0,1} training target — never a feature
 time_column       optional point-in-time cutoff column (requires as_of)
-as_of             only rows with time_column <= as_of contribute
+as_of             ISO-8601 timestamp or epoch seconds; only earlier rows contribute
 feature_columns   the numeric columns to train on
 ```
+
+When the time role is present, `as_of` and every value in `time_column` may use
+either ISO-8601 text or finite epoch seconds. Resolution converts both forms to
+epoch seconds before comparison. A dataset must use one representation
+consistently, and a row strictly after the inclusive cutoff is excluded.
 
 Every field is optional. What is omitted is **inferred**, and every inference is
 reported back in `notes` — a caller shows them, so nobody discovers an assumption

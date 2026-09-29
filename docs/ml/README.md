@@ -12,7 +12,7 @@ intervals without probability calibration; M-4 is runnable on its pipeline's tab
 native node embeddings over partitioned relationship edges. Read here
 for model work. M-21 adds event-time online logistic regression over pub/sub topics.
 
-- [segmentation.md](segmentation.md) — runnable M-3 / S-9: native distributed k-means, global preprocessing, graph checks, table outputs and run reports (#1042).
+- [segmentation.md](segmentation.md) — runnable M-3 / S-9: native distributed k-means, ISO-or-epoch cutoff normalization, global preprocessing, graph checks, table outputs and run reports (#1042, #1199).
 
 - [models.md](models.md) — the `Model` entity: replicated metadata with producing Run and Project/Pipeline names, page-ready listing, peer-to-peer weights body, and the `system.models` registry (ENT-14 / FEAT-6, #1184).
 - [run-metrics.md](run-metrics.md) — replicated step series, params, summaries, typed chart data, downsampling, live topics, and DP curve suppression (#1137).

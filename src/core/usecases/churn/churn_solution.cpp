@@ -447,7 +447,8 @@ DataFrameSchema table_accounts_schema(
     if (!contract.time_column.empty()) {
         schema.columns.push_back(ColumnSchema{.name = contract.time_column,
                                               .field = contract.time_column,
-                                              .dtype = DataType::Float64});
+                                              .dtype = DataType::Float64,
+                                              .timestamp = true});
     }
     return schema;
 }

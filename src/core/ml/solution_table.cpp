@@ -179,7 +179,8 @@ void project_shared_hints(nlohmann::json& hints,
 }
 
 nlohmann::json source_hints(const nlohmann::json& sources,
-                            const Methodology& methodology) {
+                            const Methodology& methodology,
+                            const nlohmann::json& snapshot) {
     nlohmann::json hints = nlohmann::json::object();
     if (!sources.is_object()) {
         return hints;
@@ -188,6 +189,19 @@ nlohmann::json source_hints(const nlohmann::json& sources,
     if (const auto common = sources.find("common");
         common != sources.end() && common->is_object()) {
         project_shared_hints(hints, *common, methodology);
+    }
+    const bool declares_time = std::ranges::any_of(
+        methodology.inputs, [](const MethodologyInput& input) {
+            return input.role == "time";
+        });
+    if (declares_time && snapshot.is_object()) {
+        if (!hints.contains("time_column") &&
+            snapshot.contains("time_column")) {
+            hints["time_column"] = snapshot.at("time_column");
+        }
+        if (!hints.contains("as_of") && snapshot.contains("as_of")) {
+            hints["as_of"] = snapshot.at("as_of");
+        }
     }
     if (const auto specific = sources.find(methodology.id);
         specific != sources.end() && specific->is_object()) {
@@ -875,7 +889,8 @@ nlohmann::json solution_json(const Solution& solution) {
 }
 
 ComposedSolution compose_solution(const Solution& solution, int level,
-                                  const nlohmann::json& sources) {
+                                  const nlohmann::json& sources,
+                                  const nlohmann::json& snapshot) {
     ComposedSolution result;
     if (solution.status == "sketch") {
         result.error = solution.name + " (" + solution.id +
@@ -927,7 +942,7 @@ ComposedSolution compose_solution(const Solution& solution, int level,
         }
         ShapeRequest request;
         request.solution = solution.id;
-        request.hints = source_hints(sources, *methodology);
+        request.hints = source_hints(sources, *methodology, snapshot);
         const ir::ExecutionGraph stage_graph = methodology->build_shape(request);
         if (stage_graph.empty()) {
             result.error = methodology->name + " (" + methodology->id +

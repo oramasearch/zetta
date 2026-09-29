@@ -8,6 +8,8 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/util/timestamp.hpp"
+
 namespace zetta::ml {
 namespace {
 
@@ -167,6 +169,13 @@ const nlohmann::json &forecast_step_schema() {
       (void)ignored;
       required.push_back(key);
     }
+    properties["as_of"] = {
+        {"oneOf",
+         Json::array(
+             {{{"type", "number"}},
+              {{"type", "string"},
+               {"pattern",
+                "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"}}})}};
     properties["history_length"] = positive_integer;
     return Json{{"$schema", "http://json-schema.org/draft-07/schema#"},
                 {"type", "object"},
@@ -232,6 +241,13 @@ parse_forecast_pipeline(const ir::ExecutionGraph &graph, std::string &error) {
   params.time_column = options["time_column"].get<std::string>();
   params.target_column = options["target_column"].get<std::string>();
   params.series_column = options["series_column"].get<std::string>();
+  if (const auto cutoff = options.find("as_of"); cutoff != options.end()) {
+    params.as_of = zetta::util::parse_time_seconds(*cutoff);
+    if (!params.as_of) {
+      error = "forecast as_of must be a finite epoch number or ISO-8601 timestamp";
+      return std::nullopt;
+    }
+  }
   if (params.time_column == params.target_column ||
       params.series_column == params.time_column ||
       params.series_column == params.target_column) {

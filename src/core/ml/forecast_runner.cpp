@@ -207,6 +207,7 @@ std::vector<ForecastSeries> series_from_frame(const ddf::DataFrame &frame,
                                               const std::string &series_column,
                                               const std::string &time_column,
                                               const std::string &target_column,
+                                              const std::optional<double> as_of,
                                               std::string &error) {
   std::vector<double> times;
   std::vector<double> targets;
@@ -232,6 +233,9 @@ std::vector<ForecastSeries> series_from_frame(const ddf::DataFrame &frame,
   }
   std::map<std::int64_t, ForecastSeries> grouped;
   for (std::size_t row = 0; row < times.size(); ++row) {
+    if (as_of && times[row] > *as_of) {
+      continue;
+    }
     ForecastSeries &series = grouped[keys[row]];
     series.key = keys[row];
     series.times.push_back(times[row]);
@@ -379,6 +383,7 @@ ForecastRunResult run_forecast_table(Node &node, compute::ComputeDevice &device,
       .name = time_column,
       .field = time_column,
       .dtype = compute::DataType::Float64,
+      .timestamp = true,
   });
   schema.columns.push_back(ddf::ColumnSchema{
       .name = target_column,
@@ -393,7 +398,8 @@ ForecastRunResult run_forecast_table(Node &node, compute::ComputeDevice &device,
   std::vector<ForecastSeries> local_series;
   if (shard.ok()) {
     local_series = series_from_frame(shard.frame, series_column, time_column,
-                                     target_column, conversion_error);
+                                     target_column, params.as_of,
+                                     conversion_error);
   }
   const std::string preflight = "forecast:load:" + params.run_id + ":" +
                                 params.output_database + ":" +

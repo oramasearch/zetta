@@ -4,6 +4,10 @@ Runtime foundations shared by deployed solutions: experimental measurement,
 action policy, monitoring, audit, and durable evidence that connects model scores
 and policy decisions to actions and measured outcomes.
 
+Executable composition forwards a snapshot's ISO-or-epoch `time_column` and
+`as_of` roles to every methodology that declares time input, without requiring
+duplicate per-methodology configuration (#1199).
+
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
 S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.

@@ -17,6 +17,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::ml {
 namespace {
@@ -128,8 +129,9 @@ ir::ExecutionGraph build_m18_shape(const ShapeRequest& request) {
         {"base_refit", "all_training"},
         {"note", "fit the stacker on OOF scores, then refit every base"}};
     if (!time.empty()) {
+        const auto cutoff = request.hints.find("as_of");
         model["time_cutoff"] =
-            number_field<double>(request.hints, "as_of", 0.0);
+            cutoff == request.hints.end() ? nlohmann::json(0.0) : *cutoff;
     }
     graph.add_node(ir::StepKind::Model, "Train out-of-fold stack", model,
                    "train_ensemble");
@@ -200,8 +202,17 @@ data::DatasetContract graph_contract(const ir::ExecutionGraph& graph,
     }
     if (!time.empty()) {
         contract.time_column = time;
-        contract.as_of =
-            number_field<double>(model->attributes, "time_cutoff", 0.0);
+        const auto cutoff = model->attributes.find("time_cutoff");
+        const std::optional<double> seconds =
+            cutoff == model->attributes.end()
+                ? std::optional<double>{0.0}
+                : zetta::util::parse_time_seconds(*cutoff);
+        if (!seconds) {
+            error = "M-18 time_cutoff must be a finite epoch number or "
+                    "ISO-8601 timestamp";
+            return contract;
+        }
+        contract.as_of = *seconds;
     }
     return contract;
 }

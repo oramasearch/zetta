@@ -39,6 +39,19 @@ TEST(ForecastMethodology, OwnPipelineIsRunnableAndNotTheChurnShape) {
   EXPECT_EQ(parsed->table, "daily");
 }
 
+TEST(ForecastMethodology, AcceptsIsoOrEpochCutoff) {
+  for (const nlohmann::json &cutoff :
+       {nlohmann::json("2026-09-01T00:00:00Z"),
+        nlohmann::json(1788220800.0)}) {
+    std::string error;
+    const auto parsed = zetta::ml::parse_forecast_pipeline(
+        shape({{"as_of", cutoff}}), error);
+    ASSERT_TRUE(parsed) << error;
+    ASSERT_TRUE(parsed->params.as_of);
+    EXPECT_DOUBLE_EQ(*parsed->params.as_of, 1788220800.0);
+  }
+}
+
 TEST(ForecastGraphCheck, RefusesRandomOrMissingTemporalValidation) {
   refuses({{"split", "random"}});
   refuses({{"holdout_fraction", 0.2}});

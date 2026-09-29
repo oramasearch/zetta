@@ -1710,6 +1710,34 @@ TEST(SolutionRegistry, ComposesEverySelectedMethodologyThroughItsCallback) {
     }
 }
 
+TEST(SolutionRegistry, SnapshotTimeDefaultsReachS1AtEveryLevel) {
+    const zetta::ml::Solution* churn = zetta::ml::find_solution("S-1");
+    ASSERT_NE(churn, nullptr);
+    const nlohmann::json snapshot = {
+        {"time_column", "observed_at"},
+        {"as_of", "2026-09-01T00:00:00Z"},
+    };
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "customers"},
+        {"M-3",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"feature_columns", {"feature"}}}},
+    };
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ml::ComposedSolution composed =
+            zetta::ml::compose_solution(*churn, level, sources, snapshot);
+        ASSERT_TRUE(composed.ok()) << level << ": " << composed.error;
+        const auto segmentation =
+            composed.graph.find_node("solution_stage_3_train_segments");
+        ASSERT_TRUE(segmentation) << level;
+        const auto& config = segmentation->attributes.at("segmentation");
+        EXPECT_EQ(config.at("time_column"), snapshot.at("time_column"));
+        EXPECT_EQ(config.at("as_of"), snapshot.at("as_of"));
+    }
+}
+
 TEST(SolutionRegistry,
      SolutionEvidenceDoesNotEnterMethodologyStepConfigurations) {
     const nlohmann::json sources = {

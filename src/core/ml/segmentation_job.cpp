@@ -92,13 +92,15 @@ bool append_row(const nlohmann::json &document,
     }
     if (!contract.time_column.empty()) {
         const auto time = document.find(contract.time_column);
-        if (time == document.end() || !time->is_number() ||
-            !std::isfinite(time->get<double>()) ||
-            !std::isfinite(contract.as_of)) {
+        const std::optional<double> time_seconds =
+            time == document.end()
+                ? std::nullopt
+                : zetta::util::parse_time_seconds(*time);
+        if (!time_seconds || !std::isfinite(contract.as_of)) {
             error = "segmentation dataset: invalid time cutoff or time value";
             return false;
         }
-        if (time->get<double>() > contract.as_of)
+        if (*time_seconds > contract.as_of)
             return true;
     }
     SegmentationRow row;

@@ -542,7 +542,7 @@ TEST_F(RestServerFixture, PostActionThenReadBack) {
 }
 
 TEST_F(ReplicatedRestServerFixture,
-       CreateSolutionKeepsManifestEvidenceOutOfStepsOverRestAndMcp) {
+       CreateSolutionPreservesAutomaticTimeRolesOverRestAndMcp) {
     const auto database = node.create_database("datasets");
     ASSERT_TRUE(database);
     ASSERT_TRUE(database->create_table("customers"));
@@ -631,6 +631,8 @@ TEST_F(ReplicatedRestServerFixture,
         const auto& config = segmentation->attributes.at("segmentation");
         EXPECT_FALSE(config.contains("policy_predicates"));
         EXPECT_FALSE(config.contains("missing_policy_predicates"));
+        EXPECT_EQ(config.at("time_column"), "observed_at");
+        EXPECT_EQ(config.at("as_of"), "2026-09-01T00:00:00.000Z");
     }
 }
 

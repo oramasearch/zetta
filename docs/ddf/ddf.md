@@ -123,6 +123,12 @@ implicit conversion, since it can't lose information. Read-back enforces the dty
 too: `to_host<T>` returns `InvalidArgument` if `T` doesn't match the column's dtype
 (or the column name is unknown).
 
+Time roles opt into one additional conversion with `ColumnSchema.timestamp = true`.
+Such a column must be `Float64` and accepts either a finite epoch number or an
+ISO-8601 timestamp string. The loader normalizes both to epoch seconds in the
+device buffer, so methodology code compares one internal type. Ordinary float
+columns continue to reject strings.
+
 ## The schema JSON boundary
 
 `DataFrameSchema` carries the same kind of validated JSON boundary as the
@@ -132,13 +138,15 @@ The JSON form is:
 
 ```json
 { "columns": [ { "name": "score", "dtype": "float64" },
+               { "name": "observed", "field": "observed_at",
+                 "dtype": "float64", "timestamp": true },
                { "name": "value", "field": "raw_value", "dtype": "uint32" } ] }
 ```
 
 `from_json` returns `std::nullopt` (never throws) unless the document is an object
 with a **non-empty** `columns` array of objects, each having a non-empty string
 `name`, a known `dtype` (one of the seven `DataType` names), and an optional
-non-empty string `field`, with **unique** column names — so a malformed schema
+non-empty string `field` plus optional boolean `timestamp`, with **unique** column names — so a malformed schema
 config fails fast with no partial frame.
 
 ## Tests

@@ -7,6 +7,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::data {
 namespace {
@@ -489,8 +490,14 @@ std::optional<DatasetContract> dataset_contract_from_json(const nlohmann::json& 
         *target = found->get<std::string>();
     }
     if (const auto as_of = value.find("as_of"); as_of != value.end()) {
-        if (!as_of->is_number()) return fail("dataset_contract.as_of: must be a number");
-        contract.as_of = as_of->get<double>();
+        const std::optional<double> seconds =
+            zetta::util::parse_time_seconds(*as_of);
+        if (!seconds) {
+            return fail(
+                "dataset_contract.as_of: must be a finite epoch number or "
+                "ISO-8601 timestamp");
+        }
+        contract.as_of = *seconds;
     }
     if (const auto columns = value.find("feature_columns"); columns != value.end()) {
         if (!columns->is_array()) {
@@ -533,8 +540,15 @@ const nlohmann::json& dataset_contract_schema() {
              "optional point-in-time cutoff column; requires as_of. Never inferred — it "
              "decides the leakage boundary"}};
         document["properties"]["as_of"] = {
-            {"type", "number"},
-            {"description", "the cutoff: only rows with time_column <= as_of contribute"}};
+            {"description",
+             "the cutoff as a finite epoch number or ISO-8601 timestamp; only rows with "
+             "time_column <= as_of contribute"},
+            {"oneOf",
+             nlohmann::json::array(
+                 {{{"type", "number"}},
+                  {{"type", "string"},
+                   {"pattern",
+                    "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"}}})}};
         document["properties"]["feature_columns"] = {
             {"type", "array"},
             {"items", {{"type", "string"}, {"minLength", 1}}},

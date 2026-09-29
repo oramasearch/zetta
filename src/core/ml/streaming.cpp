@@ -48,6 +48,15 @@ std::optional<double> number(const nlohmann::json& row,
     return found->get<double>();
 }
 
+std::optional<double> time_value(const nlohmann::json& row,
+                                 const std::string& column) {
+    const auto found = row.find(column);
+    if (found == row.end()) {
+        return std::nullopt;
+    }
+    return zetta::util::parse_time_seconds(*found);
+}
+
 std::optional<std::int64_t> integer(const nlohmann::json& row,
                                     const std::string& column) {
     const std::optional<double> value = number(row, column);
@@ -870,10 +879,11 @@ StreamingRunResult run_streaming(
         const std::optional<std::int64_t> entity =
             integer(row, dataset.contract.entity_column);
         const std::optional<double> time =
-            number(row, dataset.contract.time_column);
+            time_value(row, dataset.contract.time_column);
         if (!entity || !time) {
             fail_run("streaming: event '" + event.id +
-                     "' needs numeric entity and event-time columns");
+                     "' needs a numeric entity and an epoch or ISO-8601 "
+                     "event-time column");
             return result;
         }
         event.entity = *entity;
@@ -889,7 +899,7 @@ StreamingRunResult run_streaming(
         }
         event.label = number(row, dataset.contract.label_column);
         if (event.label) {
-            event.label_time = number(row, params.label_time_column);
+            event.label_time = time_value(row, params.label_time_column);
             if (!event.label_time) {
                 event.label_time = event.event_time;
             }

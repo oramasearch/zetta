@@ -92,8 +92,10 @@ Supervised `holdout_fraction` and ranked `top_k` run options are refused for M-3
 The config schema is discoverable as `segmentation_config` through `get_spec`.
 It bounds resource knobs (K up to 64, 2..32 restarts, a sample up to 8,192 rows),
 requires the stated global scaling/encoding/selection, and refuses a minimum
-share below 2%. Numeric time filters require an explicit `time_column` and
-`as_of`; neither is guessed.
+share below 2%. Time filters require an explicit `time_column` and `as_of`;
+neither is guessed. Both the cutoff and column values accept ISO-8601 timestamps
+or finite epoch seconds and are normalized to epoch seconds before the inclusive
+comparison. Rows after the cutoff never reach feature preparation or fitting.
 
 `SegmentationCheck` runs through the default `Check` interface for gate/deploy/run.
 It refuses entity/label/outcome features, local scaling, unbounded encoding,

@@ -106,9 +106,10 @@ struct DatasetContract {
     // The {0,1} training target. Never a feature.
     std::string label_column;
 
-    // Optional numeric time column. When set, rows are restricted to
-    // `time <= as_of` before anything is computed — the leakage boundary. Empty
-    // means the rows are taken as already point-in-time correct.
+    // Optional time column containing finite epoch numbers or ISO-8601 strings.
+    // When set, rows are restricted to `time <= as_of` before anything is
+    // computed — the leakage boundary. `as_of` is normalized to epoch seconds.
+    // Empty means the rows are taken as already point-in-time correct.
     std::string time_column;
     double as_of = 0.0;
 
