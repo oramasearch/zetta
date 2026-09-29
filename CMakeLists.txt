@@ -487,6 +487,7 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/memory/accounting.cpp
   src/core/pubsub/address.cpp
   src/core/pubsub/event.cpp
   src/core/pubsub/store.cpp
