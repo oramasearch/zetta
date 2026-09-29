@@ -230,6 +230,62 @@ zetta::ir::ExecutionGraph bound_s12_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b7_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("B-7");
+    if (solution == nullptr) {
+        return {};
+    }
+    zetta::ml::ComposedSolution composed = zetta::ml::compose_solution(
+        *solution, level,
+        {{"M-17",
+          {{"entity_column", "entity_id"},
+           {"label_column", "defaulted"},
+           {"group_column", "portfolio_group"},
+           {"nominal_coverage", 0.9}}}});
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00.000Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b7_correctness"] = {
+        {"policy", solution->templates.policy},
+        {"adverse_action_reasons",
+         {{"required", true},
+          {"minimum_reasons", 1},
+          {"source", "tree_shap_reason_codes"},
+          {"persist_with_decision", true}}},
+        {"validation_pipeline",
+         {{"stages",
+           {"development", "independent_validation", "approval",
+            "monitoring"}},
+          {"model_risk_owner", "model-risk"},
+          {"co_signed", true},
+          {"independent_out_of_time", true},
+          {"calibration_reviewed", true},
+          {"uncertainty_coverage_reviewed", true}}},
+        {"fairness_review",
+         {{"required", true},
+          {"review_passed", true},
+          {"owner", "fair-lending"},
+          {"protected_cohort_columns",
+           {"race_evaluation", "sex_evaluation"}},
+          {"metrics", {"approval_rate", "false_negative_rate"}},
+          {"blocked_feature_names", {"race", "sex", "age"}},
+          {"feature_names", {"income", "debt_ratio", "utilization"}}}},
+        {"adverse_action_authority",
+         {{"autonomy", "A0"}, {"human_review_required", true}}}};
+    return composed.graph;
+}
+
 zetta::ir::ExecutionGraph bound_s5_graph(int level = 1) {
     const zetta::ml::Solution* solution = zetta::ml::find_solution("S-5");
     if (solution == nullptr) {
@@ -510,6 +566,15 @@ void expect_s12_failure(const zetta::ir::ExecutionGraph& graph,
         << check->reason;
 }
 
+void expect_b7_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
 void expect_s5_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
@@ -748,7 +813,7 @@ TEST(SolutionRegistry, NextBestActionEntryCarriesTheCompleteContract) {
     EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
 }
 
-TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
+TEST(SolutionRegistry, ListsThirteenCatalogueModulesAndSevenSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -782,8 +847,8 @@ TEST(SolutionRegistry, ListsTwelveCatalogueModulesAndEightSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 12u);
-    EXPECT_EQ(sketches, 8u);
+    EXPECT_EQ(catalogue, 13u);
+    EXPECT_EQ(sketches, 7u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -800,6 +865,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"S-10", {"M-1", "M-2", "M-12", "M-5"}},
         {"S-11", {"M-8", "M-1", "M-6", "M-2", "M-15"}},
         {"S-12", {"M-1", "M-2", "M-11", "M-3"}},
+        {"B-7", {"M-1", "M-17"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =
@@ -1311,6 +1377,94 @@ TEST(SolutionRegistry, S12EveryLevelBuildsWithClaimScoreBindings) {
         EXPECT_EQ(std::find(methods.begin(), methods.end(), "M-3") !=
                       methods.end(),
                   level >= 3);
+    }
+}
+
+TEST(SolutionRegistry, CreditUnderwritingEntryCarriesExecutableContract) {
+    const zetta::ml::Solution* credit = zetta::ml::find_solution("B-7");
+    ASSERT_NE(credit, nullptr);
+    EXPECT_TRUE(credit->runnable);
+    EXPECT_EQ(credit->status, "catalogue");
+    EXPECT_FALSE(credit->templates.minimal);
+    EXPECT_EQ(credit->issue,
+              "https://github.com/oramasearch/zetta/issues/1181");
+    EXPECT_EQ(
+        credit->promotion_condition,
+        "Promote with a lender whose model-risk team co-signs and exercises the full validation pipeline.");
+    EXPECT_EQ(credit->templates.measurement.design, "holdout");
+    EXPECT_EQ(credit->templates.measurement.outcome,
+              "performing_account");
+    EXPECT_EQ(credit->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(credit->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"policy_assisted_decision"}));
+    ASSERT_TRUE(credit->templates.policy.at("actions").contains(
+        "decline_recommendation"));
+    EXPECT_EQ(credit->templates.policy.at("actions")
+                  .at("decline_recommendation")
+                  .at("autonomy"),
+              "A0");
+    EXPECT_EQ(credit->templates.policy.at("actions")
+                  .at("lower_limit_recommendation")
+                  .at("autonomy"),
+              "A0");
+    ASSERT_EQ(credit->templates.guardrails.size(), 6u);
+    EXPECT_EQ(credit->templates.guardrails.front().metric,
+              "automated_adverse_decisions");
+}
+
+TEST(SolutionRegistry, B7CorrectnessChecksRefuseEveryWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b7_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto reasons = bound_b7_graph();
+    reasons.find_node("solution_manifest")
+        ->attributes["b7_correctness"]["adverse_action_reasons"]
+                   ["required"] = false;
+    expect_b7_failure(reasons, "b7_adverse_action_reasons");
+
+    auto validation = bound_b7_graph();
+    validation.find_node("solution_manifest")
+        ->attributes["b7_correctness"]["validation_pipeline"]
+                   ["co_signed"] = false;
+    expect_b7_failure(validation, "b7_validation_pipeline");
+
+    auto fairness = bound_b7_graph();
+    fairness.find_node("solution_manifest")
+        ->attributes["b7_correctness"]["fairness_review"]
+                   ["review_passed"] = false;
+    expect_b7_failure(fairness, "b7_fairness_review");
+
+    auto authority = bound_b7_graph();
+    authority.find_node("solution_manifest")
+        ->attributes["b7_correctness"]["policy"]["actions"]
+                   ["decline_recommendation"]["autonomy"] = "A2";
+    expect_b7_failure(authority, "b7_human_authority");
+
+    auto composition = bound_b7_graph();
+    for (const auto& action :
+         composition.nodes_of_kind(zetta::ir::StepKind::Act)) {
+        if (action->attributes.value("score_output_column", std::string{}) ==
+            "credit_risk") {
+            action->attributes["score_output_column"] = "risk";
+        }
+    }
+    expect_b7_failure(composition, "b7_level_composition");
+}
+
+TEST(SolutionRegistry, B7EveryLevelBuildsWithCreditScoreBindings) {
+    for (int level = 1; level <= 4; ++level) {
+        const auto graph = bound_b7_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies"),
+                  nlohmann::json({"M-1", "M-17"}));
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 1).empty());
+        EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, 2).empty());
     }
 }
 

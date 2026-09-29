@@ -2663,6 +2663,240 @@ journey::Journey planted_lifetime_value_outcomes(
     return outcomes;
 }
 
+void land_credit_underwriting_data(Node& node) {
+    const auto database = node.create_database("credit");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("applications");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int application_id = index + 1;
+        const double debt_ratio =
+            static_cast<double>(index % 20) / 25.0;
+        const double utilization =
+            static_cast<double>((index * 7) % 20) / 20.0;
+        const double income =
+            35000.0 + static_cast<double>(index % 30) * 1800.0;
+        const bool defaulted =
+            debt_ratio + utilization * 0.5 > 0.75;
+        table->add_row(
+            {{"application_id", application_id},
+             {"record_id", application_id},
+             {"source", "credit-fixture"},
+             {"name", "Applicant " + std::to_string(application_id)},
+             {"defaulted", defaulted ? 1 : 0},
+             {"income", income},
+             {"debt_ratio", debt_ratio},
+             {"utilization", utilization},
+             {"portfolio_group", "segment-" + std::to_string(index % 4)},
+             {"action", index % 29 == 0
+                            ? "decline_recommendation"
+                            : std::string{}},
+             {"requested_limit", 4000.0},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"eligibility_verified", true},
+             {"income_verified", true},
+             {"model_validation_approved", true},
+             {"fairness_review_passed", true},
+             {"adverse_action_reasons_ready", true},
+             {"fraud_hold", false},
+             {"bankruptcy_hold", false},
+             {"manual_only", false},
+             {"approval_rate_gap", 0.04},
+             {"race_evaluation", "evaluation-cohort-a"},
+             {"sex_evaluation", "evaluation-cohort-b"},
+             {"owner", "credit-underwriting"}});
+    }
+    table->add_row(
+        {{"application_id", 9999},
+         {"record_id", 9999},
+         {"source", "credit-fixture"},
+         {"name", "Future applicant"},
+         {"defaulted", 1},
+         {"income", 1000.0},
+         {"debt_ratio", 1.0},
+         {"utilization", 1.0},
+         {"portfolio_group", "segment-future"},
+         {"requested_limit", 4000.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"eligibility_verified", true},
+         {"income_verified", true},
+         {"model_validation_approved", true},
+         {"fairness_review_passed", true},
+         {"adverse_action_reasons_ready", true},
+         {"fraud_hold", false},
+         {"bankruptcy_hold", false},
+         {"manual_only", false},
+         {"approval_rate_gap", 0.04},
+         {"owner", "credit-underwriting"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json credit_underwriting_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "credit"},
+          {"source_table", "applications"},
+          {"target_table", "applications_snapshot"},
+          {"entity_column", "application_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "defaulted"},
+          {"feature_columns", {"income", "debt_ratio", "utilization"}}}},
+        {"delivery",
+         {{"endpoint", "https://credit.example.test/underwriting"},
+          {"owner", "credit-underwriting"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1000.0},
+          {"investment", 500.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey credit_underwriting_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"credit-underwriting-solution", {}};
+    flow.steps = {
+        {"read executable credit defaults", "get_solution",
+         {{"solution", "B-7"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/decline_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::predicate(
+                  "promotion condition remains recorded",
+                  [](const auto& value) {
+                      return !value.at("solution")
+                                  .at("promotion_condition")
+                                  .template get<std::string>()
+                                  .empty();
+                  }),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the credit project", "create_project",
+         {{"name", "credit underwriting"}}},
+        {"create the composed credit solution", "create_solution",
+         {{"project", "credit underwriting"},
+          {"solution", "B-7"},
+          {"level", 1},
+          {"sources",
+           {{"source", "credit"},
+            {"table", "applications"},
+            {"M-17",
+             {{"entity_column", "entity_id"},
+              {"label_column", "defaulted"},
+              {"group_column", "portfolio_group"},
+              {"nominal_coverage", 0.9},
+              {"holdout_fraction", 0.2}}},
+            {"correctness",
+             {{"model_risk_owner", "model-risk"},
+              {"model_risk_co_signed", true},
+              {"fairness_review_owner", "fair-lending"},
+              {"fairness_review_passed", true}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 2),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"credit_graph", "/graph"},
+          {"credit_policy", "/policy_id"},
+          {"credit_experiment", "/experiment_id"}}},
+        {"read the credit policy", "get_policy",
+         {{"policy_id", "$credit_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/decline_recommendation/autonomy",
+                  "A0"),
+              journey::equals(
+                  "/versions/0/config/actions/lower_limit_recommendation/autonomy",
+                  "A0")}}},
+        {"run credit underwriting", "run_solution",
+         {{"project", "credit underwriting"},
+          {"graph", "$credit_graph"},
+          {"delivery_token", "credit-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"credit_run", "/run_id"}}},
+        {"read the completed credit Run", "get_run",
+         {{"run_id", "$credit_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 8)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read credit assignments", "get_experiment",
+         {{"experiment", "$credit_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read credit action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_credit_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"credit-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double performing =
+            0.7 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.14);
+        outcomes.steps.push_back(
+            {"record credit performance", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "performing_account"},
+              {"value", performing},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured credit effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted credit effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.14) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.14 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.14;
+                  })}}});
+    return outcomes;
+}
+
 void land_claims_data(Node& node) {
     const auto database = node.create_database("claims");
     ASSERT_TRUE(database);
@@ -3148,6 +3382,145 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_claim_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       CreditUnderwritingKeepsAdverseActionsHumanAndRecoversEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_credit_underwriting_data(node);
+    const auto flow =
+        credit_underwriting_journey(credit_underwriting_configuration());
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("credit underwriting");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-7 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish credit risk scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "applicant");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "credit_risk");
+    EXPECT_EQ(graph->record().dump().find("credit-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t adverse_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        const auto stored = policies.get_decision(decision.id);
+        ASSERT_TRUE(stored);
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        if (decision.action == "decline_recommendation") {
+            ++adverse_rows;
+            EXPECT_EQ(decision.autonomy, "A0");
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_EQ(decision.status, "manual");
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(adverse_rows, 0u);
+
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("adverse_human_only"), true);
+        EXPECT_EQ(payload.at("model_risk_owner"), "model-risk");
+        EXPECT_EQ(payload.at("fairness_review_owner"), "fair-lending");
+        EXPECT_FALSE(payload.at("reason_codes").empty());
+        EXPECT_TRUE(payload.contains("decision_cell"));
+        EXPECT_NE(payload.at("proposed_credit_action"),
+                  "decline_recommendation");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto credit_results = node.find_database("credit_results");
+    ASSERT_TRUE(credit_results);
+    ASSERT_EQ(credit_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM credit_results." +
+              credit_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("applicant"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("credit_risk"));
+    EXPECT_EQ(node.find_database("credit")
+                  ->find_table("applications_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto decisions = node.find_database("solution_results");
+    ASSERT_TRUE(decisions);
+    ASSERT_EQ(decisions->tables().size(), 1u);
+    const ApiResult decision_rows = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM solution_results." +
+              decisions->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decision_rows.ok) << decision_rows.error.message;
+    for (const auto& row : decision_rows.value.at("rows")) {
+        if (row.at("action") == "decline_recommendation") {
+            EXPECT_FALSE(row.at("reason_codes").empty());
+            EXPECT_EQ(row.at("autonomy"), "A0");
+        }
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "automated_adverse_decisions" ||
+            guardrail.bound.name == "missing_adverse_action_reasons" ||
+            guardrail.bound.name == "model_validation_approval_failures" ||
+            guardrail.bound.name == "fairness_review_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("credit-fixture-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_credit_outcomes(ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout =

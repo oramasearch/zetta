@@ -16,11 +16,11 @@ snapshot cutoff, and supplied ROI economics. The complete input contract is in
 ## Steps
 
 1. Ask the node to list its solutions.
-   → It shows twelve catalogue modules and eight entries marked as sketches.
+   → It shows 13 catalogue modules and seven entries marked as sketches.
 2. Open Churn & Retention.
    → It returns typed policy, experiment, measurement and guardrail defaults,
    `runnable: true`, and an empty `missing_components` list. S-2 through S-12
-   also return complete policies and measurement designs.
+   and B-7 also return complete policies and measurement designs.
 3. Create a project and choose level 1 of Churn & Retention against the customer table, supplying the foundation inputs above.
    → A Pipeline is created with three selected methodologies and real policy, experiment, monitor, and readout IDs; `preview` is false.
 4. Read the project back.

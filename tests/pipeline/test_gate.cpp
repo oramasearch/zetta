@@ -74,7 +74,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
     const ValidationReport report = gate.run(empty_graph);
 
     // Only the non-empty check fails; the other checks have no matching steps.
-    ASSERT_EQ(report.checks.size(), 75u);
+    ASSERT_EQ(report.checks.size(), 80u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -88,7 +88,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
     const ValidationReport report = gate.run(one_step_graph());
 
     // All default checks pass an unannotated single-step graph.
-    ASSERT_EQ(report.checks.size(), 75u);
+    ASSERT_EQ(report.checks.size(), 80u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -96,7 +96,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 75u);
+    ASSERT_EQ(gate.check_count(), 80u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -172,6 +172,11 @@ TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     EXPECT_EQ(gate.checks()[72]->name(), "privacy_budget");
     EXPECT_EQ(gate.checks()[73]->name(), "streaming_correctness");
     EXPECT_EQ(gate.checks()[74]->name(), "entity_resolution");
+    EXPECT_EQ(gate.checks()[75]->name(), "b7_adverse_action_reasons");
+    EXPECT_EQ(gate.checks()[76]->name(), "b7_validation_pipeline");
+    EXPECT_EQ(gate.checks()[77]->name(), "b7_fairness_review");
+    EXPECT_EQ(gate.checks()[78]->name(), "b7_human_authority");
+    EXPECT_EQ(gate.checks()[79]->name(), "b7_level_composition");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

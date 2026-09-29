@@ -62,6 +62,9 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+B-7 binds M-1's `Publish credit risk scores` output in `credit_results`, using
+`applicant` and `credit_risk`. M-17 runs beside it for disjoint uncertainty
+coverage validation; it does not replace the decision score.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
@@ -218,6 +221,14 @@ S-12 from a partitioned FNOL table, runs M-2 → M-11 → M-1, reads the real
 tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
+
+`SolutionJourney.CreditUnderwritingKeepsAdverseActionsHumanAndRecoversEffect`
+builds B-7 from partitioned synthetic applications and runs M-1 plus M-17. It
+reads the real `applicant`/`credit_risk` table, verifies reason codes and A0
+decline recommendations, protects the permanent holdout, inspects validation
+and fairness evidence in action payloads, observes all six guardrails, and
+recovers a planted 0.14 performing-account effect inside the readout interval.
+The future application never reaches scoring or action.
 
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
