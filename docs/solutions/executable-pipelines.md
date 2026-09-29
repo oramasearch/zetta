@@ -43,6 +43,14 @@ needs the selected methodologies' roles (for CL-1 M-2: `source`, `record_id`,
 action; it is not filled with false. Predicate and cost evidence is joined from
 the frozen snapshot, not copied from the model's feature list.
 
+`sources` is stored unchanged on the solution manifest. Composition projects
+only shared source locations and declared methodology input roles into a shape,
+then applies that methodology's explicit `M-*` settings. Solution evidence such
+as `policy_predicates`, `predicates`, and `missing_policy_predicates` therefore
+remains available to policy and correctness checks without becoming step
+configuration. This matters for methodology steps whose schemas reject unknown
+properties.
+
 `create_solution` returns graph, policy, experiment, monitor, and readout IDs.
 Read the graph with `get_project`, policy/version history with `get_policy`,
 allocations with `get_experiment`, guardrails with `get_monitor`, and definition
@@ -121,8 +129,8 @@ B-3 defaults to M-10's real `embeddings` output, using `chunk_id` and
 `classifier_confidence`. Its M-19 stage supplies label-efficiency artifacts but
 does not substitute a decision score. Put checkpoint, text-column, retrieval,
 and labelling-function settings in `sources.M-10` and `sources.M-19` at create
-time. The solution runner forwards each methodology's object into that stage's
-registered callback.
+time. The solution runner forwards each methodology-local object into that
+stage's registered callback; unscoped solution evidence stays on the manifest.
 B-6 binds M-1's `Publish healthcare operations risk scores` output in
 `healthcare_results`, using `entity` and `operational_risk`. The score feeds
 only assistive scheduling and revenue-cycle policy actions. Protected-group

@@ -144,23 +144,52 @@ std::string lower(std::string_view value) {
     return result;
 }
 
+bool source_location_hint(std::string_view key) {
+    return key == "source" || key == "database" || key == "table" ||
+           key == "dataset_path";
+}
+
+bool declared_role_hint(const Methodology& methodology,
+                        std::string_view key) {
+    if (source_location_hint(key)) {
+        return true;
+    }
+    for (const MethodologyInput& input : methodology.inputs) {
+        const std::string singular = input.role;
+        if (key == singular || key == singular + "s" ||
+            key == singular + "_column" ||
+            key == singular + "_columns") {
+            return true;
+        }
+    }
+    return false;
+}
+
+void project_shared_hints(nlohmann::json& hints,
+                          const nlohmann::json& shared,
+                          const Methodology& methodology) {
+    if (!shared.is_object()) {
+        return;
+    }
+    for (const auto& [key, value] : shared.items()) {
+        if (declared_role_hint(methodology, key)) {
+            hints[key] = value;
+        }
+    }
+}
+
 nlohmann::json source_hints(const nlohmann::json& sources,
-                            std::string_view methodology) {
+                            const Methodology& methodology) {
     nlohmann::json hints = nlohmann::json::object();
     if (!sources.is_object()) {
         return hints;
     }
-    for (const auto& [key, value] : sources.items()) {
-        if (key != "common" && key != "correctness" &&
-            !key.starts_with("M-")) {
-            hints[key] = value;
-        }
-    }
+    project_shared_hints(hints, sources, methodology);
     if (const auto common = sources.find("common");
         common != sources.end() && common->is_object()) {
-        hints.update(*common);
+        project_shared_hints(hints, *common, methodology);
     }
-    if (const auto specific = sources.find(std::string(methodology));
+    if (const auto specific = sources.find(methodology.id);
         specific != sources.end() && specific->is_object()) {
         hints.update(*specific);
     }
@@ -898,7 +927,7 @@ ComposedSolution compose_solution(const Solution& solution, int level,
         }
         ShapeRequest request;
         request.solution = solution.id;
-        request.hints = source_hints(sources, methodology_id);
+        request.hints = source_hints(sources, *methodology);
         const ir::ExecutionGraph stage_graph = methodology->build_shape(request);
         if (stage_graph.empty()) {
             result.error = methodology->name + " (" + methodology->id +
