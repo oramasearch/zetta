@@ -69,6 +69,9 @@ scores, or a cohort below the configured minimum before any methodology runs.
 B-4 binds M-11's real `extracted fields` output in `document_results`, with
 `document` and `confidence` columns. It groups field rows by document and
 refuses workflow delivery unless every declared field clears its own threshold.
+B-7 binds M-1's `Publish credit risk scores` output in `credit_results`, using
+`applicant` and `credit_risk`. M-17 runs beside it for disjoint uncertainty
+coverage validation; it does not replace the decision score.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
@@ -275,6 +278,13 @@ M-19, reads `classifier_confidence`, verifies explicit abstention and protected
 holdouts, inspects queue and draft payloads, observes all six guardrails,
 records a planted 0.16 resolution-quality effect, and requires the readout to
 recover it inside its confidence interval.
+`SolutionJourney.CreditUnderwritingKeepsAdverseActionsHumanAndRecoversEffect`
+builds B-7 from partitioned synthetic applications and runs M-1 plus M-17. It
+reads the real `applicant`/`credit_risk` table, verifies reason codes and A0
+decline recommendations, protects the permanent holdout, inspects validation
+and fairness evidence in action payloads, observes all six guardrails, and
+recovers a planted 0.14 performing-account effect inside the readout interval.
+The future application never reaches scoring or action.
 
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,

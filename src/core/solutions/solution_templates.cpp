@@ -52,6 +52,7 @@ constexpr std::array kDefaults = {
     DefaultAction{"B-4", "field_review_task", "A2", "holdout", "workflow_completed", "document", "unvalidated_workflow_actions"},
     DefaultAction{"B-5", "supplier_watch_task", "A2", "holdout", "disruption_avoided", "supplier", "missing_flag_evidence_rate"},
     DefaultAction{"B-6", "care_coordination_task", "A2", "holdout", "operational_resolution", "case", "care_denial_actions"},
+    DefaultAction{"B-7", "underwriter_review_task", "A2", "holdout", "performing_account", "application", "automated_adverse_decisions"},
 };
 
 SolutionTemplates defaults_for(const DefaultAction& action) {
@@ -268,6 +269,69 @@ void claims_triage_defaults(SolutionTemplates& result) {
         {"field_extraction_accuracy", 0.8, "minimum"},
         {"action_execution_rate", 0.95, "minimum"}};
     result.measurement = {"holdout", "referral_confirmed", "claim", 45};
+}
+
+void credit_underwriting_defaults(SolutionTemplates& result) {
+    result.minimal = false;
+    result.policy["tiers"] = {
+        {{"name", "elevated_risk"}, {"minimum_score", 0.7},
+         {"action", "underwriter_review_task"},
+         {"allowed_actions", {"underwriter_review_task",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}},
+        {{"name", "review"}, {"minimum_score", 0.4},
+         {"action", "limit_review_task"},
+         {"allowed_actions", {"limit_review_task", "increase_limit",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}},
+        {{"name", "eligible"}, {"minimum_score", 0.0},
+         {"action", "approve_credit"},
+         {"allowed_actions", {"approve_credit", "increase_limit",
+                              "decline_recommendation",
+                              "lower_limit_recommendation", "no_action"}}}};
+    result.policy["actions"] = {
+        {"approve_credit", {{"autonomy", "A2"},
+                            {"approval_field", "requested_limit"},
+                            {"approval_above", 5000.0},
+                            {"sla_seconds", 86400},
+                            {"frequency_cap", frequency(1)}}},
+        {"underwriter_review_task", {{"autonomy", "A2"},
+                                      {"sla_seconds", 86400},
+                                      {"frequency_cap", frequency(1)}}},
+        {"limit_review_task", {{"autonomy", "A2"},
+                                {"sla_seconds", 86400},
+                                {"frequency_cap", frequency(1)}}},
+        {"increase_limit", {{"autonomy", "A1"},
+                             {"sla_seconds", 86400},
+                             {"frequency_cap", frequency(1)}}},
+        {"decline_recommendation", {{"autonomy", "A0"},
+                                     {"sla_seconds", 86400}}},
+        {"lower_limit_recommendation", {{"autonomy", "A0"},
+                                         {"sla_seconds", 86400}}},
+        {"no_action", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1);
+    result.policy["budget"] = {{"limit", 0.0}};
+    result.policy["eligibility_rules"] = {
+        predicate("eligibility_verified", true),
+        predicate("income_verified", true),
+        predicate("model_validation_approved", true),
+        predicate("fairness_review_passed", true),
+        predicate("adverse_action_reasons_ready", true)};
+    result.policy["exclusion_rules"] = {
+        predicate("fraud_hold", true), predicate("bankruptcy_hold", true),
+        predicate("manual_only", true)};
+    result.experiment.holdouts = {
+        {"elevated_risk", 0.1}, {"review", 0.1}, {"eligible", 0.1}};
+    result.experiment.treatment_cells = {"policy_assisted_decision"};
+    result.guardrails = {
+        {"automated_adverse_decisions", 0.0, "maximum"},
+        {"missing_adverse_action_reasons", 0.0, "maximum"},
+        {"model_validation_approval_failures", 0.0, "maximum"},
+        {"fairness_review_failures", 0.0, "maximum"},
+        {"approval_rate_gap", 0.1, "maximum"},
+        {"action_execution_rate", 0.95, "minimum"}};
+    result.measurement = {"holdout", "performing_account", "application", 90};
 }
 
 void demand_forecast_defaults(SolutionTemplates& result) {
@@ -621,30 +685,27 @@ void employee_attrition_defaults(SolutionTemplates& result) {
          {"action", "no_action"}}};
     result.policy["actions"] = {
         {"people_leader_review",
-         {{"autonomy", "A2"},
-          {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 2592000)}}},
+         {{"autonomy", "A2"}, {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 30)}}},
         {"aggregate_risk_report",
-         {{"autonomy", "A2"},
-          {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 2592000)}}},
+         {{"autonomy", "A2"}, {"sla_seconds", 604800},
+          {"frequency_cap", frequency(1, 30)}}},
         {"organizational_intervention_review",
-         {{"autonomy", "A1"},
+         {{"autonomy", "A1"}, {"approval_above", 0.0},
           {"sla_seconds", 604800},
-          {"frequency_cap", frequency(1, 7776000)}}},
+          {"frequency_cap", frequency(1, 30)}}},
         {"no_action", {{"autonomy", "A0"}}}};
-    result.policy["eligibility_rules"] = {
-        predicate("minimum_group_size_met", true),
-        predicate("people_leader_authorized", true),
-        predicate("fairness_review_completed", true),
-        predicate("legal_approval_recorded", true),
-        predicate("individual_output", false)};
-    result.policy["exclusions"] = {
-        predicate("small_group", true),
-        predicate("approval_missing", true),
-        predicate("individual_output", true)};
     result.policy["contact_cap"] = 4;
-    result.policy["frequency_cap"] = frequency(1, 2592000);
+    result.policy["frequency_cap"] = frequency(1, 30);
+    result.policy["eligibility_rules"] = {
+        numeric_predicate("group_size", "gte", 5.0),
+        predicate("people_leader_authorized", true),
+        predicate("fairness_review_passed", true),
+        predicate("legal_approval_recorded", true),
+        predicate("individual_level_output", false)};
+    result.policy["exclusion_rules"] = {
+        predicate("restricted_cohort", true),
+        predicate("individual_level_output", true)};
     result.policy["budget"] = {{"limit", 0.0}};
     result.experiment.holdouts = {
         {"elevated", 0.1}, {"watch", 0.1}, {"baseline", 0.1}};
@@ -671,27 +732,32 @@ void ticket_triage_defaults(SolutionTemplates& result) {
          {"action", "abstain"}}};
     result.policy["actions"] = {
         {"route_ticket",
-         {{"autonomy", "A2"}, {"sla_seconds", 14400},
-          {"frequency_cap", frequency(1, 604800)}}},
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
         {"route_and_draft",
-         {{"autonomy", "A2"}, {"sla_seconds", 14400},
-          {"frequency_cap", frequency(1, 604800)}}},
+         {{"autonomy", "A2"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
         {"close_ticket",
-         {{"autonomy", "A1"}, {"sla_seconds", 14400},
-          {"frequency_cap", frequency(1, 604800)}}},
-        {"abstain", {{"autonomy", "A0"}}}};
+         {{"autonomy", "A1"}, {"sla_seconds", 3600},
+          {"frequency_cap", frequency(1, 1)}}},
+        {"abstain", {{"autonomy", "A0"}}},
+        {"no_contact", {{"autonomy", "A0"}}}};
+    result.policy["contact_cap"] = 1;
+    result.policy["frequency_cap"] = frequency(1, 1);
     result.policy["eligibility_rules"] = {
-        predicate("taxonomy_owned", true),
-        predicate("taxonomy_current", true),
-        predicate("queue_owner_assigned", true),
-        predicate("closure_approval_required", true)};
-    result.policy["exclusions"] = {
+        predicate("service_eligible", true),
+        predicate("taxonomy_owned_by_customer", true),
+        predicate("taxonomy_version_current", true),
+        {{"name", "queue_present"}, {"role", "entity"},
+         {"field", "queue"}, {"operator", "exists"}},
+        {{"name", "ticket_type_status_present"}, {"role", "entity"},
+         {"field", "new_ticket_type"}, {"operator", "exists"}}};
+    result.policy["exclusion_rules"] = {
         predicate("new_ticket_type", true),
-        predicate("taxonomy_unknown", true),
-        predicate("queue_unavailable", true)};
-    result.policy["contact_cap"] = 52;
-    result.policy["frequency_cap"] = frequency(1, 604800);
+        predicate("suppressed", true)};
     result.policy["budget"] = {{"limit", 0.0}};
+    result.policy["tunable_bounds"] = {
+        {"threshold", {{"minimum", 0.5}, {"maximum", 0.95}}}};
     result.experiment.holdouts = {
         {"confident", 0.1}, {"abstain", 0.1}};
     result.experiment.treatment_cells = {"service_routed"};
@@ -908,6 +974,8 @@ SolutionTemplates solution_templates(const std::string& solution_id) {
                 supplier_risk_defaults(result);
             } else if (solution_id == "B-6") {
                 healthcare_operations_defaults(result);
+            } else if (solution_id == "B-7") {
+                credit_underwriting_defaults(result);
             }
             return result;
         }

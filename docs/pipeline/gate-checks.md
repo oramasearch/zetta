@@ -154,6 +154,15 @@ human-review route for every low-confidence field. `b4_validated_workflow`
 requires structured downstream input and all-fields validation before a
 workflow action. The policy constraints are checked again immediately before
 `run_solution` acts. See [B-4](../solutions/B-4.md) for the full contract.
+### B-7 composed solution checks
+
+The five B-7 checks require persisted adverse-action reason codes, a
+model-risk-owned and co-signed validation pipeline, a passed fair-lending
+review with evaluation-only protected cohorts, A0 human authority for every
+adverse outcome, and M-1 credit scores plus M-17 uncertainty coverage at every
+capability level. The policy authority and required evidence are checked again
+immediately before execution. See [B-7](../solutions/B-7.md) for the complete
+operator contract and refusal list.
 
 ### S-5 composed solution checks
 

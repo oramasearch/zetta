@@ -14,8 +14,8 @@ commits. All 21 portfolio methodologies are runnable.
   but does not own its lookup; select it by `M-6`, `causal` or `uplift`.
   The registry has no separate supporting-component field. A registry test
   checks that each primary solution has only one owner.
-- S-10 and S-12 resolve to M-1 (tabular supervised learning); graph, ranking,
-  and vision remain selectable by ID and model kind. S-8 resolves to M-7
+- S-10, S-12, and B-7 resolve to M-1 (tabular supervised learning); graph,
+  ranking, and vision remain selectable by ID and model kind. S-8 resolves to M-7
   (anomaly detection), not M-5 survival or M-13 vision. These choices use the
   catalogue's first method, mapped to portfolio numbering by
   [buildable-models §8](https://github.com/oramasearch/zetta-bridge/blob/main/docs/solutions/buildable-models.md):

@@ -72,7 +72,7 @@ verifies that all 21 methodologies are runnable, rejects an unmatched non-predic
 and refuses an incomplete segmentation graph at the correctness gate. Graph and
 project views expose `methodology` plus `runnable` (#1061).
 
-The solution journeys discover 17 runnable catalogue modules plus three sketches and
+The solution journeys discover 19 runnable catalogue modules plus one sketch and
 creates S-1 CL-1 with explicit snapshot/delivery/economics inputs and executable
 defaults (#1128). It reads the policy, experiment and ROI definition, runs
 M-2/M-1/M-3 over the real snapshot, verifies protected holdout and ledger rows,

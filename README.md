@@ -124,8 +124,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists 18 runnable catalogue
-  modules and two remaining Band-B sketches. Selected levels execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 19 runnable catalogue
+  modules and one remaining Band-B sketch. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,

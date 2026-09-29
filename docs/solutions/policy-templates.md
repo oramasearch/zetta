@@ -170,6 +170,15 @@ are excluded. Every tier has a permanent 10% holdout; the treatment cell is
 `people_leader_review`, and the named 90-day outcome is
 `attrition_reduction`. The promotion condition remains catalogue metadata for
 go-to-market decisions and does not disable the executable module.
+B-7 supplies the credit-policy default. Score floors 0.70, 0.40, and 0.0
+select underwriter review, limit review, and approval. Approvals up to a 5,000
+requested limit are A2; higher approvals and limit increases require A1.
+Decline and lower-limit recommendations are explicit alternatives but remain
+A0 human-only and are never selected directly by a score tier. Verified
+eligibility and income, model-validation approval, fairness-review approval,
+and reason-code readiness must pass. Fraud, bankruptcy, and manual-only holds
+block delivery. Each tier keeps a deterministic 10% holdout measured on the
+90-day `performing_account` outcome.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly

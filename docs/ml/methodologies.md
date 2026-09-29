@@ -253,6 +253,10 @@ The pipeline carries `coverage_checked`, `nominal_coverage`, and an explicit
 exchangeability statement. `UncertaintyValidationCheck` refuses a Bayesian
 shape that omits those facts; split-conformal shapes must also declare that
 calibration rows are disjoint from fitting rows.
+
+B-7 composes M-17 with M-1 at every capability level. M-17 validates grouped
+uncertainty coverage on a disjoint holdout while M-1 remains the credit-policy
+decision source. See [B-7](../solutions/B-7.md).
 ## M-18 ensembling and stacking
 
 `src/core/ml/ensemble_methodology.cpp` owns the M-18 callbacks:
