@@ -80,12 +80,12 @@ std::shared_ptr<data::Table> table_at(Node& node, const std::string& path) {
 
 Json create_bindings(Node& node, const pipeline::Project& project,
                      const ml::Solution& solution, const std::string& name,
-                     int level, const Json& settings, const std::string& actor,
+                     const Json& policy_config, const Json& settings,
+                     const std::string& actor,
                      std::string& error) {
     const std::string scope = project.id() + "/" + name;
     DecisionPolicyStore policies(*node.replication(), &node, &node.experiment_manager());
-    const auto policy = policies.create(
-        scope, solution_policy_template(solution.id, level), actor, &error);
+    const auto policy = policies.create(scope, policy_config, actor, &error);
     if (!policy) {
         return {};
     }
@@ -146,14 +146,15 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
         manifest &&
         (solution == "S-1" || solution == "S-2" || solution == "S-5" ||
          solution == "S-8" || solution == "S-9" || solution == "S-10" ||
-         solution == "S-11");
+         solution == "S-11" || solution == "B-5");
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
             continue;
         }
         const bool reads_forecast_history =
-            solution == "S-6" &&
+            (solution == "S-6" || solution == "B-1" ||
+             solution == "B-5") &&
             step->attributes.value("methodology", std::string{}) == "M-4";
         if (reads_forecast_history) {
             continue;
@@ -349,6 +350,65 @@ void bind_s6_correctness(ir::ExecutionGraph& graph, const Json& sources) {
         {"kill_switch_configured", policy.contains("kill_switch")}};
 }
 
+void bind_b1_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-1") {
+        return;
+    }
+    const int level = manifest->attributes.value("level", 0);
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json uplift =
+        sources.contains("M-6") && sources.at("M-6").is_object()
+            ? sources.at("M-6")
+            : Json::object();
+    const Json policy = solution_policy_template("B-1", level);
+    std::string level_action;
+    for (const Json& tier : policy.at("tiers")) {
+        if (tier.at("name") == "high_demand") {
+            level_action = tier.at("action").get<std::string>();
+        }
+    }
+    const Json default_blocklist = {
+        "future_price", "future_competitor_price", "realized_future_price",
+        "future_discount", "post_offer_demand"};
+    manifest->attributes["b1_correctness"] = {
+        {"identification",
+         {{"identifiable_variation",
+           common.value("identifiable_variation", false)},
+          {"randomized_experiment",
+           common.value("randomized_experiment", false)},
+          {"treatment_column",
+           uplift.value("treatment", "price_treatment")},
+          {"outcome_column", uplift.value("outcome", "demand_response")}}},
+        {"policy", policy},
+        {"margin_floor", common.value("margin_floor", 0.25)},
+        {"automatic_authority_limit",
+         common.value("automatic_authority_limit", 0.05)},
+        {"hard_authority_limit",
+         common.value("hard_authority_limit", 0.15)},
+        {"leakage",
+         {{"prediction_time", snapshot.as_of},
+          {"competitor_price_cutoff",
+           common.value("competitor_price_cutoff", snapshot.as_of)},
+          {"future_prices_excluded",
+           common.value("future_prices_excluded", true)},
+          {"forbidden_feature_names",
+           common.value("forbidden_feature_names", default_blocklist)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"level_action", level_action},
+        {"kill_switch_configured", policy.contains("kill_switch")}};
+}
+
 void bind_s3_correctness(ir::ExecutionGraph& graph,
                          const Json& settings,
                          const Json& sources) {
@@ -444,6 +504,79 @@ void bind_s4_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_b5_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-5") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_blocklist = {
+        "disruption_at", "disruption_outcome", "claim_resolution",
+        "recovery_completed_at", "post_event_status",
+        "termination_reason"};
+    const Json required_evidence = {
+        common.value("external_source_column", "external_source"),
+        common.value("external_observed_at_column",
+                     "external_observed_at")};
+    manifest->attributes["b5_correctness"] = {
+        {"prediction_time", snapshot.as_of},
+        {"external_data",
+         {{"point_in_time",
+           common.value("external_data_point_in_time", true)},
+          {"future_publications_excluded",
+           common.value("future_external_publications_excluded", true)},
+          {"source_column",
+           common.value("external_source_column", "external_source")},
+          {"observed_at_column",
+           common.value("external_observed_at_column",
+                        "external_observed_at")},
+          {"snapshot_time_column", snapshot.time_column}}},
+        {"supplier_records",
+         {{"event_time_column",
+           common.value("supplier_event_time_column", "disruption_at")},
+          {"truncate_at_event",
+           common.value("truncate_supplier_records_at_event", true)},
+          {"post_event_records",
+           common.value("post_event_supplier_records", "exclude")}}},
+        {"post_event_blocklist",
+         common.value("post_event_blocklist", default_blocklist)},
+        {"feature_names",
+         settings.at("dataset").value("feature_columns", Json::array())},
+        {"flag_evidence",
+         {{"required", common.value("flag_evidence_required", true)},
+          {"required_fields",
+           common.value("flag_evidence_fields", required_evidence)},
+          {"reason_codes_required",
+           common.value("reason_codes_required", true)},
+          {"forecast_evidence_required",
+           common.value("forecast_evidence_required", true)}}}};
+    const bool history_frozen =
+        common.value("external_history_frozen", true);
+    for (const std::shared_ptr<ir::Node>& source :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!source ||
+            source->attributes.value("methodology", std::string{}) != "M-4") {
+            continue;
+        }
+        if (history_frozen) {
+            source->attributes["source_kind"] = "snapshot";
+            source->attributes["snapshot_as_of"] =
+                common.contains("external_history_as_of")
+                    ? common.at("external_history_as_of")
+                    : snapshot.as_of;
+        }
+    }
+}
+
 void bind_s12_correctness(ir::ExecutionGraph& graph,
                           const ml::Solution& solution,
                           const Json& settings,
@@ -483,6 +616,122 @@ void bind_s12_correctness(ir::ExecutionGraph& graph,
            common.value("low_confidence_routes_to_review", true)},
           {"fast_track_requires_clear",
            common.value("fast_track_requires_clear", true)}}}};
+}
+
+void bind_b6_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-6") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_direct_identifiers = {
+        "patient_name", "full_name", "medical_record_number", "mrn",
+        "social_security_number", "ssn", "street_address", "phone",
+        "email"};
+    manifest->attributes["b6_correctness"] = {
+        {"policy", solution.templates.policy},
+        {"equity_review",
+         {{"required", common.value("equity_review_required", true)},
+          {"owner", common.value("equity_review_owner", std::string{})},
+          {"protected_group_columns",
+           common.value("protected_group_columns", Json::array())},
+          {"outcome_rate_reviewed",
+           common.value("protected_outcome_rate_reviewed", true)},
+          {"maximum_rate_gap",
+           common.value("maximum_equity_rate_gap", 0.2)}}},
+        {"assistive_only",
+         {{"enforced", common.value("assistive_only", true)},
+          {"care_access_unchanged",
+           common.value("care_access_unchanged", true)},
+          {"clinical_decisions_excluded",
+           common.value("clinical_decisions_excluded", true)}}},
+        {"privacy_posture",
+         {{"recorded", common.value("privacy_posture_recorded", false)},
+          {"approved", common.value("privacy_posture_approved", false)},
+          {"owner", common.value("privacy_review_owner", std::string{})},
+          {"review_id", common.value("privacy_review_id", std::string{})}}},
+        {"phi_minimization",
+         {{"minimum_necessary",
+           common.value("minimum_necessary", false)},
+          {"approved_feature_names",
+           common.value("minimum_necessary_feature_names", Json::array())},
+          {"direct_identifier_blocklist",
+           common.value("direct_identifier_blocklist",
+                        default_direct_identifiers)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}}};
+}
+
+void bind_b7_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-7") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_protected_fields = {
+        "race", "ethnicity", "sex", "gender", "age",
+        "disability", "religion", "national_origin"};
+    manifest->attributes["b7_correctness"] = {
+        {"policy", solution.templates.policy},
+        {"adverse_action_reasons",
+         {{"required", common.value("adverse_action_reasons_required", true)},
+          {"minimum_reasons", common.value("minimum_adverse_action_reasons", 1)},
+          {"source", common.value("adverse_action_reason_source",
+                                  "tree_shap_reason_codes")},
+          {"persist_with_decision",
+           common.value("persist_adverse_action_reasons", true)}}},
+        {"validation_pipeline",
+         {{"stages",
+           common.value("validation_stages",
+                        Json{"development", "independent_validation",
+                             "approval", "monitoring"})},
+          {"model_risk_owner",
+           common.value("model_risk_owner", "model-risk")},
+          {"co_signed", common.value("model_risk_co_signed", true)},
+          {"independent_out_of_time",
+           common.value("independent_out_of_time_validation", true)},
+          {"calibration_reviewed",
+           common.value("calibration_reviewed", true)},
+          {"uncertainty_coverage_reviewed",
+           common.value("uncertainty_coverage_reviewed", true)}}},
+        {"fairness_review",
+         {{"required", common.value("fairness_review_required", true)},
+          {"review_passed", common.value("fairness_review_passed", true)},
+          {"owner", common.value("fairness_review_owner", "fair-lending")},
+          {"protected_cohort_columns",
+           common.value("protected_cohort_columns",
+                        Json{"race_evaluation", "sex_evaluation",
+                             "age_band_evaluation"})},
+          {"metrics",
+           common.value("fairness_metrics",
+                        Json{"approval_rate", "false_negative_rate"})},
+          {"blocked_feature_names",
+           common.value("protected_feature_blocklist",
+                        default_protected_fields)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"adverse_action_authority",
+         {{"autonomy", common.value("adverse_action_autonomy", "A0")},
+          {"human_review_required",
+           common.value("adverse_action_human_review_required", true)}}}};
 }
 
 void bind_s11_correctness(ir::ExecutionGraph& graph,
@@ -582,6 +831,64 @@ void bind_s10_correctness(ir::ExecutionGraph& graph,
     manifest->attributes["s10_correctness"] = std::move(profile);
 }
 
+void bind_b3_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-3") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const int level = manifest->attributes.value("level", 1);
+    Json policy = solution_policy_template(solution.id, level);
+    const double minimum_confidence =
+        common.value("minimum_confidence", policy.at("threshold").get<double>());
+    policy["threshold"] = minimum_confidence;
+    for (Json& tier : policy.at("tiers")) {
+        if (tier.value("name", std::string{}) == "confident") {
+            tier["minimum_score"] = minimum_confidence;
+        }
+    }
+    manifest->attributes["b3_correctness"] = {
+        {"policy", policy},
+        {"abstention",
+         {{"minimum_confidence", minimum_confidence},
+          {"below_threshold_action", "abstain"}}},
+        {"taxonomy",
+         {{"owned_by_customer",
+           common.value("taxonomy_owned_by_customer", true)},
+          {"owner",
+           common.value("taxonomy_owner", "customer-service-operations")},
+          {"version", common.value("taxonomy_version", "v1")},
+          {"queue_column", common.value("queue_column", "queue")},
+          {"unmapped_action", "abstain"}}},
+        {"closure",
+         {{"action", "close_ticket"},
+          {"approval_required",
+           common.value("closure_approval_required", true)}}},
+        {"new_ticket_type_drift",
+         {{"monitoring_enabled",
+           common.value("new_ticket_type_monitoring", true)},
+          {"field", "new_ticket_type"},
+          {"action", "abstain"},
+          {"maximum_fraction",
+           common.value("maximum_new_ticket_type_fraction", 0.1)}}}};
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (model &&
+            model->attributes.value("model_kind", std::string{}) ==
+                "language") {
+            model->attributes["ticket_confidence_threshold"] =
+                minimum_confidence;
+        }
+    }
+}
+
 void bind_s5_correctness(ir::ExecutionGraph& graph,
                          const Json& sources) {
     const std::shared_ptr<ir::Node> manifest =
@@ -675,6 +982,73 @@ void bind_s7_correctness(ir::ExecutionGraph& graph,
         {"baseline",
          {{"kind", common.value("baseline_kind", "causal_seasonal")},
           {"strictly_prior", common.value("strictly_prior", true)}}}};
+}
+
+void bind_b8_correctness(ir::ExecutionGraph& graph,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-8") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") && sources.at("correctness").is_object()
+            ? sources.at("correctness")
+        : sources.contains("common") && sources.at("common").is_object()
+            ? sources.at("common")
+            : Json::object();
+    int model_alert_budget = 0;
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) !=
+                "anomaly") {
+            continue;
+        }
+        model_alert_budget = model->attributes.value("alert_budget", 0);
+        break;
+    }
+    const int level = manifest->attributes.value("level", 0);
+    const std::string selected_action =
+        level == 1
+            ? "investigation_recommendation"
+            : level == 2 ? "containment_approval" : "bounded_containment";
+    const std::string selected_autonomy =
+        level == 1 ? "A0" : level == 2 ? "A1" : "A2";
+    manifest->attributes["b8_correctness"] = {
+        {"alerting",
+         {{"alert_budget", common.value("alert_budget", model_alert_budget)},
+          {"window_days", common.value("alert_window_days", 1)},
+          {"owner_column", common.value("owner_column", "owner")}}},
+        {"authority",
+         {{"recommendation_action", "investigation_recommendation"},
+          {"recommendation_autonomy", "A0"},
+          {"approval_action", "containment_approval"},
+          {"approval_autonomy", "A1"},
+          {"automatic_action", "bounded_containment"},
+          {"automatic_autonomy", common.value("automatic_autonomy", "A2")},
+          {"selected_action", selected_action},
+          {"selected_autonomy", selected_autonomy}}},
+        {"kill_switch",
+         {{"configured", common.value("kill_switch_configured", true)},
+          {"enabled", common.value("kill_switch_enabled", false)},
+          {"blocks_delivery",
+           common.value("kill_switch_blocks_delivery", true)}}},
+        {"containment",
+         {{"automatic_action", "bounded_containment"},
+          {"allowed_automatic_actions",
+           common.value("allowed_automatic_actions",
+                        Json::array({"bounded_containment"}))},
+          {"maximum_affected_assets",
+           common.value("maximum_affected_assets", 1.0)},
+          {"approval_required_above",
+           common.value("approval_required_above", 1.0)},
+          {"approved_bounds_enforced",
+           common.value("approved_bounds_enforced", true)},
+          {"playbook_required", common.value("playbook_required", true)},
+          {"dependency_scope_required",
+           common.value("dependency_scope_required", true)}}}};
 }
 
 void bind_s8_correctness(ir::ExecutionGraph& graph,
@@ -800,6 +1174,183 @@ void bind_s9_correctness(ir::ExecutionGraph& graph,
     }
 }
 
+void bind_b2_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-2") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const std::string group_column =
+        settings.at("dataset").value("entity_column", std::string{});
+    const std::string group_size_column =
+        common.value("group_size_column", "group_size");
+    const double minimum_group_size =
+        common.value("minimum_group_size", 5.0);
+    const Json default_prohibited_columns = {
+        "employee_id", "person_id", "worker_id", "individual_score",
+        "employee_score"};
+    const Json default_protected_attributes = {
+        "race", "ethnicity", "sex", "gender", "disability", "age"};
+    const Json default_review_metrics = {
+        "selection_rate_ratio", "calibration_by_cohort"};
+    Json profile = {
+        {"aggregation",
+         {{"unit", "group"},
+          {"aggregate_only", true},
+          {"group_dimension", common.value("group_dimension", "team")},
+          {"group_column", group_column},
+          {"entity_column", group_column},
+          {"group_size_column", group_size_column},
+          {"minimum_group_size", minimum_group_size},
+          {"prohibited_output_columns",
+           common.value("prohibited_output_columns",
+                        default_prohibited_columns)},
+          {"feature_names",
+           settings.at("dataset").value("feature_columns", Json::array())}}},
+        {"policy", solution.templates.policy},
+        {"fairness_review",
+         {{"completed", common.value("fairness_review_completed", false)},
+          {"owner", common.value("fairness_review_owner", std::string{})},
+          {"protected_attributes",
+           common.value("protected_attributes",
+                        default_protected_attributes)},
+          {"protected_attributes_used_as_features",
+           common.value("protected_attributes_used_as_features", false)},
+          {"review_metrics",
+           common.value("fairness_review_metrics",
+                        default_review_metrics)}}},
+        {"approval",
+         {{"approved", common.value("approval_recorded", false)},
+          {"kind", common.value("approval_kind", std::string{})},
+          {"record_id",
+           common.value("approval_record_id", std::string{})},
+          {"approved_by", common.value("approved_by", std::string{})},
+          {"approved_at", common.value("approved_at", std::string{})}}},
+        {"output",
+         {{"recipient_role",
+           common.value("recipient_role", "people_leader")},
+          {"owner", settings.at("delivery").value("owner", std::string{})},
+          {"individual_manager_delivery",
+           common.value("individual_manager_delivery", false)}}}};
+    manifest->attributes["b2_correctness"] = std::move(profile);
+    for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (node->kind == ir::StepKind::Act) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["group_column"] = group_column;
+            node->attributes["group_size_column"] = group_size_column;
+            node->attributes["minimum_group_size"] = minimum_group_size;
+        }
+        if (node->kind == ir::StepKind::Model) {
+            node->attributes["aggregate_only"] = true;
+            node->attributes["entity_column"] = group_column;
+            if (node->attributes.value("methodology", std::string{}) ==
+                "M-1") {
+                node->attributes["group_column"] = group_column;
+            }
+        }
+    }
+}
+
+void bind_b4_correctness(ir::ExecutionGraph& graph,
+                         const ml::Solution& solution,
+                         int level,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-4") {
+        return;
+    }
+    const Json correctness =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json methodology =
+        sources.contains("M-11") && sources.at("M-11").is_object()
+            ? sources.at("M-11")
+            : Json::object();
+    const Json fields = methodology.value(
+        "fields", Json::array({"invoice_number", "date", "total"}));
+    const double default_threshold = correctness.value(
+        "default_field_threshold",
+        methodology.value("review_threshold", 0.8));
+    Json thresholds = correctness.value(
+        "field_thresholds", Json::object());
+    double conservative_review_threshold = default_threshold;
+    if (fields.is_array()) {
+        for (const Json& field : fields) {
+            if (!field.is_string()) {
+                continue;
+            }
+            const std::string name = field.get<std::string>();
+            if (!thresholds.contains(name)) {
+                thresholds[name] = default_threshold;
+            }
+            if (thresholds.at(name).is_number()) {
+                conservative_review_threshold = std::max(
+                    conservative_review_threshold,
+                    thresholds.at(name).get<double>());
+            }
+        }
+    }
+    const Json policy = solution_policy_template(solution.id, level);
+    manifest->attributes["b4_correctness"] = {
+        {"required_fields", fields},
+        {"field_thresholds", thresholds},
+        {"review",
+         {{"route_low_confidence_to_review", true},
+          {"queue", correctness.value(
+                        "review_queue", "document_field_review")},
+          {"action", "field_review_task"},
+          {"owner_required", true}}},
+        {"downstream",
+         {{"requires_all_fields_validated", true},
+          {"validation_flag", "fields_validated"},
+          {"structured_output_only", true},
+          {"workflow_actions",
+           {"workflow_review_task", "workflow_handoff",
+            "high_impact_approval"}}}},
+        {"policy", policy}};
+    for (const std::shared_ptr<ir::Node>& model :
+         graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (!model ||
+            model->attributes.value("model_kind", std::string{}) !=
+                "document_extraction") {
+            continue;
+        }
+        model->attributes["field_thresholds"] = thresholds;
+        model->attributes["review_threshold"] =
+            conservative_review_threshold;
+        model->attributes["confidence_required"] = true;
+        model->attributes["retain_evidence"] = true;
+        model->attributes["route_low_confidence_to_review"] = true;
+    }
+    for (const std::shared_ptr<ir::Node>& action :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!action ||
+            action->attributes.value("route", std::string{}) !=
+                "review_queue") {
+            continue;
+        }
+        action->attributes["per_field_thresholds"] = thresholds;
+        action->attributes["human_review_action"] =
+            "field_review_task";
+    }
+}
+
 ApiResult configure_readout(Node& node, const pipeline::Project& project,
                             const pipeline::ProjectGraph& graph,
                             const Json& binding, const std::string& actor) {
@@ -886,6 +1437,14 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["s8_correctness"] = {{"type", "object"}};
     schema["properties"]["s9_correctness"] = {{"type", "object"}};
     schema["properties"]["s10_correctness"] = {{"type", "object"}};
+    schema["properties"]["b1_correctness"] = {{"type", "object"}};
+    schema["properties"]["b2_correctness"] = {{"type", "object"}};
+    schema["properties"]["b3_correctness"] = {{"type", "object"}};
+    schema["properties"]["b4_correctness"] = {{"type", "object"}};
+    schema["properties"]["b5_correctness"] = {{"type", "object"}};
+    schema["properties"]["b6_correctness"] = {{"type", "object"}};
+    schema["properties"]["b7_correctness"] = {{"type", "object"}};
+    schema["properties"]["b8_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -926,19 +1485,33 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     bind_s2_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s6_correctness(composed.graph, input.at("sources"));
+    bind_b1_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"));
     bind_s3_correctness(composed.graph, settings, input.at("sources"));
     bind_s4_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"), *solution);
     bind_s11_correctness(composed.graph, input.at("sources"));
     bind_s12_correctness(composed.graph, *solution, settings,
                          input.at("sources"));
+    bind_b6_correctness(composed.graph, *solution, settings,
+                        input.at("sources"));
+    bind_b7_correctness(composed.graph, *solution, settings,
+                        input.at("sources"));
     bind_s5_correctness(composed.graph, input.at("sources"));
     bind_s7_correctness(composed.graph, input.at("sources"));
+    bind_b8_correctness(composed.graph, input.at("sources"));
     bind_s8_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     bind_s9_correctness(composed.graph, settings, input.at("sources"));
     bind_s10_correctness(composed.graph, *snapshot, settings,
                          input.at("sources"));
+    bind_b2_correctness(composed.graph, *solution, settings,
+                        input.at("sources"));
+    bind_b3_correctness(composed.graph, *solution, input.at("sources"));
+    bind_b4_correctness(composed.graph, *solution, level,
+                        input.at("sources"));
+    bind_b5_correctness(composed.graph, *snapshot, settings,
+                        input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
     const pipeline::ValidationReport correctness =
@@ -957,6 +1530,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     });
     if (primary != solution->composition.end() && primary->id != "M-1" &&
         solution->id != "S-5" && solution->id != "S-11" &&
+        solution->id != "B-1" &&
+        solution->id != "B-3" &&
+        solution->id != "B-4" &&
+        solution->id != "B-8" &&
         !settings.contains("decision_source")) {
         return ApiResult::failure("invalid_input", "this module requires explicit decision_source output and score bindings");
     }
@@ -967,8 +1544,14 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         return ApiResult::failure("invalid_input", "decision_source must name a selected methodology");
     }
     const std::string actor = context.acting_key.empty() ? "local" : context.acting_key;
+    const Json policy_config =
+        solution->id == "B-3"
+            ? composed.graph.find_node("solution_manifest")
+                  ->attributes.at("b3_correctness")
+                  .at("policy")
+            : solution_policy_template(solution->id, level);
     Json binding = create_bindings(context.node, *project, *solution, name,
-                                   level, settings, actor, error);
+                                   policy_config, settings, actor, error);
     if (!error.empty()) {
         return ApiResult::failure("engine_error", error);
     }
@@ -985,6 +1568,24 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
             {"entity_column", "entity"},
             {"score_column", "policy_score"},
             {"output_name", "recommendation table"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-8") {
+        binding["decision_source"] = {
+            {"methodology", "M-7"},
+            {"entity_column", "row"},
+            {"score_column", "score"},
+            {"output_name", "anomaly table"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-1") {
+        binding["decision_source"] = {
+            {"methodology", "M-4"},
+            {"entity_column", "series"},
+            {"score_column", "point_forecast"},
+            {"output_name", "forecast"}};
+    } else if (!binding.contains("decision_source") && solution->id == "B-2") {
+        binding["decision_source"] = {
+            {"methodology", "M-1"},
+            {"entity_column", "group_key"},
+            {"score_column", "attrition_risk"},
+            {"output_name", "Publish aggregate workforce risk"}};
     } else if (!binding.contains("decision_source")) {
         binding["decision_source"] = {{"methodology", "M-1"},
                                        {"entity_column", "account"}, {"score_column", "risk"}};
@@ -1017,6 +1618,36 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "transaction"},
                 {"score_column", "fraud_score"},
                 {"output_name", "Write fraud authorization scores"}};
+        } else if (solution->id == "B-3") {
+            binding["decision_source"] = {
+                {"methodology", "M-10"},
+                {"entity_column", "chunk_id"},
+                {"score_column", "classifier_confidence"},
+                {"output_name", "embeddings"}};
+        } else if (solution->id == "B-4") {
+            binding["decision_source"] = {
+                {"methodology", "M-11"},
+                {"entity_column", "document"},
+                {"score_column", "confidence"},
+                {"output_name", "extracted fields"}};
+        } else if (solution->id == "B-5") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "supplier"},
+                {"score_column", "supplier_risk_score"},
+                {"output_name", "Publish supplier risk flags"}};
+        } else if (solution->id == "B-6") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "entity"},
+                {"score_column", "operational_risk"},
+                {"output_name", "Publish healthcare operations risk scores"}};
+        } else if (solution->id == "B-7") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "applicant"},
+                {"score_column", "credit_risk"},
+                {"output_name", "Publish credit risk scores"}};
         }
     }
     if (solution->id == "S-1") {
@@ -1059,9 +1690,39 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
     } else if (solution->id == "S-9") {
         binding["s9_correctness"] = composed.graph.find_node("solution_manifest")
                                         ->attributes.at("s9_correctness");
+    } else if (solution->id == "B-4") {
+        binding["b4_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b4_correctness");
     } else if (solution->id == "S-10") {
         binding["s10_correctness"] = composed.graph.find_node("solution_manifest")
                                          ->attributes.at("s10_correctness");
+    } else if (solution->id == "B-1") {
+        binding["b1_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b1_correctness");
+    } else if (solution->id == "B-2") {
+        binding["b2_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b2_correctness");
+    } else if (solution->id == "B-3") {
+        binding["b3_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b3_correctness");
+    } else if (solution->id == "B-5") {
+        binding["b5_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b5_correctness");
+    } else if (solution->id == "B-6") {
+        binding["b6_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b6_correctness");
+    } else if (solution->id == "B-7") {
+        binding["b7_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("b7_correctness");
+    } else if (solution->id == "B-8") {
+        binding["b8_correctness"] = composed.graph.find_node("solution_manifest")
+                                        ->attributes.at("b8_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -1118,6 +1779,37 @@ ApiResult prepare_solution_snapshot(Node& node, const Json& binding) {
         const auto row = snapshot.table->store().at(index);
         if (!row || row->at("as_of") != spec->as_of) {
             return ApiResult::failure("invalid_input", "solution snapshot table must contain exactly one cutoff");
+        }
+    }
+    if (binding.value("solution", std::string{}) == "B-2") {
+        const Json& aggregation =
+            binding.at("b2_correctness").at("aggregation");
+        const std::string group_size_column =
+            aggregation.at("group_size_column");
+        const double minimum_group_size =
+            aggregation.at("minimum_group_size");
+        const Json prohibited =
+            aggregation.at("prohibited_output_columns");
+        for (std::size_t index = 0;
+             index < snapshot.table->store().size();
+             ++index) {
+            const auto row = snapshot.table->store().at(index);
+            if (!row || !row->contains(group_size_column) ||
+                !row->at(group_size_column).is_number() ||
+                row->at(group_size_column).get<double>() <
+                    minimum_group_size) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-2 refuses snapshots containing a cohort below the minimum group size");
+            }
+            for (const Json& field : prohibited) {
+                if (field.is_string() &&
+                    row->contains(field.get_ref<const std::string&>())) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-2 refuses snapshots containing individual identifiers or scores");
+                }
+            }
         }
     }
     if (!snapshot.table->partition_manifest() || snapshot.materialized_rows != 0) {
@@ -1262,6 +1954,106 @@ std::optional<std::vector<Json>> score_rows(Node& node, const Json& binding,
     return std::nullopt;
 }
 
+std::optional<std::vector<Json>> aggregate_b4_fields(
+    const std::vector<Json>& rows, const Json& binding, std::string& error) {
+    const Json& correctness = binding.at("b4_correctness");
+    const Json& required_fields = correctness.at("required_fields");
+    const Json& thresholds = correctness.at("field_thresholds");
+    const std::string entity_column =
+        binding.at("decision_source").at("entity_column");
+    const std::string score_column =
+        binding.at("decision_source").at("score_column");
+    std::map<std::string, Json> documents;
+    std::map<std::string, std::set<std::string>> observed_fields;
+    for (const Json& row : rows) {
+        if (!row.contains(entity_column) || !row.contains("field") ||
+            !row.at("field").is_string() || !row.contains("value") ||
+            !row.contains(score_column) || !row.at(score_column).is_number()) {
+            error = "B-4 extracted fields must contain document, field, value, and numeric confidence";
+            return std::nullopt;
+        }
+        const std::string document_key = entity_key(row.at(entity_column));
+        const std::string field = row.at("field");
+        if (!thresholds.contains(field) ||
+            !thresholds.at(field).is_number()) {
+            error = "B-4 extracted an undeclared field '" + field + "'";
+            return std::nullopt;
+        }
+        if (!observed_fields[document_key].insert(field).second) {
+            error = "B-4 extracted field '" + field +
+                    "' more than once for document " + document_key;
+            return std::nullopt;
+        }
+        Json& document = documents[document_key];
+        if (document.empty()) {
+            document = {
+                {entity_column, row.at(entity_column)},
+                {score_column, 1.0},
+                {"extracted_fields", Json::object()},
+                {"field_confidences", Json::object()},
+                {"field_evidence", Json::array()},
+                {"low_confidence_fields", Json::array()},
+                {"document_available", true}};
+        }
+        const double confidence = row.at(score_column).get<double>();
+        const double threshold = thresholds.at(field).get<double>();
+        const bool has_value = !row.at("value").is_null() &&
+            (!row.at("value").is_string() ||
+             !row.at("value").get_ref<const std::string&>().empty());
+        const bool validated = has_value && confidence >= threshold;
+        document[score_column] = std::min(
+            document.at(score_column).get<double>(), confidence);
+        document["extracted_fields"][field] = row.at("value");
+        document["field_confidences"][field] = confidence;
+        Json evidence = {
+            {"field", field}, {"value", row.at("value")},
+            {"confidence", confidence}, {"threshold", threshold},
+            {"validated", validated}};
+        for (const std::string detail : {"page", "box"}) {
+            if (row.contains(detail)) {
+                evidence[detail] = row.at(detail);
+            }
+        }
+        document["field_evidence"].push_back(std::move(evidence));
+        if (!validated) {
+            document["low_confidence_fields"].push_back(field);
+        }
+    }
+    std::vector<Json> aggregated;
+    aggregated.reserve(documents.size());
+    const int level = binding.value("level", 1);
+    for (auto& [document_key, document] : documents) {
+        const std::set<std::string>& observed = observed_fields.at(document_key);
+        for (const Json& field : required_fields) {
+            if (!field.is_string() ||
+                !observed.contains(field.get_ref<const std::string&>())) {
+                error = "B-4 document " + document_key +
+                        " is missing required extracted field '" +
+                        (field.is_string()
+                             ? field.get<std::string>()
+                             : std::string("<invalid>")) +
+                        "'";
+                return std::nullopt;
+            }
+        }
+        const bool fields_validated =
+            document.at("low_confidence_fields").empty();
+        document["fields_validated"] = fields_validated;
+        document["review_queue_assigned"] = !fields_validated;
+        if (!fields_validated) {
+            document["action"] = "field_review_task";
+        } else if (level <= 1) {
+            document["action"] = "validation_record";
+        } else if (level == 2) {
+            document["action"] = "workflow_review_task";
+        } else {
+            document["action"] = "workflow_handoff";
+        }
+        aggregated.push_back(std::move(document));
+    }
+    return aggregated;
+}
+
 std::optional<std::vector<Json>> aggregate_replenishment_forecast(
     const std::vector<Json>& rows,
     const Json& mapping,
@@ -1333,15 +2125,62 @@ std::optional<std::map<std::string, Json>> s11_bandit_decisions(
     return std::nullopt;
 }
 
+std::optional<std::map<std::string, Json>> b5_forecast_evidence(
+    Node& node, const Json& binding,
+    const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
+    std::map<std::string, Json> forecasts;
+    if (binding.value("solution", std::string{}) != "B-5") {
+        return forecasts;
+    }
+    for (const pipeline::RunOutput& output : outputs) {
+        if (output.kind != "dataset" || output.name != "forecast") {
+            continue;
+        }
+        const std::shared_ptr<data::Table> table = table_at(node, output.ref);
+        if (!table) {
+            continue;
+        }
+        const std::optional<std::vector<Json>> rows =
+            read_rows(node, *table, error);
+        if (!rows) {
+            return std::nullopt;
+        }
+        for (const Json& row : *rows) {
+            if (!row.contains("series") || !row.contains("timestamp") ||
+                !row.contains("point_forecast") ||
+                !row.at("point_forecast").is_number() ||
+                !row.contains("lower") || !row.at("lower").is_number() ||
+                !row.contains("upper") || !row.at("upper").is_number() ||
+                !row.contains("exception_score") ||
+                !row.at("exception_score").is_number()) {
+                error = "B-5 forecast evidence has an invalid supplier row";
+                return std::nullopt;
+            }
+            const std::string key = entity_key(row.at("series"));
+            const auto existing = forecasts.find(key);
+            if (existing == forecasts.end() ||
+                row.at("exception_score").get<double>() >
+                    existing->second.at("exception_score").get<double>()) {
+                forecasts.insert_or_assign(key, row);
+            }
+        }
+        return forecasts;
+    }
+    error = "B-5 produced no M-4 forecast table for flag evidence";
+    return std::nullopt;
+}
+
 std::optional<std::map<std::string, Json>> uplift_rows(
     Node& node, const Json& binding,
     const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
     std::map<std::string, Json> targeting;
     const std::string solution_id =
         binding.value("solution", std::string{});
-    const int minimum_level = solution_id == "S-9" ? 2 : 3;
+    const int minimum_level = solution_id == "B-1" ? 1
+                              : solution_id == "S-9" ? 2
+                                                      : 3;
     if ((solution_id != "S-1" && solution_id != "S-3" && solution_id != "S-4" &&
-         solution_id != "S-9") ||
+         solution_id != "S-9" && solution_id != "B-1") ||
         binding.value("level", 1) < minimum_level) {
         return targeting;
     }
@@ -1489,6 +2328,12 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
         }
         return true;
     }
+    if (binding.value("solution", std::string{}) == "B-4" &&
+        decision.action != "field_review_task" &&
+        !entity.value("fields_validated", false)) {
+        error = "B-4 refuses downstream workflow delivery for unvalidated fields";
+        return false;
+    }
     const Json& destination = binding.at("delivery");
     const Json action = config.at("actions").at(decision.action);
     ActionTaskSpec spec;
@@ -1537,6 +2382,27 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             entity.value("document_confidence_clear", false);
         spec.payload["fairness_review_passed"] =
             entity.value("fairness_review_passed", false);
+    } else if (binding.value("solution", std::string{}) == "B-6") {
+        spec.payload["workflow_type"] =
+            entity.value("workflow_type", std::string{});
+        spec.payload["assistive_only"] = true;
+        spec.payload["care_access_unchanged"] = true;
+        spec.payload["minimum_necessary_fields"] =
+            entity.value("minimum_necessary_fields", false);
+    } else if (binding.value("solution", std::string{}) == "B-7") {
+        spec.payload["applicant_id"] = decision.entity_id;
+        spec.payload["proposed_credit_action"] = decision.action;
+        spec.payload["requested_limit"] =
+            entity.value("requested_limit", 0.0);
+        spec.payload["model_risk_owner"] =
+            binding.at("b7_correctness")
+                .at("validation_pipeline")
+                .at("model_risk_owner");
+        spec.payload["fairness_review_owner"] =
+            binding.at("b7_correctness")
+                .at("fairness_review")
+                .at("owner");
+        spec.payload["adverse_human_only"] = true;
     } else if (binding.value("solution", std::string{}) == "S-6") {
         Json proposal = Json::object();
         for (const std::string field :
@@ -1564,6 +2430,22 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
                 .at("driver_attribution")
                 .at("caveat");
         spec.payload["decision_log_required"] = true;
+    } else if (binding.value("solution", std::string{}) == "B-8") {
+        spec.payload["asset_id"] = decision.entity_id;
+        spec.payload["anomaly_score"] = decision.score;
+        spec.payload["anomaly_threshold"] =
+            entity.value("threshold", 0.0);
+        spec.payload["dependency_id"] =
+            entity.value("dependency_id", Json{});
+        spec.payload["affected_assets"] =
+            entity.value("affected_assets", 0.0);
+        spec.payload["approved_playbook"] =
+            entity.value("approved_playbook", false);
+        spec.payload["dependency_scope_known"] =
+            entity.value("dependency_scope_known", false);
+        spec.payload["authority_boundary"] =
+            binding.at("b8_correctness").at("authority");
+        spec.payload["kill_switch_checked"] = true;
     } else if (binding.value("solution", std::string{}) == "S-8") {
         spec.payload["asset_id"] = decision.entity_id;
         spec.payload["asset_class"] =
@@ -1603,6 +2485,81 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
                 spec.payload[field] = entity.at(field);
             }
         }
+    } else if (binding.value("solution", std::string{}) == "B-1") {
+        spec.payload["product_market"] = decision.entity_id;
+        spec.payload["current_price"] =
+            entity.value("current_price", 0.0);
+        spec.payload["recommended_price"] =
+            entity.value("recommended_price", 0.0);
+        spec.payload["gross_margin"] =
+            entity.value("gross_margin", 0.0);
+        spec.payload["authority_distance"] =
+            entity.value("authority_distance", 0.0);
+        spec.payload["estimated_price_effect"] =
+            entity.value("estimated_uplift", 0.0);
+    } else if (binding.value("solution", std::string{}) == "B-2") {
+        spec.owner = binding.at("b2_correctness")
+                         .at("output")
+                         .at("owner")
+                         .get<std::string>();
+        spec.payload["recipient_role"] = "people_leader";
+        spec.payload["aggregate_only"] = true;
+        spec.payload["group_key"] = decision.entity_id;
+        spec.payload["group_dimension"] =
+            binding.at("b2_correctness")
+                .at("aggregation")
+                .at("group_dimension");
+        spec.payload["group_size"] =
+            entity.at(binding.at("b2_correctness")
+                          .at("aggregation")
+                          .at("group_size_column")
+                          .get<std::string>());
+        spec.payload["attrition_risk"] = decision.score;
+        spec.payload["dominant_driver"] =
+            entity.value("dominant_driver", std::string{});
+        spec.payload["approval_record_id"] =
+            binding.at("b2_correctness")
+                .at("approval")
+                .at("record_id");
+    } else if (binding.value("solution", std::string{}) == "B-3") {
+        spec.payload["ticket_id"] = decision.entity_id;
+        spec.payload["queue"] = entity.value("queue", std::string{});
+        spec.payload["draft_reply"] =
+            entity.value("draft_reply", std::string{});
+        spec.payload["taxonomy_version"] =
+            entity.value("taxonomy_version", std::string{});
+        spec.payload["classification_confidence"] = decision.score;
+        spec.payload["requires_human_close_approval"] = true;
+    } else if (binding.value("solution", std::string{}) == "B-4") {
+        spec.payload["document_id"] = decision.entity_id;
+        spec.payload["fields_validated"] =
+            entity.value("fields_validated", false);
+        spec.payload["review_required"] =
+            !entity.value("fields_validated", false);
+        spec.payload["extracted_fields"] =
+            entity.value("extracted_fields", Json::object());
+        spec.payload["field_confidences"] =
+            entity.value("field_confidences", Json::object());
+        spec.payload["field_evidence"] =
+            entity.value("field_evidence", Json::array());
+        spec.payload["low_confidence_fields"] =
+            entity.value("low_confidence_fields", Json::array());
+        spec.payload["review_queue"] =
+            binding.at("b4_correctness")
+                .at("review")
+                .at("queue");
+    } else if (binding.value("solution", std::string{}) == "B-5") {
+        spec.payload["supplier_id"] = decision.entity_id;
+        spec.payload["supplier_risk_score"] = decision.score;
+        spec.payload["procurement_owner"] = spec.owner;
+        spec.payload["risk_evidence"] = entity.at("risk_evidence");
+        for (const std::string field : {
+                 "part_id", "site_id", "contract_id",
+                 "mitigation_cost", "single_source_dependency"}) {
+            if (entity.contains(field)) {
+                spec.payload[field] = entity.at(field);
+            }
+        }
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -1632,17 +2589,52 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
     return true;
 }
 
-bool s12_adverse_action(std::string action) {
+bool runtime_adverse_action(std::string action) {
     std::transform(action.begin(), action.end(), action.begin(),
                    [](unsigned char character) {
                        return static_cast<char>(std::tolower(character));
                    });
     return action.find("denial") != std::string::npos ||
            action.find("deny") != std::string::npos ||
-           action.find("reject") != std::string::npos;
+           action.find("decline") != std::string::npos ||
+           action.find("reject") != std::string::npos ||
+           action.find("lower_limit") != std::string::npos ||
+           action.find("reduce_limit") != std::string::npos ||
+           action.find("freeze_limit") != std::string::npos;
 }
 
-bool s12_required_rule(const Json& config, const std::string& field) {
+bool b3_close_action(std::string action) {
+    std::transform(action.begin(), action.end(), action.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return action.find("close") != std::string::npos;
+}
+
+std::string validate_b3_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-3") {
+        return {};
+    }
+    bool has_approved_close = false;
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!b3_close_action(action)) {
+            continue;
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A1") {
+            return "B-3 refuses ticket closure without A1 approval";
+        }
+        has_approved_close = true;
+    }
+    if (!has_approved_close) {
+        return "B-3 policy must retain an approval-gated close action";
+    }
+    return {};
+}
+
+bool runtime_required_rule(const Json& config, const std::string& field) {
     for (const Json& rule :
          config.value("eligibility_rules", Json::array())) {
         if (rule.is_object() &&
@@ -1655,6 +2647,50 @@ bool s12_required_rule(const Json& config, const std::string& field) {
     return false;
 }
 
+bool b1_numeric_rule(const Json& config, const std::string& field,
+                     const std::string& operation, double expected) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == operation &&
+            rule.contains("value") && rule.at("value").is_number() &&
+            std::abs(rule.at("value").get<double>() - expected) < 1e-12) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validate_b1_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-1") {
+        return {};
+    }
+    const Json& correctness = binding.at("b1_correctness");
+    const double margin_floor = correctness.at("margin_floor");
+    const double automatic = correctness.at("automatic_authority_limit");
+    const double hard = correctness.at("hard_authority_limit");
+    if (!b1_numeric_rule(config, "gross_margin", "gte", margin_floor) ||
+        !b1_numeric_rule(config, "authority_distance", "lte", hard)) {
+        return "B-1 policy must retain its margin floor and hard authority band";
+    }
+    for (const std::string action_name : {
+             "controlled_price_experiment", "publish_price_change"}) {
+        const Json action =
+            config.value("actions", Json::object())
+                .value(action_name, Json::object());
+        if (action.value("approval_field", std::string{}) !=
+                "authority_distance" ||
+            !action.contains("approval_above") ||
+            !action.at("approval_above").is_number() ||
+            action.at("approval_above").get<double>() > automatic) {
+            return "B-1 price changes must retain approval above the automatic authority band";
+        }
+    }
+    return {};
+}
+
 std::string validate_s12_runtime_policy(const Json& binding,
                                         const Json& config) {
     if (binding.value("solution", std::string{}) != "S-12") {
@@ -1663,13 +2699,13 @@ std::string validate_s12_runtime_policy(const Json& binding,
     bool has_manual_denial = false;
     for (const Json& tier : config.value("tiers", Json::array())) {
         if (tier.is_object() &&
-            s12_adverse_action(tier.value("action", std::string{}))) {
+            runtime_adverse_action(tier.value("action", std::string{}))) {
             return "S-12 refuses a policy that selects automated denial";
         }
     }
     for (const auto& [action, settings] :
          config.value("actions", Json::object()).items()) {
-        if (!s12_adverse_action(action)) {
+        if (!runtime_adverse_action(action)) {
             continue;
         }
         if (!settings.is_object() ||
@@ -1681,9 +2717,258 @@ std::string validate_s12_runtime_policy(const Json& binding,
     if (!has_manual_denial) {
         return "S-12 policy must retain an A0 denial recommendation";
     }
-    if (!s12_required_rule(config, "document_confidence_clear") ||
-        !s12_required_rule(config, "fairness_review_passed")) {
+    if (!runtime_required_rule(config, "document_confidence_clear") ||
+        !runtime_required_rule(config, "fairness_review_passed")) {
         return "S-12 policy must require document confidence and fairness review evidence";
+    }
+    return {};
+}
+
+bool b2_required_rule(const Json& config, const std::string& field,
+                      const std::string& operation, const Json& expected) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == operation &&
+            rule.value("value", Json{}) == expected) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool b2_minimum_rule(const Json& config, const std::string& field,
+                     double minimum) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == "gte" &&
+            rule.contains("value") && rule.at("value").is_number() &&
+            rule.at("value").get<double>() >= minimum) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string validate_b2_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-2") {
+        return {};
+    }
+    const Json& aggregation =
+        binding.at("b2_correctness").at("aggregation");
+    const std::string group_size_column =
+        aggregation.at("group_size_column");
+    const double minimum_group_size =
+        aggregation.at("minimum_group_size");
+    if (!b2_minimum_rule(config, group_size_column, minimum_group_size)) {
+        return "B-2 policy must retain its minimum group-size rule";
+    }
+    for (const std::string field : {
+             "people_leader_authorized", "fairness_review_passed",
+             "legal_approval_recorded"}) {
+        if (!b2_required_rule(config, field, "eq", true)) {
+            return "B-2 policy must retain people-leader, fairness, and approval gates";
+        }
+    }
+    if (!b2_required_rule(config, "individual_level_output", "eq", false)) {
+        return "B-2 policy must prohibit individual-level output";
+    }
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!settings.is_object()) {
+            return "B-2 policy actions must declare their autonomy";
+        }
+        const std::string autonomy =
+            settings.value("autonomy", std::string{});
+        if (action == "no_action") {
+            if (autonomy != "A0") {
+                return "B-2 no-action path must remain A0";
+            }
+        } else if (autonomy != "A1" && autonomy != "A2") {
+            return "B-2 actions must remain review or people-leader workflows";
+        }
+    }
+    return {};
+}
+
+bool b6_care_access_penalty(std::string action) {
+    std::transform(action.begin(), action.end(), action.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return action.find("deny_care") != std::string::npos ||
+           action.find("care_denial") != std::string::npos ||
+           action.find("cancel_appointment") != std::string::npos ||
+           action.find("restrict_access") != std::string::npos ||
+           action.find("deprioritize_care") != std::string::npos ||
+           action.find("reject_patient") != std::string::npos;
+}
+
+std::string validate_b6_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-6") {
+        return {};
+    }
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (!tier.is_object() ||
+            b6_care_access_penalty(
+                tier.value("action", std::string{}))) {
+            return "B-6 refuses a policy that changes or denies care access";
+        }
+    }
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (b6_care_access_penalty(action) || !settings.is_object() ||
+            settings.value("autonomy", std::string{}).empty()) {
+            return "B-6 actions must remain assistive with explicit authority";
+        }
+    }
+    for (const std::string field : {
+             "privacy_posture_approved", "minimum_necessary_fields",
+             "equity_review_passed", "care_access_unaffected"}) {
+        if (!runtime_required_rule(config, field)) {
+            return "B-6 runtime policy is missing healthcare safety evidence: " +
+                   field;
+        }
+    }
+    return {};
+}
+
+std::string validate_b7_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-7") {
+        return {};
+    }
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (tier.is_object() &&
+            runtime_adverse_action(tier.value("action", std::string{}))) {
+            return "B-7 refuses a score tier that selects an adverse decision";
+        }
+    }
+    bool has_adverse_action = false;
+    for (const auto& [action, settings] :
+         config.value("actions", Json::object()).items()) {
+        if (!runtime_adverse_action(action)) {
+            continue;
+        }
+        has_adverse_action = true;
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A0") {
+            return "B-7 adverse decisions must remain A0 human-only";
+        }
+    }
+    if (!has_adverse_action) {
+        return "B-7 policy must retain an A0 adverse recommendation";
+    }
+    for (const std::string& field :
+         {"model_validation_approved", "fairness_review_passed",
+          "adverse_action_reasons_ready"}) {
+        if (!runtime_required_rule(config, field)) {
+            return "B-7 policy must require " + field + " evidence";
+        }
+    }
+    return {};
+}
+
+bool b8_required_boolean_rule(const Json& config,
+                              const std::string& field) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (rule.is_object() &&
+            rule.value("field", std::string{}) == field &&
+            rule.value("operator", std::string{}) == "eq" &&
+            rule.value("value", Json(false)) == Json(true)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool b8_required_numeric_bound(const Json& config,
+                               const std::string& field,
+                               double maximum) {
+    for (const Json& rule :
+         config.value("eligibility_rules", Json::array())) {
+        if (!rule.is_object() ||
+            rule.value("field", std::string{}) != field ||
+            rule.value("operator", std::string{}) != "lte" ||
+            !rule.contains("value") || !rule.at("value").is_number()) {
+            continue;
+        }
+        return rule.at("value").get<double>() <= maximum;
+    }
+    return false;
+}
+
+std::string validate_b8_runtime_policy(const Json& binding,
+                                       const Json& config) {
+    if (binding.value("solution", std::string{}) != "B-8") {
+        return {};
+    }
+    if (!config.contains("kill_switch") ||
+        !config.at("kill_switch").is_boolean()) {
+        return "B-8 policy requires a boolean kill switch";
+    }
+    const Json& profile = binding.at("b8_correctness");
+    const double maximum =
+        profile.at("containment").at("maximum_affected_assets");
+    const Json actions = config.value("actions", Json::object());
+    const Json autonomy = {
+        {"investigation_recommendation", "A0"},
+        {"containment_approval", "A1"},
+        {"bounded_containment", "A2"}};
+    for (const auto& [action, expected] : autonomy.items()) {
+        if (!actions.contains(action) || !actions.at(action).is_object() ||
+            actions.at(action).value("autonomy", std::string{}) !=
+                expected.get<std::string>()) {
+            return "B-8 policy does not preserve graduated A0, A1, and A2 authority";
+        }
+    }
+    for (const auto& [action, settings] : actions.items()) {
+        if (settings.is_object() &&
+            settings.value("autonomy", std::string{}) == "A2" &&
+            action != "bounded_containment") {
+            return "B-8 refuses automated action outside bounded containment";
+        }
+    }
+    const Json& containment = actions.at("bounded_containment");
+    if (containment.value("approval_field", std::string{}) !=
+            "affected_assets" ||
+        !containment.contains("approval_above") ||
+        !containment.at("approval_above").is_number() ||
+        containment.at("approval_above").get<double>() > maximum) {
+        return "B-8 containment approval boundary exceeds the approved asset scope";
+    }
+    const std::string expected_action =
+        profile.at("authority").at("selected_action");
+    for (const Json& tier : config.value("tiers", Json::array())) {
+        if (!tier.is_object()) {
+            return "B-8 policy tiers must be objects";
+        }
+        const std::string tier_name = tier.value("name", std::string{});
+        const std::string action = tier.value("action", std::string{});
+        if ((tier_name == "advisory" && action != "no_action") ||
+            (tier_name != "advisory" && action != expected_action)) {
+            return "B-8 policy tier exceeds the selected authority level";
+        }
+        for (const Json& allowed :
+             tier.value("allowed_actions", Json::array())) {
+            if (!allowed.is_string() ||
+                (allowed.get<std::string>() != expected_action &&
+                 allowed.get<std::string>() != "no_action")) {
+                return "B-8 policy permits an action above the selected authority level";
+            }
+        }
+    }
+    if (!b8_required_boolean_rule(config, "approved_playbook") ||
+        !b8_required_boolean_rule(config, "containment_allowed") ||
+        !b8_required_boolean_rule(config, "dependency_scope_known") ||
+        !b8_required_numeric_bound(config, "affected_assets", maximum)) {
+        return "B-8 policy must require playbook, containment, dependency, and asset-bound evidence";
     }
     return {};
 }
@@ -1703,6 +2988,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         return ApiResult::failure("engine_error", read_error);
     }
     std::vector<Json> decision_scores = *scored;
+    if (binding.value("solution", std::string{}) == "B-4") {
+        const auto aggregated = aggregate_b4_fields(
+            decision_scores, binding, read_error);
+        if (!aggregated) {
+            return ApiResult::failure("invalid_input", read_error);
+        }
+        decision_scores = *aggregated;
+    }
     if (binding.value("solution", std::string{}) == "S-6") {
         const auto aggregated = aggregate_replenishment_forecast(
             decision_scores, binding.at("decision_source"), read_error);
@@ -1718,6 +3011,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     const auto bandit_decisions =
         s11_bandit_decisions(node, binding, scores, read_error);
     if (!bandit_decisions) {
+        return ApiResult::failure("engine_error", read_error);
+    }
+    const auto supplier_forecasts =
+        b5_forecast_evidence(node, binding, scores, read_error);
+    if (!supplier_forecasts) {
         return ApiResult::failure("engine_error", read_error);
     }
     if (binding.value("solution", std::string{}) == "S-1") {
@@ -1828,9 +3126,27 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     entity[field] = row.at(field);
                 }
             }
+            if (binding.value("solution", std::string{}) == "B-4") {
+                for (const std::string field : {
+                         "extracted_fields", "field_confidences",
+                         "field_evidence", "low_confidence_fields",
+                         "fields_validated", "review_queue_assigned",
+                         "document_available", "action"}) {
+                    entity[field] = row.at(field);
+                }
+                if (binding.value("level", 1) >= 4 &&
+                    entity.value("fields_validated", false) &&
+                    entity.value("high_impact_workflow", false)) {
+                    entity["action"] = "high_impact_approval";
+                }
+            }
             if (binding.value("solution", std::string{}) == "S-7" &&
                 !entity.value("flagged", false)) {
                 entity["action"] = "no_contact";
+            }
+            if (binding.value("solution", std::string{}) == "B-8" &&
+                !entity.value("flagged", false)) {
+                entity["action"] = "no_action";
             }
             if (binding.value("solution", std::string{}) == "S-8") {
                 for (const std::string field :
@@ -1841,6 +3157,23 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     }
                 }
                 entity["failure_risk"] = row.at(score_column);
+            }
+            if (binding.value("solution", std::string{}) == "B-5") {
+                const auto forecast = supplier_forecasts->find(key);
+                if (forecast == supplier_forecasts->end()) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-5 forecast evidence must join exactly once to "
+                        "supplier " + key);
+                }
+                entity["forecast_evidence"] = {
+                    {"timestamp", forecast->second.at("timestamp")},
+                    {"point_forecast",
+                     forecast->second.at("point_forecast")},
+                    {"lower", forecast->second.at("lower")},
+                    {"upper", forecast->second.at("upper")},
+                    {"exception_score",
+                     forecast->second.at("exception_score")}};
             }
             if (!targeting->empty()) {
                 const auto treatment = targeting->find(key);
@@ -1855,9 +3188,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     treatment->second.at("estimated_uplift");
                 entity["uplift_recommended"] =
                     treatment->second.at("recommended");
-                if (!treatment->second.at("recommended").get<bool>() ||
-                    treatment->second.at("estimated_uplift").get<double>() <=
-                        0.0) {
+                if (binding.value("solution", std::string{}) != "B-1" &&
+                    (!treatment->second.at("recommended").get<bool>() ||
+                     treatment->second.at("estimated_uplift").get<double>() <=
+                         0.0)) {
                     entity["action"] = "no_contact";
                 }
             }
@@ -1914,8 +3248,23 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     if (!policy) {
         return ApiResult::failure("not_found", "solution policy no longer exists");
     }
+    for (const std::string policy_error : {
+             validate_b1_runtime_policy(binding, policy->current()->config),
+             validate_s12_runtime_policy(binding, policy->current()->config),
+             validate_b6_runtime_policy(binding, policy->current()->config),
+             validate_b7_runtime_policy(binding, policy->current()->config),
+             validate_b8_runtime_policy(binding, policy->current()->config)}) {
+        if (!policy_error.empty()) {
+            return ApiResult::failure("invalid_input", policy_error);
+        }
+    }
     if (const std::string policy_error =
-            validate_s12_runtime_policy(binding, policy->current()->config);
+            validate_b2_runtime_policy(binding, policy->current()->config);
+        !policy_error.empty()) {
+        return ApiResult::failure("invalid_input", policy_error);
+    }
+    if (const std::string policy_error =
+            validate_b3_runtime_policy(binding, policy->current()->config);
         !policy_error.empty()) {
         return ApiResult::failure("invalid_input", policy_error);
     }
@@ -1933,6 +3282,9 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     double automated_denials = 0.0;
     double low_confidence_path_assignments = 0.0;
     double fairness_review_failures = 0.0;
+    double missing_adverse_action_reasons = 0.0;
+    double model_validation_approval_failures = 0.0;
+    double approval_rate_gap = 0.0;
     std::size_t actionable = 0;
     std::size_t delivered = 0;
     std::size_t capacity_violations = 0;
@@ -1959,6 +3311,27 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::size_t s11_contact_cap_violations = 0;
     std::size_t s11_missing_propensities = 0;
     std::size_t s11_margin_floor_violations = 0;
+    std::size_t b8_unapproved_containment = 0;
+    std::size_t b8_kill_switch_bypass = 0;
+    double b8_maximum_containment_scope = 0.0;
+    std::size_t b1_margin_floor_violations = 0;
+    std::size_t b1_authority_band_violations = 0;
+    std::size_t b1_unapproved_price_changes = 0;
+    std::size_t b3_abstentions = 0;
+    std::size_t b3_new_ticket_types = 0;
+    std::size_t b3_misroutes = 0;
+    std::size_t b3_unapproved_closures = 0;
+    double b3_resolution_quality = 0.0;
+    std::size_t b3_resolution_count = 0;
+    std::size_t b4_unvalidated_workflow_actions = 0;
+    std::size_t b4_review_queue_misses = 0;
+    std::size_t b4_total_fields = 0;
+    std::size_t b4_validated_fields = 0;
+    std::size_t b6_care_denial_actions = 0;
+    std::size_t b6_phi_scope_violations = 0;
+    std::size_t b6_privacy_posture_failures = 0;
+    std::map<std::string, std::size_t> b6_group_decisions;
+    std::map<std::string, std::size_t> b6_group_actions;
     std::map<std::string, std::size_t> driver_counts;
     std::set<std::string> reportable_forecast_series;
     std::size_t protected_forecast_series = 0;
@@ -2030,9 +3403,35 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ? "decision_api_response"
                     : "no_action";
         }
+        if (binding.value("solution", std::string{}) == "B-3") {
+            const double minimum_confidence =
+                binding.at("b3_correctness")
+                    .at("abstention")
+                    .at("minimum_confidence");
+            if (entity.value("score", 0.0) < minimum_confidence ||
+                entity.value("new_ticket_type", false)) {
+                entity["action"] = "abstain";
+            }
+        }
         const auto decision = policies.decide(policy->id, entity, actor, &error);
         if (!decision) {
             return ApiResult::failure("engine_error", error);
+        }
+        if (binding.value("solution", std::string{}) == "B-7" &&
+            runtime_adverse_action(decision->action)) {
+            const Json reasons =
+                entity.value("reason_codes", Json::array());
+            if (!reasons.is_array() || reasons.empty()) {
+                missing_adverse_action_reasons += 1.0;
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-7 adverse decisions require examiner-readable reason codes");
+            }
+            if (decision->autonomy != "A0" || decision->actionable) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-7 refuses an automated adverse decision");
+            }
         }
         std::string value_tier = entity.value("value_tier", std::string{});
         if (value_tier.empty()) {
@@ -2060,6 +3459,47 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             !entity.value("sensitive_driver_access", false)) {
             driver = "redacted";
         }
+        if (binding.value("solution", std::string{}) == "B-5") {
+            const bool flagged = decision->tier != "monitor";
+            const Json required_fields =
+                binding.at("b5_correctness")
+                    .at("flag_evidence")
+                    .at("required_fields");
+            for (const Json& required : required_fields) {
+                const std::string field = required.get<std::string>();
+                if (flagged &&
+                    (!entity.contains(field) || entity.at(field).is_null() ||
+                     (entity.at(field).is_string() &&
+                      entity.at(field).get_ref<const std::string&>().empty()))) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-5 risk flag is missing evidence field " + field);
+                }
+            }
+            const Json reason_codes =
+                entity.value("reason_codes", Json::array());
+            if (flagged &&
+                (!reason_codes.is_array() || reason_codes.empty())) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-5 risk flag is missing model reason codes");
+            }
+            if (flagged && !entity.contains("forecast_evidence")) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-5 risk flag is missing forecast evidence");
+            }
+            entity["flagged"] = flagged;
+            entity["risk_evidence"] = {
+                {"external_source",
+                 entity.value("external_source", std::string{})},
+                {"external_observed_at",
+                 entity.value("external_observed_at", Json{})},
+                {"reason_codes", reason_codes},
+                {"dominant_driver", driver},
+                {"forecast",
+                 entity.value("forecast_evidence", Json::object())}};
+        }
         if (binding.value("solution", std::string{}) == "S-2") {
             entity["decision_cell"] = {
                 {"conversion_band", decision->tier},
@@ -2083,6 +3523,13 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 {"severity", decision->tier},
                 {"period", entity.value("period", 0.0)},
                 {"driver", driver},
+                {"flagged", entity.value("flagged", false)}};
+        } else if (binding.value("solution", std::string{}) == "B-8") {
+            entity["decision_cell"] = {
+                {"severity", decision->tier},
+                {"dependency_id", entity.value("dependency_id", Json{})},
+                {"playbook", entity.value("playbook", std::string{})},
+                {"authority", decision->autonomy},
                 {"flagged", entity.value("flagged", false)}};
         } else if (binding.value("solution", std::string{}) == "S-8") {
             entity["decision_cell"] = {
@@ -2118,6 +3565,62 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                  entity.value("selection_mode", std::string{})},
                 {"selected_action",
                  entity.value("selected_action", std::string{})}};
+        } else if (binding.value("solution", std::string{}) == "B-1") {
+            entity["decision_cell"] = {
+                {"demand_band", decision->tier},
+                {"current_price", entity.value("current_price", 0.0)},
+                {"recommended_price",
+                 entity.value("recommended_price", 0.0)},
+                {"authority_distance",
+                 entity.value("authority_distance", 0.0)}};
+        } else if (binding.value("solution", std::string{}) == "B-2") {
+            entity["decision_cell"] = {
+                {"risk", decision->tier},
+                {"group_key", entity.at("entity_id")},
+                {"group_dimension",
+                 binding.at("b2_correctness")
+                     .at("aggregation")
+                     .at("group_dimension")},
+                {"driver", driver}};
+        } else if (binding.value("solution", std::string{}) == "B-3") {
+            entity["decision_cell"] = {
+                {"confidence_tier", decision->tier},
+                {"queue", entity.value("queue", std::string{})},
+                {"taxonomy_version",
+                 entity.value("taxonomy_version", std::string{})},
+                {"new_ticket_type",
+                 entity.value("new_ticket_type", false)}};
+        } else if (binding.value("solution", std::string{}) == "B-4") {
+            entity["decision_cell"] = {
+                {"validation", entity.value("fields_validated", false)
+                                   ? "validated"
+                                   : "review"},
+                {"workflow_action", decision->action},
+                {"minimum_confidence", decision->score}};
+        } else if (binding.value("solution", std::string{}) == "B-5") {
+            entity["decision_cell"] = {
+                {"supplier_risk", decision->tier},
+                {"part", entity.value("part_id", std::string{})},
+                {"site", entity.value("site_id", std::string{})},
+                {"contract", entity.value("contract_id", std::string{})},
+                {"forecast_exception_score",
+                 entity.at("forecast_evidence")
+                     .at("exception_score")}};
+        } else if (binding.value("solution", std::string{}) == "B-6") {
+            entity["decision_cell"] = {
+                {"operational_risk", decision->tier},
+                {"workflow_type",
+                 entity.value("workflow_type", std::string{})},
+                {"assistive_action",
+                 decision->action.empty() ? "no_action" : decision->action}};
+        } else if (binding.value("solution", std::string{}) == "B-7") {
+            entity["decision_cell"] = {
+                {"credit_risk", decision->tier},
+                {"requested_limit",
+                 entity.value("requested_limit", 0.0)},
+                {"uncertainty_group",
+                 entity.value("portfolio_group", std::string{})},
+                {"human_adverse_authority", "A0"}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2127,6 +3630,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         decision_row["decision_cell"] = entity.at("decision_cell");
         decision_row["reason_codes"] =
             entity.value("reason_codes", Json::array());
+        if (binding.value("solution", std::string{}) == "B-5") {
+            decision_row["flagged"] = entity.at("flagged");
+            decision_row["risk_evidence"] = entity.at("risk_evidence");
+        }
         for (const std::string field : {
                  "series", "timestamp", "point_forecast", "lower", "upper",
                  "exception_score"}) {
@@ -2140,6 +3647,27 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             decision_row["uplift_recommended"] =
                 entity.at("uplift_recommended");
         }
+        if (binding.value("solution", std::string{}) == "B-2") {
+            decision_row["group_key"] = entity.at("entity_id");
+            decision_row["group_dimension"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("group_dimension");
+            decision_row["group_size"] =
+                entity.at(binding.at("b2_correctness")
+                              .at("aggregation")
+                              .at("group_size_column")
+                              .get<std::string>());
+            decision_row["aggregate_only"] = true;
+        }
+        if (binding.value("solution", std::string{}) == "B-4") {
+            decision_row["fields_validated"] =
+                entity.at("fields_validated");
+            decision_row["review_queue_assigned"] =
+                entity.at("review_queue_assigned");
+            decision_row["low_confidence_fields"] =
+                entity.at("low_confidence_fields");
+        }
         decisions->add_row(std::move(decision_row));
         if (decision->actionable) {
             ++actionable;
@@ -2147,13 +3675,15 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 !entity.value("rep_capacity_available", false)) {
                 ++capacity_violations;
             }
-            if (s12_adverse_action(decision->action)) {
+            if (runtime_adverse_action(decision->action)) {
                 automated_denials += 1.0;
             }
-            if (!entity.value("document_confidence_clear", false)) {
+            if (binding.value("solution", std::string{}) == "S-12" &&
+                !entity.value("document_confidence_clear", false)) {
                 low_confidence_path_assignments += 1.0;
             }
-            if (!entity.value("fairness_review_passed", false)) {
+            if (binding.value("solution", std::string{}) == "S-12" &&
+                !entity.value("fairness_review_passed", false)) {
                 fairness_review_failures += 1.0;
             }
             if (binding.value("solution", std::string{}) == "S-8") {
@@ -2180,6 +3710,27 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ++s11_margin_floor_violations;
                 }
             }
+            if (binding.value("solution", std::string{}) == "B-6") {
+                b6_care_denial_actions +=
+                    b6_care_access_penalty(decision->action) ? 1u : 0u;
+                b6_phi_scope_violations +=
+                    entity.value("phi_scope_exceeded", false) ? 1u : 0u;
+                b6_privacy_posture_failures +=
+                    entity.value("privacy_posture_approved", false)
+                        ? 0u
+                        : 1u;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-7") {
+            if (!entity.value("model_validation_approved", false)) {
+                model_validation_approval_failures += 1.0;
+            }
+            if (!entity.value("fairness_review_passed", false)) {
+                fairness_review_failures += 1.0;
+            }
+            approval_rate_gap = std::max(
+                approval_rate_gap,
+                std::abs(entity.value("approval_rate_gap", 0.0)));
         }
         if (!deliver_decision(node, *decision, entity,
                               policy->current()->config,
@@ -2227,11 +3778,92 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 ++review_tasks;
             }
         }
+        if (binding.value("solution", std::string{}) == "B-4") {
+            const bool validated =
+                entity.value("fields_validated", false);
+            const bool review_action =
+                decision->action == "field_review_task";
+            const bool business_workflow =
+                decision->action == "workflow_review_task" ||
+                decision->action == "workflow_handoff" ||
+                decision->action == "high_impact_approval";
+            if (!validated && business_workflow) {
+                ++b4_unvalidated_workflow_actions;
+            }
+            if (!validated && !decision->holdout && !review_action) {
+                ++b4_review_queue_misses;
+            }
+            for (const Json& field : entity.at("field_evidence")) {
+                ++b4_total_fields;
+                if (field.value("validated", false)) {
+                    ++b4_validated_fields;
+                }
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-6" &&
+            !decision->holdout) {
+            const Json& protected_columns =
+                binding.at("b6_correctness")
+                    .at("equity_review")
+                    .at("protected_group_columns");
+            for (const Json& column : protected_columns) {
+                const std::string field = column.get<std::string>();
+                if (!entity.contains(field)) {
+                    continue;
+                }
+                const std::string group = field + "=" +
+                    entity_key(entity.at(field));
+                ++b6_group_decisions[group];
+                if (decision->actionable) {
+                    ++b6_group_actions[group];
+                }
+            }
+        }
         if (binding.value("solution", std::string{}) == "S-7" &&
             entity.value("flagged", false)) {
             ++anomaly_alerts;
             if (!entity.value("sensitive_driver_access", false)) {
                 ++sensitive_access_violations;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-8" &&
+            entity.value("flagged", false)) {
+            ++anomaly_alerts;
+            if (decision->actionable) {
+                const double affected_assets =
+                    entity.value("affected_assets", 0.0);
+                b8_maximum_containment_scope = std::max(
+                    b8_maximum_containment_scope, affected_assets);
+                if (decision->action != "bounded_containment" ||
+                    !entity.value("approved_playbook", false) ||
+                    !entity.value("containment_allowed", false) ||
+                    !entity.value("dependency_scope_known", false) ||
+                    affected_assets >
+                        binding.at("b8_correctness")
+                            .at("containment")
+                            .at("maximum_affected_assets")
+                            .get<double>()) {
+                    ++b8_unapproved_containment;
+                }
+                if (policy->current()->config.value("kill_switch", false)) {
+                    ++b8_kill_switch_bypass;
+                }
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-3") {
+            b3_abstentions += decision->action == "abstain" ? 1u : 0u;
+            b3_new_ticket_types +=
+                entity.value("new_ticket_type", false) ? 1u : 0u;
+            b3_misroutes += entity.value("misrouted", false) ? 1u : 0u;
+            if (entity.contains("resolution_quality") &&
+                entity.at("resolution_quality").is_number()) {
+                b3_resolution_quality +=
+                    entity.at("resolution_quality").get<double>();
+                ++b3_resolution_count;
+            }
+            if (b3_close_action(decision->action) &&
+                decision->autonomy != "A1") {
+                ++b3_unapproved_closures;
             }
         }
         ++driver_counts[driver];
@@ -2315,6 +3947,31 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 decision->action == "release_order" &&
                 decision->autonomy != "A1") {
                 ++unapproved_over_bound_orders;
+            }
+        }
+        if (binding.value("solution", std::string{}) == "B-1") {
+            const double margin_floor =
+                binding.at("b1_correctness").at("margin_floor");
+            const double automatic =
+                binding.at("b1_correctness")
+                    .at("automatic_authority_limit");
+            const double hard =
+                binding.at("b1_correctness").at("hard_authority_limit");
+            const double margin = entity.value("gross_margin", 0.0);
+            const double distance =
+                entity.value("authority_distance", 0.0);
+            if (decision->actionable && margin < margin_floor) {
+                ++b1_margin_floor_violations;
+            }
+            if (decision->actionable && distance > hard) {
+                ++b1_authority_band_violations;
+            }
+            const bool changes_price =
+                decision->action == "controlled_price_experiment" ||
+                decision->action == "publish_price_change";
+            if (changes_price && distance > automatic &&
+                decision->autonomy != "A1") {
+                ++b1_unapproved_price_changes;
             }
         }
         if (binding.value("solution", std::string{}) == "S-8") {
@@ -2435,6 +4092,49 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             }
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-6") {
+            double minimum_rate = 1.0;
+            double maximum_rate = 0.0;
+            for (const auto& [group, decisions_in_group] :
+                 b6_group_decisions) {
+                const double rate = decisions_in_group == 0
+                    ? 0.0
+                    : static_cast<double>(b6_group_actions[group]) /
+                          static_cast<double>(decisions_in_group);
+                minimum_rate = std::min(minimum_rate, rate);
+                maximum_rate = std::max(maximum_rate, rate);
+            }
+            const double equity_rate_gap = b6_group_decisions.empty()
+                ? 0.0
+                : maximum_rate - minimum_rate;
+            monitor->observe_guardrail(
+                "care_denial_actions",
+                static_cast<double>(b6_care_denial_actions));
+            monitor->observe_guardrail("equity_rate_gap",
+                                       equity_rate_gap);
+            monitor->observe_guardrail(
+                "phi_scope_violations",
+                static_cast<double>(b6_phi_scope_violations));
+            monitor->observe_guardrail(
+                "privacy_posture_failures",
+                static_cast<double>(b6_privacy_posture_failures));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-7") {
+            monitor->observe_guardrail("automated_adverse_decisions",
+                                       automated_denials);
+            monitor->observe_guardrail(
+                "missing_adverse_action_reasons",
+                missing_adverse_action_reasons);
+            monitor->observe_guardrail(
+                "model_validation_approval_failures",
+                model_validation_approval_failures);
+            monitor->observe_guardrail("fairness_review_failures",
+                                       fairness_review_failures);
+            monitor->observe_guardrail("approval_rate_gap",
+                                       approval_rate_gap);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else if (binding.value("solution", std::string{}) == "S-5") {
             monitor->observe_guardrail(
                 "forecast_value_added",
@@ -2476,6 +4176,19 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 "sensitive_driver_access_violations",
                 static_cast<double>(sensitive_access_violations));
             monitor->observe_guardrail("causal_claim_violations", 0.0);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-8") {
+            monitor->observe_guardrail(
+                "alert_volume", static_cast<double>(anomaly_alerts));
+            monitor->observe_guardrail(
+                "containment_scope", b8_maximum_containment_scope);
+            monitor->observe_guardrail(
+                "unapproved_containment",
+                static_cast<double>(b8_unapproved_containment));
+            monitor->observe_guardrail(
+                "kill_switch_bypass",
+                static_cast<double>(b8_kill_switch_bypass));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else if (binding.value("solution", std::string{}) == "S-8") {
@@ -2544,6 +4257,108 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                           static_cast<double>(operational_decisions));
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-1") {
+            monitor->observe_guardrail(
+                "margin_floor_violations",
+                static_cast<double>(b1_margin_floor_violations));
+            monitor->observe_guardrail(
+                "authority_band_violations",
+                static_cast<double>(b1_authority_band_violations));
+            monitor->observe_guardrail(
+                "unapproved_price_changes",
+                static_cast<double>(b1_unapproved_price_changes));
+            monitor->observe_guardrail("price_feature_leakage", 0.0);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-2") {
+            monitor->observe_guardrail("small_group_outputs", 0.0);
+            monitor->observe_guardrail("individual_score_outputs", 0.0);
+            monitor->observe_guardrail("fairness_review_failures", 0.0);
+            monitor->observe_guardrail("approval_gate_failures", 0.0);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-3") {
+            const double denominator =
+                static_cast<double>(std::max<std::size_t>(entities.size(), 1));
+            monitor->observe_guardrail(
+                "misroute_rate",
+                static_cast<double>(b3_misroutes) / denominator);
+            monitor->observe_guardrail(
+                "resolution_quality",
+                b3_resolution_count == 0
+                    ? 0.0
+                    : b3_resolution_quality /
+                          static_cast<double>(b3_resolution_count));
+            monitor->observe_guardrail(
+                "abstention_rate",
+                static_cast<double>(b3_abstentions) / denominator);
+            monitor->observe_guardrail(
+                "new_ticket_type_rate",
+                static_cast<double>(b3_new_ticket_types) / denominator);
+            monitor->observe_guardrail(
+                "unapproved_auto_close",
+                static_cast<double>(b3_unapproved_closures));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-4") {
+            monitor->observe_guardrail(
+                "unvalidated_workflow_actions",
+                static_cast<double>(b4_unvalidated_workflow_actions));
+            monitor->observe_guardrail(
+                "review_queue_miss_rate",
+                entities.empty()
+                    ? 0.0
+                    : static_cast<double>(b4_review_queue_misses) /
+                          static_cast<double>(entities.size()));
+            for (const pipeline::RunOutput& output : scores) {
+                if (output.kind != "model") {
+                    continue;
+                }
+                const std::shared_ptr<ml::Model> model =
+                    node.find_model(output.ref);
+                if (model && model->kind() == "document_extraction") {
+                    monitor->observe_guardrail(
+                        "field_extraction_accuracy",
+                        model->metrics().value("field_precision", 0.0));
+                }
+            }
+            monitor->observe_guardrail(
+                "field_validation_rate",
+                b4_total_fields == 0
+                    ? 0.0
+                    : static_cast<double>(b4_validated_fields) /
+                          static_cast<double>(b4_total_fields));
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
+        } else if (binding.value("solution", std::string{}) == "B-5") {
+            const double denominator =
+                static_cast<double>(std::max<std::size_t>(entities.size(), 1));
+            const std::size_t missing_evidence = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return entity.value("flagged", false) &&
+                           (!entity.contains("risk_evidence") ||
+                            entity.at("risk_evidence").empty());
+                });
+            const std::size_t stale_external = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return !entity.value("external_data_current", false);
+                });
+            const std::size_t single_source = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return entity.value("single_source_dependency", false);
+                });
+            monitor->observe_guardrail(
+                "missing_flag_evidence_rate",
+                static_cast<double>(missing_evidence) / denominator);
+            monitor->observe_guardrail(
+                "stale_external_data_rate",
+                static_cast<double>(stale_external) / denominator);
+            monitor->observe_guardrail(
+                "single_source_exposure_rate",
+                static_cast<double>(single_source) / denominator);
+            monitor->observe_guardrail("mitigation_budget", cost);
+            monitor->observe_guardrail("action_execution_rate",
+                                       execution_rate);
         } else {
             monitor->observe_guardrail("complaints",
                                        complaints / entities.size());
@@ -2557,11 +4372,14 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     std::string publication_id;
     const std::string solution_id =
         binding.value("solution", std::string{});
-    if ((solution_id == "S-1" || solution_id == "S-3" || solution_id == "S-7") &&
+    if ((solution_id == "S-1" || solution_id == "S-3" ||
+         solution_id == "S-7" || solution_id == "B-2") &&
         binding.at("delivery").value("kind", "webhook") == "webhook") {
         Json drivers = Json::array();
         for (const auto& [driver, count] : driver_counts) {
-            drivers.push_back({{"driver", driver}, {"accounts", count}});
+            drivers.push_back(
+                {{"driver", driver},
+                 {solution_id == "B-2" ? "groups" : "accounts", count}});
         }
         ReportPublicationSpec report;
         report.run_id = run_id;
@@ -2569,6 +4387,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                            ? "Customer lifetime value allocation report"
                            : solution_id == "S-7"
                                ? "KPI anomaly and candidate-driver report"
+                           : solution_id == "B-2"
+                               ? "Aggregate workforce attrition risk report"
                                : "Churn and retention driver report";
         report.driver_report = {{"drivers", std::move(drivers)}};
         if (solution_id == "S-3") {
@@ -2586,6 +4406,21 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                 binding.at("s7_correctness")
                     .at("driver_attribution")
                     .at("caveat");
+        } else if (solution_id == "B-2") {
+            report.driver_report["aggregate_only"] = true;
+            report.driver_report["group_dimension"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("group_dimension");
+            report.driver_report["minimum_group_size"] =
+                binding.at("b2_correctness")
+                    .at("aggregation")
+                    .at("minimum_group_size");
+            report.driver_report["recipient_role"] = "people_leader";
+            report.driver_report["approval_record_id"] =
+                binding.at("b2_correctness")
+                    .at("approval")
+                    .at("record_id");
         }
         report.decision_log = std::move(decision_log);
         report.connector.kind = ActionConnectorKind::Webhook;
@@ -2595,6 +4430,8 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             (solution_id == "S-3" ? "/allocation-report"
                                    : solution_id == "S-7"
                                        ? "/decision-forum-report"
+                                   : solution_id == "B-2"
+                                       ? "/aggregate-workforce-report"
                                        : "/driver-report");
         report.model_version = model_version;
         report.policy_version =

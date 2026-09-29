@@ -97,8 +97,8 @@ relay it to a person.
   `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
   Explicit caller names are unchanged.
 - **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
-  `list_solutions` and `get_solution` expose all twelve catalogue modules and eight
-  sketches with plain product copy, portfolio-number composition, data roles,
+  `list_solutions` and `get_solution` expose all 20 runnable catalogue modules
+  with plain product copy, portfolio-number composition, data roles,
   autonomy, policy, measurement, guardrails, levels, and missing components.
   `create_solution` uses typed defaults to create a callback-built Pipeline,
   versioned policy, experiment, monitor and ROI definition on an existing project.
@@ -117,7 +117,11 @@ relay it to a person.
   and a measured net-value readout. S-4 adds regulatory contact limits,
   vulnerable-customer protection, digital/dialer delivery, and net-recovery
   measurement. S-12 adds claim routing, human-only denial, document confidence,
-  fairness review, and referral measurement. S-5 has full demand-planning
+  fairness review, and referral measurement. B-2 adds aggregate workforce-risk
+  scoring, minimum cohort size,
+  fairness and approval gates, people-leader-only delivery, and holdout
+  measurement. B-7 adds credit-risk evidence, model-risk validation,
+  fair-lending review, and A0 adverse authority. S-5 has full demand-planning
   defaults, rolling-origin and hierarchy refusals, interval exception tasks,
   protected planner reports, and an honest FVA readout.
   S-6 has full replenishment defaults, service/budget/lead-time/bound refusals,
@@ -132,6 +136,9 @@ relay it to a person.
   delayed-label and selection-bias refusals, and champion/challenger ROI.
   S-11 has complete cross-channel arbitration defaults, logged exploration,
   consent/contact refusals, request-time action payloads, and uplift-cell ROI.
+  B-8 has exact-budget anomaly alerts, time-bounded dependency context,
+  graduated A0/A1/bounded-A2 authority, a hard kill switch, action payloads,
+  protected holdouts, and incident-avoidance ROI.
   See [executable solutions](../../solutions/executable-pipelines.md).
 - **Runnable forecasts** ([#1043](https://github.com/oramasearch/zetta/issues/1043)):
   compile `M-4` or `S-5` with source/table and time/target/optional-series roles,

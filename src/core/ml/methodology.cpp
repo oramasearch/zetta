@@ -63,6 +63,70 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool automated_outbound = request.solution == "S-9";
     const bool collections = request.solution == "S-4";
     const bool fraud_decisioning = request.solution == "S-10";
+    const bool supplier_risk = request.solution == "B-5";
+    const bool credit_underwriting = request.solution == "B-7";
+    const bool healthcare_operations = request.solution == "B-6";
+
+    if (request.solution == "B-2") {
+        const std::string group_column =
+            request.hints.value("group_column", "entity_id");
+        const std::string group_size_column =
+            request.hints.value("group_size_column", "group_size");
+        graph.add_node(
+            ir::StepKind::Connect, "Load aggregate workforce cohorts",
+            nlohmann::json{
+                {"source", request.hints.value("source", "people_analytics")},
+                {"table", request.hints.value("table", "workforce_groups")},
+                {"note", "one aggregate row per team, role, or tenure band"}},
+            "load_workforce_groups");
+        graph.add_node(
+            ir::StepKind::Clean, "Build aggregate attrition features",
+            nlohmann::json{
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "retain cohort measures only; never publish employee rows"}},
+            "build_group_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train aggregate attrition-risk model",
+            nlohmann::json{
+                {"model_kind", "gbdt"},
+                {"algo", "gradient_boosting"},
+                {"target", request.hints.value("label_column", "attrition_label")},
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "estimate cohort risk from aggregate workforce measures"}},
+            "train_group_risk_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index aggregate workforce risk",
+            nlohmann::json{{"kind", "feature"}, {"aggregate_only", true}},
+            "index_group_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Explain aggregate workforce drivers",
+            nlohmann::json{
+                {"aggregate_only", true},
+                {"note", "expose cohort risk and drivers to the people leader"}},
+            "serve_group_drivers");
+        graph.add_node(
+            ir::StepKind::Act, "Publish aggregate workforce risk",
+            nlohmann::json{
+                {"result_database", "workforce_results"},
+                {"result_table_prefix", "aggregate_attrition_risk_"},
+                {"entity_output_column", "group_key"},
+                {"score_output_column", "attrition_risk"},
+                {"group_column", group_column},
+                {"group_size_column", group_size_column},
+                {"aggregate_only", true},
+                {"note", "publish one risk row per protected cohort"}},
+            "publish_group_risk");
+        graph.add_edge("load_workforce_groups", "build_group_features");
+        graph.add_edge("build_group_features", "train_group_risk_model");
+        graph.add_edge("train_group_risk_model", "index_group_scores");
+        graph.add_edge("index_group_scores", "serve_group_drivers");
+        graph.add_edge("serve_group_drivers", "publish_group_risk");
+        return graph;
+    }
 
     if (request.solution == "S-3") {
         const int value_horizon_days =
@@ -152,20 +216,78 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         return graph;
     }
 
+    if (healthcare_operations) {
+        graph.add_node(
+            ir::StepKind::Connect, "Load healthcare operations cases",
+            nlohmann::json{
+                {"source", request.hints.value("source", "healthcare")},
+                {"table", request.hints.value("table", "operations")},
+                {"note", "minimum-necessary appointment and claim operations rows"}},
+            "load_healthcare_operations");
+        graph.add_node(
+            ir::StepKind::Clean, "Build minimum-necessary operations features",
+            nlohmann::json{
+                {"note", "exclude direct identifiers, clinical decisions, and care-access outcomes"}},
+            "build_healthcare_features");
+        graph.add_node(
+            ir::StepKind::Model, "Train healthcare operations risk model",
+            nlohmann::json{
+                {"model_kind", "gbdt"},
+                {"algo", "gradient_boosting"},
+                {"target", request.hints.value("label_column", "operational_outcome")},
+                {"note", "rank assistive scheduling and revenue-cycle work only"}},
+            "train_healthcare_operations_model");
+        graph.add_node(
+            ir::StepKind::Index, "Index healthcare operations scores",
+            nlohmann::json{{"kind", "feature"}},
+            "index_healthcare_operations_scores");
+        graph.add_node(
+            ir::StepKind::Serve, "Serve operations scores and reasons",
+            nlohmann::json{
+                {"note", "expose operational risk without changing care access"}},
+            "serve_healthcare_operations_scores");
+        graph.add_node(
+            ir::StepKind::Act, "Publish healthcare operations risk scores",
+            nlohmann::json{
+                {"result_database", "healthcare_results"},
+                {"result_table_prefix", "operation_risk_"},
+                {"entity_output_column", "entity"},
+                {"score_output_column", "operational_risk"},
+                {"note", "policy selects assistive work after scoring"}},
+            "publish_healthcare_operations_scores");
+        graph.add_edge("load_healthcare_operations",
+                       "build_healthcare_features");
+        graph.add_edge("build_healthcare_features",
+                       "train_healthcare_operations_model");
+        graph.add_edge("train_healthcare_operations_model",
+                       "index_healthcare_operations_scores");
+        graph.add_edge("index_healthcare_operations_scores",
+                       "serve_healthcare_operations_scores");
+        graph.add_edge("serve_healthcare_operations_scores",
+                       "publish_healthcare_operations_scores");
+        return graph;
+    }
+
     graph.add_node(
         ir::StepKind::Connect,
-        fraud_decisioning ? "Load authorization requests"
+        credit_underwriting ? "Load credit applications"
+        : fraud_decisioning ? "Load authorization requests"
+        : supplier_risk ? "Load supplier and contract records"
         : lead_scoring ? "Load lead and opportunity records"
                          : collections ? "Load receivables"
                                        : automated_outbound ? "Load consented outbound candidates"
                              : "Load customer accounts",
         nlohmann::json{
             {"source", "warehouse"},
-            {"table", fraud_decisioning ? "authorizations"
+            {"table", credit_underwriting ? "credit_applications"
+                         : fraud_decisioning ? "authorizations"
+                         : supplier_risk ? "suppliers"
                          : lead_scoring ? "leads"
                          : collections ? "receivables"
                                        : "customers"},
-            {"note", fraud_decisioning ? "authorization requests to score before a response"
+            {"note", credit_underwriting ? "point-in-time applications awaiting a governed credit decision"
+                         : fraud_decisioning ? "authorization requests to score before a response"
+                         : supplier_risk ? "suppliers, parts, sites, and contracts at the decision cutoff"
                          : lead_scoring ? "open leads and opportunities to score for conversion"
                          : collections ? "eligible receivables to score for recovery priority"
                                        : automated_outbound
@@ -174,18 +296,24 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "load_customers");
     graph.add_node(
         ir::StepKind::Connect,
-        fraud_decisioning ? "Load request-time and graph signals"
+        credit_underwriting ? "Load verified application and bureau evidence"
+        : fraud_decisioning ? "Load request-time and graph signals"
+        : supplier_risk ? "Load delivery and external risk evidence"
         : lead_scoring ? "Load pre-qualification engagement"
                          : collections ? "Load payment and contact history"
                                        : automated_outbound ? "Load pre-send engagement and contact history"
                              : "Load usage & billing activity",
         nlohmann::json{
             {"source", "warehouse"},
-            {"table", fraud_decisioning ? "authorization_signals"
+            {"table", credit_underwriting ? "credit_evidence"
+                         : fraud_decisioning ? "authorization_signals"
+                         : supplier_risk ? "supplier_risk_signals"
                          : lead_scoring ? "lead_events"
                          : collections ? "collections_events"
                                        : "events"},
-            {"note", fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
+            {"note", credit_underwriting ? "verified pre-decision income, exposure, and repayment signals"
+                         : fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
+                         : supplier_risk ? "point-in-time delivery, quality, concentration, and external publications"
                          : lead_scoring ? "point-in-time engagement signals per lead"
                          : collections ? "point-in-time payment, delinquency, and contact signals"
                                        : automated_outbound
@@ -194,14 +322,20 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "load_activity");
     graph.add_node(
         ir::StepKind::Clean,
-        fraud_decisioning ? "Build request-time fraud features"
+        credit_underwriting ? "Build point-in-time credit features"
+        : fraud_decisioning ? "Build request-time fraud features"
+        : supplier_risk ? "Build supplier risk features"
         : lead_scoring ? "Build conversion features"
                          : collections ? "Build recovery features"
                                        : automated_outbound ? "Build outbound response features"
                              : "Build churn features",
         nlohmann::json{
-            {"note", fraud_decisioning
+            {"note", credit_underwriting
+                         ? "exclude protected attributes and post-decision performance"
+                     : fraud_decisioning
                          ? "training and request-time features must have exact parity"
+                     : supplier_risk
+                         ? "use pre-event supplier evidence and exclude post-disruption records"
                      : lead_scoring
                          ? "point-in-time features; exclude post-qualification fields"
                      : collections
@@ -212,19 +346,25 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "build_features");
     graph.add_node(
         ir::StepKind::Model,
-        fraud_decisioning ? "Train fraud-risk model"
+        credit_underwriting ? "Train credit-risk model"
+        : fraud_decisioning ? "Train fraud-risk model"
+        : supplier_risk ? "Train supplier disruption-risk model"
         : lead_scoring ? "Train conversion-propensity model"
                          : collections ? "Train recovery-priority model"
                                        : automated_outbound ? "Train outbound response-propensity model"
                              : "Train churn-risk model",
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
-                       {"target", fraud_decisioning ? "fraud_label"
+                       {"target", credit_underwriting ? "defaulted"
+                         : fraud_decisioning ? "fraud_label"
+                         : supplier_risk ? "disruption"
                          : lead_scoring ? "converted"
                          : collections ? "promise_to_pay"
                                        : automated_outbound ? "response"
                                                        : "churned"},
-                       {"note", fraud_decisioning ? "predict matured fraud risk for each authorization"
+                       {"note", credit_underwriting ? "predict matured repayment risk for each applicant"
+                         : fraud_decisioning ? "predict matured fraud risk for each authorization"
+                         : supplier_risk ? "predict disruption risk for each supplier relationship"
                          : lead_scoring ? "predict probability each lead converts"
                          : collections ? "predict point-in-time recovery propensity"
                                        : automated_outbound
@@ -233,7 +373,9 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "train_churn_model");
     graph.add_node(
         ir::StepKind::Index,
-        fraud_decisioning ? "Index authorization scores"
+        credit_underwriting ? "Index credit risk scores"
+        : fraud_decisioning ? "Index authorization scores"
+        : supplier_risk ? "Index supplier risk scores"
         : lead_scoring ? "Index conversion scores"
                          : collections ? "Index recovery scores"
                                        : automated_outbound ? "Index outbound response scores"
@@ -243,13 +385,17 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "index_scores");
     graph.add_node(
         ir::StepKind::Serve,
-        fraud_decisioning ? "Serve authorization scores and reasons"
+        credit_underwriting ? "Serve credit scores and adverse-action reasons"
+        : fraud_decisioning ? "Serve authorization scores and reasons"
+        : supplier_risk ? "Serve supplier flags and evidence"
         : lead_scoring ? "Serve conversion scores and reasons"
                          : collections ? "Serve recovery scores and reasons"
                                        : automated_outbound ? "Serve outbound response scores and reasons"
                              : "Serve churn scores & reasons",
         nlohmann::json{
-            {"note", fraud_decisioning ? "expose per-request fraud score and graph evidence"
+            {"note", credit_underwriting ? "expose per-applicant risk, uncertainty, and ranked reason codes"
+                         : fraud_decisioning ? "expose per-request fraud score and graph evidence"
+                         : supplier_risk ? "expose per-supplier risk, reasons, and external provenance"
                          : lead_scoring ? "expose per-lead conversion score and top drivers"
                          : collections ? "expose per-receivable recovery priority and drivers"
                                        : automated_outbound
@@ -258,30 +404,46 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         "serve_scores");
     graph.add_node(
         ir::StepKind::Act,
-        fraud_decisioning ? "Write fraud authorization scores"
+        credit_underwriting ? "Publish credit risk scores"
+        : fraud_decisioning ? "Write fraud authorization scores"
+        : supplier_risk ? "Publish supplier risk flags"
         : lead_scoring ? "Route sales queue tasks"
                          : collections ? "Prioritize collections treatments"
                                        : automated_outbound ? "outbound response scores"
                              : "Trigger retention outreach",
         nlohmann::json{
-            {"note", fraud_decisioning ? "write request-time decisions and case-review candidates"
+            {"note", credit_underwriting ? "publish examiner-readable scores before policy and human authority"
+                         : fraud_decisioning ? "write request-time decisions and case-review candidates"
+                         : supplier_risk ? "publish evidence-backed supplier risk flags for procurement"
                          : lead_scoring ? "route capacity-aware CRM tasks with SLAs"
                          : collections ? "publish the governed recovery-priority table"
                                        : automated_outbound
                          ? "publish the outbound-specific decision score artifact"
                          : "notify retention on high-risk accounts"},
-             {"result_database", fraud_decisioning ? "fraud_results"
+             {"result_database", credit_underwriting ? "credit_results"
+                  : fraud_decisioning ? "fraud_results"
+                  : supplier_risk ? "supplier_risk_results"
                   : collections ? "collections_results"
                   : automated_outbound ? "solution_methodology_results" : "churn_results"},
-             {"result_table_prefix", fraud_decisioning ? "authorization_scores_"
+             {"result_table_prefix", credit_underwriting ? "risk_scores_"
+                  : fraud_decisioning ? "authorization_scores_"
+                  : supplier_risk ? "risk_flags_"
                   : collections ? "recovery_priority_"
                   : automated_outbound ? "outbound_response_" : "at_risk_"},
-             {"entity_output_column", fraud_decisioning ? "transaction"
+             {"entity_output_column", credit_underwriting ? "applicant"
+                  : fraud_decisioning ? "transaction"
+                  : supplier_risk ? "supplier"
                   : collections ? "receivable"
                   : automated_outbound ? "entity" : "account"},
-             {"score_output_column", fraud_decisioning ? "fraud_score"
+             {"score_output_column", credit_underwriting ? "credit_risk"
+                  : fraud_decisioning ? "fraud_score"
+                  : supplier_risk ? "supplier_risk_score"
                   : collections ? "recovery_score"
-                  : automated_outbound ? "response_propensity" : "risk"}},
+                  : automated_outbound ? "response_propensity" : "risk"},
+             {"evidence_output_fields",
+              supplier_risk
+                  ? nlohmann::json{"reason_codes", "dominant_driver"}
+                  : nlohmann::json::array()}},
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");
@@ -428,6 +590,8 @@ api::ApiResult run_m1(RunRequest& request) {
     zetta::usecases::churn::ChurnSolutionOptions options;
     const bool automated_outbound =
         request.input.value("solution", std::string{}) == "S-9";
+    const bool healthcare_operations =
+        request.input.value("solution", std::string{}) == "B-6";
     options.project = request.project->id();
     options.graph = request.graph->id();
     options.model_name = request.input.value("model_name", options.model_name);
@@ -440,6 +604,13 @@ api::ApiResult run_m1(RunRequest& request) {
         options.result_table_prefix = "outbound_response_";
         options.result_entity_column = "entity";
         options.result_score_column = "response_propensity";
+    } else if (healthcare_operations) {
+        options.model_name = request.input.value(
+            "model_name", std::string("healthcare_operations_risk"));
+        options.result_database = "healthcare_results";
+        options.result_table_prefix = "operation_risk_";
+        options.result_entity_column = "entity";
+        options.result_score_column = "operational_risk";
     }
     options.params.holdout_fraction = request.input.value(
         "holdout_fraction", options.params.holdout_fraction);
@@ -538,12 +709,15 @@ Methodology make_m1_methodology() {
                                "classifier", "classification",
                                "regression", "score",
                                "tabular"};
-    methodology.solutions = {"S-1", "S-2", "S-3", "S-4", "S-10", "S-12"};
+    methodology.solutions = {
+        "S-1", "S-2", "S-3", "S-4", "S-10", "S-12", "B-2", "B-5", "B-6", "B-7"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",
         "win-back", "predict whether", "classify",   "score",
-        "customer lifetime value", "lifetime value", "clv"};
+        "customer lifetime value", "lifetime value", "clv",
+        "no-show", "denial risk", "healthcare operations",
+        "credit underwriting", "credit risk", "limit management"};
     methodology.inputs = {
         {"entity", true, "entity identifier"},
         {"label", true, "outcome column"},

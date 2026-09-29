@@ -40,7 +40,8 @@ ir::ExecutionGraph build_forecast_shape(const ShapeRequest &request) {
   // them, not quietly replace a requested random split or future feature.
   if (request.hints.is_object()) {
     for (const auto &[key, value] : request.hints.items()) {
-      if (key == "source" || key == "table") {
+      if (key == "source" || key == "table" || key == "source_kind" ||
+          key == "snapshot_as_of" || key == "solution_snapshot_as_of") {
         source[key] = value;
       } else if (key == "model_kind" && value != "forecast") {
         options["requested_model_kind"] = value;

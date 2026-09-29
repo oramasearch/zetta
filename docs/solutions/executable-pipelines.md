@@ -62,15 +62,34 @@ S-4 narrows that default to M-1's `Prioritize collections treatments` output
 in `collections_results`, using `receivable` and `recovery_score` columns.
 S-12 binds the real claim output named `Publish claim referral scores`,
 with `claim_id` and `referral_score` columns in `claims_results`.
+B-2 binds M-1's real `Publish aggregate workforce risk` output in
+`workforce_results`, using `group_key` and `attrition_risk`. The input entity is
+already a protected cohort, and the runtime refuses individual identifiers,
+scores, or a cohort below the configured minimum before any methodology runs.
+B-4 binds M-11's real `extracted fields` output in `document_results`, with
+`document` and `confidence` columns. It groups field rows by document and
+refuses workflow delivery unless every declared field clears its own threshold.
+B-7 binds M-1's `Publish credit risk scores` output in `credit_results`, using
+`applicant` and `credit_risk`. M-17 runs beside it for disjoint uncertainty
+coverage validation; it does not replace the decision score.
 S-5 defaults to the real M-4 `forecast` output, with `series` as the
 entity and relative interval width in `exception_score` as the policy score.
 S-6 binds M-4's real `forecast` table (`series` and `point_forecast`) and sums
 the declared lead-time horizon into one decision score per item-location. Its
 M-4 stage reads the configured bounded history table; M-16 and M-5 read the
 latest decision snapshot.
+B-1 binds M-4's real `forecast` table with `series` and `point_forecast`.
+M-4 reads bounded demand history; M-6 estimates price treatment effects and
+M-16 verifies the declared constraints from the point-in-time decision
+snapshot. The M-6 effect is joined to the action payload, while the policy
+enforces margin, hard authority, and approval limits.
 S-7 uses M-7's `anomaly table`, with `row` as entity and `score` as the
 anomaly score. Forum decisions copy the real flag, threshold, period, top
 candidate driver, deviation, and contributor list.
+B-8 also binds M-7's `anomaly table` as its decision source. M-12 runs first
+over the same cutoff-bounded snapshot to produce dependency context. Decisions
+join `row` and `score` back to asset evidence and carry the M-7 flag and
+threshold into the bounded containment payload.
 S-8 binds M-5's `survival table`, using `entity` and `hazard` at a configured
 emitted horizon. M-5 writes one row per asset and horizon, so the runtime selects
 that real row and carries `hazard`, `survival`, `expected_time`, and
@@ -83,6 +102,11 @@ S-10's M-1 stage writes `fraud_results.authorization_scores_*` with
 `transaction` and `fraud_score` columns. The module binds that real output,
 not the retention table, and crosses its authorization band with graph and
 case-owner evidence.
+B-5 binds M-1's `Publish supplier risk flags` output in
+`supplier_risk_results`, using `supplier` and `supplier_risk_score`. Its M-4
+stage reads a separately frozen delivery-history table. The foundation joins
+the strongest forecast exception for that supplier and refuses a flag without
+external provenance, model reasons, or forecast context.
 
 S-11 is the other bound primary-output case. It automatically selects the M-8
 recommendation table's `entity` and `policy_score`. Its snapshot may retain
@@ -92,6 +116,18 @@ multiple candidate rows per customer by using a unique candidate key while
 customer. The S-11 foundation groups M-8 candidates, applies the experiment's
 exploit or explore choice, resolves the chosen action's channel, and refuses an
 arm that is absent, ineligible, or capped.
+
+B-3 defaults to M-10's real `embeddings` output, using `chunk_id` and
+`classifier_confidence`. Its M-19 stage supplies label-efficiency artifacts but
+does not substitute a decision score. Put checkpoint, text-column, retrieval,
+and labelling-function settings in `sources.M-10` and `sources.M-19` at create
+time. The solution runner forwards each methodology's object into that stage's
+registered callback.
+B-6 binds M-1's `Publish healthcare operations risk scores` output in
+`healthcare_results`, using `entity` and `operational_risk`. The score feeds
+only assistive scheduling and revenue-cycle policy actions. Protected-group
+columns remain evaluation-only and direct identifiers never enter the approved
+feature set or connector payload.
 
 ## Run and read back
 
@@ -106,8 +142,8 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    cutoff. Reject a target containing another cutoff. Publish native partitions
    for methodology execution; never fall back to the churn demonstration data.
 2. Run each selected methodology through its existing callback, waiting for
-   each child Run. Stage Connect nodes read this snapshot except S-6 M-4, which
-   reads its configured bounded history table. Wrapper stage
+   each child Run. Stage Connect nodes read this snapshot except S-6 and B-5
+   M-4, which read their configured bounded history tables. Wrapper stage
    annotations are removed while reconstructing the child graph, so they are
    never interpreted as methodology parameters. An ISO cutoff is carried into
    feature planning from the snapshot annotation, not inferred.
@@ -133,6 +169,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    action, predictive propensity, and actual selection probability. Its five
    guardrails are observed from the same execution.
 
+   B-1 rows carry demand band, current and recommended prices, authority
+   distance, and the M-6 effect. Its monitor observes margin-floor violations,
+   hard-band violations, unapproved changes, price-feature leakage, and action
+   execution. Only price changes inside the automatic band reach the connector;
+   larger eligible changes remain A1 pending approval.
+
    S-7 routes only flagged rows within its exact alert budget, publishes one
    candidate-driver report with a causal caveat, and includes the durable forum
    decision log.
@@ -144,6 +186,12 @@ names are graph-scoped. A concurrent launch is refused before creating a Run.
    S-9 rows carry audience tier, segment, journey, channel, consent and
    suppression evidence, and contact counts. Its monitor observes unsubscribe,
    complaint, consent-violation, contact-frequency, and execution rates.
+
+   B-3 rows carry confidence tier, customer queue, taxonomy version, and the
+   new-ticket-type flag. Low-confidence and new-type rows request `abstain` and
+   remain non-actionable. Routed payloads include the draft reply and explicit
+   human-close-approval evidence. Its monitor observes all six ticket-quality
+   and execution bounds.
 
 S-10 uses the same execution order with M-2 → M-12 → M-1 at levels 1 and 2;
 levels 3 and 4 append M-5. Its action payload includes the request-time
@@ -219,6 +267,36 @@ tasks, observes all five claim guardrails, records synthetic outcomes, and
 recovers the planted effect inside the readout interval. The future claim and
 protected holdouts never reach the connector.
 
+`SolutionJourney.EmployeeAttritionPublishesAggregateRiskAndRecoversPlantedEffect`
+builds B-2 from a partitioned synthetic cohort table, runs M-1 and M-7, reads
+the real `group_key`/`attrition_risk` table, delivers only aggregate evidence to
+the named people leader, and verifies every output meets k-anonymity. It proves
+that the future cohort and protected holdouts never reach the connector, no
+individual field reaches a decision or payload, all five guardrails are
+observed, and the readout recovers the planted aggregate effect inside its
+confidence interval.
+
+`SolutionJourney.TicketTriageAbstainsProtectsHoldoutAndRecoversPlantedEffect`
+builds level-4 B-3 over a partitioned synthetic ticket table, runs M-10 and
+M-19, reads `classifier_confidence`, verifies explicit abstention and protected
+holdouts, inspects queue and draft payloads, observes all six guardrails,
+records a planted 0.16 resolution-quality effect, and requires the readout to
+recover it inside its confidence interval.
+`SolutionJourney.CreditUnderwritingKeepsAdverseActionsHumanAndRecoversEffect`
+builds B-7 from partitioned synthetic applications and runs M-1 plus M-17. It
+reads the real `applicant`/`credit_risk` table, verifies reason codes and A0
+decline recommendations, protects the permanent holdout, inspects validation
+and fairness evidence in action payloads, observes all six guardrails, and
+recovers a planted 0.14 performing-account effect inside the readout interval.
+The future application never reaches scoring or action.
+
+`SolutionJourney.ItSecurityOperationsContainsRiskAndRecoversPlantedEffect`
+builds level-3 B-8 over partitioned synthetic security events, runs M-12 and
+M-7, excludes a future event, enforces the exact alert cap and single-asset
+playbook bound, protects holdouts, inspects every containment payload, observes
+all five guardrails, and recovers a planted 0.16 incident-avoidance effect
+inside the readout confidence interval.
+
 `SolutionJourney.DemandForecastBuildsActsAndReportsFvaLimitsHonestly` composes
 S-5 over partitioned synthetic demand, reads the native M-4 forecast table,
 checks protected-series suppression in both task and report actions, records
@@ -231,6 +309,13 @@ M-16, and M-5, aggregates the real lead-time forecast, protects the permanent
 holdout, checks bounded ERP release payloads and all five guardrails, records
 centered service-level outcomes with a 0.12 effect, and verifies that the
 readout estimate and 95% confidence interval recover the planted effect.
+
+`SolutionJourney.DynamicPricingEnforcesBandsAndRecoversPlantedEffect` builds
+and runs level-4 B-1 over partitioned synthetic pricing history. It executes
+M-4, M-6, and M-16, proves the margin floor and hard band block their bad rows,
+keeps above-automatic-band changes pending approval, protects holdouts, checks
+all five guardrails, and recovers a planted 0.40 net-margin effect inside the
+readout confidence interval.
 
 `SolutionJourney.KpiAnomalyRoutesForumReportAndKeepsPhasedClaimsHonest` builds
 and runs S-7 over a partitioned seasonal KPI table with planted spikes and
@@ -270,3 +355,10 @@ deliveries and channel selection, reads positive M-15 propensity logs, proves
 holdout/consent/contact-cap suppression, records centered net-value outcomes
 with a 0.18 effect, and checks that the estimate and 95% confidence interval
 recover the planted effect.
+
+`SolutionJourney.HealthcareOperationsProtectsAccessAndRecoversPlantedEffect`
+builds and runs B-6 over a partitioned synthetic appointment and claim-work
+table. It excludes a future case, proves permanent holdout suppression,
+inspects minimum-necessary assistive payloads, observes all five guardrails,
+records centered operational-resolution outcomes with a 0.18 planted effect,
+and verifies the effect lies inside the readout confidence interval.

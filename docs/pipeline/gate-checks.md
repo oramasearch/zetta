@@ -7,6 +7,8 @@ the gate's `Check` interface (`include/zetta/pipeline/graph_checks.hpp`,
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
+The default gate registers 79 checks, including the four B-1 checks below.
+
 The reusable annotation and methodology-specific checks are:
 
 | Check | Name | What it catches |
@@ -20,6 +22,7 @@ The reusable annotation and methodology-specific checks are:
 | `ForecastGraphCheck` | `forecast_correctness` | an M-4 graph with invalid temporal backtests, future features, calibration, or no seasonal-naive baseline |
 | `SurvivalCensoringCheck` | `survival_censoring` | a survival model that does not declare censoring, stop-after-event, duration/event columns, and point-in-time features |
 | `CausalUpliftCheck` | `causal_uplift` | an M-6 step missing treatment/outcome roles, weakening overlap bounds, or using an outcome-like or post-treatment feature |
+| `B1*Check` family | `b1_elasticity_identification`, `b1_margin_authority_policy`, `b1_price_leakage`, `b1_level_composition` | a B-1 graph without identifiable price variation, enforced margin/authority policy, decision-time price evidence, or its complete M-4/M-6/M-16 composition |
 | `AnomalyGraphCheck` | `anomaly_correctness` | an M-7 graph with invalid budget, label use, robust scaling, or causal windows |
 | `NextBestActionGraphCheck` | `next_best_action_correctness` | an M-8 graph that drops chronological holdout, guesses logging propensities, treats predictive propensity as causal lift, or weakens eligibility/contact-cap constraints |
 | `RankCorrectnessCheck` | `rank_correctness` | a rank model without a group, a whole-group split, or a ranking-time feature contract |
@@ -49,6 +52,7 @@ The reusable annotation and methodology-specific checks are:
 | `S9*Check` family | `s9_consent_suppression`, `s9_contact_caps`, `s9_uplift_over_propensity` | an S-9 graph without explicit consent/suppression/channel eligibility, positive contact limits, its real outbound response score binding, or positive-uplift targeting where M-6 is composed |
 | `S10*Check` family | `s10_label_delay`, `s10_declined_selection_bias`, `s10_request_time_feature_parity`, `s10_level_composition` | an S-10 graph with immature labels, declined-request selection bias, unlogged exploration, request-time feature drift, stale graph evidence, or missing level stages |
 | `S11*Check` family | `s11_logged_propensity`, `s11_contact_consent`, `s11_propensity_interpretation` | an S-11 graph without durable selection probabilities, consent and cross-channel cap enforcement, or a strict separation between predictive ranking and causal uplift evidence |
+| `B3*Check` family | `b3_abstention_threshold`, `b3_customer_taxonomy`, `b3_closure_approval`, `b3_new_ticket_type_drift`, `b3_level_composition` | a B-3 graph without bounded explicit abstention, a versioned customer-owned taxonomy, A1 closure approval, new-ticket-type monitoring/exclusion, or both M-10 and M-19 |
 
 | `UncertaintyValidationCheck` | `uncertainty_validation` | an M-17 model that assumes coverage instead of measuring it, omits its exchangeability assumption, uses an invalid nominal coverage, or allows conformal calibration rows to overlap fitting rows |
 
@@ -141,6 +145,25 @@ for the selected level. The policy constraints are checked again immediately
 before `run_solution` acts. See [S-12](../solutions/S-12.md) for the complete
 operator contract and refusal list.
 
+### B-4 composed solution checks
+
+The three B-4 checks engage only for a solution manifest bound to `B-4`.
+`b4_per_field_confidence` requires a valid threshold for every declared field
+and matching M-11 confidence attributes. `b4_review_queue` requires an owned
+human-review route for every low-confidence field. `b4_validated_workflow`
+requires structured downstream input and all-fields validation before a
+workflow action. The policy constraints are checked again immediately before
+`run_solution` acts. See [B-4](../solutions/B-4.md) for the full contract.
+### B-7 composed solution checks
+
+The five B-7 checks require persisted adverse-action reason codes, a
+model-risk-owned and co-signed validation pipeline, a passed fair-lending
+review with evaluation-only protected cohorts, A0 human authority for every
+adverse outcome, and M-1 credit scores plus M-17 uncertainty coverage at every
+capability level. The policy authority and required evidence are checked again
+immediately before execution. See [B-7](../solutions/B-7.md) for the complete
+operator contract and refusal list.
+
 ### S-5 composed solution checks
 
 The S-5 checks engage only for a bound S-5 manifest and evaluate the composed
@@ -171,6 +194,24 @@ authority selected for that level, and a configured kill switch at level 4.
 hints, and optional `sources.correctness` overrides. `run_solution` checks the
 stored profile again. See [S-6](../solutions/S-6.md) for the data, policy,
 action, and measurement contract.
+
+### B-1 composed solution checks
+
+The B-1 checks engage only for a bound B-1 manifest.
+`b1_elasticity_identification` requires randomized experiments or another
+declared source of identifiable price variation plus named treatment and
+outcome columns. `b1_margin_authority_policy` requires the executable policy to
+enforce the configured gross-margin floor and hard authority band, requires
+approval above the automatic band for experiments and publication, and
+requires M-16 constraint verification. `b1_price_leakage` rejects competitor
+prices observed after the decision and any configured future-price feature.
+`b1_level_composition` requires M-4, M-6, M-16, the registered level action,
+and the level-4 kill switch.
+
+`create_solution` derives the profile from snapshot and dataset roles, M-6
+columns, the complete policy template, and `sources.correctness`. The margin,
+hard-band, and approval limits are checked again immediately before actions.
+See [B-1](../solutions/B-1.md) for the complete contract.
 
 ### S-7 composed solution checks
 
@@ -255,6 +296,18 @@ propensity, and requires M-6 uplift evidence.
 `sources.correctness` overrides. `run_solution` checks the stored profile
 again. See [S-11](../solutions/S-11.md) for the complete data, action,
 measurement, and refusal contract.
+
+### B-3 composed solution checks
+
+The five B-3 checks engage only for a bound B-3 manifest. They require the
+policy and M-10 model to share a confidence threshold in `(0, 1]`, require A0
+abstention below it, bind routing to a named and versioned customer-owned
+taxonomy, keep `close_ticket` at A1, and require monitored hard exclusion of
+new ticket types. Every level must contain runnable M-10 and M-19 stages.
+
+The closure rule is checked again against the current policy immediately
+before `run_solution` decides. See [B-3](../solutions/B-3.md) for the complete
+data, action, measurement, and refusal contract.
 
 `SegmentationCheck` is mandatory for M-3 model steps, even with no other annotations.
 It validates the nested `segmentation` config against `segmentation_config_schema()`

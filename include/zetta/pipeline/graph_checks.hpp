@@ -385,6 +385,34 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-5 supplier-risk adaptations (#1179). External observations must be frozen
+// at the decision cutoff, supplier records after a disruption cannot become
+// predictors, and every emitted risk flag must carry source and model evidence.
+class B5PointInTimeExternalDataCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b5_point_in_time_external_data";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B5PostEventSupplierLeakageCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b5_post_event_supplier_leakage";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B5FlagEvidenceCheck final : public Check {
+public:
+    std::string name() const override { return "b5_flag_evidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-12 claim-routing adaptations (#1121). These checks keep claim denial out
 // of automatic paths, require a documented cohort fairness review, enforce the
 // M-11 field-confidence boundary, and verify every selected capability level.
@@ -416,6 +444,157 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
+// B-3 service automation adaptations (#1177). The composed Pipeline must
+// abstain below a governed confidence floor, use a customer-owned taxonomy,
+// keep closure behind approval, and monitor previously unseen ticket types.
+class B3AbstentionCheck final : public Check {
+public:
+    std::string name() const override { return "b3_abstention_threshold"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3CustomerTaxonomyCheck final : public Check {
+public:
+    std::string name() const override { return "b3_customer_taxonomy"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3ClosureApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "b3_closure_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3NewTicketTypeDriftCheck final : public Check {
+public:
+    std::string name() const override { return "b3_new_ticket_type_drift"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B3LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "b3_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// B-4 document-workflow adaptations (#1178). Every declared field has its own
+// threshold, uncertain fields enter an owned human-review queue, and business
+// workflow actions remain unavailable until every required field validates.
+class B4PerFieldConfidenceCheck final : public Check {
+public:
+    std::string name() const override { return "b4_per_field_confidence"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B4ReviewQueueCheck final : public Check {
+public:
+    std::string name() const override { return "b4_review_queue"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B4ValidatedWorkflowCheck final : public Check {
+public:
+    std::string name() const override { return "b4_validated_workflow"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// B-6 healthcare-operations adaptations (#1180). The module requires an
+// owned protected-group review, permits assistive work only, records an
+// approved privacy posture, and limits model features to the reviewed
+// minimum-necessary set.
+class B6EquityReviewCheck final : public Check {
+public:
+    std::string name() const override { return "b6_equity_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6AssistiveOnlyCheck final : public Check {
+public:
+    std::string name() const override { return "b6_assistive_only"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6PrivacyPostureCheck final : public Check {
+public:
+    std::string name() const override { return "b6_privacy_posture"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B6PhiMinimizationCheck final : public Check {
+public:
+    std::string name() const override { return "b6_phi_minimization"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+// B-7 credit-underwriting adaptations (#1181). These checks require complete
+// adverse-action reasons, model-risk validation, fair-lending review, A0 human
+// authority for adverse decisions, and the M-1/M-17 credit output contract.
+class B7AdverseActionReasonsCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_adverse_action_reasons";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7ValidationPipelineCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_validation_pipeline";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_fairness_review";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7HumanAuthorityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_human_authority";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B7LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b7_level_composition";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
 // S-11 validates logged probabilities, contact constraints, and interpretation.
 class S11LoggedPropensityCheck final : public Check {
 public:
@@ -437,6 +616,92 @@ public:
         return "s11_propensity_interpretation";
     }
     bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// B-2 employee-attrition adaptations (#1176). Every surfaced row is a
+// protected cohort, review and approval evidence is explicit, and delivery is
+// restricted to the named people leader.
+class B2MinimumGroupSizeCheck final : public Check {
+public:
+    std::string name() const override { return "b2_minimum_group_size"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2AggregateOnlyCheck final : public Check {
+public:
+    std::string name() const override { return "b2_aggregate_only"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2FairnessReviewCheck final : public Check {
+public:
+    std::string name() const override { return "b2_fairness_review"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2ApprovalCheck final : public Check {
+public:
+    std::string name() const override { return "b2_approval"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B2PeopleLeaderOutputCheck final : public Check {
+public:
+    std::string name() const override { return "b2_people_leader_output"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// B-8 IT and security operations adaptations (#1182). Alert volume is
+// bounded, authority advances only through the declared A0/A1/A2 levels, the
+// kill switch blocks delivery, and automatic containment stays inside the
+// approved playbook scope.
+class B8AlertBudgetCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_alert_budget";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8GraduatedAuthorityCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_graduated_authority";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8KillSwitchCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_kill_switch";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B8ContainmentBoundsCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b8_containment_bounds";
+    }
+    bool evaluates_composed_graph() const noexcept override {
+        return true;
+    }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
@@ -533,6 +798,41 @@ public:
 class S6LevelCompositionCheck final : public Check {
 public:
     std::string name() const override { return "s6_level_composition"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+// B-1 pricing adaptations (#1175). Recommendations require identifiable
+// variation, bounded policy authority, decision-time price features, and the
+// complete M-4/M-6/M-16 composition at every capability level.
+class B1ElasticityIdentificationCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b1_elasticity_identification";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1MarginAuthorityPolicyCheck final : public Check {
+public:
+    std::string name() const override {
+        return "b1_margin_authority_policy";
+    }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1PriceLeakageCheck final : public Check {
+public:
+    std::string name() const override { return "b1_price_leakage"; }
+    bool evaluates_composed_graph() const noexcept override { return true; }
+    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+};
+
+class B1LevelCompositionCheck final : public Check {
+public:
+    std::string name() const override { return "b1_level_composition"; }
     bool evaluates_composed_graph() const noexcept override { return true; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };

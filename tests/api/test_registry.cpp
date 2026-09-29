@@ -4,6 +4,7 @@
 // assertions over a real Node.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 #include <set>
@@ -156,7 +157,34 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
                   "level"),
               1);
     EXPECT_TRUE(solutions.value.at("solutions").front().at("missing_components").empty());
-    EXPECT_EQ(solutions.value.at("solutions").back().at("status"), "sketch");
+    const auto b4 = std::find_if(
+        solutions.value.at("solutions").begin(),
+        solutions.value.at("solutions").end(),
+        [](const auto& solution) { return solution.at("id") == "B-4"; });
+    ASSERT_NE(b4, solutions.value.at("solutions").end());
+    EXPECT_EQ(b4->at("status"), "catalogue");
+    EXPECT_EQ(b4->at("runnable"), true);
+    EXPECT_EQ(b4->at("minimal_template"), false);
+    EXPECT_TRUE(b4->at("missing_components").empty());
+    EXPECT_FALSE(b4->at("promotion_condition").get<std::string>().empty());
+    EXPECT_EQ(solutions.value.at("solutions").back().at("id"), "B-8");
+    EXPECT_EQ(solutions.value.at("solutions").back().at("status"),
+              "catalogue");
+    EXPECT_TRUE(solutions.value.at("solutions").back().at("runnable"));
+    EXPECT_FALSE(solutions.value.at("solutions")
+                     .back()
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+    const ApiResult healthcare =
+        call("get_solution", {{"solution", "B-6"}});
+    ASSERT_TRUE(healthcare.ok);
+    EXPECT_TRUE(healthcare.value.at("solution").at("runnable"));
+    EXPECT_EQ(healthcare.value.at("solution").at("status"), "catalogue");
+    EXPECT_FALSE(healthcare.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an

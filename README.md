@@ -124,8 +124,8 @@ What's inside, by domain (each links to that domain's docs):
   conditional spaces, TPE or random/grid sampling, median or ASHA pruning, and
   tracked Run trials; analysis, governed model promotion, and lineage-preserving
   deletion of stopped studies have REST/MCP parity.
-  The [solution registry](docs/solutions/README.md) lists the 12 catalogue
-  modules and eight Band-B sketches. Selected levels now execute snapshots,
+  The [solution registry](docs/solutions/README.md) lists 20 runnable catalogue
+  modules. Selected levels execute snapshots,
   methodology callbacks, typed policy defaults, protected holdouts, action
   delivery, ledger recording and monitoring, with versioned ROI readouts.
   S-1 is runnable at all four levels with eight named domain refusals,
@@ -140,6 +140,9 @@ What's inside, by domain (each links to that domain's docs):
   S-4 is runnable at all four levels with regulatory contact-limit,
   vulnerable-customer, and point-in-time promise-to-pay refusals; digital and
   dialer delivery; a permanent holdout; and net-recovery readout.
+  B-4 adds runnable document and workflow automation with per-field confidence
+  checks, owned review queues for uncertain fields, validated structured
+  workflow handoff, protected holdouts, and workflow-completion readout.
   S-12 adds runnable FNOL claim routing with fast-track, adjuster, and
   SIU paths, A0-only denial, document-confidence and fairness refusals, action
   tasks, holdout, and ROI readout. S-5 is runnable at all four levels with
@@ -148,6 +151,10 @@ What's inside, by domain (each links to that domain's docs):
   S-6 is runnable at all four levels with lead-time demand aggregation,
   constrained replenishment, bounded ERP release, protected holdout
   measurement, and a service-level ROI readout.
+  B-1 is runnable at all four levels with identifiable price-effect evidence,
+  M-4/M-6/M-16 execution, margin and authority limits, A1 approval above the
+  automatic band, protected experiments, governed price publication, and a
+  net-margin ROI readout.
   S-7 is runnable at all four levels with seasonal anomaly checks, exact alert
   budgets, candidate-driver forum reports, decision logs, permanent holdouts,
   and honest phased readouts. S-8 is runnable at all four levels with
@@ -159,8 +166,24 @@ What's inside, by domain (each links to that domain's docs):
   case tasks, and delayed-label, selection-bias, and feature-parity refusals.
   S-11 is runnable at all four levels with M-8 action rankings,
   M-15 logged exploration, consent/contact enforcement, request-time channel
-  delivery, uplift cells, and a net-value ROI readout. Snapshot
-  cutoffs, delivery destinations and ROI economics remain caller-supplied.
+  delivery, uplift cells, and a net-value ROI readout. B-2 is runnable at all
+  four levels with aggregate cohort scoring, minimum group size, fairness and
+  legal-approval gates, people-leader-only reports, protected holdouts, and an
+  aggregate attrition readout.
+  B-3 is runnable at all four levels with M-10 ticket confidence, M-19 label
+  efficiency, customer-owned taxonomy routing, explicit abstention,
+  approval-only closure, new-ticket-type drift, and resolution-quality
+  measurement. B-5 is runnable at all
+  four levels with point-in-time external evidence, post-event supplier-record
+  refusal, forecast-backed risk flags, bounded procurement actions, protected
+  holdouts, and disruption-avoidance measurement. B-6 is runnable at all four
+  levels with assistive scheduling and
+  revenue-cycle work queues, equity review, privacy approval, minimum-necessary
+  PHI checks, protected holdouts, and operational-resolution ROI. Snapshot
+  B-8 adds runnable IT and security operations with M-12 dependency context,
+  exact-budget M-7 alerts, graduated A0/A1/A2 authority, a hard kill switch,
+  single-asset containment, permanent holdouts, and incident-avoidance ROI.
+  Snapshot cutoffs, delivery destinations and ROI economics remain caller-supplied.
   Their projected records participate in the workspace engine's
   [incremental reconciliation](docs/cluster/solution-reconciliation.md), while
   policy/decision and ROI stores read directly from replicated state.

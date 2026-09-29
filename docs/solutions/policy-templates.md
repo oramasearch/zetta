@@ -106,6 +106,15 @@ experiment keeps 10% as permanent holdout and divides the rest equally between
 M-8 exploit and M-15 explore cells. The explore cell records M-15's actual
 selection probability; exploit records one.
 
+B-1 defines high/standard demand floors of 24.0/0.0. Level 1 emits an A0 price
+recommendation, level 2 creates an A2 pricing-review task, level 3 creates an A2
+controlled experiment, and level 4 publishes an A2 price change. Experiment
+and publication actions become A1 above `authority_distance` 0.05. Eligibility
+requires pricing approval, a fresh current price, gross margin at least 0.25,
+and authority distance at most 0.15; manual-only and legal-hold flags suppress
+action. Its two tiers each keep a deterministic 10% holdout and measure 30-day
+`net_margin`.
+
 These numbers are editable configuration, not calibration claims or customer
 economics. Experiment defaults provide 10% holdout probability per declared
 tier. S-1 treatment cells are `csm_task` and `retention_journey`; its guardrails
@@ -138,6 +147,8 @@ action execution over a champion/challenger design.
 S-11 observes consent,
 contact-cap, propensity-log, margin-floor, and action-execution guardrails and
 measures `net_value` through uplift cells.
+B-1 observes margin-floor, hard authority-band, unapproved-change,
+price-feature-leakage, and action-execution guardrails.
 Guardrails and outcome/design definitions are typed alongside the policy.
 
 S-12 supplies a complete claim-routing policy. Score floors 0.75 and 0.40
@@ -148,6 +159,36 @@ routing. Fast-track work above 5,000 cost units moves to A1 approval, while
 denial remains an A0 recommendation at every amount. Its three tiers each use
 a deterministic 10% holdout, with path-assignment and referral-task treatment
 cells measured on 45-day `referral_confirmed` outcomes.
+
+B-2 supplies a complete aggregate workforce-risk policy. Elevated/watch/
+baseline floors are 0.60/0.35/0.0 and select an A2 people-leader review, an A2
+aggregate report, or A0 no action. The optional organizational-intervention
+review is A1. Eligibility requires a cohort size of at least five, explicit
+people-leader authorization, passed fairness review, recorded legal approval,
+and no individual-level output. Restricted cohorts and individual-output rows
+are excluded. Every tier has a permanent 10% holdout; the treatment cell is
+`people_leader_review`, and the named 90-day outcome is
+`attrition_reduction`. The promotion condition remains catalogue metadata for
+go-to-market decisions and does not disable the executable module.
+B-7 supplies the credit-policy default. Score floors 0.70, 0.40, and 0.0
+select underwriter review, limit review, and approval. Approvals up to a 5,000
+requested limit are A2; higher approvals and limit increases require A1.
+Decline and lower-limit recommendations are explicit alternatives but remain
+A0 human-only and are never selected directly by a score tier. Verified
+eligibility and income, model-validation approval, fairness-review approval,
+and reason-code readiness must pass. Fraud, bankruptcy, and manual-only holds
+block delivery. Each tier keeps a deterministic 10% holdout measured on the
+90-day `performing_account` outcome.
+
+B-8 supplies a complete IT and security response policy. Critical, elevated,
+and advisory tiers share an exact ten-alert budget. Levels select A0
+investigation, A1 containment approval, or single-asset A2 containment inside
+an approved playbook; advisory and unflagged rows remain no-action. Owner,
+playbook, containment permission, dependency scope, and `affected_assets <= 1`
+rules are mandatory. Manual-only, protected-asset, and active-incident flags
+block delivery. Every tier has a deterministic 10% holdout, and a boolean kill
+switch stops the action path. Five guardrails cover alert volume, containment
+scope, unapproved containment, switch bypass, and execution.
 
 The policy regression checks high/medium/low actions, above-cap A1 approval,
 within-cap discounts, missing/true exclusion evidence, and repeated monthly

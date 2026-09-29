@@ -276,6 +276,64 @@ void land_retention_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_employee_attrition_data(Node& node) {
+    const auto database = node.create_database("people_analytics");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("workforce_groups");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 180; ++index) {
+        const double engagement =
+            0.25 + static_cast<double>(index % 13) / 20.0;
+        const double workload =
+            0.3 + static_cast<double>((index * 7) % 17) / 18.0;
+        const double tenure_mix =
+            0.2 + static_cast<double>((index * 3) % 11) / 15.0;
+        const bool attrition =
+            workload + tenure_mix - engagement +
+                static_cast<double>(index % 5) * 0.03 >
+            0.75;
+        table->add_row(
+            {{"group_key", index + 1},
+             {"record_id", index + 1},
+             {"source", "aggregate-fixture"},
+             {"name", "Workforce group " + std::to_string(index + 1)},
+             {"attrition_label", attrition ? 1 : 0},
+             {"engagement", engagement},
+             {"workload", workload},
+             {"tenure_mix", tenure_mix},
+             {"group_size", 12 + index % 19},
+             {"feature_time", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"people_leader_authorized", true},
+             {"fairness_review_passed", true},
+             {"legal_approval_recorded", true},
+             {"individual_level_output", false},
+             {"restricted_cohort", false}});
+    }
+    table->add_row(
+        {{"group_key", 9999},
+         {"record_id", 9999},
+         {"source", "aggregate-fixture"},
+         {"name", "Future workforce group"},
+         {"attrition_label", 1},
+         {"engagement", 0.1},
+         {"workload", 0.9},
+         {"tenure_mix", 0.8},
+         {"group_size", 20},
+         {"feature_time", 180.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"people_leader_authorized", true},
+         {"fairness_review_passed", true},
+         {"legal_approval_recorded", true},
+         {"individual_level_output", false},
+         {"restricted_cohort", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 void land_demand_forecast_data(Node& node) {
     const auto database = node.create_database("demand");
     ASSERT_TRUE(database);
@@ -314,6 +372,98 @@ void land_demand_forecast_data(Node& node) {
     const auto written =
         zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
+}
+
+void land_supplier_risk_data(Node& node) {
+    const auto database = node.create_database("supplier_data");
+    ASSERT_TRUE(database);
+    const auto suppliers = database->create_table("suppliers");
+    ASSERT_TRUE(suppliers);
+    suppliers->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 120; ++index) {
+        const int supplier = index + 1;
+        const bool elevated = index % 3 == 0;
+        const double delivery_signal =
+            static_cast<double>(index % 10) * 0.05 +
+            (elevated ? 0.25 : 0.0);
+        const double concentration_signal =
+            static_cast<double>((index * 7) % 11) * 0.04 +
+            (elevated ? 0.2 : 0.0);
+        suppliers->add_row(
+            {{"entity", supplier},
+             {"record_id", supplier},
+             {"source", "fixture"},
+             {"name", "Supplier " + std::to_string(supplier)},
+             {"label", elevated ? 1 : 0},
+             {"disruption", elevated ? 1 : 0},
+             {"late_delivery_rate", delivery_signal},
+             {"concentration", concentration_signal},
+             {"start_time", static_cast<double>(index)},
+             {"external_observed_at", "2026-08-15T00:00:00.000Z"},
+             {"external_source", "supplier-monitor"},
+             {"procurement_eligible", true},
+             {"external_data_current", true},
+             {"evidence_complete", true},
+             {"supplier_closed", false},
+             {"sanctions_hold", false},
+             {"part_id", "part-" + std::to_string(index % 12)},
+             {"site_id", "site-west"},
+             {"contract_id", "contract-" + std::to_string(supplier)},
+             {"mitigation_cost", elevated ? 5000.0 : 1000.0},
+             {"single_source_dependency", index % 3 == 0},
+             {"owner", "procurement-west"}});
+    }
+    suppliers->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "fixture"},
+         {"name", "Future supplier"},
+         {"label", 1},
+         {"disruption", 1},
+         {"late_delivery_rate", 1.0},
+         {"concentration", 1.0},
+         {"start_time", 120.0},
+         {"external_observed_at", "2026-10-01T00:00:00.000Z"},
+         {"external_source", "supplier-monitor"},
+         {"procurement_eligible", true},
+         {"external_data_current", true},
+         {"evidence_complete", true},
+         {"supplier_closed", false},
+         {"sanctions_hold", false},
+         {"part_id", "future-part"},
+         {"site_id", "future-site"},
+         {"contract_id", "future-contract"},
+         {"mitigation_cost", 5000.0},
+         {"single_source_dependency", true},
+         {"owner", "procurement-west"}});
+    const auto suppliers_written =
+        zetta::data::write_partitioned(node, *database, *suppliers);
+    ASSERT_TRUE(suppliers_written.ok()) << suppliers_written.error;
+
+    const auto history = database->create_table("supplier_history");
+    ASSERT_TRUE(history);
+    history->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int supplier = 1; supplier <= 120; ++supplier) {
+        for (int day = 0; day < 35; ++day) {
+            const int observation = supplier * 1000 + day;
+            const double baseline = supplier % 3 == 1 ? 0.5 : 0.15;
+            const double weekly =
+                0.04 * std::sin(day * 2.0 * std::numbers::pi / 7.0);
+            history->add_row(
+                {{"observation_id", observation},
+                 {"record_id", observation},
+                 {"source", "fixture"},
+                 {"name", "history-" + std::to_string(observation)},
+                 {"supplier_id", supplier},
+                 {"day", day},
+                 {"late_delivery_rate", baseline + weekly}});
+        }
+    }
+    const auto history_written =
+        zetta::data::write_partitioned(node, *database, *history);
+    ASSERT_TRUE(history_written.ok()) << history_written.error;
 }
 
 TEST_F(SolutionJourney,
@@ -813,6 +963,300 @@ TEST_F(SolutionJourney,
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+void land_it_security_operations_data(Node& node) {
+    const auto database = node.create_database("operations");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("security_events");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool planted_risk = index > 47 && index % 24 == 0;
+        const bool confirmed_incident = index % 31 == 0;
+        const double failed_auth =
+            static_cast<double>(index % 6) + (planted_risk ? 80.0 : 0.0);
+        const double latency =
+            20.0 + static_cast<double>(index % 9) +
+            (planted_risk ? 120.0 : 0.0);
+        table->add_row(
+            {{"asset_id", index},
+             {"dependency_id", index % 30 + 1001},
+             {"edge_weight", 1.0 + static_cast<double>(index % 5) / 10.0},
+             {"period", static_cast<double>(index)},
+             {"observed_at", "2026-08-01T00:00:00.000Z"},
+             {"failed_auth", failed_auth},
+             {"latency", latency},
+             {"confirmed_incident", confirmed_incident ? 1 : 0},
+             {"eligible", true},
+             {"owner_assigned", true},
+             {"approved_playbook", true},
+             {"containment_allowed", true},
+             {"dependency_scope_known", true},
+             {"affected_assets", 1.0},
+             {"manual_only", false},
+             {"protected_asset", false},
+             {"active_incident", false},
+             {"playbook", "isolate-single-asset"},
+             {"owner", "security-operations"}});
+    }
+    table->add_row(
+        {{"asset_id", 9999},
+         {"dependency_id", 9999},
+         {"edge_weight", 9.0},
+         {"period", 240.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"failed_auth", 9999.0},
+         {"latency", 9999.0},
+         {"confirmed_incident", 1},
+         {"eligible", true},
+         {"owner_assigned", true},
+         {"approved_playbook", true},
+         {"containment_allowed", true},
+         {"dependency_scope_known", true},
+         {"affected_assets", 1.0},
+         {"manual_only", false},
+         {"protected_asset", false},
+         {"active_incident", false},
+         {"playbook", "isolate-single-asset"},
+         {"owner", "security-operations"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json it_security_operations_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "operations"},
+          {"source_table", "security_events"},
+          {"target_table", "security_operations_snapshot"},
+          {"entity_column", "asset_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "confirmed_incident"},
+          {"time_column", "period"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"dependency_id", "edge_weight", "failed_auth", "latency"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://security.example.test/containment"},
+          {"owner", "security-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 0.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey planted_incident_avoidance_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"b8-planted-incident-avoidance", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.25 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.16);
+        outcomes.steps.push_back(
+            {"record observed incident avoidance",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "incident_avoided"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}},
+             {},
+             {{"outcome_id", "/id"}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured incident-avoidance effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted incident-avoidance effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.16) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.16 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.16;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       ItSecurityOperationsContainsRiskAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_it_security_operations_data(node);
+    ASSERT_TRUE(call("create_project", {{"name", "security operations"}}).ok);
+    const ApiResult catalogue =
+        call("get_solution", {{"solution", "B-8"}});
+    ASSERT_TRUE(catalogue.ok) << catalogue.error.message;
+    EXPECT_TRUE(catalogue.value.at("solution").at("runnable"));
+    EXPECT_FALSE(catalogue.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "security operations"},
+         {"solution", "B-8"},
+         {"level", 3},
+         {"sources",
+          {{"source", "operations"},
+           {"table", "security_events"},
+           {"M-7",
+            {{"mode", "kpi_time_series"},
+             {"entity_column", "entity_id"},
+             {"label_column", "confirmed_incident"},
+             {"time_column", "period"},
+             {"feature_columns",
+              {"dependency_id", "edge_weight", "failed_auth", "latency"}},
+             {"alert_budget", 10},
+             {"seasonal_period", 7},
+             {"trend_window", 28},
+             {"residual_window", 56},
+             {"seasonal_cycles", 8}}},
+           {"M-12",
+            {{"source_column", "entity_id"},
+             {"destination_column", "dependency_id"},
+             {"weight_column", "edge_weight"},
+             {"time_column", "period"},
+             {"label_column", "confirmed_incident"},
+             {"prediction_time", 239.0}}}}},
+         {"foundation", it_security_operations_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_EQ(created.value.at("methodologies"),
+              (nlohmann::json{"M-12", "M-7"}));
+
+    const auto project = node.find_project("security operations");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-7");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "anomaly table");
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "security operations"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 8000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+    EXPECT_EQ(status.value.at("lineage").at("steps").size(), 8u);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t actionable_containments = 0;
+    const std::string policy_id = binding.at("policy_id");
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id != policy_id) {
+            continue;
+        }
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+        }
+        if (decision.actionable) {
+            ++actionable_containments;
+            EXPECT_EQ(decision.action, "bounded_containment");
+            EXPECT_EQ(decision.autonomy, "A2");
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(actionable_containments, 0u);
+    EXPECT_LE(actionable_containments, 10u);
+    EXPECT_EQ(delivery.requests.size(), actionable_containments);
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("action"), "bounded_containment");
+        EXPECT_EQ(request.at("payload").at("affected_assets"), 1.0);
+        EXPECT_TRUE(request.at("payload").at("approved_playbook"));
+        EXPECT_TRUE(request.at("payload").at("dependency_scope_known"));
+        EXPECT_TRUE(request.at("payload").at("kill_switch_checked"));
+        EXPECT_EQ(request.at("payload")
+                      .at("authority_boundary")
+                      .at("automatic_autonomy"),
+                  "A2");
+    }
+
+    const auto snapshot = node.find_database("operations")
+                              ->find_table("security_operations_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 240u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_incident_avoidance_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout = call(
             "get_roi_readout", {{"solution", binding.at("scope")}});
         if (readout.ok) {
             ADD_FAILURE() << readout.value.at("incrementality").dump(2);
@@ -1461,6 +1905,71 @@ void land_lead_scoring_data(Node& node) {
          {"rep_capacity_available", true},
          {"territory", "west"},
          {"owner", "west-sales"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+void land_healthcare_operations_data(Node& node) {
+    const auto database = node.create_database("healthcare");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("operations");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const bool scheduling = index % 2 == 0;
+        table->add_row(
+            {{"entity", index + 1},
+             {"record_id", index + 1},
+             {"source", "synthetic_operations"},
+             {"label", index % 9 != 0 ? 1 : 0},
+             {"operational_signal", index % 17 + 0.25},
+             {"prior_missed_visits", index % 4},
+             {"start_time", static_cast<double>(index)},
+             {"time", "2026-08-01T00:00:00.000Z"},
+             {"workflow_type", scheduling ? "scheduling" : "revenue_cycle"},
+             {"action", scheduling ? "scheduling_assistance"
+                                    : "revenue_cycle_review"},
+             {"protected_group", "group-" + std::to_string(index % 4)},
+             {"operations_eligible", true},
+             {"privacy_posture_approved", true},
+             {"minimum_necessary_fields", true},
+             {"equity_review_passed", true},
+             {"care_access_unaffected", true},
+             {"patient_opt_out", false},
+             {"clinical_decision", false},
+             {"care_denial_requested", false},
+             {"phi_scope_exceeded", false},
+             {"contacts", 0},
+             {"recent_actions", 0},
+             {"owner", scheduling ? "care-coordination"
+                                  : "revenue-cycle"}});
+    }
+    table->add_row(
+        {{"entity", 9999},
+         {"record_id", 9999},
+         {"source", "synthetic_operations"},
+         {"label", 1},
+         {"operational_signal", 999.0},
+         {"prior_missed_visits", 4},
+         {"start_time", 240.0},
+         {"time", "2026-10-01T00:00:00.000Z"},
+         {"workflow_type", "scheduling"},
+         {"action", "scheduling_assistance"},
+         {"protected_group", "group-0"},
+         {"operations_eligible", true},
+         {"privacy_posture_approved", true},
+         {"minimum_necessary_fields", true},
+         {"equity_review_passed", true},
+         {"care_access_unaffected", true},
+         {"patient_opt_out", false},
+         {"clinical_decision", false},
+         {"care_denial_requested", false},
+         {"phi_scope_exceeded", false},
+         {"contacts", 0},
+         {"recent_actions", 0},
+         {"owner", "care-coordination"}});
     const auto written =
         zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
@@ -2228,6 +2737,70 @@ void land_replenishment_data(Node& node) {
     ASSERT_TRUE(written.ok()) << written.error;
 }
 
+void land_dynamic_pricing_data(Node& node) {
+    const auto database = node.create_database("datasets");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("pricing_history");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    int row_id = 1;
+    for (int product = 1; product <= 96; ++product) {
+        const double current_price =
+            80.0 + static_cast<double>(product % 20);
+        const double authority_distance =
+            product % 10 == 2 ? 0.20
+            : product % 10 == 3 ? 0.10
+                                : 0.03;
+        const double direction = product % 3 == 0 ? -1.0 : 1.0;
+        for (int period = 0; period < 36; ++period) {
+            const bool treated = product % 2 == 0;
+            const double baseline_demand =
+                18.0 + static_cast<double>(product % 9);
+            const double demand =
+                baseline_demand + static_cast<double>(period) * 0.15 +
+                static_cast<double>(period % 7) * 0.2;
+            table->add_row(
+                {{"row_id", row_id},
+                 {"series", product},
+                 {"period", static_cast<double>(period)},
+                 {"demand", demand},
+                 {"baseline_demand", baseline_demand},
+                 {"price_treatment", treated ? 1 : 0},
+                 {"demand_response",
+                  treated ? (product % 5 == 0 ? 0 : 1)
+                          : (product % 11 == 0 ? 1 : 0)},
+                 {"pricing_eligible", true},
+                 {"current_price_fresh", true},
+                 {"manual_pricing_only", false},
+                 {"legal_hold", false},
+                 {"gross_margin", product % 10 == 1 ? 0.20 : 0.40},
+                 {"current_price", current_price},
+                 {"recommended_price",
+                  current_price *
+                      (1.0 + direction * authority_distance)},
+                 {"authority_distance", authority_distance},
+                 {"competitor_price", current_price * 1.02},
+                 {"variable", "price-" + std::to_string(product)},
+                 {"objective", demand},
+                 {"lower_bound", 0.0},
+                 {"upper_bound", 1.0},
+                 {"integer", false},
+                 {"current_value", 0.0},
+                 {"scenario", "base"},
+                 {"constraint", "pricing_capacity"},
+                 {"coefficient", 1.0},
+                 {"sense", "<="},
+                 {"rhs", 96.0},
+                 {"owner", "pricing-governance"}});
+            ++row_id;
+        }
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
 nlohmann::json retention_configuration() {
     return {
         {"snapshot", {{"database", "datasets"}, {"source_table", "customers"},
@@ -2241,6 +2814,55 @@ nlohmann::json retention_configuration() {
         {"roi_model", {{"value_per_outcome", 100.0}, {"investment", 200.0}, {"currency", "USD"}}}};
 }
 
+nlohmann::json employee_attrition_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "people_analytics"},
+          {"source_table", "workforce_groups"},
+          {"target_table", "employee_attrition_snapshot"},
+          {"entity_column", "group_key"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "attrition_label"},
+          {"time_column", "feature_time"},
+          {"as_of", 179.0},
+          {"feature_columns", {"engagement", "workload", "tenure_mix"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://people.example.test/workforce-risk"},
+          {"owner", "chief-people-officer"}}},
+        {"roi_model",
+         {{"value_per_outcome", 500.0},
+          {"investment", 1000.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json supplier_risk_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "supplier_data"},
+          {"source_table", "suppliers"},
+          {"target_table", "supplier_risk_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "external_observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "disruption"},
+          {"time_column", "start_time"},
+          {"as_of", 119.0},
+          {"feature_columns", {"late_delivery_rate", "concentration"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://procurement.example.test/tasks"},
+          {"owner", "procurement-west"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1000.0},
+          {"investment", 500.0},
+          {"currency", "USD"}}}};
+}
 nlohmann::json lead_scoring_configuration() {
     return {
         {"snapshot",
@@ -2263,6 +2885,32 @@ nlohmann::json lead_scoring_configuration() {
         {"roi_model",
          {{"value_per_outcome", 250.0},
           {"investment", 300.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json healthcare_operations_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "healthcare"},
+          {"source_table", "operations"},
+          {"target_table", "operations_snapshot"},
+          {"entity_column", "entity"},
+          {"time_column", "time"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"time_column", "start_time"},
+          {"as_of", 239.0},
+          {"feature_columns",
+           {"operational_signal", "prior_missed_visits"}}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://healthcare.example.test/operations"},
+          {"owner", "healthcare-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 150.0},
+          {"investment", 250.0},
           {"currency", "USD"}}}};
 }
 
@@ -2293,6 +2941,38 @@ nlohmann::json replenishment_configuration() {
         {"roi_model",
          {{"value_per_outcome", 500.0},
           {"investment", 400.0},
+          {"currency", "USD"}}}};
+}
+
+nlohmann::json dynamic_pricing_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "datasets"},
+          {"source_table", "pricing_history"},
+          {"target_table", "pricing_snapshot"},
+          {"entity_column", "series"},
+          {"time_column", "period"},
+          {"as_of", 35.0}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "demand_response"},
+          {"time_column", "period"},
+          {"as_of", 35.0},
+          {"feature_columns", {"baseline_demand", "current_price",
+                               "competitor_price", "gross_margin",
+                               "authority_distance"}}}},
+        {"decision_source",
+         {{"methodology", "M-4"},
+          {"entity_column", "series"},
+          {"score_column", "point_forecast"},
+          {"output_name", "forecast"}}},
+        {"delivery",
+         {{"kind", "webhook"},
+          {"endpoint", "https://pricing.example.test/changes"},
+          {"owner", "pricing-governance"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1.0},
+          {"investment", 100.0},
           {"currency", "USD"}}}};
 }
 
@@ -2392,6 +3072,127 @@ journey::Journey planted_retention_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+journey::Journey planted_employee_attrition_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"employee-attrition-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double response =
+            0.2 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.15);
+        outcomes.steps.push_back(
+            {"record aggregate attrition outcome",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "attrition_reduction"},
+              {"value", response},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured aggregate attrition effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted aggregate attrition effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.15) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.15 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+journey::Journey planted_supplier_risk_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"supplier-risk-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double avoided =
+            0.3 + 0.08 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record observed supplier outcome",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "disruption_avoided"},
+              {"value", avoided},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured supplier-risk effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted supplier-risk effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
 journey::Journey planted_conversion_outcomes(
     const nlohmann::json& entries,
     const nlohmann::json& binding) {
@@ -2450,6 +3251,67 @@ journey::Journey planted_conversion_outcomes(
                              estimate.at("confidence_interval")
                                      .at("upper")
                                      .template get<double>() >= 0.15;
+                  })}}});
+    return outcomes;
+}
+
+journey::Journey planted_healthcare_operations_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"healthcare-operations-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double resolution =
+            0.3 + 0.1 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record operational resolution",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "operational_resolution"},
+              {"value", resolution},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured healthcare operations effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted operations effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
                   })}}});
     return outcomes;
 }
@@ -2659,6 +3521,240 @@ journey::Journey planted_lifetime_value_outcomes(
                              estimate.at("confidence_interval")
                                      .at("upper")
                                      .template get<double>() >= 75.0;
+                  })}}});
+    return outcomes;
+}
+
+void land_credit_underwriting_data(Node& node) {
+    const auto database = node.create_database("credit");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("applications");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int application_id = index + 1;
+        const double debt_ratio =
+            static_cast<double>(index % 20) / 25.0;
+        const double utilization =
+            static_cast<double>((index * 7) % 20) / 20.0;
+        const double income =
+            35000.0 + static_cast<double>(index % 30) * 1800.0;
+        const bool defaulted =
+            debt_ratio + utilization * 0.5 > 0.75;
+        table->add_row(
+            {{"application_id", application_id},
+             {"record_id", application_id},
+             {"source", "credit-fixture"},
+             {"name", "Applicant " + std::to_string(application_id)},
+             {"defaulted", defaulted ? 1 : 0},
+             {"income", income},
+             {"debt_ratio", debt_ratio},
+             {"utilization", utilization},
+             {"portfolio_group", "segment-" + std::to_string(index % 4)},
+             {"action", index % 29 == 0
+                            ? "decline_recommendation"
+                            : std::string{}},
+             {"requested_limit", 4000.0},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"eligibility_verified", true},
+             {"income_verified", true},
+             {"model_validation_approved", true},
+             {"fairness_review_passed", true},
+             {"adverse_action_reasons_ready", true},
+             {"fraud_hold", false},
+             {"bankruptcy_hold", false},
+             {"manual_only", false},
+             {"approval_rate_gap", 0.04},
+             {"race_evaluation", "evaluation-cohort-a"},
+             {"sex_evaluation", "evaluation-cohort-b"},
+             {"owner", "credit-underwriting"}});
+    }
+    table->add_row(
+        {{"application_id", 9999},
+         {"record_id", 9999},
+         {"source", "credit-fixture"},
+         {"name", "Future applicant"},
+         {"defaulted", 1},
+         {"income", 1000.0},
+         {"debt_ratio", 1.0},
+         {"utilization", 1.0},
+         {"portfolio_group", "segment-future"},
+         {"requested_limit", 4000.0},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"eligibility_verified", true},
+         {"income_verified", true},
+         {"model_validation_approved", true},
+         {"fairness_review_passed", true},
+         {"adverse_action_reasons_ready", true},
+         {"fraud_hold", false},
+         {"bankruptcy_hold", false},
+         {"manual_only", false},
+         {"approval_rate_gap", 0.04},
+         {"owner", "credit-underwriting"}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json credit_underwriting_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "credit"},
+          {"source_table", "applications"},
+          {"target_table", "applications_snapshot"},
+          {"entity_column", "application_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "defaulted"},
+          {"feature_columns", {"income", "debt_ratio", "utilization"}}}},
+        {"delivery",
+         {{"endpoint", "https://credit.example.test/underwriting"},
+          {"owner", "credit-underwriting"}}},
+        {"roi_model",
+         {{"value_per_outcome", 1000.0},
+          {"investment", 500.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey credit_underwriting_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"credit-underwriting-solution", {}};
+    flow.steps = {
+        {"read executable credit defaults", "get_solution",
+         {{"solution", "B-7"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/decline_recommendation/autonomy",
+                  "A0"),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::predicate(
+                  "promotion condition remains recorded",
+                  [](const auto& value) {
+                      return !value.at("solution")
+                                  .at("promotion_condition")
+                                  .template get<std::string>()
+                                  .empty();
+                  }),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the credit project", "create_project",
+         {{"name", "credit underwriting"}}},
+        {"create the composed credit solution", "create_solution",
+         {{"project", "credit underwriting"},
+          {"solution", "B-7"},
+          {"level", 1},
+          {"sources",
+           {{"source", "credit"},
+            {"table", "applications"},
+            {"M-17",
+             {{"entity_column", "entity_id"},
+              {"label_column", "defaulted"},
+              {"group_column", "portfolio_group"},
+              {"nominal_coverage", 0.9},
+              {"holdout_fraction", 0.2}}},
+            {"correctness",
+             {{"model_risk_owner", "model-risk"},
+              {"model_risk_co_signed", true},
+              {"fairness_review_owner", "fair-lending"},
+              {"fairness_review_passed", true}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 2),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"credit_graph", "/graph"},
+          {"credit_policy", "/policy_id"},
+          {"credit_experiment", "/experiment_id"}}},
+        {"read the credit policy", "get_policy",
+         {{"policy_id", "$credit_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/decline_recommendation/autonomy",
+                  "A0"),
+              journey::equals(
+                  "/versions/0/config/actions/lower_limit_recommendation/autonomy",
+                  "A0")}}},
+        {"run credit underwriting", "run_solution",
+         {{"project", "credit underwriting"},
+          {"graph", "$credit_graph"},
+          {"delivery_token", "credit-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"credit_run", "/run_id"}}},
+        {"read the completed credit Run", "get_run",
+         {{"run_id", "$credit_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 8)}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read credit assignments", "get_experiment",
+         {{"experiment", "$credit_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read credit action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_credit_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"credit-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double performing =
+            0.7 + 0.05 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.14);
+        outcomes.steps.push_back(
+            {"record credit performance", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "performing_account"},
+              {"value", performing},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured credit effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted credit effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.14) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.14 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.14;
                   })}}});
     return outcomes;
 }
@@ -2898,6 +3994,439 @@ journey::Journey planted_claim_outcomes(const nlohmann::json& entries,
     return outcomes;
 }
 
+void land_ticket_triage_data(Node& node) {
+    const auto database = node.create_database("service");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("tickets");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 160; ++index) {
+        const bool billing = index % 2 == 0;
+        const bool new_type = index < 8;
+        const double urgency = index % 5 == 0 ? 0.9 : 0.2;
+        table->add_row(
+            {{"entity_id", index + 1},
+             {"record_id", index + 1},
+             {"source", "ticket-fixture"},
+             {"name", "Ticket " + std::to_string(index + 1)},
+             {"text", billing ? "billing refund failed."
+                               : "account login failed."},
+             {"label", index % 4 == 0 ? 0 : 1},
+             {"urgency", urgency},
+             {"billing_signal", billing ? 1.0 : 0.0},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"service_eligible", true},
+             {"taxonomy_owned_by_customer", true},
+             {"taxonomy_version_current", true},
+             {"new_ticket_type", new_type},
+             {"suppressed", false},
+             {"queue", billing ? "billing" : "identity"},
+             {"taxonomy_version", "customer-v42"},
+             {"owner", "service-operations"},
+             {"draft_reply", billing ? "We are reviewing your refund."
+                                      : "We are reviewing your login."},
+             {"resolution_quality", 0.9},
+             {"misrouted", false}});
+    }
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json ticket_triage_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "service"},
+          {"source_table", "tickets"},
+          {"target_table", "tickets_snapshot"},
+          {"entity_column", "entity_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "label"},
+          {"feature_columns", {"urgency", "billing_signal"}}}},
+        {"delivery",
+         {{"endpoint", "https://service.example.test/tasks"},
+          {"owner", "service-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 50.0},
+          {"investment", 100.0},
+          {"currency", "USD"}}}};
+}
+
+std::string ticket_triage_checkpoint(const fs::path& root) {
+    std::string error;
+    const std::optional<zetta::ml::WordPieceTokenizer> tokenizer =
+        zetta::ml::WordPieceTokenizer::from_vocabulary(
+            {"[PAD]", "[UNK]", "[CLS]", "[SEP]", "billing", "refund",
+             "account", "login", "failed", "."},
+            true, &error);
+    EXPECT_TRUE(tokenizer.has_value()) << error;
+    if (!tokenizer.has_value()) {
+        return {};
+    }
+    zetta::ml::BertConfig config;
+    config.vocab_size = 10;
+    zetta::ml::BertTextEmbedder embedder(config, *tokenizer, 1177);
+    const std::string checkpoint = (root / "b3-minilm").string();
+    EXPECT_TRUE(embedder.save_checkpoint(checkpoint, &error)) << error;
+    return checkpoint;
+}
+
+journey::Journey ticket_triage_journey(
+    const nlohmann::json& foundation,
+    const std::string& checkpoint) {
+    journey::Journey flow{"ticket-triage-solution", {}};
+    const nlohmann::json sources = {
+        {"source", "service"},
+        {"database", "service"},
+        {"table", "tickets"},
+        {"correctness",
+         {{"minimum_confidence", 0.5},
+          {"taxonomy_owned_by_customer", true},
+          {"taxonomy_owner", "service-operations"},
+          {"taxonomy_version", "customer-v42"},
+          {"closure_approval_required", true},
+          {"new_ticket_type_monitoring", true},
+          {"maximum_new_ticket_type_fraction", 0.1}}},
+        {"M-10",
+         {{"embedder_directory", checkpoint},
+          {"text_column", "text"},
+          {"top_k", 1},
+          {"minimum_relevance", -1.0}}},
+        {"M-19",
+         {{"labelling_functions",
+           {{{"name", "urgent-ticket"},
+             {"column", "urgency"},
+             {"operator", "greater_equal"},
+             {"value", 0.5},
+             {"label", 1},
+             {"otherwise_label", 0}}}}}}};
+    flow.steps = {
+        {"read executable ticket triage defaults", "get_solution",
+         {{"solution", "B-3"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/policy_template/actions/close_ticket/autonomy",
+                  "A1"),
+              journey::equals("/solution/measurement/outcome/name",
+                              "resolution_quality"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the ticket triage project", "create_project",
+         {{"name", "ticket triage"}}},
+        {"create the composed ticket triage solution", "create_solution",
+         {{"project", "ticket triage"},
+          {"solution", "B-3"},
+          {"level", 4},
+          {"sources", sources},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 2),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"ticket_graph", "/graph"},
+          {"ticket_policy", "/policy_id"},
+          {"ticket_experiment", "/experiment_id"}}},
+        {"read the ticket triage policy", "get_policy",
+         {{"policy_id", "$ticket_policy"}},
+         {.checks = {
+              journey::equals("/versions/0/config/threshold", 0.5),
+              journey::equals(
+                  "/versions/0/config/actions/close_ticket/autonomy", "A1"),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "route_and_draft")}}},
+        {"run ticket triage", "run_solution",
+         {{"project", "ticket triage"},
+          {"graph", "$ticket_graph"},
+          {"delivery_token", "ticket-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"ticket_run", "/run_id"}}},
+        {"read the completed ticket triage Run", "get_run",
+         {{"run_id", "$ticket_run"}},
+         {.checks = {journey::equals("/status", "succeeded")}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read ticket assignments", "get_experiment",
+         {{"experiment", "$ticket_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read ticket action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_ticket_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"ticket-triage-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double quality =
+            0.65 + 0.04 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.16);
+        outcomes.steps.push_back(
+            {"record ticket resolution quality", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "resolution_quality"},
+              {"value", quality},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured ticket triage effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted ticket effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.16) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.16 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.16;
+                  })}}});
+    return outcomes;
+}
+
+void land_document_workflow_data(Node& node) {
+    const auto database = node.create_database("documents");
+    ASSERT_TRUE(database);
+    const auto table = database->create_table("invoices");
+    ASSERT_TRUE(table);
+    table->set_partitioner(
+        std::make_shared<zetta::data::RoundRobinPartitioner>(3));
+    for (int index = 0; index < 240; ++index) {
+        const int document_id = index + 1;
+        const std::string invoice_number =
+            "INV-" + std::to_string(10000 + document_id);
+        const std::string invoice_date =
+            "2026-08-" + std::to_string(10 + index % 18);
+        const std::string total =
+            std::to_string(100 + index % 50);
+        const bool uncertain_invoice_number = index % 4 == 0;
+        const std::string invoice_key = uncertain_invoice_number
+                                            ? "invoice numbr"
+                                            : "invoice_number";
+        const std::string document =
+            invoice_key + ": " + invoice_number + "\ndate: " +
+            invoice_date + "\ntotal: " + total;
+        table->add_row(
+            {{"document_id", document_id},
+             {"document", document},
+             {"field_labels",
+              {{"invoice_number", invoice_number},
+               {"date", invoice_date},
+               {"total", total}}},
+             {"workflow_completed", 1},
+             {"observed_at", "2026-08-20T00:00:00.000Z"},
+             {"owner", "document-operations"},
+             {"workflow_eligible", true},
+             {"excluded", false},
+             {"high_impact_workflow", false}});
+    }
+    table->add_row(
+        {{"document_id", 9999},
+         {"document",
+          "invoice_number: FUTURE\ndate: 2026-10-01\ntotal: 999"},
+         {"field_labels",
+          {{"invoice_number", "FUTURE"},
+           {"date", "2026-10-01"},
+           {"total", "999"}}},
+         {"workflow_completed", 1},
+         {"observed_at", "2026-10-01T00:00:00.000Z"},
+         {"owner", "document-operations"},
+         {"workflow_eligible", true},
+         {"excluded", false},
+         {"high_impact_workflow", false}});
+    const auto written =
+        zetta::data::write_partitioned(node, *database, *table);
+    ASSERT_TRUE(written.ok()) << written.error;
+}
+
+nlohmann::json document_workflow_configuration() {
+    return {
+        {"snapshot",
+         {{"database", "documents"},
+          {"source_table", "invoices"},
+          {"target_table", "invoice_snapshot"},
+          {"entity_column", "document_id"},
+          {"time_column", "observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"}}},
+        {"dataset",
+         {{"entity_column", "entity_id"},
+          {"label_column", "workflow_completed"},
+          {"feature_columns", {"document"}}}},
+        {"delivery",
+         {{"endpoint", "https://workflow.example.test/documents"},
+          {"owner", "document-operations"}}},
+        {"roi_model",
+         {{"value_per_outcome", 50.0},
+          {"investment", 100.0},
+          {"currency", "USD"}}}};
+}
+
+journey::Journey document_workflow_journey(
+    const nlohmann::json& foundation) {
+    journey::Journey flow{"document-workflow-solution", {}};
+    flow.steps = {
+        {"read executable document workflow defaults", "get_solution",
+         {{"solution", "B-4"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/measurement/design", "holdout"),
+              journey::size_equals("/solution/missing_components", 0)}}},
+        {"create the document workflow project", "create_project",
+         {{"name", "document workflow"}}},
+        {"create the composed document workflow", "create_solution",
+         {{"project", "document workflow"},
+          {"solution", "B-4"},
+          {"level", 3},
+          {"sources",
+           {{"source", "documents"},
+            {"table", "invoices"},
+            {"M-11",
+             {{"document_column", "document"},
+              {"document_id_column", "entity_id"},
+              {"labels_column", "field_labels"},
+              {"fields", {"invoice_number", "date", "total"}},
+              {"review_threshold", 0.8}}},
+            {"correctness",
+             {{"field_thresholds",
+               {{"invoice_number", 0.9},
+                {"date", 0.85},
+                {"total", 0.9}}},
+              {"review_queue", "invoice-field-review"}}}}},
+          {"foundation", foundation}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 1),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"document_graph", "/graph"},
+          {"document_policy", "/policy_id"},
+          {"document_experiment", "/experiment_id"}}},
+        {"read the document workflow policy", "get_policy",
+         {{"policy_id", "$document_policy"}},
+         {.checks = {
+              journey::equals("/current_version", 1),
+              journey::equals("/versions/0/config/tiers/0/action",
+                              "workflow_handoff"),
+              journey::equals(
+                  "/versions/0/config/actions/field_review_task/autonomy",
+                  "A2")}}},
+        {"run document workflow automation", "run_solution",
+         {{"project", "document workflow"},
+          {"graph", "$document_graph"},
+          {"delivery_token", "document-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"document_run", "/run_id"}}},
+        {"read the completed document workflow Run", "get_run",
+         {{"run_id", "$document_run"}},
+         {.checks = {journey::equals("/status", "succeeded")}},
+         {}, journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read document assignments", "get_experiment",
+         {{"experiment", "$document_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read document action evidence", "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+    return flow;
+}
+
+journey::Journey planted_document_workflow_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"document-workflow-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double completed =
+            0.5 + 0.08 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.18);
+        outcomes.steps.push_back(
+            {"record document workflow outcome", "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "workflow_completed"},
+              {"value", completed},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured document workflow effect", "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted document workflow effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect")
+                                         .template get<double>() -
+                                 0.18) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.18 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.18;
+                  })}}});
+    return outcomes;
+}
+
 journey::Journey planted_service_level_outcomes(
     const nlohmann::json& entries,
     const nlohmann::json& binding) {
@@ -2956,6 +4485,297 @@ journey::Journey planted_service_level_outcomes(
                                      .template get<double>() >= 0.12;
                   })}}});
     return outcomes;
+}
+
+journey::Journey planted_pricing_outcomes(
+    const nlohmann::json& entries,
+    const nlohmann::json& binding) {
+    std::map<std::string, std::size_t> counts;
+    for (const auto& entry : entries) {
+        if (entry.at("kind") == "action") {
+            ++counts[entry.at("cell")];
+        }
+    }
+    std::map<std::string, std::size_t> positions;
+    journey::Journey outcomes{"dynamic-pricing-planted-outcomes", {}};
+    for (const auto& entry : entries) {
+        if (entry.at("kind") != "action") {
+            continue;
+        }
+        const std::string cell = entry.at("cell");
+        const bool holdout = cell.ends_with("/holdout");
+        if (holdout) {
+            EXPECT_EQ(entry.at("action"), "no_contact");
+        }
+        const double centered =
+            static_cast<double>(positions[cell]++) -
+            (static_cast<double>(counts[cell]) - 1.0) / 2.0;
+        const double net_margin =
+            2.0 + 0.2 * centered / counts[cell] +
+            (holdout ? 0.0 : 0.40);
+        outcomes.steps.push_back(
+            {"record observed net margin",
+             "record_outcome",
+             {{"action_id", entry.at("id")},
+              {"outcome", "net_margin"},
+              {"value", net_margin},
+              {"currency", "USD"},
+              {"source", "connector"},
+              {"occurred_at", entry.at("action_at")}}});
+    }
+    outcomes.steps.push_back(
+        {"read measured pricing effect",
+         "get_roi_readout",
+         {{"solution", binding.at("scope")}},
+         {.checks = {
+              journey::equals("/incrementality/claimable", true),
+              journey::predicate(
+                  "planted net-margin effect is inside its confidence interval",
+                  [](const auto& value) {
+                      const auto& estimate =
+                          value.at("incrementality").at("combined");
+                      return std::abs(
+                                 estimate.at("effect").template get<double>() -
+                                 0.40) < 1e-8 &&
+                             estimate.at("confidence_interval")
+                                     .at("lower")
+                                     .template get<double>() <= 0.40 &&
+                             estimate.at("confidence_interval")
+                                     .at("upper")
+                                     .template get<double>() >= 0.40;
+                  })}}});
+    return outcomes;
+}
+
+TEST_F(SolutionJourney,
+       EmployeeAttritionPublishesAggregateRiskAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_employee_attrition_data(node);
+    journey::Journey flow{"employee-attrition-solution", {}};
+    flow.steps = {
+        {"read B-2 executable defaults",
+         "get_solution",
+         {{"solution", "B-2"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals(
+                  "/solution/measurement/outcome/name",
+                  "attrition_reduction")}}},
+        {"create employee attrition project",
+         "create_project",
+         {{"name", "employee attrition"}}},
+        {"create aggregate employee attrition Pipeline",
+         "create_solution",
+         {{"project", "employee attrition"},
+          {"solution", "B-2"},
+          {"level", 1},
+          {"sources",
+           {{"source", "people_analytics"},
+            {"table", "workforce_groups"},
+            {"M-1",
+             {{"group_column", "entity_id"},
+              {"group_size_column", "group_size"},
+              {"label_column", "attrition_label"}}},
+            {"M-7",
+             {{"mode", "tabular"},
+              {"entity_column", "entity_id"},
+              {"label_column", "attrition_label"},
+              {"feature_columns",
+               {"engagement", "workload", "tenure_mix"}},
+              {"contamination", 0.1}}},
+            {"correctness",
+             {{"group_dimension", "team"},
+              {"group_size_column", "group_size"},
+              {"minimum_group_size", 5.0},
+              {"fairness_review_completed", true},
+              {"fairness_review_owner", "workforce-equity-council"},
+              {"protected_attributes", {"race", "gender", "age"}},
+              {"fairness_review_metrics",
+               {"selection_rate_ratio", "calibration_by_cohort"}},
+              {"approval_recorded", true},
+              {"approval_kind", "works_council"},
+              {"approval_record_id", "WC-2026-17"},
+              {"approved_by", "works-council-chair"},
+              {"approved_at", "2026-08-15T00:00:00Z"},
+              {"recipient_role", "people_leader"},
+              {"individual_manager_delivery", false}}}}},
+          {"foundation", employee_attrition_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 2),
+              journey::size_equals("/missing_components", 0)}},
+         {{"attrition_graph", "/graph"},
+          {"attrition_experiment", "/experiment_id"}}},
+        {"run aggregate employee attrition Pipeline",
+         "run_solution",
+         {{"project", "employee attrition"},
+          {"graph", "$attrition_graph"},
+          {"delivery_token", "aggregate-fixture-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"attrition_run", "/run_id"}}},
+        {"read completed employee attrition Run",
+         "get_run",
+         {{"run_id", "$attrition_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 8)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected workforce assignments",
+         "get_experiment",
+         {{"experiment", "$attrition_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read workforce action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("employee attrition");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-2 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish aggregate workforce risk");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "group_key");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "attrition_risk");
+    EXPECT_EQ(binding.at("b2_correctness")
+                  .at("approval")
+                  .at("record_id"),
+              "WC-2026-17");
+    EXPECT_EQ(graph->record().dump().find("aggregate-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_groups = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_groups;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_groups, 0u);
+
+    std::size_t aggregate_reports = 0;
+    std::size_t aggregate_tasks = 0;
+    for (const auto& request : delivery.requests) {
+        const std::string serialized = request.dump();
+        EXPECT_EQ(serialized.find("employee_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("person_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("worker_id"), std::string::npos);
+        EXPECT_EQ(serialized.find("individual_score"), std::string::npos);
+        if (request.at("action") == "publish_driver_report") {
+            ++aggregate_reports;
+            const auto& driver_report =
+                request.at("payload").at("driver_report");
+            EXPECT_EQ(driver_report.at("aggregate_only"), true);
+            EXPECT_EQ(driver_report.at("recipient_role"), "people_leader");
+            EXPECT_EQ(driver_report.at("minimum_group_size"), 5.0);
+            continue;
+        }
+        ++aggregate_tasks;
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("aggregate_only"), true);
+        EXPECT_EQ(payload.at("recipient_role"), "people_leader");
+        EXPECT_GE(payload.at("group_size").get<double>(), 5.0);
+        EXPECT_TRUE(payload.contains("group_key"));
+        EXPECT_TRUE(payload.contains("attrition_risk"));
+        EXPECT_EQ(request.at("owner"), "chief-people-officer");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+    EXPECT_EQ(aggregate_reports, 1u);
+    EXPECT_GT(aggregate_tasks, 0u);
+
+    const auto workforce_results = node.find_database("workforce_results");
+    ASSERT_TRUE(workforce_results);
+    ASSERT_EQ(workforce_results->tables().size(), 1u);
+    const ApiResult aggregate_scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM workforce_results." +
+              workforce_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(aggregate_scores.ok) << aggregate_scores.error.message;
+    ASSERT_EQ(aggregate_scores.value.at("rows").size(), 180u);
+    for (const auto& row : aggregate_scores.value.at("rows")) {
+        EXPECT_TRUE(row.contains("group_key"));
+        EXPECT_TRUE(row.contains("attrition_risk"));
+        EXPECT_FALSE(row.contains("employee_id"));
+        EXPECT_FALSE(row.contains("individual_score"));
+    }
+
+    const auto decision_results = node.find_database("solution_results");
+    ASSERT_TRUE(decision_results);
+    ASSERT_EQ(decision_results->tables().size(), 1u);
+    const ApiResult decisions = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM solution_results." +
+              decision_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decisions.ok) << decisions.error.message;
+    ASSERT_EQ(decisions.value.at("rows").size(), 180u);
+    for (const auto& row : decisions.value.at("rows")) {
+        EXPECT_EQ(row.at("aggregate_only"), true);
+        EXPECT_GE(row.at("group_size").get<double>(), 5.0);
+        EXPECT_TRUE(row.contains("group_key"));
+        EXPECT_FALSE(row.contains("employee_id"));
+        EXPECT_FALSE(row.contains("individual_score"));
+    }
+
+    const auto snapshot = node.find_database("people_analytics")
+                              ->find_table("employee_attrition_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 180u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name != "action_execution_rate") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("aggregate-fixture-token"),
+              std::string::npos);
+    const journey::Journey outcomes = planted_employee_attrition_outcomes(
+        ledger.value.at("entries"), binding);
+    const journey::JourneyReport measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
 TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
@@ -3039,6 +4859,266 @@ TEST_F(SolutionJourney, FoundationProtectsHoldoutAndRecoversPlantedEffect) {
     EXPECT_TRUE(measured.ok) << measured.summary();
 }
 
+TEST_F(SolutionJourney,
+       TicketTriageAbstainsProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_ticket_triage_data(node);
+    const std::string checkpoint = ticket_triage_checkpoint(dir.path());
+    ASSERT_FALSE(checkpoint.empty());
+    const auto flow = ticket_triage_journey(
+        ticket_triage_configuration(), checkpoint);
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("ticket triage");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-3 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-10");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "embeddings");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "chunk_id");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "classifier_confidence");
+    EXPECT_EQ(graph->record().dump().find("ticket-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t abstentions = 0;
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.policy_id !=
+            binding.at("policy_id").get<std::string>()) {
+            continue;
+        }
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        } else if (decision.action == "abstain") {
+            ++abstentions;
+            EXPECT_FALSE(decision.actionable);
+        }
+        EXPECT_NE(decision.action, "close_ticket");
+    }
+    EXPECT_GT(abstentions, 0u);
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("action"), "route_and_draft");
+        EXPECT_TRUE(
+            request.at("payload").at("requires_human_close_approval"));
+        EXPECT_FALSE(request.at("payload").at("queue").get<std::string>()
+                         .empty());
+        EXPECT_EQ(request.at("payload").at("taxonomy_version"),
+                  "customer-v42");
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("ticket-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_ticket_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       SupplierRiskProtectsHoldoutAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_supplier_risk_data(node);
+
+    const ApiResult catalogue = call("get_solution", {{"solution", "B-5"}});
+    ASSERT_TRUE(catalogue.ok) << catalogue.error.message;
+    EXPECT_TRUE(catalogue.value.at("solution").at("runnable"));
+    EXPECT_FALSE(catalogue.value.at("solution")
+                     .at("promotion_condition")
+                     .get<std::string>()
+                     .empty());
+    ASSERT_TRUE(call("create_project", {{"name", "supplier risk"}}).ok);
+    const ApiResult created = call(
+        "create_solution",
+        {{"project", "supplier risk"},
+         {"solution", "B-5"},
+         {"level", 4},
+         {"sources",
+          {{"source", "supplier_data"},
+           {"table", "suppliers"},
+           {"M-1",
+            {{"entity_column", "entity_id"},
+             {"label_column", "disruption"},
+             {"time_column", "start_time"},
+             {"as_of", 119.0},
+             {"feature_columns",
+              {"late_delivery_rate", "concentration"}},
+             {"num_trees", 8},
+             {"max_depth", 2}}},
+           {"M-4",
+            {{"source", "supplier_data"},
+             {"table", "supplier_history"},
+             {"time_column", "day"},
+             {"target_column", "late_delivery_rate"},
+             {"series_column", "supplier_id"},
+             {"horizon", 7},
+             {"seasonal_period", 7},
+             {"lags", {1, 7}},
+             {"rolling_window", 7},
+             {"backtest_folds", 3},
+             {"num_trees", 8},
+             {"max_depth", 2},
+             {"seed", 1179}}},
+           {"correctness",
+            {{"external_history_frozen", true},
+             {"external_data_point_in_time", true},
+             {"future_external_publications_excluded", true},
+             {"truncate_supplier_records_at_event", true},
+             {"post_event_supplier_records", "exclude"},
+             {"flag_evidence_required", true},
+             {"reason_codes_required", true},
+             {"forecast_evidence_required", true}}}}},
+         {"foundation", supplier_risk_configuration()}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    EXPECT_FALSE(created.value.at("preview"));
+    EXPECT_EQ(created.value.at("methodologies").size(), 2u);
+    EXPECT_TRUE(created.value.at("missing_components").empty());
+
+    const ApiResult started = call(
+        "run_solution",
+        {{"project", "supplier risk"},
+         {"graph", created.value.at("graph")},
+         {"delivery_token", "fixture-only-token"}});
+    ASSERT_TRUE(started.ok) << started.error.message;
+    ApiResult status;
+    for (int attempt = 0; attempt < 5000; ++attempt) {
+        node.tick();
+        background.prune();
+        status = call("get_run", {{"run_id", started.value.at("run_id")}});
+        if (status.ok && status.value.at("status") != "running") {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(status.ok) << status.error.message;
+    if (status.value.at("status") != "succeeded") {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_EQ(status.value.at("status"), "succeeded")
+        << status.value.dump(2);
+
+    const auto project = node.find_project("supplier risk");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph(
+        created.value.at("graph").get<std::string>());
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish supplier risk flags");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "supplier");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "supplier_risk_score");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_FALSE(decision.tier.empty());
+        EXPECT_FALSE(decision.cell.empty());
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        const auto decision = policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        ASSERT_TRUE(payload.contains("risk_evidence"));
+        const auto& evidence = payload.at("risk_evidence");
+        EXPECT_FALSE(evidence.at("external_source").get<std::string>().empty());
+        EXPECT_FALSE(evidence.at("reason_codes").empty());
+        EXPECT_TRUE(evidence.contains("forecast"));
+        EXPECT_TRUE(payload.contains("decision_cell"));
+    }
+
+    const auto risk_results = node.find_database("supplier_risk_results");
+    ASSERT_TRUE(risk_results);
+    ASSERT_EQ(risk_results->tables().size(), 1u);
+    const ApiResult flags = call(
+        "sql",
+        {{"statement", "SELECT * FROM supplier_risk_results." +
+                           risk_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(flags.ok) << flags.error.message;
+    EXPECT_EQ(flags.value.at("rows").size(), 120u);
+    EXPECT_EQ(node.find_database("supplier_data")
+                  ->find_table("supplier_risk_snapshot")
+                  ->store()
+                  .size(),
+              120u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+    }
+
+    const ApiResult ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto measured = journey::run_journey(
+        planted_supplier_risk_outcomes(ledger.value.at("entries"), binding),
+        caller(),
+        pump());
+    if (!measured.ok) {
+        const ApiResult readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
 TEST_F(SolutionJourney,
        ClaimsTriageProtectsHoldoutAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
@@ -3148,6 +5228,286 @@ TEST_F(SolutionJourney,
               std::string::npos);
     const auto outcomes =
         planted_claim_outcomes(ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+
+TEST_F(SolutionJourney,
+       DocumentWorkflowRoutesReviewAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_document_workflow_data(node);
+    const journey::Journey flow = document_workflow_journey(
+        document_workflow_configuration());
+    const journey::JourneyReport report =
+        journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("document workflow");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-4 CL-3");
+    ASSERT_TRUE(graph);
+    const auto& binding = graph->graph()
+                              .find_node("solution_manifest")
+                              ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-11");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "extracted fields");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "document");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "confidence");
+    EXPECT_EQ(graph->record().dump().find("document-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t review_decisions = 0;
+    std::size_t workflow_decisions = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        EXPECT_TRUE(decision.actionable);
+        EXPECT_EQ(decision.autonomy, "A2");
+        if (decision.action == "field_review_task") {
+            ++review_decisions;
+        } else {
+            EXPECT_EQ(decision.action, "workflow_handoff");
+            ++workflow_decisions;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(review_decisions, 0u);
+    EXPECT_GT(workflow_decisions, 0u);
+
+    std::size_t review_deliveries = 0;
+    std::size_t workflow_deliveries = 0;
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+        EXPECT_EQ(payload.at("document_id"), decision->entity_id);
+        EXPECT_TRUE(payload.at("extracted_fields").is_object());
+        EXPECT_EQ(payload.at("extracted_fields").size(), 3u);
+        if (decision->action == "field_review_task") {
+            ++review_deliveries;
+            EXPECT_EQ(payload.at("review_required"), true);
+            EXPECT_EQ(payload.at("fields_validated"), false);
+            EXPECT_FALSE(payload.at("low_confidence_fields").empty());
+            EXPECT_EQ(payload.at("review_queue"),
+                      "invoice-field-review");
+        } else {
+            ++workflow_deliveries;
+            EXPECT_EQ(decision->action, "workflow_handoff");
+            EXPECT_EQ(payload.at("review_required"), false);
+            EXPECT_EQ(payload.at("fields_validated"), true);
+            EXPECT_TRUE(payload.at("low_confidence_fields").empty());
+        }
+    }
+    EXPECT_GT(review_deliveries, 0u);
+    EXPECT_GT(workflow_deliveries, 0u);
+
+    const auto document_results = node.find_database("document_results");
+    ASSERT_TRUE(document_results);
+    std::size_t extracted_rows = 0;
+    std::size_t queued_rows = 0;
+    for (const auto& table : document_results->tables()) {
+        if (table->name().starts_with("extracted_fields_")) {
+            extracted_rows += table->store().size();
+        }
+        if (table->name().starts_with("review_queue_")) {
+            queued_rows += table->store().size();
+        }
+    }
+    EXPECT_EQ(extracted_rows, 720u);
+    EXPECT_GT(queued_rows, 0u);
+    EXPECT_EQ(node.find_database("documents")
+                  ->find_table("invoice_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "unvalidated_workflow_actions" ||
+            guardrail.bound.name == "review_queue_miss_rate") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("document-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_document_workflow_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout =
+            call("get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2)
+                          << readout.value.at("correctness_certificate")
+                                 .dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       CreditUnderwritingKeepsAdverseActionsHumanAndRecoversEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_credit_underwriting_data(node);
+    const auto flow =
+        credit_underwriting_journey(credit_underwriting_configuration());
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("credit underwriting");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-7 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("methodology"), "M-1");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish credit risk scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "applicant");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "credit_risk");
+    EXPECT_EQ(graph->record().dump().find("credit-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    std::size_t adverse_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        const auto stored = policies.get_decision(decision.id);
+        ASSERT_TRUE(stored);
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+            continue;
+        }
+        if (decision.action == "decline_recommendation") {
+            ++adverse_rows;
+            EXPECT_EQ(decision.autonomy, "A0");
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_EQ(decision.status, "manual");
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_GT(adverse_rows, 0u);
+
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_EQ(payload.at("adverse_human_only"), true);
+        EXPECT_EQ(payload.at("model_risk_owner"), "model-risk");
+        EXPECT_EQ(payload.at("fairness_review_owner"), "fair-lending");
+        EXPECT_FALSE(payload.at("reason_codes").empty());
+        EXPECT_TRUE(payload.contains("decision_cell"));
+        EXPECT_NE(payload.at("proposed_credit_action"),
+                  "decline_recommendation");
+        const auto decision =
+            policies.get_decision(payload.at("decision_id"));
+        ASSERT_TRUE(decision);
+        EXPECT_TRUE(decision->actionable);
+        EXPECT_FALSE(decision->holdout);
+    }
+
+    const auto credit_results = node.find_database("credit_results");
+    ASSERT_TRUE(credit_results);
+    ASSERT_EQ(credit_results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM credit_results." +
+              credit_results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("applicant"));
+    EXPECT_TRUE(scores.value.at("rows").front().contains("credit_risk"));
+    EXPECT_EQ(node.find_database("credit")
+                  ->find_table("applications_snapshot")
+                  ->store()
+                  .size(),
+              240u);
+
+    const auto decisions = node.find_database("solution_results");
+    ASSERT_TRUE(decisions);
+    ASSERT_EQ(decisions->tables().size(), 1u);
+    const ApiResult decision_rows = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM solution_results." +
+              decisions->tables().front()->name() + ";"}});
+    ASSERT_TRUE(decision_rows.ok) << decision_rows.error.message;
+    for (const auto& row : decision_rows.value.at("rows")) {
+        if (row.at("action") == "decline_recommendation") {
+            EXPECT_FALSE(row.at("reason_codes").empty());
+            EXPECT_EQ(row.at("autonomy"), "A0");
+        }
+    }
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 6u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "automated_adverse_decisions" ||
+            guardrail.bound.name == "missing_adverse_action_reasons" ||
+            guardrail.bound.name == "model_validation_approval_failures" ||
+            guardrail.bound.name == "fairness_review_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("credit-fixture-token"),
+              std::string::npos);
+    const auto outcomes =
+        planted_credit_outcomes(ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {
         const auto readout =
@@ -3414,6 +5774,190 @@ TEST_F(SolutionJourney,
 }
 
 TEST_F(SolutionJourney,
+       HealthcareOperationsProtectsAccessAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_healthcare_operations_data(node);
+    journey::Journey flow{"healthcare-operations-solution", {}};
+    flow.steps = {
+        {"read B-6 defaults",
+         "get_solution",
+         {{"solution", "B-6"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name",
+                  "operational_resolution")}}},
+        {"create healthcare operations project",
+         "create_project",
+         {{"name", "healthcare operations"}}},
+        {"create B-6 Pipeline",
+         "create_solution",
+         {{"project", "healthcare operations"},
+          {"solution", "B-6"},
+          {"level", 1},
+          {"sources",
+           {{"source", "healthcare"},
+            {"table", "operations"},
+            {"M-1", {{"label_column", "label"}}},
+            {"correctness",
+             {{"equity_review_owner", "health-equity-review"},
+              {"protected_group_columns", {"protected_group"}},
+              {"privacy_posture_recorded", true},
+              {"privacy_posture_approved", true},
+              {"privacy_review_owner", "privacy-office"},
+              {"privacy_review_id", "privacy-review-1180"},
+              {"minimum_necessary", true},
+              {"minimum_necessary_feature_names",
+               {"operational_signal", "prior_missed_visits"}}}}}},
+          {"foundation", healthcare_operations_configuration()}},
+         {.checks = {
+              journey::equals("/preview", false),
+              journey::size_equals("/methodologies", 1),
+              journey::size_equals("/missing_components", 0)}},
+         {{"healthcare_graph", "/graph"},
+          {"healthcare_policy", "/policy_id"},
+          {"healthcare_experiment", "/experiment_id"},
+          {"healthcare_readout", "/readout_id"}}},
+        {"read assistive-only policy",
+         "get_policy",
+         {{"policy_id", "$healthcare_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/care_coordination_task/autonomy",
+                  "A2"),
+              journey::equals(
+                  "/versions/0/config/actions/revenue_cycle_review/autonomy",
+                  "A2"),
+              journey::equals(
+                  "/versions/0/config/actions/assistance_exception_review/autonomy",
+                  "A1")}}},
+        {"run B-6 Pipeline",
+         "run_solution",
+         {{"project", "healthcare operations"},
+          {"graph", "$healthcare_graph"},
+          {"delivery_token", "healthcare-fixture-token"}},
+         {.checks = {
+              journey::equals("/engine", "solution"),
+              journey::equals("/preview", false)}},
+         {{"healthcare_run", "/run_id"}}},
+        {"read completed B-6 Run",
+         "get_run",
+         {{"run_id", "$healthcare_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 7)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected healthcare assignments",
+         "get_experiment",
+         {{"experiment", "$healthcare_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 100),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read healthcare action ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 100)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("healthcare operations");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-6 CL-1");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(binding.at("decision_source").at("output_name"),
+              "Publish healthcare operations risk scores");
+    EXPECT_EQ(binding.at("decision_source").at("entity_column"),
+              "entity");
+    EXPECT_EQ(binding.at("decision_source").at("score_column"),
+              "operational_risk");
+    EXPECT_EQ(graph->record().dump().find("healthcare-fixture-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    for (const auto& decision : policies.decisions()) {
+        EXPECT_NE(decision.entity_id, "9999");
+        EXPECT_NE(decision.action, "deny_care");
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        const auto& payload = request.at("payload");
+        EXPECT_TRUE(payload.at("assistive_only").get<bool>());
+        EXPECT_TRUE(payload.at("care_access_unchanged").get<bool>());
+        EXPECT_TRUE(payload.at("minimum_necessary_fields").get<bool>());
+        EXPECT_FALSE(payload.contains("protected_group"));
+        EXPECT_FALSE(payload.contains("patient_name"));
+        const std::string action = payload.at("action");
+        EXPECT_TRUE(action == "care_coordination_task" ||
+                    action == "scheduling_assistance" ||
+                    action == "revenue_cycle_review")
+            << action;
+    }
+
+    const auto results = node.find_database("healthcare_results");
+    ASSERT_TRUE(results);
+    ASSERT_EQ(results->tables().size(), 1u);
+    const ApiResult scores = call(
+        "sql",
+        {{"statement",
+          "SELECT * FROM healthcare_results." +
+              results->tables().front()->name() + ";"}});
+    ASSERT_TRUE(scores.ok) << scores.error.message;
+    ASSERT_EQ(scores.value.at("rows").size(), 240u);
+    EXPECT_TRUE(scores.value.at("rows").front().contains("entity"));
+    EXPECT_TRUE(
+        scores.value.at("rows").front().contains("operational_risk"));
+
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    ASSERT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        ASSERT_TRUE(guardrail.value.has_value()) << guardrail.bound.name;
+        if (guardrail.bound.name == "care_denial_actions" ||
+            guardrail.bound.name == "phi_scope_violations" ||
+            guardrail.bound.name == "privacy_posture_failures") {
+            EXPECT_EQ(*guardrail.value, 0.0) << guardrail.bound.name;
+        }
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("healthcare-fixture-token"),
+              std::string::npos);
+    const auto outcomes = planted_healthcare_operations_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured =
+        journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
        ReplenishmentReleasesBoundedOrdersAndRecoversPlantedEffect) {
     SolutionDeliveryBoundary delivery;
     land_replenishment_data(node);
@@ -3560,6 +6104,200 @@ TEST_F(SolutionJourney,
     EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
               std::string::npos);
     const auto outcomes = planted_service_level_outcomes(
+        ledger.value.at("entries"), binding);
+    const auto measured = journey::run_journey(outcomes, caller(), pump());
+    if (!measured.ok) {
+        const auto readout = call(
+            "get_roi_readout", {{"solution", binding.at("scope")}});
+        if (readout.ok) {
+            ADD_FAILURE() << readout.value.at("incrementality").dump(2);
+        }
+    }
+    EXPECT_TRUE(measured.ok) << measured.summary();
+}
+
+TEST_F(SolutionJourney,
+       DynamicPricingEnforcesBandsAndRecoversPlantedEffect) {
+    SolutionDeliveryBoundary delivery;
+    land_dynamic_pricing_data(node);
+    journey::Journey flow{"dynamic-pricing-solution", {}};
+    flow.steps = {
+        {"read B-1 defaults",
+         "get_solution",
+         {{"solution", "B-1"}},
+         {.checks = {
+              journey::equals("/solution/runnable", true),
+              journey::equals("/solution/status", "catalogue"),
+              journey::equals("/solution/minimal_template", false),
+              journey::equals(
+                  "/solution/measurement/outcome/name", "net_margin"),
+              journey::predicate(
+                  "promotion condition remains recorded",
+                  [](const auto& value) {
+                      return !value.at("solution")
+                                  .at("promotion_condition")
+                                  .template get<std::string>()
+                                  .empty();
+                  })}}},
+        {"create dynamic pricing project",
+         "create_project",
+         {{"name", "dynamic pricing"}}},
+        {"create B-1 Pipeline",
+         "create_solution",
+         {{"project", "dynamic pricing"},
+          {"solution", "B-1"},
+          {"level", 4},
+          {"sources",
+           {{"source", "datasets"},
+            {"table", "pricing_history"},
+            {"M-4",
+             {{"source", "datasets"},
+              {"table", "pricing_history"},
+              {"time_column", "period"},
+              {"target_column", "demand"},
+              {"series_column", "series"},
+              {"horizon", 1},
+              {"seasonal_period", 7},
+              {"lags", {1, 7}},
+              {"rolling_window", 7},
+              {"backtest_folds", 3},
+              {"num_trees", 10},
+              {"max_depth", 2}}},
+            {"M-6",
+             {{"entity", "entity_id"},
+              {"treatment", "price_treatment"},
+              {"outcome", "demand_response"}}},
+            {"correctness",
+             {{"randomized_experiment", true},
+              {"identifiable_variation", false},
+              {"margin_floor", 0.25},
+              {"automatic_authority_limit", 0.05},
+              {"hard_authority_limit", 0.15},
+              {"competitor_price_cutoff", 35.0},
+              {"future_prices_excluded", true}}}}},
+          {"foundation", dynamic_pricing_configuration()}},
+         {.checks = {journey::equals("/preview", false),
+                     journey::size_equals("/methodologies", 3),
+                     journey::size_equals("/missing_components", 0)}},
+         {{"pricing_graph", "/graph"},
+          {"pricing_policy", "/policy_id"},
+          {"pricing_experiment", "/experiment_id"}}},
+        {"read governed pricing policy",
+         "get_policy",
+         {{"policy_id", "$pricing_policy"}},
+         {.checks = {
+              journey::equals(
+                  "/versions/0/config/actions/publish_price_change/approval_field",
+                  "authority_distance"),
+              journey::equals(
+                  "/versions/0/config/actions/publish_price_change/approval_above",
+                  0.05),
+              journey::size_equals(
+                  "/versions/0/config/eligibility_rules", 4)}}},
+        {"run B-1 Pipeline",
+         "run_solution",
+         {{"project", "dynamic pricing"},
+          {"graph", "$pricing_graph"},
+          {"delivery_token", "fixture-only-token"}},
+         {.checks = {journey::equals("/engine", "solution"),
+                     journey::equals("/preview", false)}},
+         {{"pricing_run", "/run_id"}}},
+        {"read completed dynamic pricing Run",
+         "get_run",
+         {{"run_id", "$pricing_run"}},
+         {.checks = {journey::equals("/status", "succeeded"),
+                     journey::size_equals("/lineage/steps", 9)}},
+         {},
+         journey::Poll{"/status", {"succeeded", "failed"}}},
+        {"read protected pricing assignments",
+         "get_experiment",
+         {{"experiment", "$pricing_experiment"}},
+         {.checks = {
+              journey::at_least("/sizes/assignments", 64),
+              journey::at_least("/sizes/holdout_assignments", 1)}}},
+        {"read dynamic pricing ledger",
+         "list_ledger",
+         nlohmann::json::object(),
+         {.checks = {journey::size_at_least("/entries", 64)}}}};
+
+    const auto report = journey::run_journey(flow, caller(), pump());
+    if (!report.ok) {
+        for (const auto& run : node.runs()) {
+            ADD_FAILURE() << run->metadata().dump(2);
+        }
+    }
+    ASSERT_TRUE(report.ok) << report.summary();
+
+    const auto project = node.find_project("dynamic pricing");
+    ASSERT_TRUE(project);
+    const auto graph = project->find_graph("B-1 CL-4");
+    ASSERT_TRUE(graph);
+    const auto& binding =
+        graph->graph()
+            .find_node("solution_manifest")
+            ->attributes.at("foundation");
+    EXPECT_EQ(graph->record().dump().find("fixture-only-token"),
+              std::string::npos);
+
+    zetta::solutions::DecisionPolicyStore policies(
+        *node.replication(), &node, &node.experiment_manager());
+    std::size_t protected_rows = 0;
+    bool margin_floor_blocked = false;
+    bool hard_band_blocked = false;
+    bool approval_required = false;
+    for (const auto& decision : policies.decisions()) {
+        if (decision.holdout) {
+            ++protected_rows;
+            EXPECT_FALSE(decision.actionable);
+            EXPECT_TRUE(decision.action.empty());
+        }
+        const int product = std::stoi(decision.entity_id);
+        if (product % 10 == 1 && decision.status == "blocked") {
+            margin_floor_blocked = true;
+        } else if (product % 10 == 2 &&
+                   decision.status == "blocked") {
+            hard_band_blocked = true;
+        } else if (product % 10 == 3 &&
+                   decision.status == "pending_approval" &&
+                   decision.autonomy == "A1" &&
+                   !decision.actionable) {
+            approval_required = true;
+        }
+    }
+    EXPECT_GT(protected_rows, 0u);
+    EXPECT_TRUE(margin_floor_blocked);
+    EXPECT_TRUE(hard_band_blocked);
+    EXPECT_TRUE(approval_required);
+
+    ASSERT_FALSE(delivery.requests.empty());
+    for (const auto& request : delivery.requests) {
+        EXPECT_EQ(request.at("payload").at("action"),
+                  "publish_price_change");
+        EXPECT_LE(request.at("payload")
+                      .at("authority_distance")
+                      .get<double>(),
+                  0.05);
+        EXPECT_GE(request.at("payload").at("gross_margin").get<double>(),
+                  0.25);
+        EXPECT_TRUE(request.at("payload").contains("estimated_price_effect"));
+    }
+
+    const auto snapshot =
+        node.find_database("datasets")->find_table("pricing_snapshot");
+    ASSERT_TRUE(snapshot);
+    EXPECT_EQ(snapshot->store().size(), 96u);
+    const auto monitor = node.find_monitor(binding.at("monitor_id"));
+    ASSERT_TRUE(monitor);
+    EXPECT_EQ(monitor->value().guardrails.size(), 5u);
+    for (const auto& guardrail : monitor->value().guardrails) {
+        EXPECT_TRUE(guardrail.value.has_value());
+    }
+
+    const auto ledger = call("list_ledger", nlohmann::json::object());
+    ASSERT_TRUE(ledger.ok) << ledger.error.message;
+    EXPECT_EQ(ledger.value.dump().find("fixture-only-token"),
+              std::string::npos);
+    const auto outcomes = planted_pricing_outcomes(
         ledger.value.at("entries"), binding);
     const auto measured = journey::run_journey(outcomes, caller(), pump());
     if (!measured.ok) {

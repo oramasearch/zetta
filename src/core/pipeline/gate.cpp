@@ -187,6 +187,15 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S12FairnessReviewCheck>());
     gate.add_check(std::make_shared<S12DocumentConfidenceCheck>());
     gate.add_check(std::make_shared<S12LevelCompositionCheck>());
+    gate.add_check(std::make_shared<B3AbstentionCheck>());
+    gate.add_check(std::make_shared<B3CustomerTaxonomyCheck>());
+    gate.add_check(std::make_shared<B3ClosureApprovalCheck>());
+    gate.add_check(std::make_shared<B3NewTicketTypeDriftCheck>());
+    gate.add_check(std::make_shared<B3LevelCompositionCheck>());
+    gate.add_check(std::make_shared<B6EquityReviewCheck>());
+    gate.add_check(std::make_shared<B6AssistiveOnlyCheck>());
+    gate.add_check(std::make_shared<B6PrivacyPostureCheck>());
+    gate.add_check(std::make_shared<B6PhiMinimizationCheck>());
     gate.add_check(std::make_shared<S5RollingOriginCheck>());
     gate.add_check(std::make_shared<S5FutureCovariateCheck>());
     gate.add_check(std::make_shared<S5HierarchyConsistencyCheck>());
@@ -195,6 +204,10 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S6LeadTimeCheck>());
     gate.add_check(std::make_shared<S6OrderApprovalCheck>());
     gate.add_check(std::make_shared<S6LevelCompositionCheck>());
+    gate.add_check(std::make_shared<B1ElasticityIdentificationCheck>());
+    gate.add_check(std::make_shared<B1MarginAuthorityPolicyCheck>());
+    gate.add_check(std::make_shared<B1PriceLeakageCheck>());
+    gate.add_check(std::make_shared<B1LevelCompositionCheck>());
     gate.add_check(std::make_shared<S7CausalHumilityCheck>());
     gate.add_check(std::make_shared<S7AlertBudgetCheck>());
     gate.add_check(std::make_shared<S7SeasonalityBaselineCheck>());
@@ -211,6 +224,15 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<S11LoggedPropensityCheck>());
     gate.add_check(std::make_shared<S11ContactConsentCheck>());
     gate.add_check(std::make_shared<S11PropensityInterpretationCheck>());
+    gate.add_check(std::make_shared<B8AlertBudgetCheck>());
+    gate.add_check(std::make_shared<B8GraduatedAuthorityCheck>());
+    gate.add_check(std::make_shared<B8KillSwitchCheck>());
+    gate.add_check(std::make_shared<B8ContainmentBoundsCheck>());
+    gate.add_check(std::make_shared<B2MinimumGroupSizeCheck>());
+    gate.add_check(std::make_shared<B2AggregateOnlyCheck>());
+    gate.add_check(std::make_shared<B2FairnessReviewCheck>());
+    gate.add_check(std::make_shared<B2ApprovalCheck>());
+    gate.add_check(std::make_shared<B2PeopleLeaderOutputCheck>());
     gate.add_check(std::make_shared<TemporalValidationCheck>());
     gate.add_check(std::make_shared<EntityResolutionGraphCheck>());
     gate.add_check(std::make_shared<SegmentationCheck>());
@@ -241,6 +263,17 @@ CorrectnessGate default_gate() {
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.
     gate.add_check(std::make_shared<zetta::usecases::churn::EntityResolutionCheck>());
+    gate.add_check(std::make_shared<B4PerFieldConfidenceCheck>());
+    gate.add_check(std::make_shared<B4ReviewQueueCheck>());
+    gate.add_check(std::make_shared<B4ValidatedWorkflowCheck>());
+    gate.add_check(std::make_shared<B5PointInTimeExternalDataCheck>());
+    gate.add_check(std::make_shared<B5PostEventSupplierLeakageCheck>());
+    gate.add_check(std::make_shared<B5FlagEvidenceCheck>());
+    gate.add_check(std::make_shared<B7AdverseActionReasonsCheck>());
+    gate.add_check(std::make_shared<B7ValidationPipelineCheck>());
+    gate.add_check(std::make_shared<B7FairnessReviewCheck>());
+    gate.add_check(std::make_shared<B7HumanAuthorityCheck>());
+    gate.add_check(std::make_shared<B7LevelCompositionCheck>());
     return gate;
 }
 

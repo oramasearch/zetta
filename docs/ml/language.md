@@ -60,12 +60,17 @@ resolved dataset contract as other native methodologies:
 Rows without an integer id or string text are excluded and counted. Queries or
 planted ids may be absent; they are then not included in recall@k or MRR.
 
+B-3 uses the embedding output directly for governed ticket triage: `chunk_id`
+joins the customer snapshot and `classifier_confidence` drives the policy's
+explicit abstention threshold. See [B-3](../solutions/B-3.md).
+
 ## Outputs and metrics
 
 Each successful run registers a `language` Model and replaces three tables in
 `language_results` for that graph:
 
-- `embeddings_<graph>`: chunk id, source, text, normalized vector, and exact
+- `embeddings_<graph>`: chunk id, source, text, normalized vector, raw
+  `classifier_score`, logistic `classifier_confidence`, and exact
   `embedder_version`;
 - `retrieval_<graph>`: query, rank, chunk id, cosine score, source, and relevance;
 - `answers_<graph>`: query, answer, refusal, cited chunk ids, and groundedness.

@@ -8,7 +8,8 @@ approaches it recognizes and can run. It lists the complete M-1 through M-21
 portfolio in id order, records each entry's inputs and outputs, and carries the
 callbacks for runnable implementations. All 21 methodologies are runnable. M-10 builds
 its own governed text-to-embedding-to-retrieval-to-grounded-answer graph and
-writes its native model, metrics, tables, and lineage.
+writes its native model, metrics, tables, and lineage. B-3 composes M-10 with
+M-19 and uses the real embedding-table classifier confidence for ticket policy.
 
 The generated table in [README.md](README.md#methodology-portfolio) is checked
 against the C++ registry by `MethodologyRegistry.DocumentationTableMatchesTheRegistry`.
@@ -252,6 +253,10 @@ The pipeline carries `coverage_checked`, `nominal_coverage`, and an explicit
 exchangeability statement. `UncertaintyValidationCheck` refuses a Bayesian
 shape that omits those facts; split-conformal shapes must also declare that
 calibration rows are disjoint from fitting rows.
+
+B-7 composes M-17 with M-1 at every capability level. M-17 validates grouped
+uncertainty coverage on a disjoint holdout while M-1 remains the credit-policy
+decision source. See [B-7](../solutions/B-7.md).
 ## M-18 ensembling and stacking
 
 `src/core/ml/ensemble_methodology.cpp` owns the M-18 callbacks:
@@ -275,7 +280,9 @@ predicate recognizes `label_efficiency`, `active_learning`, and
 
 The callback resolves either the run request's `dataset_path` or the pipeline's
 own connect-step `source` and `table`, then starts the asynchronous runner in
-[`label-efficiency.md`](label-efficiency.md). The API handler remains generic.
+[`label-efficiency.md`](label-efficiency.md). B-3 uses its queue and weak labels
+to improve coverage of the customer's service taxonomy. The API handler
+remains generic.
 ## M-20 privacy-preserving implementation
 
 `src/core/ml/synthetic_private_methodology.cpp` owns the `synthetic_private`

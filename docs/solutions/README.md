@@ -5,7 +5,7 @@ action policy, monitoring, audit, and durable evidence that connects model score
 and policy decisions to actions and measured outcomes.
 
 The integrated module implementations are complete for S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12. This is the scope of
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8. This is the scope of
 the current landing PR, not completion of the full #1122 catalogue epic.
 See [integration.md](integration.md) for merge resolutions and proof.
 The [pass-two integration](integration-pass-2.md) records subsequent modules
@@ -53,6 +53,30 @@ one-tick checks for all added catalog families and existing table-backed state.
 - [S-11.md](S-11.md) — runnable next-best-action module: cross-channel
   arbitration, constrained exploration, logged propensities, consent/contact
   limits, and planted-effect proof (#1120).
+- [B-1.md](B-1.md) — runnable dynamic-pricing and discount-governance module:
+  identifiable price effects, margin and authority limits, approvals,
+  controlled experiments, and planted-effect proof (#1175).
+- [B-2.md](B-2.md) — runnable aggregate-first employee-attrition module:
+  minimum cohort size, aggregate-only scoring, fairness and approval gates,
+  people-leader delivery, and planted-effect proof (#1176).
+- [B-3.md](B-3.md) — runnable ticket triage and service automation: native
+  language confidence, customer-owned taxonomy routing, explicit abstention,
+  approval-only closure, new-type drift, and planted-effect proof (#1177).
+- [B-4.md](B-4.md) — runnable document and workflow automation module:
+  per-field confidence, owned review queues, validated structured handoff,
+  holdout, and planted-effect proof (#1178).
+- [B-5.md](B-5.md) — runnable supplier risk and procurement module:
+  point-in-time external evidence, post-event leakage refusal, forecast-backed
+  flags, bounded procurement actions, and planted-effect proof (#1179).
+- [B-6.md](B-6.md) — runnable healthcare-operations module: assistive-only
+  scheduling and revenue-cycle work, equity and privacy refusals, PHI
+  minimization, protected holdout, and planted-effect proof (#1180).
+- [B-7.md](B-7.md) — runnable credit underwriting and limit-management module:
+  A0 adverse authority, reason codes, model-risk validation, fairness review,
+  uncertainty coverage, holdout, and planted-effect proof (#1181).
+- [B-8.md](B-8.md) — runnable IT and security operations module: exact-budget
+  alerts, dependency context, graduated authority, kill switch, bounded
+  containment, and planted-effect proof (#1182).
 - [audit-ledger.md](audit-ledger.md) — the append-only, replicated
   score → decision → action → outcome ledger (#1107), including its API,
   storage, governance, and query contracts.
@@ -79,26 +103,25 @@ one-tick checks for all added catalog families and existing table-backed state.
 
 Issue [#1102](https://github.com/oramasearch/zetta/issues/1102) adds the
 catalogue-level registry in `zetta::ml`. It is separate from the older headed
-deployment-card catalogue: this registry describes the S-1 through S-12 product
-modules, the eight Band-B sketches, and the methodology callbacks used to build
+deployment-card catalogue: this registry describes the S-1 through S-12 and
+B-1 through B-8 product modules and the methodology callbacks used to build
 each module's Pipeline.
 
 ## Registry contract
 
 `include/zetta/ml/solution.hpp` defines `Solution` and its supporting value
-types. `solutions()` returns 20 stable entries in catalogue order:
+types. `solutions()` returns 20 stable, runnable entries in catalogue order.
 
-- S-1 through S-12 have product copy, use case, methodology composition,
+- S-1 through S-12 and B-1 through B-8 have product copy, use case, methodology composition,
   execution order, action and latency classes, autonomy defaults, required data
   roles, policy and measurement templates, guardrails, and four selectable
   capability levels.
-- B-1 through B-8 have `status: "sketch"`, `runnable: false`, and a promotion
-  condition. Their data roles describe what promotion would require. They
-  cannot be built; the refusal repeats that promotion condition.
+- B-1 through B-8 retain their promotion conditions as go-to-market gates while
+  reporting `status: "catalogue"` and `runnable: true`.
 - All seven production foundation components are integrated (#1128).
   `runnable` describes the default level's methodology availability;
   `missing_components` lists unavailable methodology callbacks only. It is
-  empty for the currently runnable S modules. Band-B entries remain sketches.
+  empty for every catalogue module.
 
 The product copy contains no pricing or numerical return claims. It says what
 problem the module solves and what data roles it needs.
@@ -225,6 +248,28 @@ fairness-review evidence are mandatory. Catastrophe and manual-only flags block
 delivery. Fast-track cost above 5,000 requires A1 approval. The deterministic
 10% tier holdout measures `referral_confirmed` over 45 days.
 
+### B-2 executable defaults
+
+B-2 defines elevated/watch/baseline aggregate-risk floors of 0.60/0.35/0.0.
+Elevated cohorts create an A2 people-leader review, watch cohorts create an A2
+aggregate report, and baseline cohorts record A0 no action. An organizational
+intervention review is A1. Eligibility requires `group_size >= 5`, people-leader
+authorization, completed fairness review, recorded legal approval, and an
+explicitly false individual-output flag. Every tier keeps a permanent 10%
+holdout and measures `attrition_reduction` over 90 days. See [B-2.md](B-2.md)
+for the aggregate-only runtime and five named refusals.
+
+### B-3 executable defaults
+
+B-3 routes tickets at confidence 0.6 and explicitly abstains below that
+threshold or for a new ticket type. Level 1 emits an A2 queue task; levels 2–4
+add the draft reply. `close_ticket` remains A1 and is never a default tier
+action. Customer-owned taxonomy and current-version evidence are required. The
+permanent 10% holdout measures `resolution_quality`; six guardrails cover
+misroutes, resolution quality, abstention, new types, unapproved closure, and
+execution. Its customer-offering promotion condition remains recorded even
+though the module is runnable.
+
 S-5 is the complete demand-planning default. Its critical/review/routine tiers
 use relative interval uncertainty floors of 0.20/0.05/0.0. Critical and review
 series create an A2 exception task with a one-day SLA; routine series record
@@ -233,6 +278,17 @@ control eligibility. The cap is one task per seven days and 52 lifetime tasks.
 Each tier has a 10% protected holdout, and the planner report omits held-out
 series. Its five observed guardrails cover FVA, interval coverage, freshness,
 stockout censoring, and override auditability.
+
+### B-7 executable defaults
+
+B-7 uses 0.70/0.40/0.0 credit-risk floors for underwriter review, limit review,
+and approval. Approvals within a 5,000 requested limit are A2; larger approvals
+and limit increases require A1. Decline and lower-limit recommendations remain
+A0 human-only and are never default score-tier actions. Eligibility requires
+verified income, model-validation approval, fairness-review approval, and
+reason-code readiness. Every tier has a 10% holdout measuring
+`performing_account` over 90 days. See [B-7.md](B-7.md) for its validation and
+fair-lending refusals and retained go-to-market condition.
 
 ### S-6 executable defaults
 
@@ -343,6 +399,30 @@ S-11 action payloads carry the selected action and channel, exploit/explore
 mode, actual selection probability, predictive propensity, and the explicit
 non-causal interpretation through the shared action integration path.
 
+B-1 supplies level-specific price recommendations, review tasks, controlled
+experiments, and publication actions. Its policy enforces a margin floor and a
+hard authority limit, while experiment and publication actions require A1
+approval above the automatic authority limit.
+
+B-8 is the complete IT and security operations default:
+
+| Setting | Executable default |
+|---|---|
+| Critical / elevated | exact-budget flagged risk; action selected by capability level |
+| Advisory | deliberate no action, A0 |
+| Authority | level 1 investigation A0; level 2 approval A1; levels 3–4 bounded containment A2 |
+| Bound | one affected asset inside an approved playbook and known dependency scope |
+| Eligibility | explicit owner, playbook, containment, dependency, and affected-asset evidence |
+| Exclusions | manual-only, protected-asset, and active-incident flags suppress delivery |
+| Budget / stop | zero monetary spend; boolean kill switch off |
+| Experiment | permanent 10% holdout in every severity tier; `operational_response` treatment |
+| Guardrails | alert volume, containment scope, unapproved containment, kill-switch bypass, and action execution |
+| Measurement | holdout; named `incident_avoided` outcome per incident over 30 days |
+
+B-8 tasks carry the asset, dependency, anomaly evidence, approved scope,
+authority boundary, and kill-switch check through action integration. Its
+promotion condition remains recorded as a customer-offering condition.
+
 The readout refuses causal/ROI claims for FVA and phased designs until their
 module-specific estimators exist.
 
@@ -350,7 +430,7 @@ module-specific estimators exist.
 
 See [executable solution pipelines](executable-pipelines.md) for the input
 contract, example, read-backs, failure behavior, and the S-1, S-2, S-3, S-4,
-S-5, S-6, S-7, S-8, S-9, S-10, S-11, and S-12 journeys.
+S-5, S-6, S-7, S-8, S-9, S-10, S-11, S-12, and B-1 through B-8 journeys.
 
 `compose_solution` selects methodologies at the requested capability level,
 calls each registered `build_shape`, tags its nodes, and connects the stages
@@ -368,10 +448,32 @@ and point-in-time promise-to-pay labels. All completed modules run these checks 
 the graph is persisted and again before execution.
 For S-12, it refuses automated denial, missing fairness review, weak document
 thresholds, missing claim-score bindings, and incomplete level composition.
+For B-4, it refuses incomplete per-field thresholds, low-confidence extraction
+without an owned review queue, and downstream workflow action before every
+required field is validated.
+
+For B-2, it refuses a cohort minimum below five, non-aggregate identity or
+outputs, incomplete fairness review, missing legal or works-council approval,
+and any destination other than the named people leader. The runtime also
+refuses undersized cohort rows, individual identifiers or scores, and later
+policy versions that remove the required gates.
+For B-6, it refuses a missing protected-group equity review, any policy that
+can penalize care access, an unrecorded or unapproved privacy posture, and
+model features outside the approved minimum-necessary PHI set. All four levels
+run M-1 and bind its healthcare-specific operations score table.
+
+For B-7, it refuses missing adverse-action reasons, incomplete or unsigned
+model-risk validation, a missing fairness review, automated adverse authority,
+and compositions without M-1 credit scores plus M-17 coverage validation.
 
 For S-6, it refuses missing service or budget constraints, an M-4 horizon
 shorter than lead time, unsafe automatic/hard quantity bounds, and a level that
 omits M-4, M-16, M-5 when required, or its configured kill switch.
+
+For B-1, it refuses non-identifiable price effects, missing margin or authority
+policy limits, approval thresholds above the automatic band, competitor prices
+observed after the decision, future price features, and incomplete M-4/M-6/M-16
+composition.
 
 For S-7, it refuses causal driver claims, a missing or mismatched alert budget,
 and noncausal or nonseasonal baselines. Levels 3 and 4 require rolling-origin
@@ -390,6 +492,10 @@ All levels require M-1, M-2, and M-12; levels 3 and 4 also require M-5.
 For S-11, it refuses missing propensity logs, unenforced consent or
 cross-channel contact caps, and any causal claim derived from predictive
 response propensity. M-8 and M-15 outputs feed its request-time arbitration.
+For B-8, it refuses an absent or mismatched alert budget, broken A0/A1/A2
+progression, a kill switch that cannot stop delivery, or any automatic action
+outside the approved single-asset playbook bound. Every level executes M-12
+and M-7, and the live policy is rechecked before decisions.
 The composed order is snapshot → methodologies → policy/holdout protection →
 actions → ledger → monitor, with a readout definition linked to the graph.
 `create_solution` persists real versioned policy, experiment, monitor, graph,

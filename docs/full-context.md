@@ -102,16 +102,56 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   fairness review, protected holdouts, and measured referral outcomes are
   covered by [solutions/S-12.md](solutions/S-12.md).
 
+- **B-2 Employee Attrition (aggregate-first) (#1176)** — runnable at levels
+  1–4 with M-1/M-7 aggregate cohort scoring, a minimum group size of five,
+  completed fairness review, recorded legal or works-council approval,
+  people-leader-only output, a protected holdout, and measured aggregate
+  attrition outcomes. See [solutions/B-2.md](solutions/B-2.md).
+- **B-3 Ticket Triage & Service Automation (#1177)** — runnable at levels 1–4
+  with M-10/M-19, customer-owned taxonomy routing, confidence abstention,
+  approval-only closure, new-ticket-type drift monitoring, action delivery,
+  protected holdout measurement, and a resolution-quality readout. The
+  customer-offering promotion condition remains recorded. See
+  [solutions/B-3.md](solutions/B-3.md).
+- **B-6 Healthcare Operations (#1180)** — runnable at levels 1–4 with native
+  M-1 operational-risk scoring for assistive scheduling and revenue-cycle work.
+  The gate refuses missing equity review, care-access restrictions, unapproved
+  privacy posture, and PHI beyond an approved minimum. Protected holdouts,
+  governed work queues, and operational-resolution outcomes feed the ROI
+  readout. Its customer-promotion condition remains recorded independently of
+  engineering readiness. See [solutions/B-6.md](solutions/B-6.md).
+
 - **S-6 Replenishment & Inventory Action (#1115)** — runnable at levels 1–4
   with M-4 lead-time forecasting, M-16 constrained planning, optional M-5
   time-to-stockout, complete policy and holdout defaults, bounded ERP release,
   five observed guardrails, and a service-level ROI readout. See
   [solutions/S-6.md](solutions/S-6.md).
+- **B-1 Dynamic Pricing & Discount Governance (#1175)** — runnable at levels
+  1–4 with M-4/M-6/M-16, identifiable price-effect evidence, margin and
+  authority policy limits, controlled experiments, protected holdouts, A1
+  approval above the automatic band, governed price publication, and a
+  net-margin readout. Its customer-offering promotion condition remains
+  recorded. See [solutions/B-1.md](solutions/B-1.md).
 - **S-11 Next-Best-Action (#1120)** — runnable at levels 1–4 with
   M-2/M-1/M-6/M-8/M-15, complete request-time policy and uplift-cell defaults,
   exploit/explore arbitration, durable selection propensities, cross-channel
   consent/contact enforcement, action delivery, and a net-value ROI readout.
   See [solutions/S-11.md](solutions/S-11.md).
+
+- **B-5 Supplier Risk & Procurement Intelligence (#1179)** — runnable at
+  levels 1–4 with M-4 forecast context and supplier-specific M-1 risk flags.
+  Three bound checks enforce point-in-time external data, exclude post-event
+  supplier records, and require evidence on every flag. Governed procurement
+  tasks preserve tier holdouts and feed the disruption-avoidance ROI readout.
+  The customer-offering condition remains recorded independently. See
+  [solutions/B-5.md](solutions/B-5.md).
+
+- **B-8 IT & Security Operations (#1182)** — runnable at levels 1–4 with
+  M-12 dependency context and exact-budget M-7 anomaly scoring. Four named
+  refusals enforce the alert cap, graduated A0/A1/bounded-A2 authority, a hard
+  kill switch, and approved single-asset containment. Complete policy,
+  holdout, action, guardrail, and planted incident-avoidance measurement paths
+  are covered by [solutions/B-8.md](solutions/B-8.md).
 
 - **Workspace solution integration (#1128)** — `deploy/workspace` combines the
   solution foundations with the bus/engine fixes and #1131's in-flight signal

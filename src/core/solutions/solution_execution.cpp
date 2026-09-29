@@ -102,11 +102,25 @@ ApiResult call_stage(const std::shared_ptr<SolutionState>& state,
         request.project = project.get();
         request.graph = &stage_graph;
         request.input = state->input;
+        const auto sources = request.input.find("sources");
+        if (sources != request.input.end() && sources->is_object()) {
+            const auto stage_settings =
+                sources->find(stage.methodology->id);
+            if (stage_settings != sources->end() &&
+                stage_settings->is_object()) {
+                for (const auto& [key, value] :
+                     stage_settings->items()) {
+                    request.input[key] = value;
+                }
+            }
+        }
         if (stage.methodology->id == "M-4") {
             request.input.erase("dataset_path");
             request.input.erase("dataset");
         }
-        if (state->binding.value("solution", std::string{}) == "S-7" &&
+        if ((state->binding.value("solution", std::string{}) == "S-7" ||
+             state->binding.value("solution", std::string{}) == "B-2" ||
+             state->binding.value("solution", std::string{}) == "B-8") &&
             stage.methodology->id == "M-7" &&
             request.input.contains("dataset")) {
             request.input["dataset"].erase("as_of");
@@ -223,6 +237,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                         }
                     }
                 }
+                if (state->binding.value("solution", std::string{}) == "B-1" &&
+                    stage.methodology->id == "M-6") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "treatment effects") {
+                            scored_outputs.push_back(output);
+                        }
+                    }
+                }
                 if (state->binding.value("solution", std::string{}) == "S-11" &&
                     stage.methodology->id == "M-15") {
                     for (const zetta::pipeline::RunOutput& output :
@@ -230,6 +254,16 @@ zetta::runtime::task<> run_stages(std::shared_ptr<SolutionState> state) {
                         if (output.kind == "dataset" &&
                             output.name == "decision propensities") {
                             scored_outputs.push_back(output);
+                        }
+                    }
+                }
+                if (state->binding.value("solution", std::string{}) == "B-5" &&
+                    stage.methodology->id == "M-4") {
+                    for (const zetta::pipeline::RunOutput& output :
+                         snapshot.outputs) {
+                        if (output.kind == "dataset" &&
+                            output.name == "forecast") {
+                            supporting_outputs.push_back(output);
                         }
                     }
                 }

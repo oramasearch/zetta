@@ -636,6 +636,49 @@ CheckResult s11_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b8_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-8") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-8 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b8_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-8 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b8_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-8 Pipeline to validate"};
+}
+
+CheckResult b8_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b8_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 const json* s10_correctness_profile(const ir::ExecutionGraph& graph,
                                     bool& applies, int& level,
                                     std::string& error) {
@@ -737,6 +780,49 @@ const json* s6_correctness_profile(const ir::ExecutionGraph& graph,
         return nullptr;
     }
     return &*profile;
+}
+
+const json* b1_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-1") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-1 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b1_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-1 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b1_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-1 Pipeline to validate"};
+}
+
+CheckResult b1_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b1_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
 CheckResult s1_not_applicable(std::string name) {
@@ -998,6 +1084,49 @@ CheckResult s4_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b5_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-5") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-5 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b5_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-5 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b5_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-5 Pipeline to validate"};
+}
+
+CheckResult b5_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b5_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 bool has_boolean_policy_predicate(const json& policy,
                                   const char* rule_name,
                                   std::string_view field,
@@ -1019,6 +1148,22 @@ bool has_boolean_policy_predicate(const json& policy,
                operation->get_ref<const std::string&>() == "eq" &&
                value != rule.end() && value->is_boolean() &&
                value->get<bool>() == expected;
+    });
+}
+
+bool has_policy_predicate(const json& policy,
+                          const char* rule_name,
+                          std::string_view field,
+                          std::string_view expected_operation) {
+    const auto rules = policy.find(rule_name);
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        return rule.is_object() &&
+               rule.value("field", std::string{}) == field &&
+               rule.value("operator", std::string{}) ==
+                   expected_operation;
     });
 }
 
@@ -1735,6 +1880,204 @@ CheckResult S6LevelCompositionCheck::evaluate(
                       "S-6 selected level has every required stage and action bound");
 }
 
+CheckResult B1ElasticityIdentificationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* identification = object_field(*profile, "identification");
+    if (identification == nullptr ||
+        (!identification->value("identifiable_variation", false) &&
+         !identification->value("randomized_experiment", false)) ||
+        identification->value("treatment_column", std::string{}).empty() ||
+        identification->value("outcome_column", std::string{}).empty()) {
+        return b1_failure(
+            name(),
+            "B-1 price effects require identifiable variation or a randomized experiment with named treatment and outcome columns");
+    }
+    const ir::Node* uplift = model_kind(graph, "uplift");
+    if (uplift == nullptr || !has_methodology(graph, "M-6")) {
+        return b1_failure(
+            name(), "B-1 requires the M-6 price-effect estimation stage");
+    }
+    return b1_success(
+        name(), "B-1 price effects are limited to identifiable variation");
+}
+
+CheckResult B1MarginAuthorityPolicyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* policy = object_field(*profile, "policy");
+    const auto has_numeric_rule = [](const json& config,
+                                     std::string_view field,
+                                     std::string_view operation,
+                                     double expected) {
+        const auto rules = config.find("eligibility_rules");
+        if (rules == config.end() || !rules->is_array()) {
+            return false;
+        }
+        return std::ranges::any_of(*rules, [&](const json& rule) {
+            return rule.is_object() &&
+                   rule.value("field", std::string{}) == field &&
+                   rule.value("operator", std::string{}) == operation &&
+                   rule.contains("value") && rule.at("value").is_number() &&
+                   std::abs(rule.at("value").get<double>() - expected) < 1e-12;
+        });
+    };
+    const double margin_floor = profile->value("margin_floor", 0.0);
+    const double automatic =
+        profile->value("automatic_authority_limit", 0.0);
+    const double hard = profile->value("hard_authority_limit", 0.0);
+    if (policy == nullptr || margin_floor <= 0.0 || automatic <= 0.0 ||
+        hard < automatic ||
+        !has_numeric_rule(*policy, "gross_margin", "gte", margin_floor) ||
+        !has_numeric_rule(*policy, "authority_distance", "lte", hard)) {
+        return b1_failure(
+            name(),
+            "B-1 policy must enforce its positive margin floor and hard authority band as eligibility rules");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object()) {
+        return b1_failure(name(), "B-1 policy must declare governed actions");
+    }
+    for (const std::string action_name : {
+             "controlled_price_experiment", "publish_price_change"}) {
+        const auto action = actions->find(action_name);
+        if (action == actions->end() || !action->is_object() ||
+            action->value("approval_field", std::string{}) !=
+                "authority_distance" ||
+            !action->contains("approval_above") ||
+            !action->at("approval_above").is_number() ||
+            action->at("approval_above").get<double>() > automatic) {
+            return b1_failure(
+                name(),
+                "B-1 experiments and published price changes must require approval above the automatic authority band");
+        }
+    }
+    const ir::Node* optimization = model_kind(graph, "optimization");
+    if (optimization == nullptr ||
+        !optimization->attributes.value("verify_constraints", false)) {
+        return b1_failure(
+            name(), "B-1 requires M-16 to verify pricing constraints");
+    }
+    return b1_success(
+        name(), "B-1 margin and authority bands are enforced by policy");
+}
+
+CheckResult B1PriceLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    const json* leakage = object_field(*profile, "leakage");
+    if (leakage == nullptr ||
+        !leakage->value("future_prices_excluded", false)) {
+        return b1_failure(
+            name(), "B-1 must explicitly exclude future price information");
+    }
+    const auto prediction = leakage->find("prediction_time");
+    const auto competitor = leakage->find("competitor_price_cutoff");
+    if (prediction == leakage->end() || competitor == leakage->end()) {
+        return b1_failure(
+            name(), "B-1 requires prediction and competitor-price cutoffs");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    const std::optional<solutions::TimePoint> competitor_time =
+        solutions::parse_time_point(*competitor);
+    if (!prediction_time || !competitor_time ||
+        prediction_time->kind != competitor_time->kind ||
+        competitor_time->value > prediction_time->value) {
+        return b1_failure(
+            name(),
+            "B-1 competitor prices must be observed no later than the decision time");
+    }
+    const auto blocked = leakage->find("forbidden_feature_names");
+    const auto features = leakage->find("feature_names");
+    if (blocked == leakage->end() || !blocked->is_array() ||
+        features == leakage->end() || !features->is_array()) {
+        return b1_failure(
+            name(), "B-1 requires declared price features and a leakage blocklist");
+    }
+    std::unordered_set<std::string> forbidden;
+    for (const json& entry : *blocked) {
+        if (entry.is_string()) {
+            forbidden.insert(normalize_type(entry.get<std::string>()));
+        }
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string() ||
+            forbidden.contains(normalize_type(feature.get<std::string>()))) {
+            return b1_failure(
+                name(), "B-1 predictors contain a future price field");
+        }
+    }
+    return b1_success(
+        name(), "B-1 competitor and own-price features are decision-time safe");
+}
+
+CheckResult B1LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b1_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b1_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b1_failure(name(), error);
+    }
+    if (!has_methodology(graph, "M-4") ||
+        !has_methodology(graph, "M-6") ||
+        !has_methodology(graph, "M-16")) {
+        return b1_failure(
+            name(), "B-1 requires M-4, M-6, and M-16 at every level");
+    }
+    const std::string expected_action =
+        level <= 1 ? "price_recommendation"
+        : level == 2 ? "pricing_review_task"
+        : level == 3 ? "controlled_price_experiment"
+                     : "publish_price_change";
+    if (profile->value("level_action", std::string{}) != expected_action) {
+        return b1_failure(
+            name(), "B-1 selected level has the wrong action authority");
+    }
+    if (level >= 4 && !profile->value("kill_switch_configured", false)) {
+        return b1_failure(
+            name(), "B-1 level 4 requires a configured kill switch");
+    }
+    return b1_success(
+        name(), "B-1 selected level has every required stage and action bound");
+}
+
 CheckResult S3ShortTenureCensoringCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;
@@ -1962,6 +2305,193 @@ CheckResult S4PromiseToPayPointInTimeCheck::evaluate(
         "S-4 promise-to-pay labels are frozen at the prediction cutoff");
 }
 
+CheckResult B5PointInTimeExternalDataCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* external = object_field(*profile, "external_data");
+    const auto prediction = profile->find("prediction_time");
+    if (external == nullptr || prediction == profile->end() ||
+        !external->value("point_in_time", false) ||
+        !external->value("future_publications_excluded", false) ||
+        external->value("source_column", std::string{}).empty() ||
+        external->value("observed_at_column", std::string{}).empty() ||
+        external->value("observed_at_column", std::string{}) !=
+            external->value("snapshot_time_column", std::string{})) {
+        return b5_failure(
+            name(),
+            "B-5 external data must name its source and use publication time "
+            "as the point-in-time snapshot boundary");
+    }
+    const std::optional<solutions::TimePoint> prediction_time =
+        solutions::parse_time_point(*prediction);
+    if (!prediction_time) {
+        return b5_failure(name(), "B-5 prediction time is invalid");
+    }
+    std::size_t sources = 0;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        ++sources;
+        if (node->attributes.value("source_kind", std::string{}) !=
+            "snapshot") {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": live supplier or external data is refused");
+        }
+        auto cutoff = node->attributes.find("solution_snapshot_as_of");
+        if (cutoff == node->attributes.end()) {
+            cutoff = node->attributes.find("snapshot_as_of");
+        }
+        if (cutoff == node->attributes.end()) {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": point-in-time source has no inclusive cutoff");
+        }
+        const std::optional<solutions::TimePoint> source_time =
+            solutions::parse_time_point(*cutoff);
+        if (!source_time || source_time->kind != prediction_time->kind ||
+            source_time->value > prediction_time->value) {
+            return b5_failure(
+                name(), node_label(*node) +
+                            ": supplier source cutoff is after decision time");
+        }
+    }
+    if (sources == 0) {
+        return b5_failure(name(), "B-5 has no methodology snapshot sources");
+    }
+    return b5_success(
+        name(), std::to_string(sources) +
+                    " B-5 supplier sources are point-in-time safe");
+}
+
+CheckResult B5PostEventSupplierLeakageCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* records = object_field(*profile, "supplier_records");
+    const auto blocklist = profile->find("post_event_blocklist");
+    const auto features = profile->find("feature_names");
+    if (records == nullptr ||
+        records->value("event_time_column", std::string{}).empty() ||
+        !records->value("truncate_at_event", false) ||
+        records->value("post_event_records", std::string{}) != "exclude" ||
+        blocklist == profile->end() || !blocklist->is_array() ||
+        blocklist->empty() || features == profile->end() ||
+        !features->is_array() || features->empty()) {
+        return b5_failure(
+            name(),
+            "B-5 must truncate supplier history at the disruption event and "
+            "declare a non-empty post-event blocklist");
+    }
+    std::unordered_set<std::string> blocked;
+    for (const json& entry : *blocklist) {
+        if (!entry.is_string() ||
+            entry.get_ref<const std::string&>().empty()) {
+            return b5_failure(
+                name(), "B-5 post-event blocklist entries must be names");
+        }
+        blocked.insert(normalize_type(entry.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        if (!feature.is_string()) {
+            return b5_failure(name(), "B-5 feature names must be strings");
+        }
+        if (blocked.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b5_failure(
+                name(), "B-5 feature \"" +
+                            feature.get_ref<const std::string&>() +
+                            "\" is only available after the supplier event");
+        }
+    }
+    return b5_success(
+        name(), "B-5 predictors exclude post-event supplier records");
+}
+
+CheckResult B5FlagEvidenceCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b5_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b5_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b5_failure(name(), error);
+    }
+    const json* evidence = object_field(*profile, "flag_evidence");
+    if (evidence == nullptr || !evidence->value("required", false) ||
+        !evidence->value("reason_codes_required", false) ||
+        !evidence->value("forecast_evidence_required", false) ||
+        !evidence->contains("required_fields") ||
+        !evidence->at("required_fields").is_array() ||
+        evidence->at("required_fields").empty()) {
+        return b5_failure(
+            name(),
+            "B-5 flags must carry external provenance, model reasons, and "
+            "forecast evidence");
+    }
+    for (const json& field : evidence->at("required_fields")) {
+        if (!field.is_string() ||
+            field.get_ref<const std::string&>().empty()) {
+            return b5_failure(
+                name(), "B-5 flag evidence fields must be named");
+        }
+    }
+    bool supplier_output = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node ||
+            node->attributes.value("entity_output_column", std::string{}) !=
+                "supplier" ||
+            node->attributes.value("score_output_column", std::string{}) !=
+                "supplier_risk_score") {
+            continue;
+        }
+        const auto output_fields =
+            node->attributes.find("evidence_output_fields");
+        supplier_output =
+            output_fields != node->attributes.end() &&
+            output_fields->is_array() &&
+            std::ranges::find(*output_fields, "reason_codes") !=
+                output_fields->end() &&
+            std::ranges::find(*output_fields, "dominant_driver") !=
+                output_fields->end();
+    }
+    if (!supplier_output || !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-4")) {
+        return b5_failure(
+            name(),
+            "B-5 requires supplier-specific M-1 flags and M-4 forecast "
+            "context at every level");
+    }
+    return b5_success(
+        name(), "B-5 flags carry source, reason, and forecast evidence");
+}
+
 namespace {
 
 const json* s12_correctness_profile(const ir::ExecutionGraph& graph,
@@ -2007,11 +2537,58 @@ CheckResult s12_success(std::string name, std::string reason) {
     return {std::move(name), CheckStatus::Pass, std::move(reason)};
 }
 
+const json* b3_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-3") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-3 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b3_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-3 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b3_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-3 Pipeline to validate"};
+}
+
+CheckResult b3_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b3_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
 bool adverse_action(std::string_view action) {
     const std::string normalized = normalize_type(std::string(action));
     return normalized.find("denial") != std::string::npos ||
            normalized.find("deny") != std::string::npos ||
-           normalized.find("reject") != std::string::npos;
+           normalized.find("decline") != std::string::npos ||
+           normalized.find("reject") != std::string::npos ||
+           normalized.find("lower_limit") != std::string::npos ||
+           normalized.find("reduce_limit") != std::string::npos ||
+           normalized.find("freeze_limit") != std::string::npos;
 }
 
 bool policy_requires(const json& policy, std::string_view field,
@@ -2220,6 +2797,915 @@ CheckResult S12LevelCompositionCheck::evaluate(
         name(), "S-12 selected level has claim-specific runnable stages");
 }
 
+CheckResult B3AbstentionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* abstention = object_field(*profile, "abstention");
+    const json* policy = object_field(*profile, "policy");
+    if (abstention == nullptr || policy == nullptr ||
+        abstention->value("below_threshold_action", std::string{}) !=
+            "abstain") {
+        return b3_failure(
+            name(), "B-3 must name abstain as the below-threshold decision");
+    }
+    const auto minimum = abstention->find("minimum_confidence");
+    const auto threshold = policy->find("threshold");
+    if (minimum == abstention->end() || !minimum->is_number() ||
+        threshold == policy->end() || !threshold->is_number()) {
+        return b3_failure(
+            name(), "B-3 requires a numeric confidence threshold");
+    }
+    const double value = minimum->get<double>();
+    if (!std::isfinite(value) || value <= 0.0 || value > 1.0 ||
+        std::abs(threshold->get<double>() - value) > 1e-12) {
+        return b3_failure(
+            name(), "B-3 confidence threshold must be in (0, 1] and match policy");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object() ||
+        !actions->contains("abstain") ||
+        actions->at("abstain").value("autonomy", std::string{}) != "A0") {
+        return b3_failure(
+            name(), "B-3 abstention must remain a non-actionable A0 decision");
+    }
+    const ir::Node* language = model_kind(graph, "language");
+    if (language == nullptr ||
+        std::abs(language->attributes.value(
+                     "ticket_confidence_threshold", -1.0) - value) > 1e-12) {
+        return b3_failure(
+            name(), "B-3 M-10 confidence output must use the governed threshold");
+    }
+    return b3_success(
+        name(), "low-confidence tickets produce explicit abstention");
+}
+
+CheckResult B3CustomerTaxonomyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* taxonomy = object_field(*profile, "taxonomy");
+    const json* policy = object_field(*profile, "policy");
+    if (taxonomy == nullptr || policy == nullptr ||
+        !taxonomy->value("owned_by_customer", false) ||
+        taxonomy->value("owner", std::string{}).empty() ||
+        taxonomy->value("version", std::string{}).empty() ||
+        taxonomy->value("queue_column", std::string{}).empty() ||
+        taxonomy->value("unmapped_action", std::string{}) != "abstain" ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "taxonomy_owned_by_customer", true) ||
+        !has_boolean_policy_predicate(
+            *policy, "eligibility_rules", "taxonomy_version_current", true) ||
+        !has_policy_predicate(
+            *policy, "eligibility_rules", "queue", "exists")) {
+        return b3_failure(
+            name(), "B-3 routing requires a versioned customer-owned taxonomy");
+    }
+    return b3_success(
+        name(), "ticket routing is bound to the customer's taxonomy");
+}
+
+CheckResult B3ClosureApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* closure = object_field(*profile, "closure");
+    const json* policy = object_field(*profile, "policy");
+    if (closure == nullptr || policy == nullptr ||
+        !closure->value("approval_required", false) ||
+        closure->value("action", std::string{}) != "close_ticket") {
+        return b3_failure(
+            name(), "B-3 must declare approval for ticket closure");
+    }
+    const auto actions = policy->find("actions");
+    if (actions == policy->end() || !actions->is_object() ||
+        !actions->contains("close_ticket") ||
+        actions->at("close_ticket").value("autonomy", std::string{}) !=
+            "A1") {
+        return b3_failure(
+            name(), "B-3 ticket closure must remain A1 pending approval");
+    }
+    return b3_success(
+        name(), "ticket closure cannot execute without approval");
+}
+
+CheckResult B3NewTicketTypeDriftCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    const json* drift = object_field(*profile, "new_ticket_type_drift");
+    const json* policy = object_field(*profile, "policy");
+    if (drift == nullptr || policy == nullptr ||
+        !drift->value("monitoring_enabled", false) ||
+        drift->value("field", std::string{}) != "new_ticket_type" ||
+        drift->value("action", std::string{}) != "abstain") {
+        return b3_failure(
+            name(), "B-3 must monitor and abstain on new ticket types");
+    }
+    const auto maximum = drift->find("maximum_fraction");
+    if (maximum == drift->end() || !maximum->is_number() ||
+        !std::isfinite(maximum->get<double>()) ||
+        maximum->get<double>() < 0.0 || maximum->get<double>() > 1.0 ||
+        !has_policy_predicate(
+            *policy, "eligibility_rules", "new_ticket_type", "exists") ||
+        !has_boolean_policy_predicate(
+            *policy, "exclusion_rules", "new_ticket_type", true)) {
+        return b3_failure(
+            name(), "B-3 new-type drift needs a bounded monitor and hard exclusion");
+    }
+    return b3_success(
+        name(), "new ticket types are monitored and routed to abstention");
+}
+
+CheckResult B3LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b3_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b3_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b3_failure(name(), error);
+    }
+    if (level < 1 || level > 4 || !has_methodology(graph, "M-10") ||
+        !has_methodology(graph, "M-19") ||
+        model_kind(graph, "language") == nullptr ||
+        model_kind(graph, "label_efficiency") == nullptr) {
+        return b3_failure(
+            name(), "B-3 levels require runnable M-10 and M-19 stages");
+    }
+    return b3_success(
+        name(), "B-3 selected level contains both methodology callbacks");
+}
+
+
+namespace {
+
+const json* b4_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-4") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-4 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    if (level < 1 || level > 4) {
+        error = "B-4 level must be between 1 and 4";
+        return nullptr;
+    }
+    const auto profile = manifest->attributes.find("b4_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-4 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b4_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-4 Pipeline to validate"};
+}
+
+CheckResult b4_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b4_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+} // namespace
+
+CheckResult B4PerFieldConfidenceCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const auto fields = profile->find("required_fields");
+    const auto thresholds = profile->find("field_thresholds");
+    if (fields == profile->end() || !fields->is_array() || fields->empty() ||
+        thresholds == profile->end() || !thresholds->is_object()) {
+        return b4_failure(
+            name(), "B-4 requires declared fields and a threshold for each field");
+    }
+    std::unordered_set<std::string> names;
+    double maximum_threshold = 0.0;
+    for (const json& field : *fields) {
+        if (!field.is_string() || field.get_ref<const std::string&>().empty() ||
+            !names.insert(field.get_ref<const std::string&>()).second) {
+            return b4_failure(
+                name(), "B-4 required fields must be unique non-empty names");
+        }
+        const auto threshold =
+            thresholds->find(field.get_ref<const std::string&>());
+        if (threshold == thresholds->end() || !threshold->is_number() ||
+            threshold->get<double>() <= 0.0 ||
+            threshold->get<double>() > 1.0) {
+            return b4_failure(
+                name(), "B-4 every required field needs a threshold in (0, 1]");
+        }
+        maximum_threshold =
+            std::max(maximum_threshold, threshold->get<double>());
+    }
+    const ir::Node* extraction = model_kind(graph, "document_extraction");
+    if (!has_methodology(graph, "M-11") || extraction == nullptr ||
+        !extraction->attributes.value("confidence_required", false) ||
+        !extraction->attributes.value("retain_evidence", false) ||
+        extraction->attributes.value("field_thresholds", json::object()) !=
+            *thresholds ||
+        extraction->attributes.value("review_threshold", 0.0) <
+            maximum_threshold) {
+        return b4_failure(
+            name(), "B-4 M-11 must retain evidence and enforce every field threshold");
+    }
+    return b4_success(
+        name(), "B-4 applies governed confidence thresholds to every field");
+}
+
+CheckResult B4ReviewQueueCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "review");
+    const auto thresholds = profile->find("field_thresholds");
+    if (review == nullptr || thresholds == profile->end() ||
+        !review->value("route_low_confidence_to_review", false) ||
+        review->value("queue", std::string{}).empty() ||
+        review->value("action", std::string{}) != "field_review_task" ||
+        !review->value("owner_required", false)) {
+        return b4_failure(
+            name(), "B-4 low-confidence fields require an owned human-review queue");
+    }
+    const ir::Node* extraction = model_kind(graph, "document_extraction");
+    if (extraction == nullptr ||
+        !extraction->attributes.value("route_low_confidence_to_review", false)) {
+        return b4_failure(
+            name(), "B-4 M-11 must mark low-confidence fields for review");
+    }
+    bool has_review_action = false;
+    for (const std::shared_ptr<ir::Node>& action :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!action || !action->attributes.is_object()) {
+            continue;
+        }
+        if (action->attributes.value("route", std::string{}) ==
+                "review_queue" &&
+            action->attributes.value("human_review_action", std::string{}) ==
+                "field_review_task" &&
+            action->attributes.value("per_field_thresholds", json::object()) ==
+                *thresholds) {
+            has_review_action = true;
+            break;
+        }
+    }
+    if (!has_review_action) {
+        return b4_failure(
+            name(), "B-4 requires an M-11 action that routes failed fields to review");
+    }
+    return b4_success(
+        name(), "B-4 routes every low-confidence field to owned human review");
+}
+
+CheckResult B4ValidatedWorkflowCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b4_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b4_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b4_failure(name(), error);
+    }
+    const json* downstream = object_field(*profile, "downstream");
+    const json* policy = object_field(*profile, "policy");
+    if (downstream == nullptr || policy == nullptr ||
+        !downstream->value("requires_all_fields_validated", false) ||
+        downstream->value("validation_flag", std::string{}) !=
+            "fields_validated" ||
+        !downstream->value("structured_output_only", false)) {
+        return b4_failure(
+            name(), "B-4 workflow delivery must require all fields to validate");
+    }
+    const auto workflow_actions = downstream->find("workflow_actions");
+    const auto policy_actions = policy->find("actions");
+    if (workflow_actions == downstream->end() ||
+        !workflow_actions->is_array() || workflow_actions->empty() ||
+        policy_actions == policy->end() || !policy_actions->is_object() ||
+        !policy_actions->contains("field_review_task")) {
+        return b4_failure(
+            name(), "B-4 must distinguish review from workflow actions");
+    }
+    for (const json& action : *workflow_actions) {
+        if (!action.is_string() || action == "field_review_task" ||
+            !policy_actions->contains(action.get_ref<const std::string&>())) {
+            return b4_failure(
+                name(), "B-4 workflow action allowlist is invalid");
+        }
+    }
+    if (!has_methodology(graph, "M-11")) {
+        return b4_failure(name(), "B-4 levels require the M-11 callback");
+    }
+    return b4_success(
+        name(), "B-4 blocks business workflows until every field validates");
+}
+
+namespace {
+
+const json* b6_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies,
+                                   std::string& error) {
+    applies = false;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-6") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto profile = manifest->attributes.find("b6_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-6 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b6_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-6 Pipeline to validate"};
+}
+
+CheckResult b6_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b6_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool care_access_penalty(std::string_view action) {
+    const std::string normalized = normalize_type(std::string(action));
+    return normalized.find("deny_care") != std::string::npos ||
+           normalized.find("care_denial") != std::string::npos ||
+           normalized.find("cancel_appointment") != std::string::npos ||
+           normalized.find("restrict_access") != std::string::npos ||
+           normalized.find("deprioritize_care") != std::string::npos ||
+           normalized.find("reject_patient") != std::string::npos;
+}
+
+bool named_string_array(const json& value) {
+    return value.is_array() && !value.empty() &&
+           std::ranges::all_of(value, [](const json& entry) {
+               return entry.is_string() &&
+                      !entry.get_ref<const std::string&>().empty();
+           });
+}
+
+} // namespace
+
+CheckResult B6EquityReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "equity_review");
+    if (review == nullptr || !review->value("required", false) ||
+        review->value("owner", std::string{}).empty() ||
+        !review->value("outcome_rate_reviewed", false)) {
+        return b6_failure(
+            name(),
+            "B-6 requires an owned outcome-rate equity review");
+    }
+    const auto groups = review->find("protected_group_columns");
+    const double maximum_gap =
+        review->value("maximum_rate_gap", -1.0);
+    if (groups == review->end() || !named_string_array(*groups) ||
+        maximum_gap < 0.0 || maximum_gap > 1.0) {
+        return b6_failure(
+            name(),
+            "B-6 equity review must name protected-group columns and a valid rate-gap bound");
+    }
+    const json* minimization = object_field(*profile, "phi_minimization");
+    if (minimization == nullptr) {
+        return b6_failure(
+            name(), "B-6 equity review requires evaluation-only group fields");
+    }
+    const auto features = minimization->find("feature_names");
+    if (features == minimization->end() || !named_string_array(*features)) {
+        return b6_failure(
+            name(), "B-6 equity review requires named model features");
+    }
+    std::unordered_set<std::string> feature_names;
+    for (const json& feature : *features) {
+        feature_names.insert(
+            normalize_type(feature.get_ref<const std::string&>()));
+    }
+    for (const json& group : *groups) {
+        if (feature_names.contains(
+                normalize_type(group.get_ref<const std::string&>()))) {
+            return b6_failure(
+                name(),
+                "B-6 protected-group fields are evaluation-only and may not be model features");
+        }
+    }
+    return b6_success(
+        name(),
+        "B-6 records an owned review across protected groups");
+}
+
+CheckResult B6AssistiveOnlyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* assistive = object_field(*profile, "assistive_only");
+    const json* policy = object_field(*profile, "policy");
+    if (assistive == nullptr || policy == nullptr ||
+        !assistive->value("enforced", false) ||
+        !assistive->value("care_access_unchanged", false) ||
+        !assistive->value("clinical_decisions_excluded", false) ||
+        !policy_requires(*policy, "care_access_unaffected", true)) {
+        return b6_failure(
+            name(),
+            "B-6 must remain assistive and may not change care access or clinical decisions");
+    }
+    for (const json& tier : policy->value("tiers", json::array())) {
+        if (!tier.is_object() ||
+            care_access_penalty(tier.value("action", std::string{}))) {
+            return b6_failure(
+                name(),
+                "B-6 policy tiers may not select a care-access penalty");
+        }
+    }
+    for (const auto& [action, settings] :
+         policy->value("actions", json::object()).items()) {
+        if (care_access_penalty(action)) {
+            return b6_failure(
+                name(),
+                "B-6 may not register a model-driven care-access penalty");
+        }
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}).empty()) {
+            return b6_failure(
+                name(), "B-6 actions must declare their authority class");
+        }
+    }
+    return b6_success(
+        name(),
+        "B-6 actions assist operations without denying or delaying care");
+}
+
+CheckResult B6PrivacyPostureCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* posture = object_field(*profile, "privacy_posture");
+    const json* policy = object_field(*profile, "policy");
+    if (posture == nullptr || policy == nullptr ||
+        !posture->value("recorded", false) ||
+        !posture->value("approved", false) ||
+        posture->value("owner", std::string{}).empty() ||
+        posture->value("review_id", std::string{}).empty() ||
+        !policy_requires(*policy, "privacy_posture_approved", true)) {
+        return b6_failure(
+            name(),
+            "B-6 requires a recorded, approved, owned privacy posture before creation");
+    }
+    return b6_success(
+        name(), "B-6 records an approved privacy posture as a creation gate");
+}
+
+CheckResult B6PhiMinimizationCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    std::string error;
+    const json* profile = b6_correctness_profile(graph, applies, error);
+    if (!applies) {
+        return b6_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b6_failure(name(), error);
+    }
+    const json* minimization = object_field(*profile, "phi_minimization");
+    const json* policy = object_field(*profile, "policy");
+    if (minimization == nullptr || policy == nullptr ||
+        !minimization->value("minimum_necessary", false) ||
+        !policy_requires(*policy, "minimum_necessary_fields", true)) {
+        return b6_failure(
+            name(), "B-6 requires a minimum-necessary PHI review");
+    }
+    const auto approved = minimization->find("approved_feature_names");
+    const auto blocked = minimization->find("direct_identifier_blocklist");
+    const auto features = minimization->find("feature_names");
+    if (approved == minimization->end() ||
+        !named_string_array(*approved) || blocked == minimization->end() ||
+        !named_string_array(*blocked) || features == minimization->end() ||
+        !named_string_array(*features)) {
+        return b6_failure(
+            name(),
+            "B-6 PHI review must name selected, approved, and blocked fields");
+    }
+    std::unordered_set<std::string> approved_names;
+    std::unordered_set<std::string> blocked_names;
+    for (const json& field : *approved) {
+        approved_names.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& field : *blocked) {
+        blocked_names.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& feature : *features) {
+        const std::string normalized =
+            normalize_type(feature.get_ref<const std::string&>());
+        if (!approved_names.contains(normalized) ||
+            blocked_names.contains(normalized)) {
+            return b6_failure(
+                name(),
+                "B-6 model features exceed the approved minimum-necessary set");
+        }
+    }
+    return b6_success(
+        name(), "B-6 model inputs are limited to reviewed operational fields");
+}
+namespace {
+
+const json* b7_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-7") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-7 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b7_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-7 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b7_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-7 Pipeline to validate"};
+}
+
+CheckResult b7_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b7_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool contains_string(const json& values, std::string_view expected) {
+    return values.is_array() && std::ranges::any_of(
+        values, [&](const json& value) {
+            return value.is_string() && value.get<std::string>() == expected;
+        });
+}
+
+} // namespace
+
+CheckResult B7AdverseActionReasonsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* reasons = object_field(*profile, "adverse_action_reasons");
+    if (reasons == nullptr || !reasons->value("required", false) ||
+        reasons->value("minimum_reasons", 0) < 1 ||
+        reasons->value("source", std::string{}) != "tree_shap_reason_codes" ||
+        !reasons->value("persist_with_decision", false)) {
+        return b7_failure(
+            name(), "B-7 requires at least one persisted TreeSHAP reason code "
+                    "for every adverse action");
+    }
+    const json* policy = object_field(*profile, "policy");
+    if (policy == nullptr || !policy->contains("actions")) {
+        return b7_failure(name(), "B-7 must bind its credit policy actions");
+    }
+    const bool has_adverse_action = std::ranges::any_of(
+        policy->at("actions").items(), [](const auto& action) {
+            return adverse_action(action.key());
+        });
+    if (!has_adverse_action) {
+        return b7_failure(
+            name(), "B-7 policy must represent governed adverse actions");
+    }
+    return b7_success(
+        name(), "every B-7 adverse action requires persisted reason codes");
+}
+
+CheckResult B7ValidationPipelineCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* validation = object_field(*profile, "validation_pipeline");
+    if (validation == nullptr ||
+        validation->value("model_risk_owner", std::string{}).empty() ||
+        !validation->value("co_signed", false) ||
+        !validation->value("independent_out_of_time", false) ||
+        !validation->value("calibration_reviewed", false) ||
+        !validation->value("uncertainty_coverage_reviewed", false)) {
+        return b7_failure(
+            name(), "B-7 requires an independent validation pipeline co-signed "
+                    "by the model-risk owner");
+    }
+    const json stages = validation->value("stages", json::array());
+    for (const std::string_view stage :
+         {"development", "independent_validation", "approval", "monitoring"}) {
+        if (!contains_string(stages, stage)) {
+            return b7_failure(
+                name(), "B-7 validation pipeline is missing stage " +
+                            std::string(stage));
+        }
+    }
+    const ir::Node* uncertainty = model_kind(graph, "bayesian");
+    if (!has_methodology(graph, "M-17") || uncertainty == nullptr ||
+        !uncertainty->attributes.value("coverage_checked", false)) {
+        return b7_failure(
+            name(), "B-7 requires M-17 with measured holdout coverage");
+    }
+    const double nominal =
+        uncertainty->attributes.value("nominal_coverage", 0.0);
+    if (!(nominal > 0.0 && nominal < 1.0)) {
+        return b7_failure(
+            name(), "B-7 M-17 nominal coverage must be between zero and one");
+    }
+    return b7_success(
+        name(), "model-risk co-signs the complete M-17 validation pipeline");
+}
+
+CheckResult B7FairnessReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* fairness = object_field(*profile, "fairness_review");
+    if (fairness == nullptr || !fairness->value("required", false) ||
+        !fairness->value("review_passed", false) ||
+        fairness->value("owner", std::string{}).empty()) {
+        return b7_failure(
+            name(), "B-7 requires an owned, passed fair-lending review");
+    }
+    const json cohorts =
+        fairness->value("protected_cohort_columns", json::array());
+    const json metrics = fairness->value("metrics", json::array());
+    if (cohorts.empty() || !contains_string(metrics, "approval_rate") ||
+        !contains_string(metrics, "false_negative_rate")) {
+        return b7_failure(
+            name(), "B-7 fairness review requires protected cohorts, approval "
+                    "rates, and false-negative rates");
+    }
+    const json blocked = fairness->value("blocked_feature_names", json::array());
+    const json features = fairness->value("feature_names", json::array());
+    if (blocked.empty() || !features.is_array()) {
+        return b7_failure(
+            name(), "B-7 fairness review must separate evaluation cohorts from features");
+    }
+    std::unordered_set<std::string> protected_fields;
+    for (const json& field : blocked) {
+        if (!field.is_string() || field.get_ref<const std::string&>().empty()) {
+            return b7_failure(
+                name(), "B-7 protected-field exclusions must be names");
+        }
+        protected_fields.insert(
+            normalize_type(field.get_ref<const std::string&>()));
+    }
+    for (const json& feature : features) {
+        if (!feature.is_string()) {
+            return b7_failure(name(), "B-7 feature names must be strings");
+        }
+        if (protected_fields.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b7_failure(
+                name(), "B-7 protected attributes are evaluation-only, not model features");
+        }
+    }
+    return b7_success(
+        name(), "B-7 passed its owned fair-lending cohort review");
+}
+
+CheckResult B7HumanAuthorityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    const json* authority = object_field(*profile, "adverse_action_authority");
+    const json* policy = object_field(*profile, "policy");
+    if (authority == nullptr || policy == nullptr ||
+        authority->value("autonomy", std::string{}) != "A0" ||
+        !authority->value("human_review_required", false)) {
+        return b7_failure(
+            name(), "B-7 adverse decisions require explicit A0 human authority");
+    }
+    for (const json& tier : policy->value("tiers", json::array())) {
+        if (!tier.is_object() ||
+            adverse_action(tier.value("action", std::string{}))) {
+            return b7_failure(
+                name(), "B-7 model score tiers may not select an adverse decision");
+        }
+    }
+    bool has_adverse_action = false;
+    for (const auto& [action, settings] :
+         policy->value("actions", json::object()).items()) {
+        if (!adverse_action(action)) {
+            continue;
+        }
+        has_adverse_action = true;
+        if (!settings.is_object() ||
+            settings.value("autonomy", std::string{}) != "A0") {
+            return b7_failure(
+                name(), "every B-7 adverse action must remain A0 human-only");
+        }
+    }
+    if (!has_adverse_action) {
+        return b7_failure(
+            name(), "B-7 policy must retain an A0 adverse recommendation");
+    }
+    return b7_success(
+        name(), "B-7 adverse decisions remain A0 human-only");
+}
+
+CheckResult B7LevelCompositionCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b7_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b7_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b7_failure(name(), error);
+    }
+    if (level < 1 || level > 4 || !has_methodology(graph, "M-1") ||
+        !has_methodology(graph, "M-17")) {
+        return b7_failure(
+            name(), "B-7 levels 1 through 4 require M-1 and M-17");
+    }
+    const bool has_credit_scores = std::ranges::any_of(
+        graph.nodes_of_kind(ir::StepKind::Act),
+        [](const std::shared_ptr<ir::Node>& node) {
+            return node &&
+                   node->attributes.value("entity_output_column",
+                                          std::string{}) == "applicant" &&
+                   node->attributes.value("score_output_column",
+                                          std::string{}) == "credit_risk";
+        });
+    if (!has_credit_scores) {
+        return b7_failure(
+            name(), "B-7 M-1 must publish applicant and credit_risk outputs");
+    }
+    return b7_success(
+        name(), "B-7 selected level has credit scoring and uncertainty stages");
+}
+
 CheckResult S11LoggedPropensityCheck::evaluate(
     const ir::ExecutionGraph& graph) const {
     bool applies = false;
@@ -2357,6 +3843,468 @@ CheckResult S11PropensityInterpretationCheck::evaluate(
     }
     return s11_success(
         name(), "S-11 separates predictive ranking from causal uplift evidence");
+}
+
+namespace {
+
+const json* b2_correctness_profile(const ir::ExecutionGraph& graph,
+                                   bool& applies, int& level,
+                                   std::string& error) {
+    applies = false;
+    level = 0;
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest || !manifest->attributes.is_object() ||
+        manifest->attributes.value("solution", std::string{}) != "B-2") {
+        return nullptr;
+    }
+    if (!manifest->attributes.contains("foundation")) {
+        return nullptr;
+    }
+    applies = true;
+    const auto selected_level = manifest->attributes.find("level");
+    if (selected_level == manifest->attributes.end() ||
+        !selected_level->is_number_integer()) {
+        error = "B-2 manifest must declare an integer level";
+        return nullptr;
+    }
+    level = selected_level->get<int>();
+    const auto profile = manifest->attributes.find("b2_correctness");
+    if (profile == manifest->attributes.end() || !profile->is_object()) {
+        error = "B-2 manifest is missing its correctness profile";
+        return nullptr;
+    }
+    return &*profile;
+}
+
+CheckResult b2_not_applicable(std::string name) {
+    return {std::move(name), CheckStatus::Pass,
+            "no bound B-2 Pipeline to validate"};
+}
+
+CheckResult b2_failure(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Fail, std::move(reason)};
+}
+
+CheckResult b2_success(std::string name, std::string reason) {
+    return {std::move(name), CheckStatus::Pass, std::move(reason)};
+}
+
+bool policy_has_minimum_group_size(const json& policy,
+                                   std::string_view field,
+                                   double minimum) {
+    const auto rules = policy.find("eligibility_rules");
+    if (rules == policy.end() || !rules->is_array()) {
+        return false;
+    }
+    return std::ranges::any_of(*rules, [&](const json& rule) {
+        return rule.is_object() &&
+               rule.value("field", std::string{}) == field &&
+               rule.value("operator", std::string{}) == "gte" &&
+               rule.contains("value") && rule.at("value").is_number() &&
+               rule.at("value").get<double>() >= minimum;
+    });
+}
+
+} // namespace
+
+CheckResult B2MinimumGroupSizeCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    const json* policy = object_field(*profile, "policy");
+    if (aggregation == nullptr || policy == nullptr) {
+        return b2_failure(
+            name(), "B-2 must bind aggregate output and policy settings");
+    }
+    const std::string group_size_column =
+        aggregation->value("group_size_column", std::string{});
+    const double minimum_group_size =
+        aggregation->value("minimum_group_size", 0.0);
+    if (group_size_column.empty() || minimum_group_size < 5.0 ||
+        !policy_has_minimum_group_size(
+            *policy, group_size_column, minimum_group_size)) {
+        return b2_failure(
+            name(), "B-2 requires k-anonymity of at least five on every output");
+    }
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node || !node->attributes.contains("solution_stage")) {
+            continue;
+        }
+        if (!node->attributes.value("aggregate_only", false) ||
+            node->attributes.value("minimum_group_size", 0.0) <
+                minimum_group_size ||
+            node->attributes.value("group_size_column", std::string{}) !=
+                group_size_column) {
+            return b2_failure(
+                name(), "B-2 methodology outputs must enforce the same minimum group size");
+        }
+    }
+    return b2_success(
+        name(), "every B-2 output enforces its configured minimum cohort size");
+}
+
+CheckResult B2AggregateOnlyCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    if (aggregation == nullptr ||
+        !aggregation->value("aggregate_only", false) ||
+        aggregation->value("unit", std::string{}) != "group") {
+        return b2_failure(
+            name(), "B-2 may expose aggregate cohort rows only");
+    }
+    const std::string group_column =
+        aggregation->value("group_column", std::string{});
+    const std::string group_dimension =
+        normalize_type(
+            aggregation->value("group_dimension", std::string{}));
+    if (group_column.empty() ||
+        aggregation->value("entity_column", std::string{}) != group_column) {
+        return b2_failure(
+            name(), "B-2 modeling identity must be the protected cohort key");
+    }
+    if (group_dimension != "team" && group_dimension != "role" &&
+        group_dimension != "tenure_band") {
+        return b2_failure(
+            name(), "B-2 group dimension must be team, role, or tenure_band");
+    }
+    std::unordered_set<std::string> prohibited;
+    for (const json& column :
+         aggregation->value("prohibited_output_columns", json::array())) {
+        if (!column.is_string() || column.get_ref<const std::string&>().empty()) {
+            return b2_failure(
+                name(), "B-2 prohibited individual columns must be named");
+        }
+        prohibited.insert(
+            normalize_type(column.get_ref<const std::string&>()));
+    }
+    if (prohibited.empty()) {
+        return b2_failure(
+            name(), "B-2 must name the individual identifiers it refuses to publish");
+    }
+    for (const json& feature :
+         aggregation->value("feature_names", json::array())) {
+        if (!feature.is_string() ||
+            prohibited.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b2_failure(
+                name(), "B-2 individual identifiers and scores may not become output features");
+        }
+    }
+    if (!has_methodology(graph, "M-1") || !has_methodology(graph, "M-7")) {
+        return b2_failure(
+            name(), "B-2 levels require both M-1 and M-7 callbacks");
+    }
+    bool has_group_risk_output = false;
+    for (const std::shared_ptr<ir::Node>& node :
+         graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (!node || !node->attributes.contains("solution_stage") ||
+            !node->attributes.value("aggregate_only", false)) {
+            continue;
+        }
+        if (node->attributes.value("entity_output_column", std::string{}) ==
+                "group_key" &&
+            node->attributes.value("score_output_column", std::string{}) ==
+                "attrition_risk") {
+            has_group_risk_output = true;
+        }
+    }
+    if (!has_group_risk_output) {
+        return b2_failure(
+            name(), "B-2 M-1 must publish group_key and attrition_risk outputs");
+    }
+    return b2_success(
+        name(), "B-2 publishes cohort risk and never an individual score");
+}
+
+CheckResult B2FairnessReviewCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* review = object_field(*profile, "fairness_review");
+    if (review == nullptr || !review->value("completed", false) ||
+        review->value("owner", std::string{}).empty() ||
+        review->value("protected_attributes_used_as_features", true)) {
+        return b2_failure(
+            name(), "B-2 requires an owned, completed fairness review before execution");
+    }
+    const auto attributes = review->find("protected_attributes");
+    const auto metrics = review->find("review_metrics");
+    if (attributes == review->end() || !attributes->is_array() ||
+        attributes->empty() || metrics == review->end() ||
+        !metrics->is_array() || metrics->empty()) {
+        return b2_failure(
+            name(), "B-2 fairness review must name protected cohorts and review metrics");
+    }
+    std::unordered_set<std::string> protected_attributes;
+    for (const json& attribute : *attributes) {
+        if (!attribute.is_string() ||
+            attribute.get_ref<const std::string&>().empty()) {
+            return b2_failure(
+                name(), "B-2 fairness review contains an unnamed protected cohort");
+        }
+        protected_attributes.insert(
+            normalize_type(attribute.get_ref<const std::string&>()));
+    }
+    const json* aggregation = object_field(*profile, "aggregation");
+    if (aggregation == nullptr) {
+        return b2_failure(name(), "B-2 fairness review requires aggregate features");
+    }
+    for (const json& feature :
+         aggregation->value("feature_names", json::array())) {
+        if (feature.is_string() &&
+            protected_attributes.contains(
+                normalize_type(feature.get_ref<const std::string&>()))) {
+            return b2_failure(
+                name(), "B-2 protected attributes may not be model features");
+        }
+    }
+    return b2_success(
+        name(), "B-2 records its aggregate cohort fairness review");
+}
+
+CheckResult B2ApprovalCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* approval = object_field(*profile, "approval");
+    if (approval == nullptr || !approval->value("approved", false) ||
+        approval->value("record_id", std::string{}).empty() ||
+        approval->value("approved_by", std::string{}).empty() ||
+        approval->value("approved_at", std::string{}).empty()) {
+        return b2_failure(
+            name(), "B-2 requires recorded legal or works-council approval before execution");
+    }
+    const std::string kind =
+        normalize_type(approval->value("kind", std::string{}));
+    if (kind != "legal" && kind != "works_council") {
+        return b2_failure(
+            name(), "B-2 approval kind must be legal or works_council");
+    }
+    return b2_success(
+        name(), "B-2 legal or works-council approval is recorded");
+}
+
+CheckResult B2PeopleLeaderOutputCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b2_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b2_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b2_failure(name(), error);
+    }
+    const json* output = object_field(*profile, "output");
+    if (output == nullptr ||
+        output->value("recipient_role", std::string{}) != "people_leader" ||
+        output->value("owner", std::string{}).empty() ||
+        output->value("individual_manager_delivery", true)) {
+        return b2_failure(
+            name(), "B-2 output must go only to the named people leader");
+    }
+    return b2_success(
+        name(), "B-2 routes aggregate evidence only to its people leader");
+}
+
+CheckResult B8AlertBudgetCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* alerting = object_field(*profile, "alerting");
+    const ir::Node* anomaly = model_kind(graph, "anomaly");
+    if (alerting == nullptr || anomaly == nullptr ||
+        !alerting->contains("alert_budget") ||
+        !alerting->at("alert_budget").is_number_integer() ||
+        alerting->at("alert_budget").get<int>() < 1 ||
+        alerting->value("window_days", 0) < 1 ||
+        alerting->value("owner_column", std::string{}).empty()) {
+        return b8_failure(
+            name(), "B-8 requires a positive alert budget, reporting window, "
+                    "and accountable owner role");
+    }
+    const auto configured = anomaly->attributes.find("alert_budget");
+    if (configured == anomaly->attributes.end() ||
+        !configured->is_number_integer() ||
+        configured->get<int>() != alerting->at("alert_budget").get<int>() ||
+        anomaly->attributes.contains("contamination")) {
+        return b8_failure(
+            name(), "B-8 anomaly scoring must enforce the declared exact "
+                    "alert budget");
+    }
+    if (!has_methodology(graph, "M-7") ||
+        !has_methodology(graph, "M-12")) {
+        return b8_failure(
+            name(), "B-8 requires M-7 anomaly scoring and M-12 dependency context");
+    }
+    return b8_success(
+        name(), "B-8 operational alerts stay within the declared budget");
+}
+
+CheckResult B8GraduatedAuthorityCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* authority = object_field(*profile, "authority");
+    if (authority == nullptr ||
+        authority->value("recommendation_action", std::string{}) !=
+            "investigation_recommendation" ||
+        authority->value("recommendation_autonomy", std::string{}) != "A0" ||
+        authority->value("approval_action", std::string{}) !=
+            "containment_approval" ||
+        authority->value("approval_autonomy", std::string{}) != "A1" ||
+        authority->value("automatic_action", std::string{}) !=
+            "bounded_containment" ||
+        authority->value("automatic_autonomy", std::string{}) != "A2") {
+        return b8_failure(
+            name(), "B-8 authority must progress from A0 investigation to "
+                    "A1 approval and only then bounded A2 containment");
+    }
+    if (level < 1 || level > 4) {
+        return b8_failure(name(), "B-8 level must be between 1 and 4");
+    }
+    const std::string expected_action =
+        level == 1
+            ? "investigation_recommendation"
+            : level == 2 ? "containment_approval" : "bounded_containment";
+    const std::string expected_autonomy =
+        level == 1 ? "A0" : level == 2 ? "A1" : "A2";
+    if (authority->value("selected_action", std::string{}) != expected_action ||
+        authority->value("selected_autonomy", std::string{}) !=
+            expected_autonomy) {
+        return b8_failure(
+            name(), "B-8 selected level does not match its graduated authority boundary");
+    }
+    return b8_success(
+        name(), "B-8 selected level preserves A0 to A1 to bounded A2 authority");
+}
+
+CheckResult B8KillSwitchCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* kill_switch = object_field(*profile, "kill_switch");
+    if (kill_switch == nullptr ||
+        !kill_switch->value("configured", false) ||
+        !kill_switch->value("blocks_delivery", false) ||
+        !kill_switch->contains("enabled") ||
+        !kill_switch->at("enabled").is_boolean()) {
+        return b8_failure(
+            name(), "B-8 requires a configured kill switch that blocks action delivery");
+    }
+    return b8_success(
+        name(), "B-8 kill switch is configured as a hard delivery stop");
+}
+
+CheckResult B8ContainmentBoundsCheck::evaluate(
+    const ir::ExecutionGraph& graph) const {
+    bool applies = false;
+    int level = 0;
+    std::string error;
+    const json* profile =
+        b8_correctness_profile(graph, applies, level, error);
+    if (!applies) {
+        return b8_not_applicable(name());
+    }
+    if (profile == nullptr) {
+        return b8_failure(name(), error);
+    }
+    const json* containment = object_field(*profile, "containment");
+    if (containment == nullptr ||
+        containment->value("automatic_action", std::string{}) !=
+            "bounded_containment" ||
+        !containment->value("approved_bounds_enforced", false) ||
+        !containment->value("playbook_required", false) ||
+        !containment->value("dependency_scope_required", false) ||
+        !containment->contains("maximum_affected_assets") ||
+        !containment->at("maximum_affected_assets").is_number() ||
+        containment->at("maximum_affected_assets").get<double>() <= 0.0 ||
+        containment->value("approval_required_above", 0.0) !=
+            containment->at("maximum_affected_assets").get<double>()) {
+        return b8_failure(
+            name(), "B-8 automatic containment requires an approved positive "
+                    "asset bound, playbook, and dependency scope");
+    }
+    const json allowed =
+        containment->value("allowed_automatic_actions", json::array());
+    if (!allowed.is_array() || allowed.size() != 1 ||
+        !allowed.at(0).is_string() ||
+        allowed.at(0).get<std::string>() != "bounded_containment") {
+        return b8_failure(
+            name(), "B-8 refuses automatic actions outside bounded containment");
+    }
+    return b8_success(
+        name(), "B-8 automated containment stays within approved bounds");
 }
 
 CheckResult S10LabelDelayCheck::evaluate(
