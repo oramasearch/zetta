@@ -252,7 +252,7 @@ ApiResult handle_run(const nlohmann::json& input, ApiContext& context) {
 void register_solution_capabilities(Registry& registry) {
     registry.add(Capability{
         "list_solutions", "List solutions",
-        "Read all thirteen catalogue solutions and seven Band-B sketches, including composition, data roles, governance, capability levels, and runnable status. No side effects.",
+        "Read all 17 runnable catalogue solutions and three Band-B sketches, including composition, data roles, governance, capability levels, and runnable status. No side effects.",
         empty_schema(), list_output_schema(), CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"}, false, false, handle_list});
     registry.add(Capability{

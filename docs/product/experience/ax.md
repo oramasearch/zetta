@@ -97,7 +97,7 @@ relay it to a person.
   `Segmentation / clustering pipeline`; M-1 retains `churn skeleton`.
   Explicit caller names are unchanged.
 - **Solution discovery and composition** ([#1102](https://github.com/oramasearch/zetta/issues/1102)):
-  `list_solutions` and `get_solution` expose all 16 catalogue modules and four
+  `list_solutions` and `get_solution` expose all 17 runnable catalogue modules and three
   sketches with plain product copy, portfolio-number composition, data roles,
   autonomy, policy, measurement, guardrails, levels, and missing components.
   `create_solution` uses typed defaults to create a callback-built Pipeline,

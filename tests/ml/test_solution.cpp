@@ -730,6 +730,69 @@ zetta::ir::ExecutionGraph bound_b3_graph(int level = 1) {
     return composed.graph;
 }
 
+zetta::ir::ExecutionGraph bound_b5_graph(int level = 1) {
+    const zetta::ml::Solution* solution = zetta::ml::find_solution("B-5");
+    if (solution == nullptr) {
+        return {};
+    }
+    const nlohmann::json sources = {
+        {"source", "datasets"},
+        {"table", "suppliers"},
+        {"M-1",
+         {{"entity_column", "entity_id"},
+          {"label_column", "disruption"},
+          {"time_column", "external_observed_at"},
+          {"as_of", "2026-09-01T00:00:00.000Z"},
+          {"feature_columns", {"late_delivery_rate", "concentration"}}}},
+        {"M-4",
+         {{"source", "datasets"},
+          {"table", "supplier_history"},
+          {"time_column", "day"},
+          {"target_column", "late_delivery_rate"},
+          {"series_column", "supplier_id"},
+          {"horizon", 7},
+          {"seasonal_period", 7},
+          {"lags", {1, 7}},
+          {"rolling_window", 7},
+          {"backtest_folds", 3}}}};
+    zetta::ml::ComposedSolution composed =
+        zetta::ml::compose_solution(*solution, level, sources);
+    if (!composed.ok()) {
+        return {};
+    }
+    for (const auto& source :
+         composed.graph.nodes_of_kind(zetta::ir::StepKind::Connect)) {
+        if (!source->attributes.contains("solution_stage")) {
+            continue;
+        }
+        source->attributes["source_kind"] = "snapshot";
+        source->attributes["snapshot_as_of"] =
+            "2026-09-01T00:00:00.000Z";
+    }
+    const auto manifest = composed.graph.find_node("solution_manifest");
+    manifest->attributes["foundation"] = nlohmann::json::object();
+    manifest->attributes["b5_correctness"] = {
+        {"prediction_time", "2026-09-01T00:00:00.000Z"},
+        {"external_data",
+         {{"point_in_time", true},
+          {"future_publications_excluded", true},
+          {"source_column", "external_source"},
+          {"observed_at_column", "external_observed_at"},
+          {"snapshot_time_column", "external_observed_at"}}},
+        {"supplier_records",
+         {{"event_time_column", "disruption_at"},
+          {"truncate_at_event", true},
+          {"post_event_records", "exclude"}}},
+        {"post_event_blocklist",
+         {"disruption_at", "disruption_outcome", "claim_resolution"}},
+        {"feature_names", {"late_delivery_rate", "concentration"}},
+        {"flag_evidence",
+         {{"required", true},
+          {"required_fields", {"external_source", "external_observed_at"}},
+          {"reason_codes_required", true},
+          {"forecast_evidence_required", true}}}};
+    return composed.graph;
+}
 const zetta::pipeline::CheckResult* check_result(
     const zetta::pipeline::ValidationReport& report,
     const std::string& name) {
@@ -742,6 +805,15 @@ const zetta::pipeline::CheckResult* check_result(
 }
 
 void expect_s1_failure(const zetta::ir::ExecutionGraph& graph,
+                       const std::string& name) {
+    const auto report = zetta::pipeline::default_gate().run(graph);
+    const auto* check = check_result(report, "solution/" + name);
+    ASSERT_NE(check, nullptr) << nlohmann::json(report).dump(2);
+    EXPECT_EQ(check->status, zetta::pipeline::CheckStatus::Fail)
+        << check->reason;
+}
+
+void expect_b5_failure(const zetta::ir::ExecutionGraph& graph,
                        const std::string& name) {
     const auto report = zetta::pipeline::default_gate().run(graph);
     const auto* check = check_result(report, "solution/" + name);
@@ -1132,7 +1204,78 @@ TEST(SolutionRegistry, B2EveryLevelBuildsThroughRegisteredMethodologies) {
     }
 }
 
-TEST(SolutionRegistry, ListsSixteenCatalogueModulesAndFourSketches) {
+TEST(SolutionRegistry, SupplierRiskEntryCarriesTheCompleteContract) {
+    const zetta::ml::Solution* supplier_risk =
+        zetta::ml::find_solution("B-5");
+    ASSERT_NE(supplier_risk, nullptr);
+    EXPECT_TRUE(supplier_risk->runnable);
+    EXPECT_EQ(supplier_risk->issue,
+              "https://github.com/oramasearch/zetta/issues/1179");
+    EXPECT_FALSE(supplier_risk->promotion_condition.empty());
+    EXPECT_FALSE(supplier_risk->templates.minimal);
+    EXPECT_EQ(supplier_risk->composition.size(), 2u);
+    EXPECT_EQ(supplier_risk->action_patterns.size(), 2u);
+    EXPECT_EQ(supplier_risk->templates.experiment.holdouts.size(), 3u);
+    EXPECT_EQ(supplier_risk->templates.experiment.treatment_cells,
+              (std::vector<std::string>{"procurement_action"}));
+    ASSERT_EQ(supplier_risk->templates.guardrails.size(), 5u);
+    EXPECT_EQ(supplier_risk->templates.guardrails.front().metric,
+              "missing_flag_evidence_rate");
+    EXPECT_EQ(supplier_risk->templates.measurement.design, "holdout");
+    EXPECT_EQ(supplier_risk->templates.measurement.outcome,
+              "disruption_avoided");
+
+    const nlohmann::json policy = supplier_risk->templates.policy;
+    EXPECT_EQ(policy.at("tiers").size(), 3u);
+    EXPECT_EQ(policy.at("contact_cap"), 12);
+    EXPECT_EQ(policy.at("actions").at("supplier_mitigation_task")
+                  .at("approval_above"),
+              10000.0);
+    EXPECT_EQ(policy.at("eligibility_rules").size(), 3u);
+}
+
+TEST(SolutionRegistry, B5ChecksRefuseEachSupplierRiskWrongCase) {
+    const auto accepted =
+        zetta::pipeline::default_gate().run(bound_b5_graph());
+    ASSERT_TRUE(accepted.passed()) << nlohmann::json(accepted).dump(2);
+
+    auto external_data = bound_b5_graph();
+    external_data.find_node("solution_manifest")
+        ->attributes["b5_correctness"]["external_data"]
+                   ["point_in_time"] = false;
+    expect_b5_failure(external_data, "b5_point_in_time_external_data");
+
+    auto supplier_records = bound_b5_graph();
+    supplier_records.find_node("solution_manifest")
+        ->attributes["b5_correctness"]["supplier_records"]
+                   ["post_event_records"] = "include";
+    expect_b5_failure(supplier_records,
+                      "b5_post_event_supplier_leakage");
+
+    auto evidence = bound_b5_graph();
+    evidence.find_node("solution_manifest")
+        ->attributes["b5_correctness"]["flag_evidence"]["required"] =
+        false;
+    expect_b5_failure(evidence, "b5_flag_evidence");
+}
+
+TEST(SolutionRegistry, B5EveryLevelBuildsThroughRegisteredMethodologies) {
+    for (int level = 1; level <= 4; ++level) {
+        const zetta::ir::ExecutionGraph graph = bound_b5_graph(level);
+        ASSERT_FALSE(graph.empty()) << level;
+        const auto report = zetta::pipeline::default_gate().run(graph);
+        EXPECT_TRUE(report.passed())
+            << "level " << level << '\n' << nlohmann::json(report).dump(2);
+        const auto manifest = graph.find_node("solution_manifest");
+        ASSERT_TRUE(manifest);
+        EXPECT_EQ(manifest->attributes.at("methodologies").size(), 2u);
+        for (int stage = 1; stage <= 2; ++stage) {
+            EXPECT_FALSE(zetta::ml::solution_stage_graph(graph, stage).empty());
+        }
+    }
+}
+
+TEST(SolutionRegistry, ListsSeventeenCatalogueModulesAndThreeSketches) {
     ASSERT_EQ(zetta::ml::solutions().size(), 20u);
     std::set<std::string> ids;
     std::size_t catalogue = 0;
@@ -1166,8 +1309,8 @@ TEST(SolutionRegistry, ListsSixteenCatalogueModulesAndFourSketches) {
             EXPECT_EQ(solution.capability_levels.size(), 4u);
         }
     }
-    EXPECT_EQ(catalogue, 16u);
-    EXPECT_EQ(sketches, 4u);
+    EXPECT_EQ(catalogue, 17u);
+    EXPECT_EQ(sketches, 3u);
 }
 
 TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
@@ -1188,6 +1331,7 @@ TEST(SolutionRegistry, UsesPortfolioMethodologyNumbering) {
         {"B-2", {"M-1", "M-7"}},
         {"B-3", {"M-10", "M-19"}},
         {"B-4", {"M-11"}},
+        {"B-5", {"M-1", "M-4"}},
     };
     for (const auto& [solution_id, methodology_ids] : expected) {
         const zetta::ml::Solution* solution =

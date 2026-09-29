@@ -74,7 +74,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
     const ValidationReport report = gate.run(empty_graph);
 
     // Only the non-empty check fails; the other checks have no matching steps.
-    ASSERT_EQ(report.checks.size(), 92u);
+    ASSERT_EQ(report.checks.size(), 95u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -88,7 +88,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
     const ValidationReport report = gate.run(one_step_graph());
 
     // All default checks pass an unannotated single-step graph.
-    ASSERT_EQ(report.checks.size(), 92u);
+    ASSERT_EQ(report.checks.size(), 95u);
     EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -96,7 +96,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 92u);
+    ASSERT_EQ(gate.check_count(), 95u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -189,6 +189,9 @@ TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     EXPECT_EQ(gate.checks()[89]->name(), "b4_per_field_confidence");
     EXPECT_EQ(gate.checks()[90]->name(), "b4_review_queue");
     EXPECT_EQ(gate.checks()[91]->name(), "b4_validated_workflow");
+    EXPECT_EQ(gate.checks()[92]->name(), "b5_point_in_time_external_data");
+    EXPECT_EQ(gate.checks()[93]->name(), "b5_post_event_supplier_leakage");
+    EXPECT_EQ(gate.checks()[94]->name(), "b5_flag_evidence");
 }
 
 // ---- aggregation policy: warnings pass, any failure blocks ------------------

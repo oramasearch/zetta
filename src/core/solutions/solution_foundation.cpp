@@ -146,14 +146,15 @@ void bind_sources(ir::ExecutionGraph& graph, const SnapshotSpec& snapshot) {
         manifest &&
         (solution == "S-1" || solution == "S-2" || solution == "S-5" ||
          solution == "S-8" || solution == "S-9" || solution == "S-10" ||
-         solution == "S-11");
+         solution == "S-11" || solution == "B-5");
     for (const auto& step : graph.nodes()) {
         if (step->kind != ir::StepKind::Connect ||
             !step->attributes.contains("solution_stage")) {
             continue;
         }
         const bool reads_forecast_history =
-            (solution == "S-6" || solution == "B-1") &&
+            (solution == "S-6" || solution == "B-1" ||
+             solution == "B-5") &&
             step->attributes.value("methodology", std::string{}) == "M-4";
         if (reads_forecast_history) {
             continue;
@@ -500,6 +501,79 @@ void bind_s4_correctness(ir::ExecutionGraph& graph,
             common.value("randomized_cycles", 1);
         model->attributes["sleeping_dogs_action"] = "no_contact";
         model->attributes["positive_uplift_only"] = true;
+    }
+}
+
+void bind_b5_correctness(ir::ExecutionGraph& graph,
+                         const SnapshotSpec& snapshot,
+                         const Json& settings,
+                         const Json& sources) {
+    const std::shared_ptr<ir::Node> manifest =
+        graph.find_node("solution_manifest");
+    if (!manifest ||
+        manifest->attributes.value("solution", std::string{}) != "B-5") {
+        return;
+    }
+    const Json common =
+        sources.contains("correctness") &&
+                sources.at("correctness").is_object()
+            ? sources.at("correctness")
+            : Json::object();
+    const Json default_blocklist = {
+        "disruption_at", "disruption_outcome", "claim_resolution",
+        "recovery_completed_at", "post_event_status",
+        "termination_reason"};
+    const Json required_evidence = {
+        common.value("external_source_column", "external_source"),
+        common.value("external_observed_at_column",
+                     "external_observed_at")};
+    manifest->attributes["b5_correctness"] = {
+        {"prediction_time", snapshot.as_of},
+        {"external_data",
+         {{"point_in_time",
+           common.value("external_data_point_in_time", true)},
+          {"future_publications_excluded",
+           common.value("future_external_publications_excluded", true)},
+          {"source_column",
+           common.value("external_source_column", "external_source")},
+          {"observed_at_column",
+           common.value("external_observed_at_column",
+                        "external_observed_at")},
+          {"snapshot_time_column", snapshot.time_column}}},
+        {"supplier_records",
+         {{"event_time_column",
+           common.value("supplier_event_time_column", "disruption_at")},
+          {"truncate_at_event",
+           common.value("truncate_supplier_records_at_event", true)},
+          {"post_event_records",
+           common.value("post_event_supplier_records", "exclude")}}},
+        {"post_event_blocklist",
+         common.value("post_event_blocklist", default_blocklist)},
+        {"feature_names",
+         settings.at("dataset").value("feature_columns", Json::array())},
+        {"flag_evidence",
+         {{"required", common.value("flag_evidence_required", true)},
+          {"required_fields",
+           common.value("flag_evidence_fields", required_evidence)},
+          {"reason_codes_required",
+           common.value("reason_codes_required", true)},
+          {"forecast_evidence_required",
+           common.value("forecast_evidence_required", true)}}}};
+    const bool history_frozen =
+        common.value("external_history_frozen", true);
+    for (const std::shared_ptr<ir::Node>& source :
+         graph.nodes_of_kind(ir::StepKind::Connect)) {
+        if (!source ||
+            source->attributes.value("methodology", std::string{}) != "M-4") {
+            continue;
+        }
+        if (history_frozen) {
+            source->attributes["source_kind"] = "snapshot";
+            source->attributes["snapshot_as_of"] =
+                common.contains("external_history_as_of")
+                    ? common.at("external_history_as_of")
+                    : snapshot.as_of;
+        }
     }
 }
 
@@ -1184,6 +1258,7 @@ std::string validate_solution_binding(const Json& binding) {
     schema["properties"]["b2_correctness"] = {{"type", "object"}};
     schema["properties"]["b3_correctness"] = {{"type", "object"}};
     schema["properties"]["b4_correctness"] = {{"type", "object"}};
+    schema["properties"]["b5_correctness"] = {{"type", "object"}};
     nlohmann::json_schema::json_validator validator(schema);
     Error error;
     validator.validate(binding, error);
@@ -1243,6 +1318,8 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                         input.at("sources"));
     bind_b3_correctness(composed.graph, *solution, input.at("sources"));
     bind_b4_correctness(composed.graph, *solution, level,
+                        input.at("sources"));
+    bind_b5_correctness(composed.graph, *snapshot, settings,
                         input.at("sources"));
     composed.graph.find_node("solution_manifest")->attributes["foundation"] =
         settings;
@@ -1355,6 +1432,12 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
                 {"entity_column", "document"},
                 {"score_column", "confidence"},
                 {"output_name", "extracted fields"}};
+        } else if (solution->id == "B-5") {
+            binding["decision_source"] = {
+                {"methodology", "M-1"},
+                {"entity_column", "supplier"},
+                {"score_column", "supplier_risk_score"},
+                {"output_name", "Publish supplier risk flags"}};
         }
     }
     if (solution->id == "S-1") {
@@ -1416,6 +1499,10 @@ ApiResult create_composed_solution(const Json& input, api::ApiContext& context) 
         binding["b3_correctness"] =
             composed.graph.find_node("solution_manifest")
                 ->attributes.at("b3_correctness");
+    } else if (solution->id == "B-5") {
+        binding["b5_correctness"] =
+            composed.graph.find_node("solution_manifest")
+                ->attributes.at("b5_correctness");
     }
     for (const auto& step : composed.graph.nodes()) {
         const std::string component = step->attributes.value("foundation_component", "");
@@ -1818,6 +1905,51 @@ std::optional<std::map<std::string, Json>> s11_bandit_decisions(
     return std::nullopt;
 }
 
+std::optional<std::map<std::string, Json>> b5_forecast_evidence(
+    Node& node, const Json& binding,
+    const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
+    std::map<std::string, Json> forecasts;
+    if (binding.value("solution", std::string{}) != "B-5") {
+        return forecasts;
+    }
+    for (const pipeline::RunOutput& output : outputs) {
+        if (output.kind != "dataset" || output.name != "forecast") {
+            continue;
+        }
+        const std::shared_ptr<data::Table> table = table_at(node, output.ref);
+        if (!table) {
+            continue;
+        }
+        const std::optional<std::vector<Json>> rows =
+            read_rows(node, *table, error);
+        if (!rows) {
+            return std::nullopt;
+        }
+        for (const Json& row : *rows) {
+            if (!row.contains("series") || !row.contains("timestamp") ||
+                !row.contains("point_forecast") ||
+                !row.at("point_forecast").is_number() ||
+                !row.contains("lower") || !row.at("lower").is_number() ||
+                !row.contains("upper") || !row.at("upper").is_number() ||
+                !row.contains("exception_score") ||
+                !row.at("exception_score").is_number()) {
+                error = "B-5 forecast evidence has an invalid supplier row";
+                return std::nullopt;
+            }
+            const std::string key = entity_key(row.at("series"));
+            const auto existing = forecasts.find(key);
+            if (existing == forecasts.end() ||
+                row.at("exception_score").get<double>() >
+                    existing->second.at("exception_score").get<double>()) {
+                forecasts.insert_or_assign(key, row);
+            }
+        }
+        return forecasts;
+    }
+    error = "B-5 produced no M-4 forecast table for flag evidence";
+    return std::nullopt;
+}
+
 std::optional<std::map<std::string, Json>> uplift_rows(
     Node& node, const Json& binding,
     const std::vector<pipeline::RunOutput>& outputs, std::string& error) {
@@ -2159,6 +2291,18 @@ bool deliver_decision(Node& node, const DecisionRecord& decision,
             binding.at("b4_correctness")
                 .at("review")
                 .at("queue");
+    } else if (binding.value("solution", std::string{}) == "B-5") {
+        spec.payload["supplier_id"] = decision.entity_id;
+        spec.payload["supplier_risk_score"] = decision.score;
+        spec.payload["procurement_owner"] = spec.owner;
+        spec.payload["risk_evidence"] = entity.at("risk_evidence");
+        for (const std::string field : {
+                 "part_id", "site_id", "contract_id",
+                 "mitigation_cost", "single_source_dependency"}) {
+            if (entity.contains(field)) {
+                spec.payload[field] = entity.at(field);
+            }
+        }
     }
     for (const std::string field : {
              "series", "timestamp", "point_forecast", "lower", "upper",
@@ -2430,6 +2574,11 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
     if (!bandit_decisions) {
         return ApiResult::failure("engine_error", read_error);
     }
+    const auto supplier_forecasts =
+        b5_forecast_evidence(node, binding, scores, read_error);
+    if (!supplier_forecasts) {
+        return ApiResult::failure("engine_error", read_error);
+    }
     if (binding.value("solution", std::string{}) == "S-1") {
         const double threshold =
             binding.at("s1_correctness").value("too_good_auc_threshold", 0.95);
@@ -2565,6 +2714,23 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     }
                 }
                 entity["failure_risk"] = row.at(score_column);
+            }
+            if (binding.value("solution", std::string{}) == "B-5") {
+                const auto forecast = supplier_forecasts->find(key);
+                if (forecast == supplier_forecasts->end()) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-5 forecast evidence must join exactly once to "
+                        "supplier " + key);
+                }
+                entity["forecast_evidence"] = {
+                    {"timestamp", forecast->second.at("timestamp")},
+                    {"point_forecast",
+                     forecast->second.at("point_forecast")},
+                    {"lower", forecast->second.at("lower")},
+                    {"upper", forecast->second.at("upper")},
+                    {"exception_score",
+                     forecast->second.at("exception_score")}};
             }
             if (!targeting->empty()) {
                 const auto treatment = targeting->find(key);
@@ -2820,6 +2986,47 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
             !entity.value("sensitive_driver_access", false)) {
             driver = "redacted";
         }
+        if (binding.value("solution", std::string{}) == "B-5") {
+            const bool flagged = decision->tier != "monitor";
+            const Json required_fields =
+                binding.at("b5_correctness")
+                    .at("flag_evidence")
+                    .at("required_fields");
+            for (const Json& required : required_fields) {
+                const std::string field = required.get<std::string>();
+                if (flagged &&
+                    (!entity.contains(field) || entity.at(field).is_null() ||
+                     (entity.at(field).is_string() &&
+                      entity.at(field).get_ref<const std::string&>().empty()))) {
+                    return ApiResult::failure(
+                        "invalid_input",
+                        "B-5 risk flag is missing evidence field " + field);
+                }
+            }
+            const Json reason_codes =
+                entity.value("reason_codes", Json::array());
+            if (flagged &&
+                (!reason_codes.is_array() || reason_codes.empty())) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-5 risk flag is missing model reason codes");
+            }
+            if (flagged && !entity.contains("forecast_evidence")) {
+                return ApiResult::failure(
+                    "invalid_input",
+                    "B-5 risk flag is missing forecast evidence");
+            }
+            entity["flagged"] = flagged;
+            entity["risk_evidence"] = {
+                {"external_source",
+                 entity.value("external_source", std::string{})},
+                {"external_observed_at",
+                 entity.value("external_observed_at", Json{})},
+                {"reason_codes", reason_codes},
+                {"dominant_driver", driver},
+                {"forecast",
+                 entity.value("forecast_evidence", Json::object())}};
+        }
         if (binding.value("solution", std::string{}) == "S-2") {
             entity["decision_cell"] = {
                 {"conversion_band", decision->tier},
@@ -2910,6 +3117,15 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                                    : "review"},
                 {"workflow_action", decision->action},
                 {"minimum_confidence", decision->score}};
+        } else if (binding.value("solution", std::string{}) == "B-5") {
+            entity["decision_cell"] = {
+                {"supplier_risk", decision->tier},
+                {"part", entity.value("part_id", std::string{})},
+                {"site", entity.value("site_id", std::string{})},
+                {"contract", entity.value("contract_id", std::string{})},
+                {"forecast_exception_score",
+                 entity.at("forecast_evidence")
+                     .at("exception_score")}};
         } else {
             entity["decision_cell"] = {{"risk", decision->tier},
                                        {"value", value_tier},
@@ -2919,6 +3135,10 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
         decision_row["decision_cell"] = entity.at("decision_cell");
         decision_row["reason_codes"] =
             entity.value("reason_codes", Json::array());
+        if (binding.value("solution", std::string{}) == "B-5") {
+            decision_row["flagged"] = entity.at("flagged");
+            decision_row["risk_evidence"] = entity.at("risk_evidence");
+        }
         for (const std::string field : {
                  "series", "timestamp", "point_forecast", "lower", "upper",
                  "exception_score"}) {
@@ -3491,6 +3711,33 @@ ApiResult finish_solution_run(Node& node, const Json& binding,
                     ? 0.0
                     : static_cast<double>(b4_validated_fields) /
                           static_cast<double>(b4_total_fields));
+        } else if (binding.value("solution", std::string{}) == "B-5") {
+            const double denominator =
+                static_cast<double>(std::max<std::size_t>(entities.size(), 1));
+            const std::size_t missing_evidence = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return entity.value("flagged", false) &&
+                           (!entity.contains("risk_evidence") ||
+                            entity.at("risk_evidence").empty());
+                });
+            const std::size_t stale_external = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return !entity.value("external_data_current", false);
+                });
+            const std::size_t single_source = std::ranges::count_if(
+                entities, [](const Json& entity) {
+                    return entity.value("single_source_dependency", false);
+                });
+            monitor->observe_guardrail(
+                "missing_flag_evidence_rate",
+                static_cast<double>(missing_evidence) / denominator);
+            monitor->observe_guardrail(
+                "stale_external_data_rate",
+                static_cast<double>(stale_external) / denominator);
+            monitor->observe_guardrail(
+                "single_source_exposure_rate",
+                static_cast<double>(single_source) / denominator);
+            monitor->observe_guardrail("mitigation_budget", cost);
             monitor->observe_guardrail("action_execution_rate",
                                        execution_rate);
         } else {

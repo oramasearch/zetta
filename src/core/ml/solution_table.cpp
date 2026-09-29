@@ -86,6 +86,7 @@ Solution band_a(
                            : solution.id == "B-2" ? 1176
                            : solution.id == "B-3" ? 1177
                            : solution.id == "B-4" ? 1178
+                           : solution.id == "B-5" ? 1179
                                                    : 1102);
     return solution;
 }
@@ -654,14 +655,36 @@ const std::vector<Solution>& solutions() {
                 {"label", true, "routing and resolved outcome"},
                 {"entity", false, "customer, service, and product"}},
                "Promote when ticket volume is high enough and the service organization owns or funds its taxonomy."),
-        sketch("B-5", "Supplier Risk & Procurement Intelligence",
-               "Prioritize supplier risks and procurement actions with evidence.",
-               "Reduce disruption exposure despite sparse, selected supplier outcomes.",
-               {{"M-1", "primary", 1}, {"M-4", "foundation", 1}},
-               {{"entity", true, "supplier, part, site, and contract"},
-                {"label", true, "disruption or performance outcome"},
-                {"time", true, "orders, deliveries, and risk signals"}},
-               "Promote with concentrated manufacturing demand and reusable external-data support across several modules."),
+        band_a(
+            "B-5", "Supplier Risk & Procurement Intelligence",
+            "Prioritize supplier risks and procurement actions with evidence.",
+            "Reduce disruption exposure despite sparse, selected supplier outcomes.",
+            {{"M-1", "primary", 1}, {"M-4", "foundation", 1}},
+            {"M-4", "M-1"},
+            {"supplier watch and procurement review tasks",
+             "approval-bounded mitigation tasks"},
+            {"L1 procurement tasks", "batch supplier-risk read-back"},
+            {{"publish evidence-backed supplier flags", "A2"},
+             {"route procurement review work", "A2"},
+             {"approve supplier mitigation spend", "A1"},
+             {"tune risk thresholds inside approved bounds", "A3"}},
+            {{"entity", true, "supplier, part, site, and contract"},
+             {"label", true, "disruption or performance outcome"},
+             {"time", true, "orders, deliveries, external publications, and risk signals"},
+             {"feature", true, "pre-event delivery, quality, concentration, and external-risk evidence"},
+             {"owner", true, "buyer or procurement team accountable for review"},
+             {"evidence", true, "source, publication cutoff, reason codes, and forecast context"},
+             {"cost", false, "mitigation cost used for budget and approval limits"}},
+            "Risk tiers crossed with supplier eligibility, evidence completeness, task frequency, mitigation budget, approvals, and a kill switch.",
+            "Permanent holdout in every risk tier, measuring disruption avoidance after procurement action.",
+            {"missing flag evidence", "stale external data",
+             "single-source exposure", "mitigation budget",
+             "action-execution rate"},
+             levels("supplier risk flags with source and forecast evidence",
+                    "add owned procurement review tasks",
+                    "add approval-bounded mitigation tasks",
+                    "add bounded procurement action routing"),
+             "Promote with concentrated manufacturing demand and reusable external-data support across several modules."),
         sketch("B-6", "Healthcare Operations (no-show & denials)",
                "Prioritize assistive scheduling and revenue-cycle work with equity controls.",
                "Recover operational capacity without turning predictions into access penalties.",

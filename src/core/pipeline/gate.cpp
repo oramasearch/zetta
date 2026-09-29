@@ -258,6 +258,9 @@ CorrectnessGate default_gate() {
     gate.add_check(std::make_shared<B4PerFieldConfidenceCheck>());
     gate.add_check(std::make_shared<B4ReviewQueueCheck>());
     gate.add_check(std::make_shared<B4ValidatedWorkflowCheck>());
+    gate.add_check(std::make_shared<B5PointInTimeExternalDataCheck>());
+    gate.add_check(std::make_shared<B5PostEventSupplierLeakageCheck>());
+    gate.add_check(std::make_shared<B5FlagEvidenceCheck>());
     return gate;
 }
 

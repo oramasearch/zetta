@@ -63,6 +63,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     const bool automated_outbound = request.solution == "S-9";
     const bool collections = request.solution == "S-4";
     const bool fraud_decisioning = request.solution == "S-10";
+    const bool supplier_risk = request.solution == "B-5";
 
     if (request.solution == "B-2") {
         const std::string group_column =
@@ -216,6 +217,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Connect,
         fraud_decisioning ? "Load authorization requests"
+        : supplier_risk ? "Load supplier and contract records"
         : lead_scoring ? "Load lead and opportunity records"
                          : collections ? "Load receivables"
                                        : automated_outbound ? "Load consented outbound candidates"
@@ -223,10 +225,12 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         nlohmann::json{
             {"source", "warehouse"},
             {"table", fraud_decisioning ? "authorizations"
+                         : supplier_risk ? "suppliers"
                          : lead_scoring ? "leads"
                          : collections ? "receivables"
                                        : "customers"},
             {"note", fraud_decisioning ? "authorization requests to score before a response"
+                         : supplier_risk ? "suppliers, parts, sites, and contracts at the decision cutoff"
                          : lead_scoring ? "open leads and opportunities to score for conversion"
                          : collections ? "eligible receivables to score for recovery priority"
                                        : automated_outbound
@@ -236,6 +240,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Connect,
         fraud_decisioning ? "Load request-time and graph signals"
+        : supplier_risk ? "Load delivery and external risk evidence"
         : lead_scoring ? "Load pre-qualification engagement"
                          : collections ? "Load payment and contact history"
                                        : automated_outbound ? "Load pre-send engagement and contact history"
@@ -243,10 +248,12 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         nlohmann::json{
             {"source", "warehouse"},
             {"table", fraud_decisioning ? "authorization_signals"
+                         : supplier_risk ? "supplier_risk_signals"
                          : lead_scoring ? "lead_events"
                          : collections ? "collections_events"
                                        : "events"},
             {"note", fraud_decisioning ? "request-time device, merchant, counterparty, and graph features"
+                         : supplier_risk ? "point-in-time delivery, quality, concentration, and external publications"
                          : lead_scoring ? "point-in-time engagement signals per lead"
                          : collections ? "point-in-time payment, delinquency, and contact signals"
                                        : automated_outbound
@@ -256,6 +263,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Clean,
         fraud_decisioning ? "Build request-time fraud features"
+        : supplier_risk ? "Build supplier risk features"
         : lead_scoring ? "Build conversion features"
                          : collections ? "Build recovery features"
                                        : automated_outbound ? "Build outbound response features"
@@ -263,6 +271,8 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         nlohmann::json{
             {"note", fraud_decisioning
                          ? "training and request-time features must have exact parity"
+                     : supplier_risk
+                         ? "use pre-event supplier evidence and exclude post-disruption records"
                      : lead_scoring
                          ? "point-in-time features; exclude post-qualification fields"
                      : collections
@@ -274,6 +284,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Model,
         fraud_decisioning ? "Train fraud-risk model"
+        : supplier_risk ? "Train supplier disruption-risk model"
         : lead_scoring ? "Train conversion-propensity model"
                          : collections ? "Train recovery-priority model"
                                        : automated_outbound ? "Train outbound response-propensity model"
@@ -281,11 +292,13 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
         nlohmann::json{{"model_kind", "gbdt"},
                        {"algo", "gradient_boosting"},
                        {"target", fraud_decisioning ? "fraud_label"
+                         : supplier_risk ? "disruption"
                          : lead_scoring ? "converted"
                          : collections ? "promise_to_pay"
                                        : automated_outbound ? "response"
                                                        : "churned"},
                        {"note", fraud_decisioning ? "predict matured fraud risk for each authorization"
+                         : supplier_risk ? "predict disruption risk for each supplier relationship"
                          : lead_scoring ? "predict probability each lead converts"
                          : collections ? "predict point-in-time recovery propensity"
                                        : automated_outbound
@@ -295,6 +308,7 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Index,
         fraud_decisioning ? "Index authorization scores"
+        : supplier_risk ? "Index supplier risk scores"
         : lead_scoring ? "Index conversion scores"
                          : collections ? "Index recovery scores"
                                        : automated_outbound ? "Index outbound response scores"
@@ -305,12 +319,14 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Serve,
         fraud_decisioning ? "Serve authorization scores and reasons"
+        : supplier_risk ? "Serve supplier flags and evidence"
         : lead_scoring ? "Serve conversion scores and reasons"
                          : collections ? "Serve recovery scores and reasons"
                                        : automated_outbound ? "Serve outbound response scores and reasons"
                              : "Serve churn scores & reasons",
         nlohmann::json{
             {"note", fraud_decisioning ? "expose per-request fraud score and graph evidence"
+                         : supplier_risk ? "expose per-supplier risk, reasons, and external provenance"
                          : lead_scoring ? "expose per-lead conversion score and top drivers"
                          : collections ? "expose per-receivable recovery priority and drivers"
                                        : automated_outbound
@@ -320,29 +336,39 @@ ir::ExecutionGraph build_m1_shape(const ShapeRequest& request) {
     graph.add_node(
         ir::StepKind::Act,
         fraud_decisioning ? "Write fraud authorization scores"
+        : supplier_risk ? "Publish supplier risk flags"
         : lead_scoring ? "Route sales queue tasks"
                          : collections ? "Prioritize collections treatments"
                                        : automated_outbound ? "outbound response scores"
                              : "Trigger retention outreach",
         nlohmann::json{
             {"note", fraud_decisioning ? "write request-time decisions and case-review candidates"
+                         : supplier_risk ? "publish evidence-backed supplier risk flags for procurement"
                          : lead_scoring ? "route capacity-aware CRM tasks with SLAs"
                          : collections ? "publish the governed recovery-priority table"
                                        : automated_outbound
                          ? "publish the outbound-specific decision score artifact"
                          : "notify retention on high-risk accounts"},
              {"result_database", fraud_decisioning ? "fraud_results"
+                  : supplier_risk ? "supplier_risk_results"
                   : collections ? "collections_results"
                   : automated_outbound ? "solution_methodology_results" : "churn_results"},
              {"result_table_prefix", fraud_decisioning ? "authorization_scores_"
+                  : supplier_risk ? "risk_flags_"
                   : collections ? "recovery_priority_"
                   : automated_outbound ? "outbound_response_" : "at_risk_"},
              {"entity_output_column", fraud_decisioning ? "transaction"
+                  : supplier_risk ? "supplier"
                   : collections ? "receivable"
                   : automated_outbound ? "entity" : "account"},
              {"score_output_column", fraud_decisioning ? "fraud_score"
+                  : supplier_risk ? "supplier_risk_score"
                   : collections ? "recovery_score"
-                  : automated_outbound ? "response_propensity" : "risk"}},
+                  : automated_outbound ? "response_propensity" : "risk"},
+             {"evidence_output_fields",
+              supplier_risk
+                  ? nlohmann::json{"reason_codes", "dominant_driver"}
+                  : nlohmann::json::array()}},
         "notify_retention");
 
     graph.add_edge("load_customers", "build_features");
@@ -600,7 +626,7 @@ Methodology make_m1_methodology() {
                                "regression", "score",
                                "tabular"};
     methodology.solutions = {
-        "S-1", "S-2", "S-3", "S-4", "S-10", "S-12", "B-2"};
+        "S-1", "S-2", "S-3", "S-4", "S-10", "S-12", "B-2", "B-5"};
     methodology.keywords = {
         "churn",    "retention",       "retain",     "attrition", "cancel",
         "renew",    "renewal",         "subscriber", "lapse",     "downgrade",

@@ -698,7 +698,7 @@ TEST(BanditPolicyCheck, AcceptsFeasibleFloorsAndCapsForEveryArm) {
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::pipeline::default_gate();
-    ASSERT_EQ(gate.check_count(), 92u);
+    ASSERT_EQ(gate.check_count(), 95u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
@@ -791,6 +791,9 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     EXPECT_EQ(gate.checks()[89]->name(), "b4_per_field_confidence");
     EXPECT_EQ(gate.checks()[90]->name(), "b4_review_queue");
     EXPECT_EQ(gate.checks()[91]->name(), "b4_validated_workflow");
+    EXPECT_EQ(gate.checks()[92]->name(), "b5_point_in_time_external_data");
+    EXPECT_EQ(gate.checks()[93]->name(), "b5_post_event_supplier_leakage");
+    EXPECT_EQ(gate.checks()[94]->name(), "b5_flag_evidence");
 }
 
 TEST(RankGraphCheck, CorrectRankGraphPasses) {
